@@ -9,6 +9,7 @@
 - API: `gpt-5.1-pro` now targets `gpt-5.2-pro` instead of older Pro fallbacks.
 - Browser: “Thinking time → Extended” selection now reuses centralized menu selectors, normalizes text matching, and ships a best-effort helper for future “auto” mode. Original PR #36 by Victor Vannara (@voctory) — thank you!
 - Browser: new `--browser-attachments <auto|never|always>` (default `auto`) pastes file contents inline up to ~60k characters, then switches to uploads; if ChatGPT rejects an inline paste as too large, Oracle retries automatically with uploads.
+  - Note: the ~60k threshold is based on pasted **characters** in the ChatGPT composer (not token estimates); on rejection we log the retry and switch to uploads automatically.
 
 ## 0.5.6 — 2025-12-09 (re-release of 0.5.5)
 
