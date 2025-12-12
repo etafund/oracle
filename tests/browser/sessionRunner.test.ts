@@ -97,6 +97,83 @@ describe('runBrowserSessionExecution', () => {
     expect(noisyLogger).toHaveBeenCalled(); // ensure executeBrowser ran
   });
 
+  test('prints fallback retry logs even when not verbose', async () => {
+    const log = vi.fn();
+    await runBrowserSessionExecution(
+      {
+        runOptions: { ...baseRunOptions, verbose: false },
+        browserConfig: baseConfig,
+        cwd: '/repo',
+        log,
+      },
+      {
+        assemblePrompt: async () => ({
+          markdown: 'prompt',
+          composerText: 'prompt',
+          estimatedInputTokens: 5,
+          attachments: [],
+          inlineFileCount: 0,
+          tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: 'auto',
+          attachmentMode: 'inline',
+          fallback: null,
+        }),
+        executeBrowser: async ({ log: automationLog }) => {
+          automationLog?.('[browser] Inline prompt too large; retrying with file uploads.');
+          return { answerText: 'text', answerMarkdown: 'markdown', tookMs: 1, answerTokens: 1, answerChars: 4 };
+        },
+      },
+    );
+    expect(
+      log.mock.calls.some((call) => String(call[0]).includes('Inline prompt too large; retrying')),
+    ).toBe(true);
+  });
+
+  test('passes fallback submission through to browser runner', async () => {
+    const log = vi.fn();
+    const executeBrowser = vi.fn(async () => ({
+      answerText: 'text',
+      answerMarkdown: 'markdown',
+      tookMs: 1,
+      answerTokens: 1,
+      answerChars: 4,
+    }));
+    await runBrowserSessionExecution(
+      {
+        runOptions: { ...baseRunOptions, verbose: false },
+        browserConfig: baseConfig,
+        cwd: '/repo',
+        log,
+      },
+      {
+        assemblePrompt: async () => ({
+          markdown: 'prompt',
+          composerText: 'prompt',
+          estimatedInputTokens: 5,
+          attachments: [],
+          inlineFileCount: 0,
+          tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: 'auto',
+          attachmentMode: 'inline',
+          fallback: {
+            composerText: 'fallback prompt',
+            attachments: [{ path: '/repo/a.txt', displayPath: 'a.txt', sizeBytes: 1 }],
+            bundled: null,
+          },
+        }),
+        executeBrowser,
+      },
+    );
+    expect(executeBrowser).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fallbackSubmission: {
+          prompt: 'fallback prompt',
+          attachments: [expect.objectContaining({ path: '/repo/a.txt', displayPath: 'a.txt' })],
+        },
+      }),
+    );
+  });
+
   test('respects verbose logging', async () => {
     const log = vi.fn();
     await runBrowserSessionExecution(

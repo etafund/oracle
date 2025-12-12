@@ -37,6 +37,72 @@ describe('assembleBrowserPrompt', () => {
     expect(result.tokenEstimateIncludesInlineFiles).toBe(true);
   });
 
+  test('auto mode uploads when inline composer exceeds ~60k chars', async () => {
+    const options = buildOptions({ prompt: 'Explain the bug', file: ['big.txt'], browserAttachments: 'auto' });
+    // Keep this just over the threshold; huge strings make tokenization slow on CI.
+    const huge = 'x'.repeat(62_000);
+    const result = await assembleBrowserPrompt(options, {
+      cwd: '/repo',
+      readFilesImpl: async () => [{ path: '/repo/big.txt', content: huge }],
+    });
+    expect(result.attachmentMode).toBe('upload');
+    expect(result.attachments).toEqual([expect.objectContaining({ path: '/repo/big.txt', displayPath: 'big.txt' })]);
+    expect(result.inlineFileCount).toBe(0);
+    expect(result.tokenEstimateIncludesInlineFiles).toBe(false);
+    expect(result.composerText).toBe('Explain the bug');
+    expect(result.composerText).not.toContain('### File: big.txt');
+    expect(result.fallback).toBeNull();
+  }, 20_000);
+
+  test('auto inline mode includes upload fallback', async () => {
+    const options = buildOptions({ prompt: 'Explain the bug', file: ['a.txt'], browserAttachments: 'auto' });
+    const result = await assembleBrowserPrompt(options, {
+      cwd: '/repo',
+      readFilesImpl: async () => [{ path: '/repo/a.txt', content: 'tiny' }],
+    });
+    expect(result.attachmentMode).toBe('inline');
+    expect(result.attachments).toEqual([]);
+    expect(result.inlineFileCount).toBe(1);
+    expect(result.fallback).toEqual(
+      expect.objectContaining({
+        composerText: 'Explain the bug',
+        attachments: [expect.objectContaining({ path: '/repo/a.txt', displayPath: 'a.txt' })],
+      }),
+    );
+  });
+
+  test('always mode forces uploads even when small', async () => {
+    const options = buildOptions({ prompt: 'Explain the bug', file: ['a.txt'], browserAttachments: 'always' });
+    const result = await assembleBrowserPrompt(options, {
+      cwd: '/repo',
+      readFilesImpl: async () => [{ path: '/repo/a.txt', content: 'tiny' }],
+    });
+    expect(result.attachmentMode).toBe('upload');
+    expect(result.attachments).toEqual([expect.objectContaining({ path: '/repo/a.txt', displayPath: 'a.txt' })]);
+    expect(result.composerText).toBe('Explain the bug');
+    expect(result.composerText).not.toContain('### File: a.txt');
+    expect(result.fallback).toBeNull();
+  });
+
+  test('legacy browserInlineFiles forces inline and disables auto fallback', async () => {
+    const options = buildOptions({
+      prompt: 'Explain the bug',
+      file: ['big.txt'],
+      browserInlineFiles: true,
+      browserAttachments: 'auto',
+    });
+    const huge = 'x'.repeat(62_000);
+    const result = await assembleBrowserPrompt(options, {
+      cwd: '/repo',
+      readFilesImpl: async () => [{ path: '/repo/big.txt', content: huge }],
+    });
+    expect(result.attachmentsPolicy).toBe('never');
+    expect(result.attachmentMode).toBe('inline');
+    expect(result.attachments).toEqual([]);
+    expect(result.composerText).toContain('### File: big.txt');
+    expect(result.fallback).toBeNull();
+  });
+
   test('respects custom cwd and multiple files', async () => {
     const options = buildOptions({ file: ['docs/one.md', 'docs/two.md'] });
     const result = await assembleBrowserPrompt(options, {
