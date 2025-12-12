@@ -9,6 +9,7 @@ import {
 import { delay } from '../utils.js';
 import { logDomFailure } from '../domDebug.js';
 import { buildClickDispatcher } from './domEvents.js';
+import { BrowserAutomationError } from '../../oracle/errors.js';
 
 const ENTER_KEY_EVENT = {
   key: 'Enter',
@@ -88,9 +89,11 @@ export async function submitPrompt(
     returnByValue: true,
   });
 
-  const editorText = verification.result?.value?.editorText?.trim?.() ?? '';
-  const fallbackValue = verification.result?.value?.fallbackValue?.trim?.() ?? '';
-  if (!editorText && !fallbackValue) {
+  const editorTextRaw = verification.result?.value?.editorText ?? '';
+  const fallbackValueRaw = verification.result?.value?.fallbackValue ?? '';
+  const editorTextTrimmed = editorTextRaw?.trim?.() ?? '';
+  const fallbackValueTrimmed = fallbackValueRaw?.trim?.() ?? '';
+  if (!editorTextTrimmed && !fallbackValueTrimmed) {
     await runtime.evaluate({
       expression: `(() => {
         const fallback = document.querySelector(${fallbackSelectorLiteral});
@@ -106,6 +109,31 @@ export async function submitPrompt(
           editor.dispatchEvent(new InputEvent('input', { bubbles: true, data: ${encodedPrompt}, inputType: 'insertFromPaste' }));
         }
       })()`,
+    });
+  }
+
+  const promptLength = prompt.length;
+  const postVerification = await runtime.evaluate({
+    expression: `(() => {
+      const editor = document.querySelector(${primarySelectorLiteral});
+      const fallback = document.querySelector(${fallbackSelectorLiteral});
+      return {
+        editorText: editor?.innerText ?? '',
+        fallbackValue: fallback?.value ?? '',
+      };
+    })()`,
+    returnByValue: true,
+  });
+  const observedEditor = postVerification.result?.value?.editorText ?? '';
+  const observedFallback = postVerification.result?.value?.fallbackValue ?? '';
+  const observedLength = Math.max(observedEditor.length, observedFallback.length);
+  if (promptLength >= 50_000 && observedLength > 0 && observedLength < promptLength - 2_000) {
+    await logDomFailure(runtime, logger, 'prompt-too-large');
+    throw new BrowserAutomationError('Prompt appears truncated in the composer (likely too large).', {
+      stage: 'submit-prompt',
+      code: 'prompt-too-large',
+      promptLength,
+      observedLength,
     });
   }
 
@@ -129,6 +157,36 @@ export async function submitPrompt(
   await verifyPromptCommitted(runtime, prompt, 30_000, logger);
 
   await clickAnswerNowIfPresent(runtime, logger);
+}
+
+export async function clearPromptComposer(Runtime: ChromeClient['Runtime'], logger: BrowserLogger) {
+  const primarySelectorLiteral = JSON.stringify(PROMPT_PRIMARY_SELECTOR);
+  const fallbackSelectorLiteral = JSON.stringify(PROMPT_FALLBACK_SELECTOR);
+  const result = await Runtime.evaluate({
+    expression: `(() => {
+      const fallback = document.querySelector(${fallbackSelectorLiteral});
+      const editor = document.querySelector(${primarySelectorLiteral});
+      let cleared = false;
+      if (fallback) {
+        fallback.value = '';
+        fallback.dispatchEvent(new InputEvent('input', { bubbles: true, data: '', inputType: 'deleteByCut' }));
+        fallback.dispatchEvent(new Event('change', { bubbles: true }));
+        cleared = true;
+      }
+      if (editor) {
+        editor.textContent = '';
+        editor.dispatchEvent(new InputEvent('input', { bubbles: true, data: '', inputType: 'deleteByCut' }));
+        cleared = true;
+      }
+      return { cleared };
+    })()`,
+    returnByValue: true,
+  });
+  if (!result.result?.value?.cleared) {
+    await logDomFailure(Runtime, logger, 'clear-composer');
+    throw new Error('Failed to clear prompt composer');
+  }
+  await delay(250);
 }
 
 async function waitForDomReady(Runtime: ChromeClient['Runtime'], logger?: BrowserLogger) {
@@ -300,6 +358,14 @@ async function verifyPromptCommitted(
       }).then((res) => JSON.stringify(res?.result?.value)).catch(() => 'unavailable')}`,
     );
     await logDomFailure(Runtime, logger, 'prompt-commit');
+  }
+  if (prompt.trim().length >= 50_000) {
+    throw new BrowserAutomationError('Prompt did not appear in conversation before timeout (likely too large).', {
+      stage: 'submit-prompt',
+      code: 'prompt-too-large',
+      promptLength: prompt.trim().length,
+      timeoutMs,
+    });
   }
   throw new Error('Prompt did not appear in conversation before timeout (send may have failed)');
 }

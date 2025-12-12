@@ -64,6 +64,11 @@ export interface BrowserAutomationConfig {
 export interface BrowserRunOptions {
   prompt: string;
   attachments?: BrowserAttachment[];
+  /**
+   * Optional secondary submission to try if the initial prompt is rejected by ChatGPT
+   * (e.g. inline file paste exceeds composer limits). Intended for auto inline->upload fallback.
+   */
+  fallbackSubmission?: { prompt: string; attachments: BrowserAttachment[] };
   config?: BrowserAutomationConfig;
   log?: BrowserLogger;
   heartbeatIntervalMs?: number;

@@ -9,6 +9,7 @@ const baseOptions = {
   browserConfig: undefined,
   verbose: false,
   heartbeatIntervalMs: 30000,
+  browserAttachments: 'auto' as const,
   browserInlineFiles: false,
   browserBundleFiles: false,
   background: false,

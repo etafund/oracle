@@ -63,6 +63,9 @@ describe('runDryRunSummary', () => {
           attachments: [{ path: '/repo/report.txt', displayPath: 'report.txt', sizeBytes: 2048 }],
           inlineFileCount: 0,
           tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: 'auto',
+          attachmentMode: 'upload',
+          fallback: null,
         }),
       },
     );
@@ -111,6 +114,9 @@ describe('runDryRunSummary', () => {
           attachments: [],
           inlineFileCount: 0,
           tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: 'auto',
+          attachmentMode: 'inline',
+          fallback: null,
         }),
       },
     );

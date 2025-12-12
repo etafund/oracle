@@ -129,6 +129,11 @@ export interface RunOracleOptions {
   effectiveModelId?: string;
   verbose?: boolean;
   heartbeatIntervalMs?: number;
+  /**
+   * Browser-only: controls whether `--file` inputs are pasted inline (never upload),
+   * uploaded as attachments (always), or selected automatically based on prompt size.
+   */
+  browserAttachments?: 'auto' | 'never' | 'always';
   browserInlineFiles?: boolean;
   browserBundleFiles?: boolean;
   background?: boolean;

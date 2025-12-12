@@ -117,6 +117,7 @@ interface CliOptions extends OptionValues {
   browserManualLogin?: boolean;
   browserExtendedThinking?: boolean;
   browserAllowCookieErrors?: boolean;
+  browserAttachments?: string;
   browserInlineFiles?: boolean;
   browserBundleFiles?: boolean;
   remoteChrome?: string;
@@ -372,6 +373,14 @@ program
   )
   .addOption(
     new Option(
+      '--browser-attachments <mode>',
+      'How to deliver --file inputs in browser mode: auto (default) pastes inline up to ~60k chars then uploads; never always paste inline; always always upload.',
+    )
+      .choices(['auto', 'never', 'always'])
+      .default('auto'),
+  )
+  .addOption(
+    new Option(
       '--remote-chrome <host:port>',
       'Connect to remote Chrome DevTools Protocol (e.g., 192.168.1.10:9222 or [2001:db8::1]:9222 for IPv6).',
     ),
@@ -379,7 +388,7 @@ program
   .addOption(new Option('--remote-host <host:port>', 'Delegate browser runs to a remote `oracle serve` instance.'))
   .addOption(new Option('--remote-token <token>', 'Access token for the remote `oracle serve` instance.'))
   .addOption(
-    new Option('--browser-inline-files', 'Paste files directly into the ChatGPT composer instead of uploading attachments.').default(false),
+    new Option('--browser-inline-files', 'Alias for --browser-attachments never (force pasting file contents inline).').default(false),
   )
   .addOption(new Option('--browser-bundle-files', 'Bundle all attachments into a single archive before uploading.').default(false))
   .option(
@@ -536,6 +545,7 @@ function buildRunOptions(options: ResolvedCliOptions, overrides: Partial<RunOrac
     sessionId: overrides.sessionId ?? options.sessionId,
     verbose: overrides.verbose ?? options.verbose,
     heartbeatIntervalMs: overrides.heartbeatIntervalMs ?? resolveHeartbeatIntervalMs(options.heartbeat),
+    browserAttachments: overrides.browserAttachments ?? (options.browserAttachments as 'auto' | 'never' | 'always' | undefined) ?? 'auto',
     browserInlineFiles: overrides.browserInlineFiles ?? options.browserInlineFiles ?? false,
     browserBundleFiles: overrides.browserBundleFiles ?? options.browserBundleFiles ?? false,
     background: overrides.background ?? undefined,
@@ -585,6 +595,7 @@ function buildRunOptionsFromMetadata(metadata: SessionMetadata): RunOracleOption
     sessionId: metadata.id,
     verbose: stored.verbose,
     heartbeatIntervalMs: stored.heartbeatIntervalMs,
+    browserAttachments: stored.browserAttachments,
     browserInlineFiles: stored.browserInlineFiles,
     browserBundleFiles: stored.browserBundleFiles,
     background: stored.background,

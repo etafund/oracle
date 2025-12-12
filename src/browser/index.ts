@@ -20,6 +20,7 @@ import {
   ensurePromptReady,
   ensureModelSelection,
   submitPrompt,
+  clearPromptComposer,
   waitForAssistantResponse,
   captureAssistantMarkdown,
   uploadAttachmentFile,
@@ -45,6 +46,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
   }
 
   const attachments: BrowserAttachment[] = options.attachments ?? [];
+  const fallbackSubmission = options.fallbackSubmission;
 
   let config = resolveBrowserConfig(options.config);
   const logger: BrowserLogger = options.log ?? ((_message: string) => {});
@@ -327,20 +329,38 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         }),
       );
     }
-    const attachmentNames = attachments.map((a) => path.basename(a.path));
-    if (attachments.length > 0) {
-      if (!DOM) {
-        throw new Error('Chrome DOM domain unavailable while uploading attachments.');
+    const submitOnce = async (prompt: string, submissionAttachments: BrowserAttachment[]) => {
+      const attachmentNames = submissionAttachments.map((a) => path.basename(a.path));
+      if (submissionAttachments.length > 0) {
+        if (!DOM) {
+          throw new Error('Chrome DOM domain unavailable while uploading attachments.');
+        }
+        for (const attachment of submissionAttachments) {
+          logger(`Uploading attachment: ${attachment.displayPath}`);
+          await uploadAttachmentFile({ runtime: Runtime, dom: DOM }, attachment, logger);
+        }
+        const waitBudget = Math.max(config.inputTimeoutMs ?? 30_000, 30_000);
+        await waitForAttachmentCompletion(Runtime, waitBudget, attachmentNames, logger);
+        logger('All attachments uploaded');
       }
-      for (const attachment of attachments) {
-        logger(`Uploading attachment: ${attachment.displayPath}`);
-        await uploadAttachmentFile({ runtime: Runtime, dom: DOM }, attachment, logger);
+      await submitPrompt({ runtime: Runtime, input: Input, attachmentNames }, prompt, logger);
+    };
+
+    try {
+      await raceWithDisconnect(submitOnce(promptText, attachments));
+    } catch (error) {
+      const isPromptTooLarge =
+        error instanceof BrowserAutomationError &&
+        (error.details as { code?: string } | undefined)?.code === 'prompt-too-large';
+      if (fallbackSubmission && isPromptTooLarge) {
+        logger('[browser] Inline prompt too large; retrying with file uploads.');
+        await raceWithDisconnect(clearPromptComposer(Runtime, logger));
+        await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+        await raceWithDisconnect(submitOnce(fallbackSubmission.prompt, fallbackSubmission.attachments));
+      } else {
+        throw error;
       }
-      const waitBudget = Math.max(config.inputTimeoutMs ?? 30_000, 30_000);
-      await raceWithDisconnect(waitForAttachmentCompletion(Runtime, waitBudget, attachmentNames, logger));
-      logger('All attachments uploaded');
     }
-    await raceWithDisconnect(submitPrompt({ runtime: Runtime, input: Input, attachmentNames }, promptText, logger));
     stopThinkingMonitor = startThinkingStatusMonitor(Runtime, logger, options.verbose ?? false);
     const answer = await raceWithDisconnect(waitForAssistantResponse(Runtime, config.timeoutMs, logger));
     answerText = answer.text;
@@ -759,21 +779,39 @@ async function runRemoteBrowserMode(
       });
     }
 
-    const attachmentNames = attachments.map((a) => path.basename(a.path));
-    if (attachments.length > 0) {
-      if (!DOM) {
-        throw new Error('Chrome DOM domain unavailable while uploading attachments.');
+    const submitOnce = async (prompt: string, submissionAttachments: BrowserAttachment[]) => {
+      const attachmentNames = submissionAttachments.map((a) => path.basename(a.path));
+      if (submissionAttachments.length > 0) {
+        if (!DOM) {
+          throw new Error('Chrome DOM domain unavailable while uploading attachments.');
+        }
+        // Use remote file transfer for remote Chrome (reads local files and injects via CDP)
+        for (const attachment of submissionAttachments) {
+          logger(`Uploading attachment: ${attachment.displayPath}`);
+          await uploadAttachmentViaDataTransfer({ runtime: Runtime, dom: DOM }, attachment, logger);
+        }
+        const waitBudget = Math.max(config.inputTimeoutMs ?? 30_000, 30_000);
+        await waitForAttachmentCompletion(Runtime, waitBudget, attachmentNames, logger);
+        logger('All attachments uploaded');
       }
-      // Use remote file transfer for remote Chrome (reads local files and injects via CDP)
-      for (const attachment of attachments) {
-        logger(`Uploading attachment: ${attachment.displayPath}`);
-        await uploadAttachmentViaDataTransfer({ runtime: Runtime, dom: DOM }, attachment, logger);
+      await submitPrompt({ runtime: Runtime, input: Input, attachmentNames }, prompt, logger);
+    };
+
+    try {
+      await submitOnce(promptText, attachments);
+    } catch (error) {
+      const isPromptTooLarge =
+        error instanceof BrowserAutomationError &&
+        (error.details as { code?: string } | undefined)?.code === 'prompt-too-large';
+      if (options.fallbackSubmission && isPromptTooLarge) {
+        logger('[browser] Inline prompt too large; retrying with file uploads.');
+        await clearPromptComposer(Runtime, logger);
+        await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
+        await submitOnce(options.fallbackSubmission.prompt, options.fallbackSubmission.attachments);
+      } else {
+        throw error;
       }
-      const waitBudget = Math.max(config.inputTimeoutMs ?? 30_000, 30_000);
-      await waitForAttachmentCompletion(Runtime, waitBudget, attachmentNames, logger);
-      logger('All attachments uploaded');
     }
-    await submitPrompt({ runtime: Runtime, input: Input, attachmentNames }, promptText, logger);
     stopThinkingMonitor = startThinkingStatusMonitor(Runtime, logger, options.verbose ?? false);
     const answer = await waitForAssistantResponse(Runtime, config.timeoutMs, logger);
     answerText = answer.text;

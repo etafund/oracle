@@ -461,6 +461,7 @@ async function askOracleFlow(version: string, userConfig: UserConfig): Promise<v
     sessionId: undefined,
     verbose: false,
     heartbeatIntervalMs: undefined,
+    browserAttachments: 'auto',
     browserInlineFiles: false,
     browserBundleFiles: false,
     background: undefined,

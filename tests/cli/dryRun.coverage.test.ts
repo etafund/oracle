@@ -32,6 +32,9 @@ describe('runDryRunSummary', () => {
       attachments: [{ path: '/tmp/bundle.txt', displayPath: '/tmp/bundle.txt', sizeBytes: 42 }],
       inlineFileCount: 0,
       tokenEstimateIncludesInlineFiles: false,
+      attachmentsPolicy: 'auto',
+      attachmentMode: 'bundle',
+      fallback: null,
       bundled: { originalCount: 3, bundlePath: '/tmp/bundle.txt' },
     });
 
@@ -66,6 +69,9 @@ describe('runDryRunSummary', () => {
       attachments: [],
       inlineFileCount: 2,
       tokenEstimateIncludesInlineFiles: true,
+      attachmentsPolicy: 'auto',
+      attachmentMode: 'inline',
+      fallback: null,
       bundled: null,
     });
 
@@ -95,6 +101,9 @@ describe('runDryRunSummary', () => {
       attachments: [],
       inlineFileCount: 0,
       tokenEstimateIncludesInlineFiles: false,
+      attachmentsPolicy: 'auto',
+      attachmentMode: 'inline',
+      fallback: null,
       bundled: null,
     });
 
@@ -124,6 +133,9 @@ describe('runDryRunSummary', () => {
       attachments: [{ path: '/tmp/file.txt', displayPath: 'file.txt', sizeBytes: 5 }],
       inlineFileCount: 0,
       tokenEstimateIncludesInlineFiles: false,
+      attachmentsPolicy: 'auto',
+      attachmentMode: 'upload',
+      fallback: null,
       bundled: null,
     });
 

@@ -1,6 +1,6 @@
 export { navigateToChatGPT, ensureNotBlocked, ensureLoggedIn, ensurePromptReady } from './actions/navigation.js';
 export { ensureModelSelection } from './actions/modelSelection.js';
-export { submitPrompt } from './actions/promptComposer.js';
+export { submitPrompt, clearPromptComposer } from './actions/promptComposer.js';
 export { uploadAttachmentFile, waitForAttachmentCompletion } from './actions/attachments.js';
 export {
   waitForAssistantResponse,

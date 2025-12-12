@@ -83,6 +83,7 @@ export interface StoredRunOptions {
   browserConfig?: BrowserSessionConfig;
   verbose?: boolean;
   heartbeatIntervalMs?: number;
+  browserAttachments?: 'auto' | 'never' | 'always';
   browserInlineFiles?: boolean;
   browserBundleFiles?: boolean;
   background?: boolean;
@@ -380,6 +381,7 @@ export async function initializeSession(
       browserConfig,
       verbose: options.verbose,
       heartbeatIntervalMs: options.heartbeatIntervalMs,
+      browserAttachments: options.browserAttachments,
       browserInlineFiles: options.browserInlineFiles,
       browserBundleFiles: options.browserBundleFiles,
       background: options.background,

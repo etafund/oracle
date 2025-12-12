@@ -10,6 +10,7 @@ function buildOptions(overrides: Partial<RunOracleOptions> = {}): RunOracleOptio
     model: overrides.model ?? 'gpt-5.1-pro',
     file: overrides.file ?? ['a.txt'],
     system: overrides.system,
+    browserAttachments: overrides.browserAttachments ?? 'auto',
     browserInlineFiles: overrides.browserInlineFiles,
   } as RunOracleOptions;
 }
@@ -26,16 +27,14 @@ describe('assembleBrowserPrompt', () => {
     expect(result.markdown).toContain('### File: a.txt');
     expect(result.markdown).toContain('```');
     expect(result.composerText).not.toContain(DEFAULT_SYSTEM_PROMPT);
-    expect(result.composerText).toBe('Explain the bug');
+    expect(result.composerText).toContain('Explain the bug');
     expect(result.composerText).not.toContain('[SYSTEM]');
     expect(result.composerText).not.toContain('[USER]');
-    expect(result.composerText).not.toContain('### File:');
+    expect(result.composerText).toContain('### File: a.txt');
     expect(result.estimatedInputTokens).toBeGreaterThan(0);
-    expect(result.attachments).toEqual([
-      expect.objectContaining({ path: '/repo/a.txt', displayPath: 'a.txt' }),
-    ]);
-    expect(result.inlineFileCount).toBe(0);
-    expect(result.tokenEstimateIncludesInlineFiles).toBe(false);
+    expect(result.attachments).toEqual([]);
+    expect(result.inlineFileCount).toBe(1);
+    expect(result.tokenEstimateIncludesInlineFiles).toBe(true);
   });
 
   test('respects custom cwd and multiple files', async () => {
@@ -48,14 +47,10 @@ describe('assembleBrowserPrompt', () => {
     expect(result.markdown).toContain('### File: docs/one.md');
     expect(result.markdown).toContain('### File: docs/two.md');
     expect(result.markdown).toContain('```');
-    expect(result.composerText).not.toContain('### File: docs/one.md');
-    expect(result.composerText).not.toContain('### File: docs/two.md');
-    expect(result.attachments).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ path: path.resolve('/root/project', 'docs/one.md'), displayPath: 'docs/one.md' }),
-        expect.objectContaining({ path: path.resolve('/root/project', 'docs/two.md'), displayPath: 'docs/two.md' }),
-      ]),
-    );
+    expect(result.composerText).toContain('### File: docs/one.md');
+    expect(result.composerText).toContain('### File: docs/two.md');
+    expect(result.attachments).toEqual([]);
+    expect(result.inlineFileCount).toBe(2);
   });
 
   test('inlines files when browserInlineFiles enabled', async () => {
@@ -86,7 +81,7 @@ describe('assembleBrowserPrompt', () => {
   });
 
   test('inline file mode boosts estimate compared to prompt-only', async () => {
-    const readFilesImpl = async () => [{ path: '/repo/doc.md', content: 'inline payload' }];
+    const readFilesImpl = async (paths: string[]) => (paths.length > 0 ? [{ path: '/repo/doc.md', content: 'inline payload' }] : []);
     const promptOnly = await assembleBrowserPrompt(buildOptions({ file: [] }), { cwd: '/repo', readFilesImpl });
     const inline = await assembleBrowserPrompt(
       { ...buildOptions({ file: ['doc.md'] }), browserInlineFiles: true } as RunOracleOptions,
@@ -98,7 +93,7 @@ describe('assembleBrowserPrompt', () => {
 
   test('bundles attachments when more than 10 files', async () => {
     const fileNames = Array.from({ length: 11 }, (_, i) => `file${i + 1}.txt`);
-    const options = buildOptions({ file: fileNames });
+    const options = buildOptions({ file: fileNames, browserAttachments: 'always' });
     const result = await assembleBrowserPrompt(options, {
       cwd: '/repo',
       readFilesImpl: async (paths) =>
