@@ -47,6 +47,9 @@ describe('runBrowserSessionExecution', () => {
           attachments: [],
           inlineFileCount: 0,
           tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: 'auto',
+          attachmentMode: 'inline',
+          fallback: null,
         }),
         executeBrowser,
         persistRuntimeHint,
@@ -78,6 +81,9 @@ describe('runBrowserSessionExecution', () => {
           attachments: [],
           inlineFileCount: 0,
           tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: 'auto',
+          attachmentMode: 'inline',
+          fallback: null,
         }),
         executeBrowser: async ({ log: automationLog }) => {
           automationLog?.('Prompt textarea ready');
@@ -108,6 +114,9 @@ describe('runBrowserSessionExecution', () => {
           attachments: [{ path: '/repo/a.txt', displayPath: 'a.txt', sizeBytes: 1024 }],
           inlineFileCount: 0,
           tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: 'auto',
+          attachmentMode: 'upload',
+          fallback: null,
         }),
         executeBrowser: async () => ({
           answerText: 'text',
@@ -138,6 +147,9 @@ describe('runBrowserSessionExecution', () => {
           attachments: [],
           inlineFileCount: 0,
           tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: 'auto',
+          attachmentMode: 'inline',
+          fallback: null,
         }),
         executeBrowser: async () => ({
           answerText: 'text',
@@ -171,6 +183,9 @@ describe('runBrowserSessionExecution', () => {
           attachments: [],
           inlineFileCount: 0,
           tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: 'auto',
+          attachmentMode: 'inline',
+          fallback: null,
         }),
         executeBrowser: async () => ({
           answerText: 'text',
