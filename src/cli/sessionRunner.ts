@@ -37,7 +37,6 @@ import { formatElapsed } from '../oracle/format.js';
 import { sanitizeOscProgress } from './oscUtils.js';
 import { readFiles } from '../oracle/files.js';
 import { formatUSD } from '../oracle/format.js';
-import { SESSIONS_DIR } from '../sessionManager.js';
 import { cwd as getCwd } from 'node:process';
 
 const isTty = process.stdout.isTTY;
@@ -475,7 +474,7 @@ async function writeAssistantOutput(targetPath: string | undefined, content: str
     return;
   }
   const normalizedTarget = path.resolve(targetPath);
-  const normalizedSessionsDir = path.resolve(SESSIONS_DIR);
+  const normalizedSessionsDir = path.resolve(sessionStore.sessionsDir());
   if (
     normalizedTarget === normalizedSessionsDir ||
     normalizedTarget.startsWith(`${normalizedSessionsDir}${path.sep}`)
@@ -532,7 +531,7 @@ function buildFallbackPath(original: string): string | null {
   const dir = getCwd();
   const candidate = ext ? `${stem}.fallback${ext}` : `${stem}.fallback`;
   const fallback = path.join(dir, candidate);
-  const normalizedSessionsDir = path.resolve(SESSIONS_DIR);
+  const normalizedSessionsDir = path.resolve(sessionStore.sessionsDir());
   const normalizedFallback = path.resolve(fallback);
   if (
     normalizedFallback === normalizedSessionsDir ||

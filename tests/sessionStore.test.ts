@@ -1,28 +1,21 @@
-import { beforeEach, afterEach, describe, expect, test, vi } from 'vitest';
+import { beforeEach, afterEach, describe, expect, test } from 'vitest';
 import os from 'node:os';
 import path from 'node:path';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { setOracleHomeDirOverrideForTest } from '../src/oracleHome.js';
+import { sessionStore as store } from '../src/sessionStore.js';
 
 describe('sessionStore', () => {
-  let originalHome: string | undefined;
   let tmpHome: string;
-  let store: typeof import('../src/sessionStore.ts').sessionStore;
 
   beforeEach(async () => {
-    originalHome = process.env.ORACLE_HOME_DIR;
     tmpHome = await mkdtemp(path.join(os.tmpdir(), 'oracle-store-'));
-    process.env.ORACLE_HOME_DIR = tmpHome;
-    vi.resetModules();
-    ({ sessionStore: store } = await import('../src/sessionStore.ts'));
+    setOracleHomeDirOverrideForTest(tmpHome);
     await store.ensureStorage();
   });
 
   afterEach(async () => {
-    if (originalHome === undefined) {
-      delete process.env.ORACLE_HOME_DIR;
-    } else {
-      process.env.ORACLE_HOME_DIR = originalHome;
-    }
+    setOracleHomeDirOverrideForTest(null);
     await rm(tmpHome, { recursive: true, force: true });
   });
 

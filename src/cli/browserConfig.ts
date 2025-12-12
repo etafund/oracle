@@ -1,10 +1,10 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 import type { BrowserSessionConfig } from '../sessionStore.js';
 import type { ModelName } from '../oracle.js';
 import { CHATGPT_URL, DEFAULT_MODEL_TARGET, normalizeChatgptUrl, parseDuration } from '../browserMode.js';
 import type { CookieParam } from '../browser/types.js';
+import { getOracleHomeDir } from '../oracleHome.js';
 
 const DEFAULT_BROWSER_TIMEOUT_MS = 1_200_000;
 const DEFAULT_BROWSER_INPUT_TIMEOUT_MS = 30_000;
@@ -217,7 +217,7 @@ async function resolveInlineCookies({
   }
 
   // fallback: ~/.oracle/cookies.{json,base64}
-  const oracleHome = process.env.ORACLE_HOME_DIR ?? path.join(os.homedir(), '.oracle');
+  const oracleHome = getOracleHomeDir();
   const candidates = ['cookies.json', 'cookies.base64'];
   for (const file of candidates) {
     const fullPath = path.join(oracleHome, file);

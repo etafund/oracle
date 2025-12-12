@@ -6,6 +6,7 @@ import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 
 import type { RunOracleOptions } from '../../src/oracle.ts';
 import type { SessionMetadata } from '../../src/sessionManager.ts';
+import { setOracleHomeDirOverrideForTest } from '../../src/oracleHome.js';
 
 const baseUrl = process.env.OPENAI_BASE_URL ?? '';
 const isOpenRouterBase = baseUrl.includes('openrouter');
@@ -23,18 +24,17 @@ if (!ENABLE_LIVE) {
     let getCliVersion: typeof import('../../src/version.ts').getCliVersion;
     const log = () => {};
     const write = () => true;
-    const originalHomeDir = process.env.ORACLE_HOME_DIR;
 
     beforeAll(async () => {
       tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'oracle-live-write-'));
-      process.env.ORACLE_HOME_DIR = tmpHome;
+      setOracleHomeDirOverrideForTest(tmpHome);
       ({ performSessionRun } = await import('../../src/cli/sessionRunner.ts'));
       ({ sessionStore } = await import('../../src/sessionStore.ts'));
       ({ getCliVersion } = await import('../../src/version.ts'));
     });
 
     afterAll(async () => {
-      process.env.ORACLE_HOME_DIR = originalHomeDir;
+      setOracleHomeDirOverrideForTest(null);
       await fs.rm(tmpHome, { recursive: true, force: true }).catch(() => {});
     });
 

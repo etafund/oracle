@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { ptyAvailable, runOracleTuiWithPty } from '../../util/pty.js';
+import { setOracleHomeDirOverrideForTest } from '../../../src/oracleHome.js';
 
 const ptyDescribe =
   process.platform === 'linux' ? describe.skip : ptyAvailable ? describe : describe.skip;
@@ -47,11 +48,10 @@ ptyDescribe('TUI (interactive, PTY)', () => {
   it(
     'lists recent sessions without disabled placeholders or duplicate headers',
     async () => {
-      const prevHome = process.env.ORACLE_HOME_DIR;
       const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'oracle-tui-sessions-'));
-      process.env.ORACLE_HOME_DIR = homeDir;
       try {
         const { sessionStore } = await import('../../../src/sessionStore.ts');
+        setOracleHomeDirOverrideForTest(homeDir);
 
         await sessionStore.ensureStorage();
         await sessionStore.createSession({ prompt: 'one', model: 'gpt-5.1' }, process.cwd());
@@ -69,7 +69,7 @@ ptyDescribe('TUI (interactive, PTY)', () => {
         expect(statusHeaders.length).toBeGreaterThan(0);
         expect(statusHeaders.length).toBeLessThan(10);
       } finally {
-        process.env.ORACLE_HOME_DIR = prevHome;
+        setOracleHomeDirOverrideForTest(null);
         await fs.rm(homeDir, { recursive: true, force: true }).catch(() => {});
       }
     },

@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import JSON5 from 'json5';
+import { getOracleHomeDir } from './oracleHome.js';
 
 export type EnginePreference = 'api' | 'browser';
 
@@ -55,8 +55,7 @@ export interface UserConfig {
 }
 
 function resolveConfigPath(): string {
-  const oracleHome = process.env.ORACLE_HOME_DIR ?? path.join(os.homedir(), '.oracle');
-  return path.join(oracleHome, 'config.json');
+  return path.join(getOracleHomeDir(), 'config.json');
 }
 
 export interface LoadConfigResult {

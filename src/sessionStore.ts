@@ -13,7 +13,7 @@ import {
   deleteSessionsOlderThan,
   updateModelRunMetadata,
   getSessionPaths,
-  SESSIONS_DIR,
+  getSessionsDir,
 } from './sessionManager.js';
 type InitializeSessionOptionsType = Parameters<typeof initializeSession>[0];
 
@@ -102,7 +102,7 @@ class FileSessionStore implements SessionStore {
   }
 
   sessionsDir(): string {
-    return SESSIONS_DIR;
+    return getSessionsDir();
   }
 }
 

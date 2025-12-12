@@ -3,15 +3,14 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { loadUserConfig } from '../src/config.js';
-
-const ORIGINAL_HOME = process.env.ORACLE_HOME_DIR;
+import { setOracleHomeDirOverrideForTest } from '../src/oracleHome.js';
 
 describe('loadUserConfig', () => {
   let tempDir: string;
 
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'oracle-config-'));
-    process.env.ORACLE_HOME_DIR = tempDir;
+    setOracleHomeDirOverrideForTest(tempDir);
   });
 
   it('parses JSON5 config with comments', async () => {
@@ -60,6 +59,6 @@ describe('loadUserConfig', () => {
   });
 
   afterAll(() => {
-    process.env.ORACLE_HOME_DIR = ORIGINAL_HOME;
+    setOracleHomeDirOverrideForTest(null);
   });
 });

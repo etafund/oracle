@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from 'vit
 import { mkdtemp, rm, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { setOracleHomeDirOverrideForTest } from '../src/oracleHome.js';
 
 type SessionModule = typeof import('../src/sessionManager.ts');
 type SessionMetadata = Awaited<ReturnType<SessionModule['initializeSession']>>;
@@ -11,26 +12,26 @@ let oracleHomeDir: string;
 
 beforeAll(async () => {
   oracleHomeDir = await mkdtemp(path.join(os.tmpdir(), 'oracle-session-tests-'));
-  process.env.ORACLE_HOME_DIR = oracleHomeDir;
+  setOracleHomeDirOverrideForTest(oracleHomeDir);
   sessionModule = await import('../src/sessionManager.ts');
   await sessionModule.ensureSessionStorage();
 });
 
 beforeEach(async () => {
-  await rm(sessionModule.SESSIONS_DIR, { recursive: true, force: true });
+  await rm(sessionModule.getSessionsDir(), { recursive: true, force: true });
   await sessionModule.ensureSessionStorage();
 });
 
 afterAll(async () => {
   await rm(oracleHomeDir, { recursive: true, force: true });
-  delete process.env.ORACLE_HOME_DIR;
+  setOracleHomeDirOverrideForTest(null);
 });
 
 describe('session storage setup', () => {
   test('ensureSessionStorage creates the sessions directory', async () => {
-    await rm(sessionModule.SESSIONS_DIR, { recursive: true, force: true });
+    await rm(sessionModule.getSessionsDir(), { recursive: true, force: true });
     await sessionModule.ensureSessionStorage();
-    const stats = await stat(sessionModule.SESSIONS_DIR);
+    const stats = await stat(sessionModule.getSessionsDir());
     expect(stats.isDirectory()).toBe(true);
   });
 });
@@ -76,7 +77,7 @@ describe('session lifecycle', () => {
       '/tmp/cwd',
     );
     vi.useRealTimers();
-    const baseDir = path.join(sessionModule.SESSIONS_DIR, metadata.id);
+    const baseDir = path.join(sessionModule.getSessionsDir(), metadata.id);
     const storedMeta = JSON.parse(await readFile(path.join(baseDir, 'meta.json'), 'utf8'));
     expect(storedMeta.options.file).toEqual(['notes.md']);
     await expect(readFile(path.join(baseDir, 'request.json'), 'utf8')).rejects.toThrow();

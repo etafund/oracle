@@ -2,21 +2,24 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
+import { setOracleHomeDirOverrideForTest } from '../../src/oracleHome.js';
+import { getSessionsDir } from '../../src/sessionManager.js';
 
 describe('resolveOutputPath', () => {
-  const originalHome = process.env.ORACLE_HOME_DIR;
+  let tmpHome: string;
 
   beforeAll(() => {
-    process.env.ORACLE_HOME_DIR = path.join(os.tmpdir(), 'oracle-write-output-test');
+    tmpHome = path.join(os.tmpdir(), 'oracle-write-output-test');
+    setOracleHomeDirOverrideForTest(tmpHome);
   });
 
   afterAll(() => {
-    process.env.ORACLE_HOME_DIR = originalHome;
+    setOracleHomeDirOverrideForTest(null);
   });
 
   test('rejects paths inside session storage', async () => {
     const { resolveOutputPath } = await import('../../src/cli/writeOutputPath.ts');
-    const insideSessions = path.join(process.env.ORACLE_HOME_DIR as string, 'sessions', 'out.md');
+    const insideSessions = path.join(getSessionsDir(), 'out.md');
     expect(() => resolveOutputPath(insideSessions, '/tmp')).toThrow(/Refusing to write output inside session storage/);
   });
 

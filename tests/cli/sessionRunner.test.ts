@@ -45,7 +45,6 @@ vi.mock('../../src/sessionStore.ts', () => ({
   sessionStore: sessionStoreMock,
 }));
 
-import { SESSIONS_DIR } from '../../src/sessionManager.ts';
 import type { SessionMetadata, SessionModelRun } from '../../src/sessionManager.ts';
 import type { ModelName } from '../../src/oracle.ts';
 import { performSessionRun } from '../../src/cli/sessionRunner.ts';
@@ -732,7 +731,7 @@ describe('performSessionRun', () => {
   });
 
   test('refuses to write inside session storage path', async () => {
-    const sessionsDir = SESSIONS_DIR;
+    const sessionsDir = sessionStoreMock.sessionsDir();
     const liveResult: RunOracleResult = {
       mode: 'live',
       usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0, totalTokens: 2 },

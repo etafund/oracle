@@ -2,17 +2,18 @@ import { describe, expect, test, vi, afterEach } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { setOracleHomeDirOverrideForTest } from '../../src/oracleHome.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
   vi.resetModules();
+  setOracleHomeDirOverrideForTest(null);
 });
 
 describe('browser reattach end-to-end (simulated)', () => {
   test('marks session completed after reconnection', async () => {
     const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'oracle-reattach-'));
-    const prevHome = process.env.ORACLE_HOME_DIR;
-    process.env.ORACLE_HOME_DIR = tmpHome;
+    setOracleHomeDirOverrideForTest(tmpHome);
 
     try {
       const resumeMock = vi.fn(async () => ({ answerText: 'ok text', answerMarkdown: 'ok markdown' }));
@@ -66,18 +67,13 @@ describe('browser reattach end-to-end (simulated)', () => {
       expect(runs.some((r) => r.status === 'completed')).toBe(true);
     } finally {
       await fs.rm(tmpHome, { recursive: true, force: true });
-      if (prevHome === undefined) {
-        delete process.env.ORACLE_HOME_DIR;
-      } else {
-        process.env.ORACLE_HOME_DIR = prevHome;
-      }
+      setOracleHomeDirOverrideForTest(null);
     }
   });
 
   test('reattaches when controller pid is gone even without incompleteReason', async () => {
     const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'oracle-reattach-'));
-    const prevHome = process.env.ORACLE_HOME_DIR;
-    process.env.ORACLE_HOME_DIR = tmpHome;
+    setOracleHomeDirOverrideForTest(tmpHome);
 
     try {
       const resumeMock = vi.fn(async () => ({ answerText: 'ok text', answerMarkdown: 'ok markdown' }));
@@ -129,11 +125,7 @@ describe('browser reattach end-to-end (simulated)', () => {
       expect(resumeMock).toHaveBeenCalledTimes(1);
     } finally {
       await fs.rm(tmpHome, { recursive: true, force: true });
-      if (prevHome === undefined) {
-        delete process.env.ORACLE_HOME_DIR;
-      } else {
-        process.env.ORACLE_HOME_DIR = prevHome;
-      }
+      setOracleHomeDirOverrideForTest(null);
     }
   });
 });
