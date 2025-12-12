@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { runOracle, extractTextOutput, OracleTransportError } from '../../src/oracle.ts';
+import { runOracle, extractTextOutput } from '../../src/oracle.ts';
 
 const ENABLE_LIVE = process.env.ORACLE_LIVE_TEST === '1';
 const LIVE_API_KEY = process.env.OPENAI_API_KEY;
@@ -41,14 +41,15 @@ if (!ENABLE_LIVE || !LIVE_API_KEY) {
     );
 
     test(
-      'gpt-5-pro background flow eventually completes',
+      'gpt-5.2-pro background flow eventually completes',
       async () => {
         const result = await runOracle(
           {
-            prompt: 'Reply with "live pro smoke test" on a single line.',
-            model: 'gpt-5-pro',
+            prompt: 'Reply with "live 5.2 pro smoke test" on a single line.',
+            model: 'gpt-5.2-pro',
             silent: true,
             heartbeatIntervalMs: 2000,
+            maxOutput: 64,
           },
           sharedDeps,
         );
@@ -56,7 +57,7 @@ if (!ENABLE_LIVE || !LIVE_API_KEY) {
           throw new Error('Expected live result');
         }
         const text = extractTextOutput(result.response);
-        expect(text.toLowerCase()).toContain('live pro smoke test');
+        expect(text.toLowerCase()).toContain('live 5.2 pro smoke test');
         expect(result.response.status ?? 'completed').toBe('completed');
       },
       30 * 60 * 1000,
@@ -83,35 +84,6 @@ if (!ENABLE_LIVE || !LIVE_API_KEY) {
         expect(result.response.status ?? 'completed').toBe('completed');
       },
       10 * 60 * 1000,
-    );
-
-    test(
-      'gpt-5.1-pro currently reports model-unavailable (temporary guard)',
-      async () => {
-        try {
-          await runOracle(
-            {
-              prompt: 'This should fail because gpt-5.1-pro is not live yet.',
-              model: 'gpt-5.1-pro',
-              silent: true,
-              background: false,
-              heartbeatIntervalMs: 0,
-              maxOutput: 16,
-            },
-            sharedDeps,
-          );
-          expect.fail(
-            'gpt-5.1-pro is now available; remove the temporary model-unavailable guard and this test.',
-          );
-        } catch (error) {
-          expect(error).toBeInstanceOf(OracleTransportError);
-          const transport = error as OracleTransportError;
-          expect(transport.reason).toBe('model-unavailable');
-          expect(transport.message).toContain('gpt-5.1-pro');
-          expect(transport.message).toContain('gpt-5-pro');
-        }
-      },
-      2 * 60 * 1000,
     );
   });
 }
