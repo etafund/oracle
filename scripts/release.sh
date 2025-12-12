@@ -23,12 +23,19 @@ phase_artifacts() {
   banner "Artifacts (npm pack + checksums)"
   run "$RUNNER" pnpm run build
   run "$RUNNER" npm pack --pack-destination /tmp
-  mv "/tmp/@steipete/oracle-${VERSION}.tgz" "." || mv "/tmp/oracle-${VERSION}.tgz" "." || true
-  # Determine actual tarball name (scoped or unscoped)
-  local tgz
-  tgz=$(ls -1 *.tgz | head -n1)
-  if [[ -z "$tgz" ]]; then
-    echo "No tgz found after npm pack" >&2; exit 1; fi
+
+  # npm pack tarballs are not consistent for scoped packages:
+  # - @scope/name -> scope-name-x.y.z.tgz
+  # - name        -> name-x.y.z.tgz
+  local packed
+  packed=$(ls -1 "/tmp/"*"${VERSION}.tgz" 2>/dev/null | head -n1 || true)
+  if [[ -z "${packed:-}" ]]; then
+    echo "No tgz found in /tmp after npm pack" >&2
+    exit 1
+  fi
+
+  local tgz="oracle-${VERSION}.tgz"
+  mv "$packed" "$tgz"
   run shasum "$tgz" > "${tgz}.sha1"
   run shasum -a 256 "$tgz" > "${tgz}.sha256"
 }
