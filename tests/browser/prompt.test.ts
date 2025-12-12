@@ -1,8 +1,13 @@
 import path from 'node:path';
 import { describe, expect, test } from 'vitest';
 import { assembleBrowserPrompt } from '../../src/browser/prompt.js';
-import { DEFAULT_SYSTEM_PROMPT } from '../../src/oracle.js';
+import { DEFAULT_SYSTEM_PROMPT, type MODEL_CONFIGS } from '../../src/oracle.js';
 import type { RunOracleOptions } from '../../src/oracle.js';
+
+const fastTokenizer: typeof MODEL_CONFIGS['gpt-5.1']['tokenizer'] = (messages) => {
+  const typed = messages as Array<{ content: string }>;
+  return typed.reduce((sum: number, message) => sum + Math.max(1, Math.ceil(message.content.length / 1000)), 0);
+};
 
 function buildOptions(overrides: Partial<RunOracleOptions> = {}): RunOracleOptions {
   return {
@@ -44,6 +49,7 @@ describe('assembleBrowserPrompt', () => {
     const result = await assembleBrowserPrompt(options, {
       cwd: '/repo',
       readFilesImpl: async () => [{ path: '/repo/big.txt', content: huge }],
+      tokenizeImpl: fastTokenizer,
     });
     expect(result.attachmentMode).toBe('upload');
     expect(result.attachments).toEqual([expect.objectContaining({ path: '/repo/big.txt', displayPath: 'big.txt' })]);
@@ -52,7 +58,7 @@ describe('assembleBrowserPrompt', () => {
     expect(result.composerText).toBe('Explain the bug');
     expect(result.composerText).not.toContain('### File: big.txt');
     expect(result.fallback).toBeNull();
-  }, 20_000);
+  });
 
   test('auto inline mode includes upload fallback', async () => {
     const options = buildOptions({ prompt: 'Explain the bug', file: ['a.txt'], browserAttachments: 'auto' });
@@ -95,6 +101,7 @@ describe('assembleBrowserPrompt', () => {
     const result = await assembleBrowserPrompt(options, {
       cwd: '/repo',
       readFilesImpl: async () => [{ path: '/repo/big.txt', content: huge }],
+      tokenizeImpl: fastTokenizer,
     });
     expect(result.attachmentsPolicy).toBe('never');
     expect(result.attachmentMode).toBe('inline');

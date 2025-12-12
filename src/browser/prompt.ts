@@ -36,6 +36,7 @@ export interface BrowserPromptArtifacts {
 interface AssemblePromptDeps {
   cwd?: string;
   readFilesImpl?: typeof readFiles;
+  tokenizeImpl?: typeof MODEL_CONFIGS['gpt-5.1']['tokenizer'];
 }
 
 export async function assembleBrowserPrompt(
@@ -106,7 +107,7 @@ export async function assembleBrowserPrompt(
 
   const inlineFileCount = selectedPlan.inlineFileCount;
   const modelConfig = isKnownModel(runOptions.model) ? MODEL_CONFIGS[runOptions.model] : MODEL_CONFIGS['gpt-5.1'];
-  const tokenizer = modelConfig.tokenizer;
+  const tokenizer = deps.tokenizeImpl ?? modelConfig.tokenizer;
   const tokenizerUserContent =
     inlineFileCount > 0 && selectedPlan.inlineBlock
       ? [userPrompt, selectedPlan.inlineBlock].filter((value) => Boolean(value?.trim())).join('\n\n').trim()
