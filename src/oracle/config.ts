@@ -13,12 +13,13 @@ const countTokensAnthropic: TokenizerFn = (input: unknown): number =>
 export const MODEL_CONFIGS: Record<KnownModelName, ModelConfig> = {
   'gpt-5.1-pro': {
     model: 'gpt-5.1-pro',
+    apiModel: 'gpt-5.2-pro',
     provider: 'openai',
     tokenizer: countTokensGpt5Pro as TokenizerFn,
     inputLimit: 196000,
     pricing: {
-      inputPerToken: 15 / 1_000_000,
-      outputPerToken: 120 / 1_000_000,
+      inputPerToken: 21 / 1_000_000,
+      outputPerToken: 168 / 1_000_000,
     },
     reasoning: null,
   },

@@ -47,6 +47,12 @@ Or via `config.json`:
 }
 ```
 
+## Model aliases
+
+Oracle keeps a stable CLI-facing model set, but some names are aliases for the concrete API model ids it sends:
+
+- `gpt-5.1-pro` → `gpt-5.2-pro` (API)
+
 ### Browser engine vs API base URLs
 
 `--base-url` / `apiBaseUrl` only affect API runs. For browser automation, use `--chatgpt-url` (or `browser.chatgptUrl` in config) to point Chrome at a specific ChatGPT workspace/folder such as `https://chatgpt.com/g/.../project`.

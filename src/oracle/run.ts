@@ -240,18 +240,15 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
         : DEFAULT_TIMEOUT_NON_PRO_MS / 1000
       : options.timeoutSeconds;
   const timeoutMs = timeoutSeconds * 1000;
-  const apiModelFromConfig = modelConfig.apiModel ?? modelConfig.model;
-  const modelDowngraded = apiModelFromConfig === 'gpt-5.1-pro';
-  const resolvedApiModelId = modelDowngraded ? 'gpt-5-pro' : apiModelFromConfig;
   // Track the concrete model id we dispatch to (especially for Gemini preview aliases)
   const effectiveModelId =
     options.effectiveModelId ??
     (options.model.startsWith('gemini')
       ? resolveGeminiModelId(options.model)
-      : resolvedApiModelId);
+      : (modelConfig.apiModel ?? modelConfig.model));
   const headerModelLabel = richTty ? chalk.cyan(modelConfig.model) : modelConfig.model;
   const requestBody = buildRequestBody({
-    modelConfig: { ...modelConfig, apiModel: resolvedApiModelId },
+    modelConfig,
     systemPrompt,
     userPrompt: promptWithFiles,
     searchEnabled,
@@ -282,8 +279,8 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
     if (baseUrl) {
       log(dim(`Base URL: ${formatBaseUrlForLog(baseUrl)}`));
     }
-    if (modelDowngraded) {
-      log(dim('gpt-5.1-pro is not yet available via API; sending request with gpt-5-pro instead.'));
+    if (effectiveModelId !== modelConfig.model) {
+      log(dim(`Resolved model: ${modelConfig.model} → ${effectiveModelId}`));
     }
     if (options.background && !supportsBackground) {
       log(dim('Background runs are not supported for this model; streaming in foreground instead.'));

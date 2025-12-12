@@ -124,9 +124,9 @@ export function toTransportError(error: unknown, model?: string): OracleTranspor
       apiError.error?.message ||
       apiError.message ||
       (apiError.status ? `${apiError.status} OpenAI API error` : 'OpenAI API error');
-    // TODO: Remove once gpt-5.1-pro is available via the Responses API.
+    // Friendly guidance when a pro-tier model isn't available on this base URL / API key.
     if (
-      model === 'gpt-5.1-pro' &&
+      model === 'gpt-5.2-pro' &&
       (code === 'model_not_found' ||
         messageText.includes('does not exist') ||
         messageText.includes('unknown model') ||
@@ -134,7 +134,7 @@ export function toTransportError(error: unknown, model?: string): OracleTranspor
     ) {
       return new OracleTransportError(
         'model-unavailable',
-        'gpt-5.1-pro is not yet available on this API base. Using gpt-5-pro until OpenAI enables it. // TODO: Remove once gpt-5.1-pro is available',
+        'gpt-5.2-pro is not available on this API base/key. Try gpt-5-pro or gpt-5.2, or switch to the browser engine.',
         apiError,
       );
     }
