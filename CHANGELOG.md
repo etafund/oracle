@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.0 — Unreleased
+## 0.6.0 — 2025-12-12
 
 ### Added
 - GPT-5.2 model support (`gpt-5.2` Thinking, `gpt-5.2-instant`, `gpt-5.2-pro`) plus browser `--browser-extended-thinking` automation. Original PR #37 by Nico Bailon (@nicobailon) — thank you!
