@@ -115,7 +115,11 @@ async function ensureVenvSetup(log?: BrowserLogger): Promise<void> {
 
   await mkdir(path.dirname(venvPath), { recursive: true });
 
-  const pythonCandidates = ['python3', 'python'];
+  const pythonCandidates = [
+    process.env.PYTHON,
+    process.platform === 'win32' ? 'python' : 'python3',
+    'python',
+  ].filter(Boolean) as string[];
   let createVenv: SpawnResult | null = null;
   for (const candidate of pythonCandidates) {
     try {
