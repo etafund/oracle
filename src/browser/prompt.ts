@@ -116,6 +116,7 @@ export async function assembleBrowserPrompt(
 
   const shouldBundle = selectedPlan.shouldBundle;
   let bundleText: string | null = null;
+  let bundled: { originalCount: number; bundlePath: string } | null = null;
   if (shouldBundle) {
     const bundleDir = await fs.mkdtemp(path.join(os.tmpdir(), 'oracle-browser-bundle-'));
     const bundlePath = path.join(bundleDir, 'attachments-bundle.txt');
@@ -133,6 +134,7 @@ export async function assembleBrowserPrompt(
       sizeBytes: Buffer.byteLength(bundleText, 'utf8'),
     });
     attachments.push(...mediaAttachments);
+    bundled = { originalCount: sections.length, bundlePath };
   }
 
   const inlineFileCount = selectedPlan.inlineFileCount;
@@ -169,7 +171,7 @@ export async function assembleBrowserPrompt(
   let fallback: BrowserPromptArtifacts['fallback'] = null;
   if (attachmentsPolicy === 'auto' && selectedPlan.mode === 'inline' && sections.length > 0) {
     const fallbackComposerText = baseComposerSections.join('\n\n').trim();
-    const fallbackAttachments = uploadPlan.attachments.slice();
+    const fallbackAttachments = [...uploadPlan.attachments, ...mediaAttachments];
     let fallbackBundled: { originalCount: number; bundlePath: string } | null = null;
     if (uploadPlan.shouldBundle) {
       const bundleDir = await fs.mkdtemp(path.join(os.tmpdir(), 'oracle-browser-bundle-'));
@@ -187,6 +189,7 @@ export async function assembleBrowserPrompt(
         displayPath: bundlePath,
         sizeBytes: Buffer.byteLength(fallbackBundleText, 'utf8'),
       });
+      fallbackAttachments.push(...mediaAttachments);
       fallbackBundled = { originalCount: sections.length, bundlePath };
     }
     fallback = {
@@ -206,9 +209,6 @@ export async function assembleBrowserPrompt(
     attachmentsPolicy,
     attachmentMode: selectedPlan.mode,
     fallback,
-    bundled:
-      shouldBundle && attachments.length === 1 && attachments[0]?.displayPath
-        ? { originalCount: sections.length, bundlePath: attachments[0].displayPath }
-        : null,
+    bundled,
   };
 }

@@ -4,20 +4,42 @@ import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { BrowserRunOptions, BrowserRunResult, BrowserLogger } from '../browser/types.js';
+import { getOracleHomeDir } from '../oracleHome.js';
 import type { GeminiWebOptions, GeminiWebResponse, SpawnResult } from './types.js';
 
 // biome-ignore lint/style/useNamingConvention: __dirname is standard Node.js ESM convention
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const VENDOR_DIR = path.resolve(__dirname, '../../vendor/gemini-webapi');
 const WRAPPER_SCRIPT = path.join(VENDOR_DIR, 'wrapper.py');
+const REQUIREMENTS_PATH = path.join(VENDOR_DIR, 'requirements.txt');
 
 function estimateTokenCount(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
+function resolveVenvDir(): string {
+  return path.join(getOracleHomeDir(), 'gemini-webapi', '.venv');
+}
+
+function resolveVenvPython(venvDir: string): string {
+  if (process.platform === 'win32') {
+    return path.join(venvDir, 'Scripts', 'python.exe');
+  }
+  return path.join(venvDir, 'bin', 'python');
+}
+
+function resolveVenvPip(venvDir: string): string {
+  if (process.platform === 'win32') {
+    return path.join(venvDir, 'Scripts', 'pip.exe');
+  }
+  return path.join(venvDir, 'bin', 'pip');
+}
+
 async function spawnPython(args: string[], log?: BrowserLogger): Promise<SpawnResult> {
-  const venvPython = path.join(VENDOR_DIR, '.venv', 'bin', 'python');
-  const pythonPath = existsSync(venvPython) ? venvPython : 'python3';
+  const venvDir = resolveVenvDir();
+  const venvPython = resolveVenvPython(venvDir);
+  const pythonPath =
+    existsSync(venvPython) ? venvPython : (process.env.PYTHON ?? (process.platform === 'win32' ? 'python' : 'python3'));
 
   return new Promise((resolve, reject) => {
     const proc = spawn(pythonPath, [WRAPPER_SCRIPT, ...args], {
@@ -78,25 +100,43 @@ async function spawnCommand(command: string, args: string[], cwd?: string): Prom
 }
 
 async function ensureVenvSetup(log?: BrowserLogger): Promise<void> {
-  const venvPath = path.join(VENDOR_DIR, '.venv');
+  if (!existsSync(WRAPPER_SCRIPT) || !existsSync(REQUIREMENTS_PATH)) {
+    throw new Error(`Gemini WebAPI vendor bundle is missing. Expected ${WRAPPER_SCRIPT} and ${REQUIREMENTS_PATH}.`);
+  }
 
-  if (existsSync(venvPath)) {
+  const venvPath = resolveVenvDir();
+  const venvPython = resolveVenvPython(venvPath);
+
+  if (existsSync(venvPython)) {
     return;
   }
 
   log?.('[gemini-web] First run: setting up Python environment...');
 
-  await mkdir(VENDOR_DIR, { recursive: true });
+  await mkdir(path.dirname(venvPath), { recursive: true });
 
-  const createVenv = await spawnCommand('python3', ['-m', 'venv', venvPath]);
-  if (createVenv.exitCode !== 0) {
-    throw new Error(`Failed to create venv: ${createVenv.stderr}`);
+  const pythonCandidates = ['python3', 'python'];
+  let createVenv: SpawnResult | null = null;
+  for (const candidate of pythonCandidates) {
+    try {
+      const result = await spawnCommand(candidate, ['-m', 'venv', venvPath], undefined);
+      if (result.exitCode === 0) {
+        createVenv = result;
+        break;
+      }
+      createVenv = result;
+    } catch {
+      // Try next candidate.
+    }
+  }
+  if (!createVenv || createVenv.exitCode !== 0) {
+    const stderr = createVenv?.stderr ? `\n${createVenv.stderr}` : '';
+    throw new Error(`Failed to create venv at ${venvPath}.${stderr}`);
   }
 
-  const pipPath = path.join(venvPath, 'bin', 'pip');
-  const requirementsPath = path.join(VENDOR_DIR, 'requirements.txt');
+  const pipPath = resolveVenvPip(venvPath);
 
-  const installResult = await spawnCommand(pipPath, ['install', '-r', requirementsPath]);
+  const installResult = await spawnCommand(pipPath, ['install', '-r', REQUIREMENTS_PATH]);
   if (installResult.exitCode !== 0) {
     throw new Error(`Failed to install dependencies: ${installResult.stderr}`);
   }

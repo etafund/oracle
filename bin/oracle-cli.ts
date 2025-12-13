@@ -953,10 +953,8 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   }
 
   if (options.file && options.file.length > 0) {
-    const isGeminiBrowserMode = isGemini && (engine === 'browser' || userForcedBrowser);
-    const filesToValidate = isGeminiBrowserMode
-      ? options.file.filter((f: string) => !isMediaFile(f))
-      : options.file;
+    const isBrowserMode = engine === 'browser' || userForcedBrowser;
+    const filesToValidate = isBrowserMode ? options.file.filter((f: string) => !isMediaFile(f)) : options.file;
     if (filesToValidate.length > 0) {
       await readFiles(filesToValidate, { cwd: process.cwd() });
     }

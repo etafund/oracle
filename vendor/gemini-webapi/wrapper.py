@@ -21,7 +21,7 @@ Arguments:
   PROMPT                Text prompt for query/generation
 
 Options:
-  --file, -f FILE       Input file (MP4, PDF, PNG, JPG, etc.)
+  --file, -f FILE       Input file (repeatable; MP4, PDF, PNG, JPG, etc.)
   --youtube URL         YouTube video URL to analyze
   --generate-image FILE Generate image and save to FILE
   --edit IMAGE          Edit existing image (use with --output)
@@ -65,7 +65,7 @@ Prerequisites:
 def parse_args(args):
     result = {
         "prompt": None,
-        "file": None,
+        "files": [],
         "youtube": None,
         "generate_image": None,
         "edit": None,
@@ -90,7 +90,7 @@ def parse_args(args):
             if i >= len(args):
                 print("Error: --file requires a path", file=sys.stderr)
                 sys.exit(1)
-            result["file"] = args[i]
+            result["files"].append(args[i])
         elif arg == "--youtube":
             i += 1
             if i >= len(args):
@@ -161,10 +161,10 @@ async def run(args):
     if args["aspect"] and (args["generate_image"] or args["edit"]):
         prompt = f"{prompt} (aspect ratio: {args['aspect']})"
 
-    if args["file"]:
-        file_path = Path(args["file"])
+    for raw_file in args["files"]:
+        file_path = Path(raw_file)
         if not file_path.exists():
-            print(f"Error: File not found: {args['file']}", file=sys.stderr)
+            print(f"Error: File not found: {raw_file}", file=sys.stderr)
             sys.exit(1)
         files.append(str(file_path.resolve()))
 
