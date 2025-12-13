@@ -1,4 +1,4 @@
-import { mkdtemp, rm, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
@@ -34,6 +34,14 @@ import { formatElapsed } from '../oracle/format.js';
 import { CHATGPT_URL } from './constants.js';
 import type { LaunchedChrome } from 'chrome-launcher';
 import { BrowserAutomationError } from '../oracle/errors.js';
+import {
+  cleanupStaleProfileState,
+  readChromePid,
+  readDevToolsPort,
+  verifyDevToolsReachable,
+  writeChromePid,
+  writeDevToolsActivePort,
+} from './profileState.js';
 
 export type { BrowserAutomationConfig, BrowserRunOptions, BrowserRunResult } from './types.js';
 export { CHATGPT_URL, DEFAULT_MODEL_TARGET } from './constants.js';
@@ -137,11 +145,12 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       logger,
     ));
   const chromeHost = (chrome as unknown as { host?: string }).host ?? '127.0.0.1';
-  // Write DevToolsActivePort for future sessions to reuse this Chrome
-  if (!reusedChrome && chrome.port) {
-    const devToolsContent = `${chrome.port}\n/devtools/browser`;
-    const devToolsPath = path.join(userDataDir, 'DevToolsActivePort');
-    await writeFile(devToolsPath, devToolsContent, 'utf8').catch(() => undefined);
+  // Persist profile state so future manual-login runs can reuse this Chrome.
+  if (manualLogin && chrome.port) {
+    await writeDevToolsActivePort(userDataDir, chrome.port);
+    if (!reusedChrome && chrome.pid) {
+      await writeChromePid(userDataDir, chrome.pid);
+    }
   }
   let removeTerminationHooks: (() => void) | null = null;
   try {
@@ -630,82 +639,25 @@ async function _assertNavigatedToHttp(
 async function maybeReuseRunningChrome(userDataDir: string, logger: BrowserLogger): Promise<LaunchedChrome | null> {
   const port = await readDevToolsPort(userDataDir);
   if (!port) return null;
-  const versionUrl = `http://127.0.0.1:${port}/json/version`;
-  // Try multiple times with increasing delays - Chrome DevTools can be slow to respond on Windows
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 3000);
-      const response = await fetch(versionUrl, { signal: controller.signal });
-      clearTimeout(timeout);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      logger(`Found running Chrome for ${userDataDir}; reusing (DevTools port ${port})`);
-      return {
-        port,
-        pid: undefined,
-        kill: async () => {},
-        process: undefined,
-      } as unknown as LaunchedChrome;
-    } catch (error) {
-      if (attempt < 2) {
-        // Wait before retrying
-        await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
-        continue;
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      logger(`DevToolsActivePort found for ${userDataDir} but unreachable (${message}); launching new Chrome.`);
-      // Clean up stale DevToolsActivePort files to avoid conflicts with new Chrome launch
-      await cleanupStaleDevToolsPort(userDataDir, logger);
-      return null;
-    }
-  }
-  return null; // TypeScript needs this
-}
 
-async function cleanupStaleDevToolsPort(userDataDir: string, logger: BrowserLogger): Promise<void> {
-  // Remove stale DevToolsActivePort files
-  const devToolsCandidates = [
-    path.join(userDataDir, 'DevToolsActivePort'),
-    path.join(userDataDir, 'Default', 'DevToolsActivePort'),
-  ];
-  for (const candidate of devToolsCandidates) {
-    try {
-      await rm(candidate, { force: true });
-      logger(`Removed stale DevToolsActivePort: ${candidate}`);
-    } catch {
-      // ignore cleanup errors
-    }
+  const probe = await verifyDevToolsReachable({ port });
+  if (!probe.ok) {
+    logger(`DevToolsActivePort found for ${userDataDir} but unreachable (${probe.error}); launching new Chrome.`);
+    // Safe cleanup: remove stale DevToolsActivePort; only remove lock files if this was an Oracle-owned pid that died.
+    await cleanupStaleProfileState(userDataDir, logger, { lockRemovalMode: 'if_oracle_pid_dead' });
+    return null;
   }
-  // Remove Chrome lock files - allows new Chrome to start with this profile
-  const lockFiles = [
-    path.join(userDataDir, 'lockfile'),
-    path.join(userDataDir, 'SingletonLock'),
-    path.join(userDataDir, 'SingletonSocket'),
-    path.join(userDataDir, 'SingletonCookie'),
-  ];
-  for (const lock of lockFiles) {
-    await rm(lock, { force: true }).catch(() => undefined);
-  }
-  logger('Cleaned up stale Chrome profile locks');
-}
 
-async function readDevToolsPort(userDataDir: string): Promise<number | null> {
-  const candidates = [
-    path.join(userDataDir, 'DevToolsActivePort'),
-    path.join(userDataDir, 'Default', 'DevToolsActivePort'),
-  ];
-  for (const candidate of candidates) {
-    try {
-      const raw = await readFile(candidate, 'utf8');
-      const firstLine = raw.split(/\r?\n/u)[0]?.trim();
-      const port = Number.parseInt(firstLine ?? '', 10);
-      if (Number.isFinite(port)) {
-        return port;
-      }
-    } catch {
-    }
-  }
-  return null;
+  const pid = await readChromePid(userDataDir);
+  logger(
+    `Found running Chrome for ${userDataDir}; reusing (DevTools port ${port}${pid ? `, pid ${pid}` : ''})`,
+  );
+  return {
+    port,
+    pid: pid ?? undefined,
+    kill: async () => {},
+    process: undefined,
+  } as unknown as LaunchedChrome;
 }
 
 async function runRemoteBrowserMode(

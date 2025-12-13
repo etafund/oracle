@@ -4,7 +4,6 @@ import path from 'node:path';
 import net from 'node:net';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 import chalk from 'chalk';
 import type { BrowserAttachment, BrowserLogger, CookieParam } from '../browser/types.js';
@@ -13,6 +12,13 @@ import type { BrowserRunResult } from '../browserMode.js';
 import type { RemoteRunPayload, RemoteRunEvent } from './types.js';
 import { loadChromeCookies } from '../browser/chromeCookies.js';
 import { CHATGPT_URL } from '../browser/constants.js';
+import {
+  cleanupStaleProfileState,
+  readDevToolsPort,
+  verifyDevToolsReachable,
+  writeChromePid,
+  writeDevToolsActivePort,
+} from '../browser/profileState.js';
 import { normalizeChatgptUrl } from '../browser/utils.js';
 
 export interface RemoteServerOptions {
@@ -254,10 +260,18 @@ export async function serveRemote(options: RemoteServerOptions = {}): Promise<vo
       console.log(
         `Cookie extraction is unavailable on this platform. Using manual-login Chrome profile at ${manualProfileDir}. Remote runs will reuse this profile; sign in once when the browser opens.`,
       );
-      const devtoolsPortFile = path.join(manualProfileDir, 'DevToolsActivePort');
-      const alreadyRunning = existsSync(devtoolsPortFile);
-      if (alreadyRunning) {
-        console.log('Detected an existing automation Chrome session; will reuse it for manual login.');
+      const existingPort = await readDevToolsPort(manualProfileDir);
+      if (existingPort) {
+        const reachable = await verifyDevToolsReachable({ port: existingPort });
+        if (reachable.ok) {
+          console.log('Detected an existing automation Chrome session; will reuse it for manual login.');
+        } else {
+          console.log(
+            `Found stale DevToolsActivePort (port ${existingPort}, ${reachable.error}); launching a fresh manual-login Chrome.`,
+          );
+          await cleanupStaleProfileState(manualProfileDir, console.log, { lockRemovalMode: 'never' });
+          void launchManualLoginChrome(manualProfileDir, CHATGPT_URL, console.log);
+        }
       } else {
         void launchManualLoginChrome(manualProfileDir, CHATGPT_URL, console.log);
       }
@@ -505,12 +519,11 @@ async function launchManualLoginChrome(profileDir: string, url: string, logger: 
 
     const chosenPort = chrome?.port ?? debugPort ?? null;
     if (chosenPort) {
-      // Write DevToolsActivePort eagerly so maybeReuseRunningChrome can attach on the next run
-      const devtoolsFile = path.join(profileDir, 'DevToolsActivePort');
-      const devtoolsFileDefault = path.join(profileDir, 'Default', 'DevToolsActivePort');
-      const contents = `${chosenPort}\n/devtools/browser`;
-      await writeFile(devtoolsFile, contents).catch(() => undefined);
-      await writeFile(devtoolsFileDefault, contents).catch(() => undefined);
+      // Persist DevToolsActivePort eagerly so future runs can attach/reuse this Chrome.
+      await writeDevToolsActivePort(profileDir, chosenPort);
+      if (chrome?.pid) {
+        await writeChromePid(profileDir, chrome.pid);
+      }
       logger(`Manual-login Chrome DevTools port: ${chosenPort}`);
       logger(`If needed, DevTools JSON at http://127.0.0.1:${chosenPort}/json/version`);
     } else {
