@@ -793,6 +793,9 @@ describe('performSessionRun', () => {
       'gpt-5.1-pro',
       expect.objectContaining({ status: 'error' }),
     );
+    const logLines = log.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(logLines).not.toContain('Next steps (browser fallback)');
+    expect(logLines).not.toContain('--engine api');
   });
 
   test('records response metadata when runOracle throws OracleResponseError', async () => {
