@@ -12,6 +12,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const VENDOR_DIR = path.resolve(__dirname, '../../vendor/gemini-webapi');
 const WRAPPER_SCRIPT = path.join(VENDOR_DIR, 'wrapper.py');
 const REQUIREMENTS_PATH = path.join(VENDOR_DIR, 'requirements.txt');
+const DEFAULT_GEMINI_IMAGE_MODEL = 'gemini-2.5-pro';
 
 function estimateTokenCount(text: string): number {
   return Math.ceil(text.length / 4);
@@ -230,6 +231,7 @@ export function createGeminiWebExecutor(
     const generateImagePath = resolveInvocationPath(geminiOptions.generateImage);
     const editImagePath = resolveInvocationPath(geminiOptions.editImage);
     const outputPath = resolveInvocationPath(geminiOptions.outputPath);
+    const isImageOperation = Boolean(generateImagePath || editImagePath);
     if (generateImagePath) {
       args.push('--generate-image', generateImagePath);
     }
@@ -245,6 +247,9 @@ export function createGeminiWebExecutor(
     if (geminiOptions.showThoughts) {
       args.push('--show-thoughts');
     }
+    if (isImageOperation) {
+      args.push('--model', DEFAULT_GEMINI_IMAGE_MODEL);
+    }
 
     log?.(`[gemini-web] Calling wrapper with ${args.length} args`);
 
@@ -252,7 +257,7 @@ export function createGeminiWebExecutor(
     const result = await spawnPython(args, log, cookieEnv);
 
     if (result.exitCode !== 0) {
-      const errorMsg = result.stderr || 'Unknown error from Gemini WebAPI';
+      const errorMsg = [result.stderr, result.stdout].map((value) => value?.trim()).filter(Boolean).join('\n');
       throw new Error(`Gemini WebAPI failed: ${errorMsg}`);
     }
 

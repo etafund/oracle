@@ -208,7 +208,7 @@ async def run(args):
 
     try:
         if edit_image_path:
-            chat = client.start_chat()
+            chat = client.start_chat(model=model)
             await chat.send_message("Here is an image to edit", files=[edit_image_path])
             edit_prompt = f"Use image generation tool to {prompt}"
             response = await chat.send_message(edit_prompt)
@@ -218,6 +218,23 @@ async def run(args):
             response = await client.generate_content(prompt, model=model)
 
         if args["generate_image"] or edit_image_path:
+            if (not response.images) and response.text and response.text.startswith("http://googleusercontent.com/image_generation_content/") and model == "gemini-3.0-pro":
+                # gemini-3.0-pro sometimes returns the placeholder URL but no parsed image payload; fall back to 2.5 models.
+                fallback_models = ["gemini-2.5-pro", "gemini-2.5-flash"]
+                for fallback_model in fallback_models:
+                    print(f"Retrying image generation with {fallback_model}...", file=sys.stderr)
+                    model = fallback_model
+                    if edit_image_path:
+                        chat = client.start_chat(model=model)
+                        await chat.send_message("Here is an image to edit", files=[edit_image_path])
+                        response = await chat.send_message(edit_prompt)
+                    elif files:
+                        response = await client.generate_content(prompt, files=files, model=model)
+                    else:
+                        response = await client.generate_content(prompt, model=model)
+                    if response.images:
+                        break
+
             if not response.images:
                 print("No images generated. Response text:", file=sys.stderr)
                 if response.text:
