@@ -263,12 +263,7 @@ export function createGeminiWebExecutor(
     log?.(`[gemini-web] Calling wrapper with ${args.length} args`);
 
     const cookieEnv = await loadGeminiCookiesFromChrome(runOptions.config, log);
-    const geminiCookiePath = path.join(getOracleHomeDir(), 'gemini-webapi');
-    const result = await spawnPython(args, log, {
-      ...cookieEnv,
-      // biome-ignore lint/style/useNamingConvention: env keys intentionally uppercase
-      GEMINI_COOKIE_PATH: geminiCookiePath,
-    });
+    const result = await spawnPython(args, log, cookieEnv);
 
     if (result.exitCode !== 0) {
       const errorMsg = [result.stderr, result.stdout].map((value) => value?.trim()).filter(Boolean).join('\n');
