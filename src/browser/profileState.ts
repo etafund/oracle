@@ -1,5 +1,7 @@
 import path from 'node:path';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 export type ProfileStateLogger = (message: string) => void;
 
@@ -10,6 +12,8 @@ const DEVTOOLS_ACTIVE_PORT_RELATIVE_PATHS = [
 ] as const;
 
 const CHROME_PID_FILENAME = 'chrome.pid';
+
+const execFileAsync = promisify(execFile);
 
 export function getDevToolsActivePortPaths(userDataDir: string): string[] {
   return DEVTOOLS_ACTIVE_PORT_RELATIVE_PATHS.map((relative) => path.join(userDataDir, relative));
@@ -144,6 +148,13 @@ export async function cleanupStaleProfileState(
     return;
   }
 
+  // Extra safety: if Chrome is running with this profile (but with a different PID, e.g. user relaunched
+  // without remote debugging), never delete lock files.
+  if (await isChromeUsingUserDataDir(userDataDir)) {
+    logger?.('Detected running Chrome using this profile; skipping profile lock cleanup');
+    return;
+  }
+
   const lockFiles = [
     path.join(userDataDir, 'lockfile'),
     path.join(userDataDir, 'SingletonLock'),
@@ -156,3 +167,26 @@ export async function cleanupStaleProfileState(
   logger?.('Cleaned up stale Chrome profile locks');
 }
 
+async function isChromeUsingUserDataDir(userDataDir: string): Promise<boolean> {
+  if (process.platform === 'win32') {
+    // On Windows, lockfiles are typically held open and removal should fail anyway; avoid expensive process scans.
+    return false;
+  }
+
+  try {
+    const { stdout } = await execFileAsync('ps', ['-ax', '-o', 'command='], { maxBuffer: 10 * 1024 * 1024 });
+    const lines = String(stdout ?? '').split('\n');
+    const needle = userDataDir;
+    for (const line of lines) {
+      if (!line) continue;
+      const lower = line.toLowerCase();
+      if (!lower.includes('chrome') && !lower.includes('chromium')) continue;
+      if (line.includes(needle) && lower.includes('user-data-dir')) {
+        return true;
+      }
+    }
+  } catch {
+    // best effort
+  }
+  return false;
+}
