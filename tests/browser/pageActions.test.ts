@@ -158,6 +158,11 @@ describe('waitForAssistantResponse', () => {
     await expect(waitForAssistantResponse(runtime, 100, logger)).rejects.toThrow('stop');
     expect(capturedExpression).toContain('characterData: true');
     expect(capturedExpression).toContain('copy-turn-action-button');
+    expect(capturedExpression).toContain('isLastAssistantTurnFinished');
+    expect(capturedExpression).toContain('lastAssistantTurn.querySelector(FINISHED_SELECTOR)');
+    expect(capturedExpression).not.toContain('document.querySelector(FINISHED_SELECTOR)');
+    expect(capturedExpression).toContain("lastAssistantTurn.querySelectorAll('.markdown')");
+    expect(capturedExpression).not.toContain("document.querySelectorAll('.markdown')");
   });
 
   test('falls back to snapshot when observer fails', async () => {
