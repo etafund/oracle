@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.1 — Unreleased
+
+### Added
+
+### Changed
+
+### Fixed
+
 ## 0.6.0 — 2025-12-12
 
 ### Added
