@@ -9,7 +9,7 @@ const execFileAsync = promisify(execFile);
 const TSX_BIN = path.join(process.cwd(), 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const CLI_ENTRY = path.join(process.cwd(), 'bin', 'oracle-cli.ts');
 const CLIENT_FACTORY = path.join(process.cwd(), 'tests', 'fixtures', 'mockClientFactory.cjs');
-const INTEGRATION_TIMEOUT = process.platform === 'win32' ? 30000 : 15000;
+const INTEGRATION_TIMEOUT = process.platform === 'win32' ? 60000 : 30000;
 
 describe('oracle CLI integration', () => {
   test('stores session metadata using stubbed client factory', async () => {

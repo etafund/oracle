@@ -3,10 +3,14 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { setOracleHomeDirOverrideForTest } from '../../src/oracleHome.js';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+
+vi.mock('../../src/browser/reattach.js', () => ({ resumeBrowserSession: vi.fn() }));
 
 afterEach(() => {
+  vi.clearAllMocks();
   vi.restoreAllMocks();
-  vi.resetModules();
   setOracleHomeDirOverrideForTest(null);
 });
 
@@ -16,10 +20,10 @@ describe('browser reattach end-to-end (simulated)', () => {
     setOracleHomeDirOverrideForTest(tmpHome);
 
     try {
-      const resumeMock = vi.fn(async () => ({ answerText: 'ok text', answerMarkdown: 'ok markdown' }));
+      const { resumeBrowserSession } = await import('../../src/browser/reattach.js');
+      const resumeMock = vi.mocked(resumeBrowserSession);
+      resumeMock.mockResolvedValue({ answerText: 'ok text', answerMarkdown: 'ok markdown' });
 
-      vi.resetModules();
-      vi.doMock('../../src/browser/reattach.js', () => ({ resumeBrowserSession: resumeMock }));
       const { sessionStore } = await import('../../src/sessionStore.js');
       const { attachSession } = await import('../../src/cli/sessionDisplay.js');
 
@@ -76,10 +80,10 @@ describe('browser reattach end-to-end (simulated)', () => {
     setOracleHomeDirOverrideForTest(tmpHome);
 
     try {
-      const resumeMock = vi.fn(async () => ({ answerText: 'ok text', answerMarkdown: 'ok markdown' }));
+      const { resumeBrowserSession } = await import('../../src/browser/reattach.js');
+      const resumeMock = vi.mocked(resumeBrowserSession);
+      resumeMock.mockResolvedValue({ answerText: 'ok text', answerMarkdown: 'ok markdown' });
 
-      vi.resetModules();
-      vi.doMock('../../src/browser/reattach.js', () => ({ resumeBrowserSession: resumeMock }));
       const { sessionStore } = await import('../../src/sessionStore.js');
       const { attachSession } = await import('../../src/cli/sessionDisplay.js');
 
@@ -108,7 +112,22 @@ describe('browser reattach end-to-end (simulated)', () => {
             chromeHost: '127.0.0.1',
             chromeTargetId: 't-1',
             tabUrl: 'https://chatgpt.com/c/demo',
-            controllerPid: 999_999,
+            controllerPid: undefined,
+          },
+        },
+      });
+
+      const deadController = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' });
+      await once(deadController, 'exit');
+      await sessionStore.updateSession(sessionMeta.id, {
+        browser: {
+          config: {},
+          runtime: {
+            chromePort: 51559,
+            chromeHost: '127.0.0.1',
+            chromeTargetId: 't-1',
+            tabUrl: 'https://chatgpt.com/c/demo',
+            controllerPid: deadController.pid ?? undefined,
           },
         },
       });

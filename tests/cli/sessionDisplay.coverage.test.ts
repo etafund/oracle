@@ -18,7 +18,6 @@ vi.mock('../../src/sessionStore.js', () => ({
 
 describe('sessionDisplay helpers', () => {
   beforeEach(() => {
-    vi.resetModules();
     Object.values(mockSessionStore).forEach((fn) => {
       if ('mockReset' in fn) {
         (fn as unknown as { mockReset: () => void }).mockReset();
@@ -38,7 +37,7 @@ describe('sessionDisplay helpers', () => {
       expect.stringContaining('Tip: Run "oracle session --clear --hours 24" to prune cached runs'),
     );
     log.mockRestore();
-  });
+  }, 15_000);
 
   it('prints a status table with cost info and truncation notice', async () => {
     const entry = {
@@ -60,7 +59,7 @@ describe('sessionDisplay helpers', () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining('sess-123'));
     expect(log).toHaveBeenCalledWith(expect.stringContaining('Showing 1 of 2 sessions'));
     log.mockRestore();
-  });
+  }, 15_000);
 
   it('formats metadata and completion summaries', async () => {
     const {

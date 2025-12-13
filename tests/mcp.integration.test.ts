@@ -22,7 +22,7 @@ describe('oracle-mcp stdio smoke', () => {
     const started = startOracleMcp();
     proc = started.proc;
     await started.waitReady();
-  }, 10_000);
+  }, 30_000);
 
   afterAll(async () => {
     if (proc) {

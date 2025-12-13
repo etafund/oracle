@@ -10,8 +10,6 @@ import {
 } from '../../src/cli/sessionDisplay.ts';
 import chalk from 'chalk';
 
-vi.useFakeTimers();
-
 const waitMock = vi.hoisted(() => vi.fn());
 const sessionStoreMock = vi.hoisted(() => ({
   readSession: vi.fn(),
@@ -51,6 +49,7 @@ const originalIsTty = process.stdout.isTTY;
 const originalChalkLevel = chalk.level;
 
 beforeEach(() => {
+  vi.useFakeTimers();
   Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
   chalk.level = 1;
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
@@ -63,6 +62,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   Object.defineProperty(process.stdout, 'isTTY', { value: originalIsTty, configurable: true });
   chalk.level = originalChalkLevel;
   vi.restoreAllMocks();

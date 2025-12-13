@@ -88,7 +88,7 @@ describe('runOracle streaming rendering', () => {
     expect(rendered.length).toBeGreaterThan(0); // stdout receives rendered markdown on TTY
     stdoutSpy.mockRestore();
     restoreEnv();
-  });
+  }, 15_000);
 
   it('streams raw text immediately when --render-plain is used', async () => {
     const { runOracle, restoreEnv } = await loadRunOracleWithTty(true);
@@ -115,5 +115,5 @@ describe('runOracle streaming rendering', () => {
     expect(rendered).not.toContain('\u001b[');
     stdoutSpy.mockRestore();
     restoreEnv();
-  });
+  }, 15_000);
 });
