@@ -218,10 +218,12 @@ async def run(args):
             response = await client.generate_content(prompt, model=model)
 
         if args["generate_image"] or edit_image_path:
-            if (not response.images) and response.text and response.text.startswith("http://googleusercontent.com/image_generation_content/") and model == "gemini-3.0-pro":
-                # gemini-3.0-pro sometimes returns the placeholder URL but no parsed image payload; fall back to 2.5 models.
-                fallback_models = ["gemini-2.5-pro", "gemini-2.5-flash"]
+            if (not response.images) and response.text and response.text.startswith("http://googleusercontent.com/image_generation_content/"):
+                # Some models return a placeholder URL but no parsed image payload. Fall back to known-good image models.
+                fallback_models = ["gemini-2.5-flash", "gemini-2.5-pro"]
                 for fallback_model in fallback_models:
+                    if fallback_model == model:
+                        continue
                     print(f"Retrying image generation with {fallback_model}...", file=sys.stderr)
                     model = fallback_model
                     if edit_image_path:

@@ -12,7 +12,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const VENDOR_DIR = path.resolve(__dirname, '../../vendor/gemini-webapi');
 const WRAPPER_SCRIPT = path.join(VENDOR_DIR, 'wrapper.py');
 const REQUIREMENTS_PATH = path.join(VENDOR_DIR, 'requirements.txt');
-const DEFAULT_GEMINI_IMAGE_MODEL = 'gemini-2.5-pro';
+const DEFAULT_GEMINI_IMAGE_MODEL = 'gemini-2.5-flash';
 
 function estimateTokenCount(text: string): number {
   return Math.ceil(text.length / 4);
