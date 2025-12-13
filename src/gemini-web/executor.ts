@@ -21,6 +21,13 @@ function resolveVenvDir(): string {
   return path.join(getOracleHomeDir(), 'gemini-webapi', '.venv');
 }
 
+function resolveInvocationPath(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  return path.isAbsolute(trimmed) ? trimmed : path.resolve(process.cwd(), trimmed);
+}
+
 function resolveVenvPython(venvDir: string): string {
   if (process.platform === 'win32') {
     return path.join(venvDir, 'Scripts', 'python.exe');
@@ -220,14 +227,17 @@ export function createGeminiWebExecutor(
     if (geminiOptions.youtube) {
       args.push('--youtube', geminiOptions.youtube);
     }
-    if (geminiOptions.generateImage) {
-      args.push('--generate-image', geminiOptions.generateImage);
+    const generateImagePath = resolveInvocationPath(geminiOptions.generateImage);
+    const editImagePath = resolveInvocationPath(geminiOptions.editImage);
+    const outputPath = resolveInvocationPath(geminiOptions.outputPath);
+    if (generateImagePath) {
+      args.push('--generate-image', generateImagePath);
     }
-    if (geminiOptions.editImage) {
-      args.push('--edit', geminiOptions.editImage);
+    if (editImagePath) {
+      args.push('--edit', editImagePath);
     }
-    if (geminiOptions.outputPath) {
-      args.push('--output', geminiOptions.outputPath);
+    if (outputPath) {
+      args.push('--output', outputPath);
     }
     if (geminiOptions.aspectRatio) {
       args.push('--aspect', geminiOptions.aspectRatio);
@@ -269,7 +279,7 @@ export function createGeminiWebExecutor(
     }
 
     if (response.has_images && response.image_count > 0) {
-      const imagePath = geminiOptions.generateImage || geminiOptions.outputPath || 'generated.png';
+      const imagePath = generateImagePath || outputPath || 'generated.png';
       answerMarkdown += `\n\n*Generated ${response.image_count} image(s). Saved to: ${imagePath}*`;
     }
 
