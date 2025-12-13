@@ -999,7 +999,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
         showThoughts: options.geminiShowThoughts,
       }),
     };
-    console.log(chalk.dim('Using Gemini WebAPI for browser automation'));
+    console.log(chalk.dim('Using Gemini web client for browser automation'));
   }
   const remoteExecutionActive = Boolean(browserDeps);
 
