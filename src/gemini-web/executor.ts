@@ -35,7 +35,7 @@ function resolveVenvPip(venvDir: string): string {
   return path.join(venvDir, 'bin', 'pip');
 }
 
-async function spawnPython(args: string[], log?: BrowserLogger): Promise<SpawnResult> {
+async function spawnPython(args: string[], log?: BrowserLogger, envOverrides?: Record<string, string>): Promise<SpawnResult> {
   const venvDir = resolveVenvDir();
   const venvPython = resolveVenvPython(venvDir);
   const pythonPath =
@@ -44,7 +44,7 @@ async function spawnPython(args: string[], log?: BrowserLogger): Promise<SpawnRe
   return new Promise((resolve, reject) => {
     const proc = spawn(pythonPath, [WRAPPER_SCRIPT, ...args], {
       cwd: VENDOR_DIR,
-      env: { ...process.env },
+      env: { ...process.env, ...(envOverrides ?? {}) },
     });
 
     let stdout = '';
@@ -148,6 +148,58 @@ async function ensureVenvSetup(log?: BrowserLogger): Promise<void> {
   log?.('[gemini-web] Python environment ready');
 }
 
+async function loadGeminiCookiesFromChrome(
+  browserConfig: BrowserRunOptions['config'],
+  log?: BrowserLogger,
+): Promise<Record<string, string>> {
+  try {
+    // biome-ignore lint/suspicious/noExplicitAny: third-party module without types
+    const mod: any = await import('chrome-cookies-secure');
+    // biome-ignore lint/suspicious/noExplicitAny: third-party module without types
+    const chromeCookies: any = mod.default ?? mod;
+
+    const profile = typeof browserConfig?.chromeProfile === 'string' && browserConfig.chromeProfile.trim().length > 0
+      ? browserConfig.chromeProfile.trim()
+      : undefined;
+
+    // browser-cookie3 (Python) can hang on macOS Keychain prompts; prefer Node extraction when possible.
+    const cookieMap = (await chromeCookies.getCookiesPromised(
+      'https://gemini.google.com',
+      'object',
+      profile,
+    )) as Record<string, string>;
+
+    const secure1psid = cookieMap['__Secure-1PSID'];
+    const secure1psidts = cookieMap['__Secure-1PSIDTS'];
+    const nid = cookieMap['NID'];
+
+    if (!secure1psid || !secure1psidts) {
+      return {};
+    }
+
+    log?.('[gemini-web] Loaded Gemini auth cookies from Chrome (node).');
+
+    return {
+      // Passed to vendor wrapper.py; do not log these values.
+      // biome-ignore lint/style/useNamingConvention: env keys intentionally uppercase
+      ORACLE_GEMINI_SECURE_1PSID: secure1psid,
+      // biome-ignore lint/style/useNamingConvention: env keys intentionally uppercase
+      ORACLE_GEMINI_SECURE_1PSIDTS: secure1psidts,
+      ...(nid
+        ? {
+            // biome-ignore lint/style/useNamingConvention: env keys intentionally uppercase
+            ORACLE_GEMINI_NID: nid,
+          }
+        : {}),
+    };
+  } catch (error) {
+    log?.(
+      `[gemini-web] Failed to load Chrome cookies via node (falling back to Python cookie loader): ${error instanceof Error ? error.message : String(error ?? '')}`,
+    );
+    return {};
+  }
+}
+
 export function createGeminiWebExecutor(
   geminiOptions: GeminiWebOptions,
 ): (runOptions: BrowserRunOptions) => Promise<BrowserRunResult> {
@@ -186,7 +238,8 @@ export function createGeminiWebExecutor(
 
     log?.(`[gemini-web] Calling wrapper with ${args.length} args`);
 
-    const result = await spawnPython(args, log);
+    const cookieEnv = await loadGeminiCookiesFromChrome(runOptions.config, log);
+    const result = await spawnPython(args, log, cookieEnv);
 
     if (result.exitCode !== 0) {
       const errorMsg = result.stderr || 'Unknown error from Gemini WebAPI';

@@ -3,6 +3,7 @@
 import sys
 import asyncio
 import json
+import os
 from pathlib import Path
 
 try:
@@ -186,8 +187,17 @@ async def run(args):
 
     print(f"Initializing Gemini client...", file=sys.stderr)
 
+    secure_1psid = os.environ.get("ORACLE_GEMINI_SECURE_1PSID")
+    secure_1psidts = os.environ.get("ORACLE_GEMINI_SECURE_1PSIDTS")
+    nid = os.environ.get("ORACLE_GEMINI_NID")
+
     try:
-        client = GeminiClient()
+        if secure_1psid and secure_1psidts:
+            client = GeminiClient(secure_1psid=secure_1psid, secure_1psidts=secure_1psidts)
+            if nid:
+                client.cookies["NID"] = nid
+        else:
+            client = GeminiClient()
         await client.init(timeout=120, auto_close=False, auto_refresh=True)
     except Exception as e:
         print(f"Error initializing client: {e}", file=sys.stderr)
