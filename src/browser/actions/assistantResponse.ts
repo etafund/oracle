@@ -233,7 +233,9 @@ async function pollAssistantCompletion(
         isStopButtonVisible(Runtime),
         isCompletionVisible(Runtime),
       ]);
-      if (completionVisible || (!stopVisible && stableCycles >= requiredStableCycles)) {
+      // Require at least 2 stable cycles even when completion buttons are visible
+      // to ensure DOM text has fully rendered (buttons can appear before text settles)
+      if ((completionVisible && stableCycles >= 2) || (!stopVisible && stableCycles >= requiredStableCycles)) {
         return normalized;
       }
     } else {
@@ -261,10 +263,36 @@ async function isCompletionVisible(Runtime: ChromeClient['Runtime']): Promise<bo
   try {
     const { result } = await Runtime.evaluate({
       expression: `(() => {
-        if (document.querySelector('${FINISHED_ACTIONS_SELECTOR}')) {
+        // Find the LAST assistant turn to check completion status
+        // Must match the same logic as buildAssistantExtractor for consistency
+        const ASSISTANT_SELECTOR = '${ASSISTANT_ROLE_SELECTOR}';
+        const isAssistantTurn = (node) => {
+          if (!(node instanceof HTMLElement)) return false;
+          const role = (node.getAttribute('data-message-author-role') || node.dataset?.messageAuthorRole || '').toLowerCase();
+          if (role === 'assistant') return true;
+          const testId = (node.getAttribute('data-testid') || '').toLowerCase();
+          if (testId.includes('assistant')) return true;
+          return Boolean(node.querySelector(ASSISTANT_SELECTOR) || node.querySelector('[data-testid*="assistant"]'));
+        };
+
+        const turns = Array.from(document.querySelectorAll('${CONVERSATION_TURN_SELECTOR}'));
+        let lastAssistantTurn = null;
+        for (let i = turns.length - 1; i >= 0; i--) {
+          if (isAssistantTurn(turns[i])) {
+            lastAssistantTurn = turns[i];
+            break;
+          }
+        }
+        if (!lastAssistantTurn) {
+          return false;
+        }
+        // Check if the last assistant turn has finished action buttons (copy, thumbs up/down, share)
+        if (lastAssistantTurn.querySelector('${FINISHED_ACTIONS_SELECTOR}')) {
           return true;
         }
-        return Array.from(document.querySelectorAll('.markdown')).some((n) => (n.textContent || '').trim() === 'Done');
+        // Also check for "Done" text in the last assistant turn's markdown
+        const markdowns = lastAssistantTurn.querySelectorAll('.markdown');
+        return Array.from(markdowns).some((n) => (n.textContent || '').trim() === 'Done');
       })()`,
       returnByValue: true,
     });
@@ -313,12 +341,27 @@ function buildAssistantSnapshotExpression(): string {
 
 function buildResponseObserverExpression(timeoutMs: number): string {
   const selectorsLiteral = JSON.stringify(ANSWER_SELECTORS);
+  const conversationLiteral = JSON.stringify(CONVERSATION_TURN_SELECTOR);
+  const assistantLiteral = JSON.stringify(ASSISTANT_ROLE_SELECTOR);
   return `(() => {
     ${buildClickDispatcher()}
     const SELECTORS = ${selectorsLiteral};
     const STOP_SELECTOR = '${STOP_BUTTON_SELECTOR}';
     const FINISHED_SELECTOR = '${FINISHED_ACTIONS_SELECTOR}';
+    const CONVERSATION_SELECTOR = ${conversationLiteral};
+    const ASSISTANT_SELECTOR = ${assistantLiteral};
     const settleDelayMs = 800;
+
+    // Helper to detect assistant turns - matches buildAssistantExtractor logic
+    const isAssistantTurn = (node) => {
+      if (!(node instanceof HTMLElement)) return false;
+      const role = (node.getAttribute('data-message-author-role') || node.dataset?.messageAuthorRole || '').toLowerCase();
+      if (role === 'assistant') return true;
+      const testId = (node.getAttribute('data-testid') || '').toLowerCase();
+      if (testId.includes('assistant')) return true;
+      return Boolean(node.querySelector(ASSISTANT_SELECTOR) || node.querySelector('[data-testid*="assistant"]'));
+    };
+
     ${buildAssistantExtractor('extractFromTurns')}
 
     const captureViaObserver = () =>
@@ -363,6 +406,24 @@ function buildResponseObserverExpression(timeoutMs: number): string {
         }, ${timeoutMs});
       });
 
+    // Check if the last assistant turn has finished (scoped to avoid detecting old turns)
+    const isLastAssistantTurnFinished = () => {
+      const turns = Array.from(document.querySelectorAll(CONVERSATION_SELECTOR));
+      let lastAssistantTurn = null;
+      for (let i = turns.length - 1; i >= 0; i--) {
+        if (isAssistantTurn(turns[i])) {
+          lastAssistantTurn = turns[i];
+          break;
+        }
+      }
+      if (!lastAssistantTurn) return false;
+      // Check for action buttons in this specific turn
+      if (lastAssistantTurn.querySelector(FINISHED_SELECTOR)) return true;
+      // Check for "Done" text in this turn's markdown
+      const markdowns = lastAssistantTurn.querySelectorAll('.markdown');
+      return Array.from(markdowns).some((n) => (n.textContent || '').trim() === 'Done');
+    };
+
     const waitForSettle = async (snapshot) => {
       const settleWindowMs = 5000;
       const settleIntervalMs = 400;
@@ -377,9 +438,7 @@ function buildResponseObserverExpression(timeoutMs: number): string {
           lastLength = refreshed.text?.length ?? lastLength;
         }
         const stopVisible = Boolean(document.querySelector(STOP_SELECTOR));
-        const finishedVisible =
-          Boolean(document.querySelector(FINISHED_SELECTOR)) ||
-          Array.from(document.querySelectorAll('.markdown')).some((n) => (n.textContent || '').trim() === 'Done');
+        const finishedVisible = isLastAssistantTurnFinished();
 
         if (!stopVisible || finishedVisible) {
           break;
