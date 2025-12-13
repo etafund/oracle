@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.1 — Unreleased
+## 0.6.1 — 2025-12-13
 
 ### Changed
 - Browser: default model target now prefers ChatGPT 5.2. Original PR #40 by Muly Oved (@mulyoved) — thank you!
