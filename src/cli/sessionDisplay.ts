@@ -25,7 +25,14 @@ function isProcessAlive(pid?: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return !(error instanceof Error && (error as NodeJS.ErrnoException).code === 'ESRCH');
+    const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+    if (code === 'ESRCH' || code === 'EINVAL') {
+      return false;
+    }
+    if (code === 'EPERM') {
+      return true;
+    }
+    return true;
   }
 }
 
