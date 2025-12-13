@@ -2,11 +2,13 @@
 
 ## 0.6.1 — Unreleased
 
-### Added
-
 ### Changed
+- Browser: default model target now prefers ChatGPT 5.2. Original PR #40 by Muly Oved (@mulyoved) — thank you!
 
 ### Fixed
+- Browser: manual-login runs now reuse an already-running Chrome more reliably (persist DevTools port in the profile; probe with retries; clean up stale port state). Original PR #40 by Muly Oved (@mulyoved) — thank you!
+- Browser: response capture is less likely to truncate by mistaking earlier turns as complete; completion detection is scoped to the last assistant turn and requires brief stability before capture. Original PR #40 by Muly Oved (@mulyoved) — thank you!
+- Browser: stale profile cleanup avoids deleting lock files when an active Chrome process is using the profile.
 
 ## 0.6.0 — 2025-12-12
 
