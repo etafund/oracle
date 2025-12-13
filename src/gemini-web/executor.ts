@@ -12,7 +12,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const VENDOR_DIR = path.resolve(__dirname, '../../vendor/gemini-webapi');
 const WRAPPER_SCRIPT = path.join(VENDOR_DIR, 'wrapper.py');
 const REQUIREMENTS_PATH = path.join(VENDOR_DIR, 'requirements.txt');
-const DEFAULT_GEMINI_IMAGE_MODEL = 'gemini-2.5-flash';
 
 function estimateTokenCount(text: string): number {
   return Math.ceil(text.length / 4);
@@ -178,36 +177,43 @@ async function loadGeminiCookiesFromChrome(
       profile,
     )) as PuppeteerCookie[];
 
-    const pickCookie = (name: string): string | undefined => {
-      const candidates = cookies.filter((cookie) => cookie.name === name);
-      if (candidates.length === 0) return undefined;
-      const preferredDomain = candidates.find((cookie) => cookie.domain === '.google.com' && (cookie.path ?? '/') === '/');
-      const googleDomain = candidates.find((cookie) => (cookie.domain ?? '').endsWith('google.com'));
-      return (preferredDomain ?? googleDomain ?? candidates[0])?.value;
+    const pickCookieValue = (name: string): string | undefined => {
+      const matches = cookies.filter((cookie) => cookie.name === name);
+      if (matches.length === 0) return undefined;
+      const preferredDomain = matches.find((cookie) => cookie.domain === '.google.com' && (cookie.path ?? '/') === '/');
+      const googleDomain = matches.find((cookie) => (cookie.domain ?? '').endsWith('google.com'));
+      return (preferredDomain ?? googleDomain ?? matches[0])?.value;
     };
 
-    const secure1psid = pickCookie('__Secure-1PSID');
-    const secure1psidts = pickCookie('__Secure-1PSIDTS');
-    const nid = pickCookie('NID');
+    const cookieNames = [
+      '__Secure-1PSID',
+      '__Secure-1PSIDTS',
+      'NID',
+      'AEC',
+      'SOCS',
+      '__Secure-BUCKET',
+      '__Secure-ENID',
+    ] as const;
 
-    if (!secure1psid || !secure1psidts) {
+    const cookieMap = Object.fromEntries(
+      cookieNames
+        .map((name) => {
+          const value = pickCookieValue(name);
+          return value ? [name, value] : null;
+        })
+        .filter(Boolean) as [string, string][],
+    );
+
+    if (!cookieMap['__Secure-1PSID'] || !cookieMap['__Secure-1PSIDTS']) {
       return {};
     }
 
-    log?.('[gemini-web] Loaded Gemini auth cookies from Chrome (node).');
+    log?.(`[gemini-web] Loaded Gemini cookies from Chrome (node): ${Object.keys(cookieMap).length} cookie(s).`);
 
     return {
       // Passed to vendor wrapper.py; do not log these values.
       // biome-ignore lint/style/useNamingConvention: env keys intentionally uppercase
-      ORACLE_GEMINI_SECURE_1PSID: secure1psid,
-      // biome-ignore lint/style/useNamingConvention: env keys intentionally uppercase
-      ORACLE_GEMINI_SECURE_1PSIDTS: secure1psidts,
-      ...(nid
-        ? {
-            // biome-ignore lint/style/useNamingConvention: env keys intentionally uppercase
-            ORACLE_GEMINI_NID: nid,
-          }
-        : {}),
+      ORACLE_GEMINI_COOKIES_JSON: JSON.stringify(cookieMap),
     };
   } catch (error) {
     log?.(
@@ -240,7 +246,6 @@ export function createGeminiWebExecutor(
     const generateImagePath = resolveInvocationPath(geminiOptions.generateImage);
     const editImagePath = resolveInvocationPath(geminiOptions.editImage);
     const outputPath = resolveInvocationPath(geminiOptions.outputPath);
-    const isImageOperation = Boolean(generateImagePath || editImagePath);
     if (generateImagePath) {
       args.push('--generate-image', generateImagePath);
     }
@@ -255,9 +260,6 @@ export function createGeminiWebExecutor(
     }
     if (geminiOptions.showThoughts) {
       args.push('--show-thoughts');
-    }
-    if (isImageOperation) {
-      args.push('--model', DEFAULT_GEMINI_IMAGE_MODEL);
     }
 
     log?.(`[gemini-web] Calling wrapper with ${args.length} args`);

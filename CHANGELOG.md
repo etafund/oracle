@@ -14,6 +14,9 @@
 - Gemini browser mode: Python venv is created under `~/.oracle/gemini-webapi/.venv` (works for global installs and pnpm dlx).
 - Gemini browser mode: avoid macOS Keychain hangs by preferring Node-based Chrome cookie extraction and passing auth cookies into the Python wrapper.
 - Gemini browser mode: wrapper accepts multiple `--file` flags; CLI resolves image-operation paths relative to `cwd`.
+- Gemini browser mode: compatibility init for Gemini web token changes (keeps text runs working even when `gemini-webapi`’s default init can’t find the legacy token key).
+- Gemini browser mode: auto-fallback when “Pro” models aren’t available on the logged-in Gemini account, plus clearer errors for failed file/image feature requests.
+- Gemini browser mode: image ops can save `gg-dl` artifacts even when `gemini-webapi` doesn’t populate `response.images`.
 
 ## 0.6.1 — 2025-12-13
 
