@@ -1,24 +1,12 @@
-import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { BrowserRunOptions, BrowserRunResult, BrowserLogger } from '../browser/types.js';
-import { getOracleHomeDir } from '../oracleHome.js';
-import type { GeminiWebOptions, GeminiWebResponse, SpawnResult } from './types.js';
-
-// biome-ignore lint/style/useNamingConvention: __dirname is standard Node.js ESM convention
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const VENDOR_DIR = path.resolve(__dirname, '../../vendor/gemini-webapi');
-const WRAPPER_SCRIPT = path.join(VENDOR_DIR, 'wrapper.py');
-const REQUIREMENTS_PATH = path.join(VENDOR_DIR, 'requirements.txt');
+import type { ChromeCookiesSecureModule, PuppeteerCookie } from '../browser/types.js';
+import { runGeminiWebWithFallback, saveFirstGeminiImageFromOutput } from './client.js';
+import type { GeminiWebModelId } from './client.js';
+import type { GeminiWebOptions, GeminiWebResponse } from './types.js';
 
 function estimateTokenCount(text: string): number {
   return Math.ceil(text.length / 4);
-}
-
-function resolveVenvDir(): string {
-  return path.join(getOracleHomeDir(), 'gemini-webapi', '.venv');
 }
 
 function resolveInvocationPath(value: string | undefined): string | undefined {
@@ -28,196 +16,62 @@ function resolveInvocationPath(value: string | undefined): string | undefined {
   return path.isAbsolute(trimmed) ? trimmed : path.resolve(process.cwd(), trimmed);
 }
 
-function resolveVenvPython(venvDir: string): string {
-  if (process.platform === 'win32') {
-    return path.join(venvDir, 'Scripts', 'python.exe');
-  }
-  return path.join(venvDir, 'bin', 'python');
-}
-
-function resolveVenvPip(venvDir: string): string {
-  if (process.platform === 'win32') {
-    return path.join(venvDir, 'Scripts', 'pip.exe');
-  }
-  return path.join(venvDir, 'bin', 'pip');
-}
-
-async function spawnPython(args: string[], log?: BrowserLogger, envOverrides?: Record<string, string>): Promise<SpawnResult> {
-  const venvDir = resolveVenvDir();
-  const venvPython = resolveVenvPython(venvDir);
-  const pythonPath =
-    existsSync(venvPython) ? venvPython : (process.env.PYTHON ?? (process.platform === 'win32' ? 'python' : 'python3'));
-
-  return new Promise((resolve, reject) => {
-    const proc = spawn(pythonPath, [WRAPPER_SCRIPT, ...args], {
-      cwd: VENDOR_DIR,
-      env: { ...process.env, ...(envOverrides ?? {}) },
-    });
-
-    let stdout = '';
-    let stderr = '';
-
-    proc.stdout.on('data', (data) => {
-      stdout += data.toString();
-    });
-
-    proc.stderr.on('data', (data) => {
-      const chunk = data.toString();
-      stderr += chunk;
-      if (log) {
-        for (const line of chunk.split('\n').filter(Boolean)) {
-          log(`[gemini-web] ${line}`);
-        }
-      }
-    });
-
-    proc.on('error', (err) => {
-      reject(new Error(`Failed to spawn Python: ${err.message}`));
-    });
-
-    proc.on('close', (code) => {
-      resolve({ stdout, stderr, exitCode: code ?? 0 });
-    });
-  });
-}
-
-async function spawnCommand(command: string, args: string[], cwd?: string): Promise<SpawnResult> {
-  return new Promise((resolve, reject) => {
-    const proc = spawn(command, args, { cwd: cwd ?? VENDOR_DIR });
-
-    let stdout = '';
-    let stderr = '';
-
-    proc.stdout.on('data', (data) => {
-      stdout += data.toString();
-    });
-
-    proc.stderr.on('data', (data) => {
-      stderr += data.toString();
-    });
-
-    proc.on('error', (err) => {
-      reject(new Error(`Failed to spawn ${command}: ${err.message}`));
-    });
-
-    proc.on('close', (code) => {
-      resolve({ stdout, stderr, exitCode: code ?? 0 });
-    });
-  });
-}
-
-async function ensureVenvSetup(log?: BrowserLogger): Promise<void> {
-  if (!existsSync(WRAPPER_SCRIPT) || !existsSync(REQUIREMENTS_PATH)) {
-    throw new Error(`Gemini WebAPI vendor bundle is missing. Expected ${WRAPPER_SCRIPT} and ${REQUIREMENTS_PATH}.`);
-  }
-
-  const venvPath = resolveVenvDir();
-  const venvPython = resolveVenvPython(venvPath);
-
-  if (existsSync(venvPython)) {
-    return;
-  }
-
-  log?.('[gemini-web] First run: setting up Python environment...');
-
-  await mkdir(path.dirname(venvPath), { recursive: true });
-
-  const pythonCandidates = [
-    process.env.PYTHON,
-    process.platform === 'win32' ? 'python' : 'python3',
-    'python',
-  ].filter(Boolean) as string[];
-  let createVenv: SpawnResult | null = null;
-  for (const candidate of pythonCandidates) {
-    try {
-      const result = await spawnCommand(candidate, ['-m', 'venv', venvPath], undefined);
-      if (result.exitCode === 0) {
-        createVenv = result;
-        break;
-      }
-      createVenv = result;
-    } catch {
-      // Try next candidate.
-    }
-  }
-  if (!createVenv || createVenv.exitCode !== 0) {
-    const stderr = createVenv?.stderr ? `\n${createVenv.stderr}` : '';
-    throw new Error(`Failed to create venv at ${venvPath}.${stderr}`);
-  }
-
-  const pipPath = resolveVenvPip(venvPath);
-
-  const installResult = await spawnCommand(pipPath, ['install', '-r', REQUIREMENTS_PATH]);
-  if (installResult.exitCode !== 0) {
-    throw new Error(`Failed to install dependencies: ${installResult.stderr}`);
-  }
-
-  log?.('[gemini-web] Python environment ready');
-}
-
 async function loadGeminiCookiesFromChrome(
   browserConfig: BrowserRunOptions['config'],
   log?: BrowserLogger,
 ): Promise<Record<string, string>> {
   try {
-    // biome-ignore lint/suspicious/noExplicitAny: third-party module without types
-    const mod: any = await import('chrome-cookies-secure');
-    // biome-ignore lint/suspicious/noExplicitAny: third-party module without types
-    const chromeCookies: any = mod.default ?? mod;
+    const mod = (await import('chrome-cookies-secure')) as unknown;
+    const chromeCookies = (mod as { default?: ChromeCookiesSecureModule }).default ?? (mod as ChromeCookiesSecureModule);
 
     const profile = typeof browserConfig?.chromeProfile === 'string' && browserConfig.chromeProfile.trim().length > 0
       ? browserConfig.chromeProfile.trim()
       : undefined;
 
-    // browser-cookie3 (Python) can hang on macOS Keychain prompts; prefer Node extraction when possible.
-    type PuppeteerCookie = { name: string; value: string; domain?: string; path?: string };
-    const cookies = (await chromeCookies.getCookiesPromised(
-      'https://gemini.google.com',
-      'puppeteer',
-      profile,
-    )) as PuppeteerCookie[];
-
-    const pickCookieValue = (name: string): string | undefined => {
-      const matches = cookies.filter((cookie) => cookie.name === name);
-      if (matches.length === 0) return undefined;
-      const preferredDomain = matches.find((cookie) => cookie.domain === '.google.com' && (cookie.path ?? '/') === '/');
-      const googleDomain = matches.find((cookie) => (cookie.domain ?? '').endsWith('google.com'));
-      return (preferredDomain ?? googleDomain ?? matches[0])?.value;
-    };
-
-    const cookieNames = [
+    const sources = ['https://gemini.google.com', 'https://accounts.google.com', 'https://www.google.com'];
+    const wantNames = [
       '__Secure-1PSID',
       '__Secure-1PSIDTS',
+      '__Secure-1PSIDCC',
       'NID',
       'AEC',
       'SOCS',
       '__Secure-BUCKET',
       '__Secure-ENID',
+      'SID',
+      'HSID',
+      'SSID',
+      'APISID',
+      'SAPISID',
+      '__Secure-3PSID',
+      '__Secure-3PSIDTS',
+      '__Secure-3PAPISID',
+      'SIDCC',
     ] as const;
 
-    const cookieMap = Object.fromEntries(
-      cookieNames
-        .map((name) => {
-          const value = pickCookieValue(name);
-          return value ? [name, value] : null;
-        })
-        .filter(Boolean) as [string, string][],
-    );
+    const cookieMap: Record<string, string> = {};
+    for (const url of sources) {
+      const cookies = (await chromeCookies.getCookiesPromised(url, 'puppeteer', profile)) as PuppeteerCookie[];
+      for (const name of wantNames) {
+        if (cookieMap[name]) continue;
+        const matches = cookies.filter((cookie) => cookie.name === name);
+        if (matches.length === 0) continue;
+        const preferredDomain = matches.find((cookie) => cookie.domain === '.google.com' && (cookie.path ?? '/') === '/');
+        const googleDomain = matches.find((cookie) => (cookie.domain ?? '').endsWith('google.com'));
+        const value = (preferredDomain ?? googleDomain ?? matches[0])?.value;
+        if (value) cookieMap[name] = value;
+      }
+    }
 
     if (!cookieMap['__Secure-1PSID'] || !cookieMap['__Secure-1PSIDTS']) {
       return {};
-    }
+    };
 
     log?.(`[gemini-web] Loaded Gemini cookies from Chrome (node): ${Object.keys(cookieMap).length} cookie(s).`);
-
-    return {
-      // Passed to vendor wrapper.py; do not log these values.
-      // biome-ignore lint/style/useNamingConvention: env keys intentionally uppercase
-      ORACLE_GEMINI_COOKIES_JSON: JSON.stringify(cookieMap),
-    };
+    return cookieMap;
   } catch (error) {
     log?.(
-      `[gemini-web] Failed to load Chrome cookies via node (falling back to Python cookie loader): ${error instanceof Error ? error.message : String(error ?? '')}`,
+      `[gemini-web] Failed to load Chrome cookies via node: ${error instanceof Error ? error.message : String(error ?? '')}`,
     );
     return {};
   }
@@ -230,61 +84,96 @@ export function createGeminiWebExecutor(
     const startTime = Date.now();
     const log = runOptions.log;
 
-    log?.('[gemini-web] Starting Gemini WebAPI executor');
+    log?.('[gemini-web] Starting Gemini web executor (TypeScript)');
 
-    await ensureVenvSetup(log);
-
-    const args: string[] = [runOptions.prompt, '--json'];
-
-    for (const attachment of runOptions.attachments ?? []) {
-      args.push('--file', attachment.path);
+    const cookieMap = await loadGeminiCookiesFromChrome(runOptions.config, log);
+    if (!cookieMap['__Secure-1PSID'] || !cookieMap['__Secure-1PSIDTS']) {
+      throw new Error('Gemini browser mode requires Chrome cookies for google.com (missing __Secure-1PSID/__Secure-1PSIDTS).');
     }
 
-    if (geminiOptions.youtube) {
-      args.push('--youtube', geminiOptions.youtube);
-    }
     const generateImagePath = resolveInvocationPath(geminiOptions.generateImage);
     const editImagePath = resolveInvocationPath(geminiOptions.editImage);
     const outputPath = resolveInvocationPath(geminiOptions.outputPath);
-    if (generateImagePath) {
-      args.push('--generate-image', generateImagePath);
+    const attachmentPaths = (runOptions.attachments ?? []).map((attachment) => attachment.path);
+
+    let prompt = runOptions.prompt;
+    if (geminiOptions.aspectRatio && (generateImagePath || editImagePath)) {
+      prompt = `${prompt} (aspect ratio: ${geminiOptions.aspectRatio})`;
     }
-    if (editImagePath) {
-      args.push('--edit', editImagePath);
+    if (geminiOptions.youtube) {
+      prompt = `${prompt}\n\nYouTube video: ${geminiOptions.youtube}`;
     }
-    if (outputPath) {
-      args.push('--output', outputPath);
-    }
-    if (geminiOptions.aspectRatio) {
-      args.push('--aspect', geminiOptions.aspectRatio);
-    }
-    if (geminiOptions.showThoughts) {
-      args.push('--show-thoughts');
+    if (generateImagePath && !editImagePath) {
+      prompt = `Generate an image: ${prompt}`;
     }
 
-    log?.(`[gemini-web] Calling wrapper with ${args.length} args`);
-
-    const cookieEnv = await loadGeminiCookiesFromChrome(runOptions.config, log);
-    const result = await spawnPython(args, log, cookieEnv);
-
-    if (result.exitCode !== 0) {
-      const errorMsg = [result.stderr, result.stdout].map((value) => value?.trim()).filter(Boolean).join('\n');
-      throw new Error(`Gemini WebAPI failed: ${errorMsg}`);
-    }
-
+    const model: GeminiWebModelId = 'gemini-3.0-pro';
     let response: GeminiWebResponse;
-    try {
-      response = JSON.parse(result.stdout);
-    } catch {
-      if (result.stdout.trim()) {
-        response = { text: result.stdout.trim(), thoughts: null, has_images: false, image_count: 0 };
-      } else {
-        throw new Error(`Failed to parse Gemini response: ${result.stdout}`);
-      }
-    }
 
-    if (response.error) {
-      throw new Error(`Gemini error: ${response.error}`);
+    if (editImagePath) {
+      const intro = await runGeminiWebWithFallback({
+        prompt: 'Here is an image to edit',
+        files: [editImagePath],
+        model,
+        cookieMap,
+        chatMetadata: null,
+      });
+      const editPrompt = `Use image generation tool to ${prompt}`;
+      const out = await runGeminiWebWithFallback({
+        prompt: editPrompt,
+        files: attachmentPaths,
+        model,
+        cookieMap,
+        chatMetadata: intro.metadata,
+      });
+      response = {
+        text: out.text ?? null,
+        thoughts: geminiOptions.showThoughts ? out.thoughts : null,
+        has_images: false,
+        image_count: 0,
+      };
+
+      const resolvedOutputPath = outputPath ?? generateImagePath ?? 'generated.png';
+      const imageSave = await saveFirstGeminiImageFromOutput(out, cookieMap, resolvedOutputPath);
+      response.has_images = imageSave.saved;
+      response.image_count = imageSave.imageCount;
+      if (!imageSave.saved) {
+        throw new Error(`No images generated. Response text:\n${out.text || '(empty response)'}`);
+      }
+    } else if (generateImagePath) {
+      const out = await runGeminiWebWithFallback({
+        prompt,
+        files: attachmentPaths,
+        model,
+        cookieMap,
+        chatMetadata: null,
+      });
+      response = {
+        text: out.text ?? null,
+        thoughts: geminiOptions.showThoughts ? out.thoughts : null,
+        has_images: false,
+        image_count: 0,
+      };
+      const imageSave = await saveFirstGeminiImageFromOutput(out, cookieMap, generateImagePath);
+      response.has_images = imageSave.saved;
+      response.image_count = imageSave.imageCount;
+      if (!imageSave.saved) {
+        throw new Error(`No images generated. Response text:\n${out.text || '(empty response)'}`);
+      }
+    } else {
+      const out = await runGeminiWebWithFallback({
+        prompt,
+        files: attachmentPaths,
+        model,
+        cookieMap,
+        chatMetadata: null,
+      });
+      response = {
+        text: out.text ?? null,
+        thoughts: geminiOptions.showThoughts ? out.thoughts : null,
+        has_images: out.images.length > 0,
+        image_count: out.images.length,
+      };
     }
 
     const answerText = response.text ?? '';

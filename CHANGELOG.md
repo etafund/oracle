@@ -3,20 +3,19 @@
 ## 0.7.0 — Unreleased
 
 ### Added
-- Browser: Gemini browser mode via `gemini-webapi` (uses Chrome cookies; no API key required). Includes `--youtube`, `--generate-image`, `--edit-image`, `--output`, `--aspect`, and `--gemini-show-thoughts`. Original PR #39 by Nico Bailon (@nicobailon) — thank you!
+- Browser: Gemini browser mode via direct Gemini web client (uses Chrome cookies; no API key required). Includes `--youtube`, `--generate-image`, `--edit-image`, `--output`, `--aspect`, and `--gemini-show-thoughts`. Original PR #39 by Nico Bailon (@nicobailon) — thank you!
 - Browser: media files passed via `--file` (images/video/audio/PDF) are treated as upload attachments instead of being inlined into the prompt (enables Gemini file analysis).
 
 ### Changed
 - Browser guard now allows Gemini models (browser engine supports GPT + Gemini; other models require `--engine api`).
-- Packaging: ship the Gemini browser wrapper under `dist/vendor/gemini-webapi`.
+- Browser: Gemini mode no longer requires a Python venv (runs fully in Node/TypeScript).
 
 ### Fixed
-- Gemini browser mode: Python venv is created under `~/.oracle/gemini-webapi/.venv` (works for global installs and pnpm dlx).
-- Gemini browser mode: avoid macOS Keychain hangs by preferring Node-based Chrome cookie extraction and passing auth cookies into the Python wrapper.
-- Gemini browser mode: wrapper accepts multiple `--file` flags; CLI resolves image-operation paths relative to `cwd`.
-- Gemini browser mode: compatibility init for Gemini web token changes (keeps text runs working even when `gemini-webapi`’s default init can’t find the legacy token key).
+- Gemini browser mode: avoid macOS Keychain hangs by preferring Node-based Chrome cookie extraction.
+- Gemini browser mode: accept multiple `--file` inputs; CLI resolves image-operation paths relative to `cwd`.
+- Gemini browser mode: compatibility init for Gemini web token changes (keeps text runs working even when Gemini rotates the token key).
 - Gemini browser mode: auto-fallback when “Pro” models aren’t available on the logged-in Gemini account, plus clearer errors for failed file/image feature requests.
-- Gemini browser mode: image ops can save `gg-dl` artifacts even when `gemini-webapi` doesn’t populate `response.images`.
+- Gemini browser mode: image ops can save `gg-dl` artifacts even when generated images aren’t surfaced in the primary response.
 
 ## 0.6.1 — 2025-12-13
 

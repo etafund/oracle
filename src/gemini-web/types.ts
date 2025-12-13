@@ -14,9 +14,3 @@ export interface GeminiWebResponse {
   image_count: number;
   error?: string;
 }
-
-export interface SpawnResult {
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-}
