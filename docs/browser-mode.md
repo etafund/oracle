@@ -1,5 +1,12 @@
 # Browser Mode
 
+Oracle’s `--engine browser` supports two different execution paths:
+
+- **ChatGPT automation** (GPT-* models): drives the ChatGPT web UI with Chrome automation.
+- **Gemini web mode** (Gemini models): talks directly to `gemini.google.com` using your signed-in Chrome cookies (no ChatGPT automation).
+
+If you’re running Gemini, also see `docs/gemini.md`.
+
 `oracle --engine browser` routes the assembled prompt bundle through the ChatGPT web UI instead of the Responses API. (Legacy `--browser` still maps to `--engine browser`, but it will be removed.) If you omit `--engine`, Oracle first honors any `engine` value in `~/.oracle/config.json`, then auto-picks API when `OPENAI_API_KEY` is available and falls back to browser otherwise. The CLI writes the same session metadata/logs as API runs, and by default pastes the payload into ChatGPT via a temporary Chrome profile (manual-login mode can reuse a persistent automation profile).
 
 `--preview` now works with `--engine browser`: it renders the composed prompt, lists which files would be uploaded vs inlined, and shows the bundle location when bundling is enabled, without launching Chrome.
@@ -191,5 +198,7 @@ This mode is ideal when you have a macOS VM (or spare Mac mini) logged into Chat
 
 ## Testing Notes
 
+- ChatGPT automation smoke: `pnpm test:browser`
+- Gemini web (cookie) smoke: `ORACLE_LIVE_TEST=1 pnpm vitest run tests/live/gemini-web-live.test.ts` (requires a signed-in Chrome profile at `gemini.google.com`)
 - `pnpm test --filter browser` does not exist yet; manual runs with `--engine browser -v` are the current validation path.
 - Most of the heavy lifting lives in `src/browserMode.ts`. If you change selectors or the mutation observer logic, run a local `oracle --engine browser --browser-keep-browser` session so you can inspect DevTools before cleanup.
