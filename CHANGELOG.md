@@ -3,9 +3,11 @@
 ## 0.7.0 — Unreleased
 
 ### Added
-- Browser: Gemini browser mode via direct Gemini web client (uses Chrome cookies; no API key required). Includes `--youtube`, `--generate-image`, `--edit-image`, `--output`, `--aspect`, and `--gemini-show-thoughts`. Original PR #39 by Nico Bailon (@nicobailon) — thank you!
+- Browser: Gemini browser mode via direct Gemini web client (uses Chrome cookies; no API key required). Includes `--youtube`, `--generate-image`, `--edit-image`, `--output`, `--aspect`, and `--gemini-show-thoughts`.
 - Browser: media files passed via `--file` (images/video/audio/PDF) are treated as upload attachments instead of being inlined into the prompt (enables Gemini file analysis).
 - Live tests: add opt-in Gemini web smoke coverage for image generation/editing (cookie-based browser mode).
+
+- Thanks: Nico Bailon (@nicobailon) for the Gemini browser mode work (PR #39).
 
 ### Changed
 - Browser guard now allows Gemini models (browser engine supports GPT + Gemini; other models require `--engine api`).
