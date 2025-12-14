@@ -41,6 +41,30 @@ if (!ENABLE_LIVE || !LIVE_API_KEY) {
     );
 
     test(
+      'gpt-5.2 returns completed (no in_progress)',
+      async () => {
+        const result = await runOracle(
+          {
+            prompt: 'Reply with "live 5.2 completion" on one line.',
+            model: 'gpt-5.2',
+            silent: true,
+            background: false,
+            heartbeatIntervalMs: 0,
+            maxOutput: 64,
+          },
+          sharedDeps,
+        );
+        if (result.mode !== 'live') {
+          throw new Error('Expected live result');
+        }
+        const text = extractTextOutput(result.response).toLowerCase();
+        expect(text).toContain('live 5.2 completion');
+        expect(result.response.status ?? 'completed').toBe('completed');
+      },
+      5 * 60 * 1000,
+    );
+
+    test(
       'gpt-5.2-pro background flow eventually completes',
       async () => {
         const result = await runOracle(
@@ -64,15 +88,16 @@ if (!ENABLE_LIVE || !LIVE_API_KEY) {
     );
 
     test(
-      'gpt-5 foreground flow still streams normally',
+      'gpt-5.2-instant foreground flow still streams normally',
       async () => {
         const result = await runOracle(
           {
-            prompt: 'Reply with "live base smoke test" on a single line.',
-            model: 'gpt-5.1',
+            prompt: 'Reply with "live 5.2 instant smoke test" on a single line.',
+            model: 'gpt-5.2-instant',
             silent: true,
             background: false,
             heartbeatIntervalMs: 0,
+            maxOutput: 64,
           },
           sharedDeps,
         );
@@ -80,7 +105,7 @@ if (!ENABLE_LIVE || !LIVE_API_KEY) {
           throw new Error('Expected live result');
         }
         const text = extractTextOutput(result.response);
-        expect(text.toLowerCase()).toContain('live base smoke test');
+        expect(text.toLowerCase()).toContain('live 5.2 instant smoke test');
         expect(result.response.status ?? 'completed').toBe('completed');
       },
       10 * 60 * 1000,

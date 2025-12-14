@@ -45,6 +45,61 @@ describe('runOracle no-file tip', () => {
 });
 
 describe('api key logging', () => {
+  test('prints API model suffix + alias note for gpt-5.1-pro', async () => {
+    const stream = new MockStream([], buildResponse());
+    const client = new MockClient(stream);
+    const logs: string[] = [];
+
+    await runOracle(
+      {
+        prompt: 'Alias header test',
+        model: 'gpt-5.1-pro',
+        background: false,
+      },
+      {
+        apiKey: 'sk-test',
+        client,
+        log: (msg: string) => logs.push(msg),
+        write: () => true,
+      },
+    );
+
+    const combined = logs.join('\n');
+    expect(combined).toContain('Calling gpt-5.1-pro (API: gpt-5.2-pro)');
+    expect(combined).toContain('Resolved model: gpt-5.1-pro → gpt-5.2-pro');
+    expect(combined).toContain('Note: `gpt-5.1-pro` is a stable CLI alias; OpenAI API uses `gpt-5.2-pro`');
+
+    const headerIndex = logs.findIndex((line) => line.includes('Calling gpt-5.1-pro'));
+    const noteIndex = logs.findIndex((line) => line.includes('stable CLI alias'));
+    expect(headerIndex).toBeGreaterThanOrEqual(0);
+    expect(noteIndex).toBeGreaterThan(headerIndex);
+  });
+
+  test('suppresses alias note when suppressHeader is enabled', async () => {
+    const stream = new MockStream([], buildResponse());
+    const client = new MockClient(stream);
+    const logs: string[] = [];
+
+    await runOracle(
+      {
+        prompt: 'Alias header test (suppressed)',
+        model: 'gpt-5.1-pro',
+        background: false,
+        suppressHeader: true,
+      },
+      {
+        apiKey: 'sk-test',
+        client,
+        log: (msg: string) => logs.push(msg),
+        write: () => true,
+      },
+    );
+
+    const combined = logs.join('\n');
+    expect(combined).not.toContain('Calling gpt-5.1-pro');
+    expect(combined).not.toContain('stable CLI alias');
+  });
+
   test('logs masked OPENAI_API_KEY in verbose mode', async () => {
     const stream = new MockStream([], buildResponse());
     const client = new MockClient(stream);
@@ -66,6 +121,31 @@ describe('api key logging', () => {
 
     const combined = logs.join('\n');
     expect(combined).toContain('Using apiKey option=sk-s****1234');
+    expect(combined).not.toContain('supersecret');
+  });
+
+  test('adds API suffix to verbose key log when model is an alias', async () => {
+    const stream = new MockStream([], buildResponse());
+    const client = new MockClient(stream);
+    const logs: string[] = [];
+
+    await runOracle(
+      {
+        prompt: 'Alias verbose key log test',
+        model: 'gpt-5.1-pro',
+        background: false,
+        verbose: true,
+      },
+      {
+        apiKey: 'sk-supersecret-key-1234',
+        client,
+        log: (msg: string) => logs.push(msg),
+        write: () => true,
+      },
+    );
+
+    const combined = logs.join('\n');
+    expect(combined).toContain('Using apiKey option=sk-s****1234 for model gpt-5.1-pro (API: gpt-5.2-pro)');
     expect(combined).not.toContain('supersecret');
   });
 
