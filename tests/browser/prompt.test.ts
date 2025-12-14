@@ -12,7 +12,7 @@ const fastTokenizer: typeof MODEL_CONFIGS['gpt-5.1']['tokenizer'] = (messages) =
 function buildOptions(overrides: Partial<RunOracleOptions> = {}): RunOracleOptions {
   return {
     prompt: overrides.prompt ?? 'Explain the bug',
-    model: overrides.model ?? 'gpt-5.1-pro',
+    model: overrides.model ?? 'gpt-5.2-pro',
     file: overrides.file ?? ['a.txt'],
     system: overrides.system,
     browserAttachments: overrides.browserAttachments ?? 'auto',

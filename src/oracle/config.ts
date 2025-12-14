@@ -4,7 +4,7 @@ import type { ModelConfig, ModelName, KnownModelName, ProModelName, TokenizerFn 
 import { countTokens as countTokensAnthropicRaw } from '@anthropic-ai/tokenizer';
 import { stringifyTokenizerInput } from './tokenStringifier.js';
 
-export const DEFAULT_MODEL: ModelName = 'gpt-5.1-pro';
+export const DEFAULT_MODEL: ModelName = 'gpt-5.2-pro';
 export const PRO_MODELS = new Set<ProModelName>(['gpt-5.1-pro', 'gpt-5-pro', 'gpt-5.2-pro', 'claude-4.5-sonnet', 'claude-4.1-opus']);
 
 const countTokensAnthropic: TokenizerFn = (input: unknown): number =>

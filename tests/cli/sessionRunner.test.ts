@@ -69,7 +69,7 @@ const baseSessionMeta: SessionMetadata = {
 
 const baseRunOptions = {
   prompt: 'Hello',
-  model: 'gpt-5.1-pro' as const,
+  model: 'gpt-5.2-pro' as const,
 };
 
 const log = vi.fn();
@@ -137,12 +137,12 @@ describe('performSessionRun', () => {
     });
     expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
       baseSessionMeta.id,
-      'gpt-5.1-pro',
+      'gpt-5.2-pro',
       expect.objectContaining({ status: 'running' }),
     );
     expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
       baseSessionMeta.id,
-      'gpt-5.1-pro',
+      'gpt-5.2-pro',
       expect.objectContaining({ status: 'completed' }),
     );
     expect(vi.mocked(sendSessionNotification)).toHaveBeenCalled();
@@ -324,15 +324,15 @@ describe('performSessionRun', () => {
     }
   });
 
-  test('writes per-model outputs during multi-model runs when writeOutputPath provided', async () => {
-    const summary: MultiModelRunSummary = {
-      fulfilled: [
-        {
-          model: 'gpt-5.1-pro' as ModelName,
-          usage: { inputTokens: 1, outputTokens: 2, reasoningTokens: 0, totalTokens: 3, cost: 0.01 },
-          answerText: 'pro answer',
-          logPath: 'log-pro',
-        },
+	  test('writes per-model outputs during multi-model runs when writeOutputPath provided', async () => {
+	    const summary: MultiModelRunSummary = {
+	      fulfilled: [
+	        {
+	          model: 'gpt-5.2-pro' as ModelName,
+	          usage: { inputTokens: 1, outputTokens: 2, reasoningTokens: 0, totalTokens: 3, cost: 0.01 },
+	          answerText: 'pro answer',
+	          logPath: 'log-pro',
+	        },
         {
           model: 'gemini-3-pro' as ModelName,
           usage: { inputTokens: 1, outputTokens: 2, reasoningTokens: 0, totalTokens: 3, cost: 0.02 },
@@ -345,31 +345,31 @@ describe('performSessionRun', () => {
     };
     vi.mocked(runMultiModelApiSession).mockResolvedValue(summary);
 
-    await performSessionRun({
-      sessionMeta: {
-        ...baseSessionMeta,
-        models: [
-          { model: 'gpt-5.1-pro', status: 'pending' } as SessionModelRun,
-          { model: 'gemini-3-pro', status: 'pending' } as SessionModelRun,
-        ],
-      },
-      runOptions: { ...baseRunOptions, models: ['gpt-5.1-pro', 'gemini-3-pro'], writeOutputPath: '/tmp/out.md' },
-      mode: 'api',
-      cwd: '/tmp',
-      log,
-      write,
-      version: cliVersion,
-    });
+	    await performSessionRun({
+	      sessionMeta: {
+	        ...baseSessionMeta,
+	        models: [
+	          { model: 'gpt-5.2-pro', status: 'pending' } as SessionModelRun,
+	          { model: 'gemini-3-pro', status: 'pending' } as SessionModelRun,
+	        ],
+	      },
+	      runOptions: { ...baseRunOptions, models: ['gpt-5.2-pro', 'gemini-3-pro'], writeOutputPath: '/tmp/out.md' },
+	      mode: 'api',
+	      cwd: '/tmp',
+	      log,
+	      write,
+	      version: cliVersion,
+	    });
 
-    const writeCalls = (fsPromises.writeFile as unknown as { mock: { calls: unknown[][] } }).mock.calls;
-    const expectedProPath = path.resolve('/tmp/out.gpt-5.1-pro.md');
-    const expectedGeminiPath = path.resolve('/tmp/out.gemini-3-pro.md');
-    expect(writeCalls).toContainEqual([expectedProPath, expect.stringContaining('pro answer\n'), 'utf8']);
-    expect(writeCalls).toContainEqual([expectedGeminiPath, expect.stringContaining('gemini answer\n'), 'utf8']);
-    const logLines = log.mock.calls.map((c) => c[0]).join('\n');
-    expect(logLines).toContain('Saved outputs:');
-    expect(logLines).toContain(`gpt-5.1-pro -> ${expectedProPath}`);
-  });
+	    const writeCalls = (fsPromises.writeFile as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+	    const expectedProPath = path.resolve('/tmp/out.gpt-5.2-pro.md');
+	    const expectedGeminiPath = path.resolve('/tmp/out.gemini-3-pro.md');
+	    expect(writeCalls).toContainEqual([expectedProPath, expect.stringContaining('pro answer\n'), 'utf8']);
+	    expect(writeCalls).toContainEqual([expectedGeminiPath, expect.stringContaining('gemini answer\n'), 'utf8']);
+	    const logLines = log.mock.calls.map((c) => c[0]).join('\n');
+	    expect(logLines).toContain('Saved outputs:');
+	    expect(logLines).toContain(`gpt-5.2-pro -> ${expectedProPath}`);
+	  });
 
   test('prints one aggregate header and colored summary for multi-model runs', async () => {
     const sessionMeta = {
@@ -654,17 +654,17 @@ describe('performSessionRun', () => {
       status: 'completed',
       browser: expect.objectContaining({ runtime: expect.objectContaining({ chromePid: 123 }) }),
     });
-    expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
-      baseSessionMeta.id,
-      'gpt-5.1-pro',
-      expect.objectContaining({ status: 'running' }),
-    );
-    expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
-      baseSessionMeta.id,
-      'gpt-5.1-pro',
-      expect.objectContaining({ status: 'completed' }),
-    );
-  });
+	    expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
+	      baseSessionMeta.id,
+	      'gpt-5.2-pro',
+	      expect.objectContaining({ status: 'running' }),
+	    );
+	    expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
+	      baseSessionMeta.id,
+	      'gpt-5.2-pro',
+	      expect.objectContaining({ status: 'completed' }),
+	    );
+	  });
 
   test('writes browser answers to disk when writeOutputPath provided', async () => {
     vi.mocked(runBrowserSessionExecution).mockResolvedValue({
@@ -759,11 +759,11 @@ describe('performSessionRun', () => {
     expect(logLines).toContain('refusing to write inside session storage');
   });
 
-  test('deriveModelOutputPath appends model when base has no extension', () => {
-    const result = deriveModelOutputPath('/tmp/out', 'gpt-5.1-pro');
-    const expected = path.join(path.dirname('/tmp/out'), 'out.gpt-5.1-pro');
-    expect(result).toBe(expected);
-  });
+	  test('deriveModelOutputPath appends model when base has no extension', () => {
+	    const result = deriveModelOutputPath('/tmp/out', 'gpt-5.2-pro');
+	    const expected = path.join(path.dirname('/tmp/out'), 'out.gpt-5.2-pro');
+	    expect(result).toBe(expected);
+	  });
 
   test('records metadata when browser automation fails', async () => {
     const automationError = new BrowserAutomationError('automation failed', { stage: 'execute-browser' });
@@ -788,11 +788,11 @@ describe('performSessionRun', () => {
       errorMessage: 'automation failed',
       browser: expect.objectContaining({ config: expect.any(Object) }),
     });
-    expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
-      baseSessionMeta.id,
-      'gpt-5.1-pro',
-      expect.objectContaining({ status: 'error' }),
-    );
+	    expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
+	      baseSessionMeta.id,
+	      'gpt-5.2-pro',
+	      expect.objectContaining({ status: 'error' }),
+	    );
     const logLines = log.mock.calls.map((c) => String(c[0])).join('\n');
     expect(logLines).not.toContain('Next steps (browser fallback)');
     expect(logLines).not.toContain('--engine api');
@@ -819,16 +819,16 @@ describe('performSessionRun', () => {
       status: 'error',
       response: expect.objectContaining({ responseId: 'resp-error' }),
     });
-    expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
-      baseSessionMeta.id,
-      'gpt-5.1-pro',
-      expect.objectContaining({ status: 'running' }),
-    );
-    expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
-      baseSessionMeta.id,
-      'gpt-5.1-pro',
-      expect.objectContaining({ status: 'error' }),
-    );
+	    expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
+	      baseSessionMeta.id,
+	      'gpt-5.2-pro',
+	      expect.objectContaining({ status: 'running' }),
+	    );
+	    expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
+	      baseSessionMeta.id,
+	      'gpt-5.2-pro',
+	      expect.objectContaining({ status: 'error' }),
+	    );
   });
 
   test('captures transport failures when OracleTransportError thrown', async () => {
@@ -851,11 +851,11 @@ describe('performSessionRun', () => {
       status: 'error',
       transport: { reason: 'client-timeout' },
     });
-    expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
-      baseSessionMeta.id,
-      'gpt-5.1-pro',
-      expect.objectContaining({ status: 'error' }),
-    );
+	    expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
+	      baseSessionMeta.id,
+	      'gpt-5.2-pro',
+	      expect.objectContaining({ status: 'error' }),
+	    );
     expect(log).toHaveBeenCalledWith(expect.stringContaining('Transport'));
   });
 
@@ -902,11 +902,11 @@ describe('performSessionRun', () => {
       status: 'error',
       error: expect.objectContaining({ category: 'file-validation', message: 'too large' }),
     });
-    expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
-      baseSessionMeta.id,
-      'gpt-5.1-pro',
-      expect.objectContaining({ status: 'error' }),
-    );
+	    expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
+	      baseSessionMeta.id,
+	      'gpt-5.2-pro',
+	      expect.objectContaining({ status: 'error' }),
+	    );
     expect(log).toHaveBeenCalledWith(expect.stringContaining('User error (file-validation)'));
   });
 });

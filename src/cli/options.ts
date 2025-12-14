@@ -155,6 +155,9 @@ export function resolveApiModel(modelValue: string): ModelName {
   if (normalized.includes('5-pro') && !normalized.includes('5.1')) {
     return 'gpt-5-pro';
   }
+  if (normalized.includes('5.2') && normalized.includes('pro')) {
+    return 'gpt-5.2-pro';
+  }
   if (normalized.includes('5.1') && normalized.includes('pro')) {
     return 'gpt-5.1-pro';
   }
@@ -166,6 +169,9 @@ export function resolveApiModel(modelValue: string): ModelName {
   }
   if (normalized.includes('gemini')) {
     return 'gemini-3-pro';
+  }
+  if (normalized.includes('pro')) {
+    return 'gpt-5.2-pro';
   }
   // Passthrough for custom/OpenRouter model IDs.
   return normalized as ModelName;
@@ -188,12 +194,6 @@ export function inferModelFromLabel(modelValue: string): ModelName {
   if (normalized.includes('claude') && normalized.includes('opus')) {
     return 'claude-4.1-opus';
   }
-  if (normalized.includes('5.0') || normalized.includes('5-pro')) {
-    return 'gpt-5-pro';
-  }
-  if (normalized.includes('gpt-5') && normalized.includes('pro') && !normalized.includes('5.1')) {
-    return 'gpt-5-pro';
-  }
   if (normalized.includes('codex')) {
     return 'gpt-5.1-codex';
   }
@@ -201,13 +201,27 @@ export function inferModelFromLabel(modelValue: string): ModelName {
     return 'gemini-3-pro';
   }
   if (normalized.includes('classic')) {
-    return 'gpt-5.1-pro';
+    return 'gpt-5-pro';
+  }
+  if ((normalized.includes('5.2') || normalized.includes('5_2')) && normalized.includes('pro')) {
+    return 'gpt-5.2-pro';
+  }
+  if (normalized.includes('5.0') || normalized.includes('5-pro')) {
+    return 'gpt-5-pro';
+  }
+  if (
+    normalized.includes('gpt-5') &&
+    normalized.includes('pro') &&
+    !normalized.includes('5.1') &&
+    !normalized.includes('5.2')
+  ) {
+    return 'gpt-5-pro';
   }
   if ((normalized.includes('5.1') || normalized.includes('5_1')) && normalized.includes('pro')) {
     return 'gpt-5.1-pro';
   }
   if (normalized.includes('pro')) {
-    return 'gpt-5.1-pro';
+    return 'gpt-5.2-pro';
   }
   if (normalized.includes('5.1') || normalized.includes('5_1')) {
     return 'gpt-5.1';

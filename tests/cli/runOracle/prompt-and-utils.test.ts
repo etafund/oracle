@@ -314,14 +314,14 @@ describe('oracle utility helpers', () => {
     expect(sections[0].sectionText).toContain('### File 1: file.txt');
   });
 
-  test('buildRequestBody respects search toggles', () => {
-    const base = buildRequestBody({
-      modelConfig: MODEL_CONFIGS['gpt-5.1-pro'],
-      systemPrompt: 'sys',
-      userPrompt: 'user',
-      searchEnabled: false,
-      maxOutputTokens: 222,
-    });
+	  test('buildRequestBody respects search toggles', () => {
+	    const base = buildRequestBody({
+	      modelConfig: MODEL_CONFIGS['gpt-5.2-pro'],
+	      systemPrompt: 'sys',
+	      userPrompt: 'user',
+	      searchEnabled: false,
+	      maxOutputTokens: 222,
+	    });
     expect(base.tools).toBeUndefined();
     expect(base.max_output_tokens).toBe(222);
 

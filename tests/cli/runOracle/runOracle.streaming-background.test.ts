@@ -24,7 +24,7 @@ describe('runOracle streaming output', () => {
     const result = await runOracle(
       {
         prompt: 'Say hello',
-        model: 'gpt-5.1-pro',
+        model: 'gpt-5.2-pro',
         background: false,
       },
       {
@@ -59,7 +59,7 @@ describe('runOracle streaming output', () => {
     await runOracle(
       {
         prompt: 'Say nothing',
-        model: 'gpt-5.1-pro',
+        model: 'gpt-5.2-pro',
         silent: true,
         background: false,
       },
@@ -91,7 +91,7 @@ describe('runOracle streaming output', () => {
     const client = new MockClient(stream);
     const writes: string[] = [];
     await runOracle(
-      { prompt: 'Mix events', model: 'gpt-5.1-pro', background: false },
+      { prompt: 'Mix events', model: 'gpt-5.2-pro', background: false },
       {
         apiKey: 'sk-test',
         client,
@@ -118,7 +118,7 @@ describe('runOracle streaming output', () => {
     const client = new MockClient(stream);
     const writes: string[] = [];
     await runOracle(
-      { prompt: 'Robust stream', model: 'gpt-5.1-pro', background: false },
+      { prompt: 'Robust stream', model: 'gpt-5.2-pro', background: false },
       {
         apiKey: 'sk-test',
         client,
@@ -148,7 +148,7 @@ describe('runOracle background mode', () => {
     const result = await runOracle(
       {
         prompt: 'Background run',
-        model: 'gpt-5.1-pro',
+        model: 'gpt-5.2-pro',
       },
       {
         apiKey: 'sk-test',
@@ -177,7 +177,7 @@ describe('runOracle background mode', () => {
     await runOracle(
       {
         prompt: 'Retry test',
-        model: 'gpt-5.1-pro',
+        model: 'gpt-5.2-pro',
       },
       {
         apiKey: 'sk-test',
@@ -207,7 +207,7 @@ describe('runOracle file reports', () => {
     await runOracle(
       {
         prompt: 'Base prompt',
-        model: 'gpt-5.1-pro',
+        model: 'gpt-5.2-pro',
         file: ['alpha.md', 'beta.md'],
         filesReport: true,
         silent: true,
@@ -240,7 +240,7 @@ describe('runOracle file reports', () => {
       runOracle(
         {
           prompt: 'Check budget',
-          model: 'gpt-5.1-pro',
+          model: 'gpt-5.2-pro',
           file: ['big.txt'],
           maxInput: 100,
           background: false,
@@ -273,7 +273,7 @@ describe('runOracle file reports', () => {
     await runOracle(
       {
         prompt: 'Directory test',
-        model: 'gpt-5.1-pro',
+        model: 'gpt-5.2-pro',
         file: [dir],
         filesReport: true,
         silent: true,

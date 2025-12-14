@@ -156,15 +156,15 @@ describe('attachSession rendering', () => {
     readSessionRequestMock.mockReset();
   });
 
-  test('prints all model runs with status and tokens', async () => {
-    const multiMeta: SessionMetadata = {
-      ...baseMeta,
-      models: [
-        {
-          model: 'gpt-5.1-pro',
-          status: 'completed',
-          usage: { inputTokens: 10, outputTokens: 12, reasoningTokens: 0, totalTokens: 24 },
-        },
+	  test('prints all model runs with status and tokens', async () => {
+	    const multiMeta: SessionMetadata = {
+	      ...baseMeta,
+	      models: [
+	        {
+	          model: 'gpt-5.2-pro',
+	          status: 'completed',
+	          usage: { inputTokens: 10, outputTokens: 12, reasoningTokens: 0, totalTokens: 24 },
+	        },
         {
           model: 'gemini-3-pro',
           status: 'running',
@@ -177,39 +177,39 @@ describe('attachSession rendering', () => {
     readSessionRequestMock.mockResolvedValue({ prompt: 'Prompt here' });
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
 
-    await attachSession('sess', { renderMarkdown: false });
+	    await attachSession('sess', { renderMarkdown: false });
 
-    expect(logSpy).toHaveBeenCalledWith('Models:');
-    expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/gpt-5\.1-pro.*completed tok=12\/24/));
-    expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/gemini-3-pro.*running tok=0\/10/));
-  });
+	    expect(logSpy).toHaveBeenCalledWith('Models:');
+	    expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/gpt-5\.2-pro.*completed tok=12\/24/));
+	    expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/gemini-3-pro.*running tok=0\/10/));
+	  });
 
-  test('ignores empty model filter from CLI defaults', async () => {
-    const multiMeta: SessionMetadata = {
-      ...baseMeta,
-      models: [
-        { model: 'gpt-5.1-pro', status: 'completed', usage: { inputTokens: 1, outputTokens: 2, reasoningTokens: 0, totalTokens: 3 } },
-      ],
-    } as SessionMetadata;
+	  test('ignores empty model filter from CLI defaults', async () => {
+	    const multiMeta: SessionMetadata = {
+	      ...baseMeta,
+	      models: [
+	        { model: 'gpt-5.2-pro', status: 'completed', usage: { inputTokens: 1, outputTokens: 2, reasoningTokens: 0, totalTokens: 3 } },
+	      ],
+	    } as SessionMetadata;
     readSessionMetadataMock.mockResolvedValue(multiMeta);
     readSessionLogMock.mockResolvedValue('Answer:\nbody');
     readSessionRequestMock.mockResolvedValue({ prompt: 'Prompt here' });
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     const writeSpy = vi.spyOn(process.stdout, 'write');
 
-    await attachSession('sess', { renderMarkdown: false, model: '' });
+	    await attachSession('sess', { renderMarkdown: false, model: '' });
 
-    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('gpt-5.1-pro'));
-    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining('Answer:'));
-  });
+	    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('gpt-5.2-pro'));
+	    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining('Answer:'));
+	  });
 
-  test('falls back to session log when per-model logs are empty', async () => {
-    const multiMeta: SessionMetadata = {
-      ...baseMeta,
-      models: [
-        { model: 'gpt-5.1-pro', status: 'completed', usage: { inputTokens: 1, outputTokens: 2, reasoningTokens: 0, totalTokens: 3 } },
-      ],
-    } as SessionMetadata;
+	  test('falls back to session log when per-model logs are empty', async () => {
+	    const multiMeta: SessionMetadata = {
+	      ...baseMeta,
+	      models: [
+	        { model: 'gpt-5.2-pro', status: 'completed', usage: { inputTokens: 1, outputTokens: 2, reasoningTokens: 0, totalTokens: 3 } },
+	      ],
+	    } as SessionMetadata;
     readSessionMetadataMock.mockResolvedValue(multiMeta);
     readSessionLogMock.mockResolvedValue('Answer:\nfrom-session-log');
     // model log missing/empty
@@ -218,11 +218,11 @@ describe('attachSession rendering', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     const writeSpy = vi.spyOn(process.stdout, 'write');
 
-    await attachSession('sess', { renderMarkdown: false });
+	    await attachSession('sess', { renderMarkdown: false });
 
-    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining('Answer:\nfrom-session-log'));
-    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('gpt-5.1-pro'));
-  });
+	    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining('Answer:\nfrom-session-log'));
+	    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('gpt-5.2-pro'));
+	  });
 
   test('renders markdown when requested and rich tty', async () => {
     readSessionMetadataMock.mockResolvedValue(baseMeta);
@@ -299,15 +299,15 @@ describe('attachSession rendering', () => {
     expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining('Prompt:'));
   });
 
-  test('shows completion summary with cost and slug when available', async () => {
-    const metaWithUsage: SessionMetadata = {
-      ...baseMeta,
-      status: 'completed',
-      model: 'gpt-5.1-pro',
-      mode: 'api',
-      elapsedMs: 1234,
-      usage: { inputTokens: 10, outputTokens: 20, reasoningTokens: 0, totalTokens: 30, cost: 1.23 },
-    } as SessionMetadata;
+	  test('shows completion summary with cost and slug when available', async () => {
+	    const metaWithUsage: SessionMetadata = {
+	      ...baseMeta,
+	      status: 'completed',
+	      model: 'gpt-5.2-pro',
+	      mode: 'api',
+	      elapsedMs: 1234,
+	      usage: { inputTokens: 10, outputTokens: 20, reasoningTokens: 0, totalTokens: 30, cost: 1.23 },
+	    } as SessionMetadata;
     readSessionMetadataMock.mockResolvedValue(metaWithUsage);
     readSessionLogMock.mockResolvedValue('Answer:\nhello');
     readSessionRequestMock.mockResolvedValue({ prompt: 'Prompt here' });
@@ -332,43 +332,43 @@ describe('attachSession rendering', () => {
     expect(renderMarkdownMock).toHaveBeenCalledWith('Answer:\nhello');
   });
 
-  test('prints all per-model logs when multi-model session completes', async () => {
-    const multiMeta: SessionMetadata = {
-      ...baseMeta,
-      models: [
-        { model: 'gpt-5.1-pro', status: 'completed', usage: { inputTokens: 1, outputTokens: 2, reasoningTokens: 0, totalTokens: 3 } },
-        { model: 'gemini-3-pro', status: 'completed', usage: { inputTokens: 4, outputTokens: 5, reasoningTokens: 0, totalTokens: 9 } },
-      ],
-    } as SessionMetadata;
+	  test('prints all per-model logs when multi-model session completes', async () => {
+	    const multiMeta: SessionMetadata = {
+	      ...baseMeta,
+	      models: [
+	        { model: 'gpt-5.2-pro', status: 'completed', usage: { inputTokens: 1, outputTokens: 2, reasoningTokens: 0, totalTokens: 3 } },
+	        { model: 'gemini-3-pro', status: 'completed', usage: { inputTokens: 4, outputTokens: 5, reasoningTokens: 0, totalTokens: 9 } },
+	      ],
+	    } as SessionMetadata;
 
     readSessionMetadataMock.mockResolvedValue(multiMeta);
     sessionStoreMock.readSession.mockResolvedValue(multiMeta);
     readSessionRequestMock.mockResolvedValue({ prompt: 'Prompt here' });
     const writeSpy = vi.spyOn(process.stdout, 'write');
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+	    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
 
-    sessionStoreMock.readModelLog
-      .mockResolvedValueOnce('Answer:\nfrom gpt-5.1-pro')
-      .mockResolvedValueOnce('Answer:\nfrom gemini');
+	    sessionStoreMock.readModelLog
+	      .mockResolvedValueOnce('Answer:\nfrom gpt-5.2-pro')
+	      .mockResolvedValueOnce('Answer:\nfrom gemini');
 
-    await attachSession('sess', { renderMarkdown: false });
+	    await attachSession('sess', { renderMarkdown: false });
 
-    const written = writeSpy.mock.calls.map((c) => c[0]).join('');
-    expect(written).toContain('from gpt-5.1-pro');
-    expect(written).toContain('=== gemini-3-pro ===');
-    expect(written).toContain('from gemini');
+	    const written = writeSpy.mock.calls.map((c) => c[0]).join('');
+	    expect(written).toContain('from gpt-5.2-pro');
+	    expect(written).toContain('=== gemini-3-pro ===');
+	    expect(written).toContain('from gemini');
     expect(sessionStoreMock.readModelLog).toHaveBeenCalledTimes(2);
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Models:'));
   });
 
-  test('prints only the selected model log when a model filter is provided', async () => {
-    const multiMeta: SessionMetadata = {
-      ...baseMeta,
-      models: [
-        { model: 'gpt-5.1-pro', status: 'completed' },
-        { model: 'gemini-3-pro', status: 'completed' },
-      ],
-    } as SessionMetadata;
+	  test('prints only the selected model log when a model filter is provided', async () => {
+	    const multiMeta: SessionMetadata = {
+	      ...baseMeta,
+	      models: [
+	        { model: 'gpt-5.2-pro', status: 'completed' },
+	        { model: 'gemini-3-pro', status: 'completed' },
+	      ],
+	    } as SessionMetadata;
 
     readSessionMetadataMock.mockResolvedValue(multiMeta);
     sessionStoreMock.readSession.mockResolvedValue(multiMeta);
@@ -377,23 +377,23 @@ describe('attachSession rendering', () => {
     sessionStoreMock.readModelLog
       .mockResolvedValueOnce('Answer:\nfrom gemini only');
 
-    await attachSession('sess', { renderMarkdown: false, model: 'Gemini-3-Pro' });
+	    await attachSession('sess', { renderMarkdown: false, model: 'Gemini-3-Pro' });
 
-    const written = writeSpy.mock.calls.map((c) => c[0]).join('');
-    expect(written).toContain('from gemini only');
-    expect(written).not.toContain('gpt-5.1-pro');
-    expect(sessionStoreMock.readModelLog).toHaveBeenCalledTimes(1);
-    expect(sessionStoreMock.readModelLog).toHaveBeenCalledWith('sess', 'gemini-3-pro');
-  });
+	    const written = writeSpy.mock.calls.map((c) => c[0]).join('');
+	    expect(written).toContain('from gemini only');
+	    expect(written).not.toContain('gpt-5.2-pro');
+	    expect(sessionStoreMock.readModelLog).toHaveBeenCalledTimes(1);
+	    expect(sessionStoreMock.readModelLog).toHaveBeenCalledWith('sess', 'gemini-3-pro');
+	  });
 
-  test('exits with error when requested model is not part of the session', async () => {
-    const multiMeta: SessionMetadata = {
-      ...baseMeta,
-      models: [
-        { model: 'gpt-5.1-pro', status: 'completed' },
-        { model: 'gemini-3-pro', status: 'completed' },
-      ],
-    } as SessionMetadata;
+	  test('exits with error when requested model is not part of the session', async () => {
+	    const multiMeta: SessionMetadata = {
+	      ...baseMeta,
+	      models: [
+	        { model: 'gpt-5.2-pro', status: 'completed' },
+	        { model: 'gemini-3-pro', status: 'completed' },
+	      ],
+	    } as SessionMetadata;
 
     readSessionMetadataMock.mockResolvedValue(multiMeta);
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -405,12 +405,12 @@ describe('attachSession rendering', () => {
     expect(sessionStoreMock.readModelLog).not.toHaveBeenCalled();
   });
 
-  test('falls back to per-model log when metadata is legacy but filter provided', async () => {
-    const legacyMeta: SessionMetadata = {
-      ...baseMeta,
-      model: 'gpt-5.1-pro',
-      models: undefined,
-    } as SessionMetadata;
+	  test('falls back to per-model log when metadata is legacy but filter provided', async () => {
+	    const legacyMeta: SessionMetadata = {
+	      ...baseMeta,
+	      model: 'gpt-5.2-pro',
+	      models: undefined,
+	    } as SessionMetadata;
 
     readSessionMetadataMock.mockResolvedValue(legacyMeta);
     sessionStoreMock.readSession.mockResolvedValue(legacyMeta);
@@ -418,12 +418,12 @@ describe('attachSession rendering', () => {
     sessionStoreMock.readModelLog.mockResolvedValue('Answer:\nlegacy per-model');
     const writeSpy = vi.spyOn(process.stdout, 'write');
 
-    await attachSession('sess', { renderMarkdown: false, model: 'gpt-5.1-pro' });
+	    await attachSession('sess', { renderMarkdown: false, model: 'gpt-5.2-pro' });
 
-    const written = writeSpy.mock.calls.map((c) => c[0]).join('');
-    expect(written).toContain('legacy per-model');
-    expect(sessionStoreMock.readModelLog).toHaveBeenCalledTimes(1);
-    expect(sessionStoreMock.readModelLog).toHaveBeenCalledWith('sess', 'gpt-5.1-pro');
-    expect(sessionStoreMock.readLog).not.toHaveBeenCalled();
-  });
+	    const written = writeSpy.mock.calls.map((c) => c[0]).join('');
+	    expect(written).toContain('legacy per-model');
+	    expect(sessionStoreMock.readModelLog).toHaveBeenCalledTimes(1);
+	    expect(sessionStoreMock.readModelLog).toHaveBeenCalledWith('sess', 'gpt-5.2-pro');
+	    expect(sessionStoreMock.readLog).not.toHaveBeenCalled();
+	  });
 });

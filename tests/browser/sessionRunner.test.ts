@@ -5,7 +5,7 @@ import { runBrowserSessionExecution } from '../../src/browser/sessionRunner.js';
 
 const baseRunOptions: RunOracleOptions = {
   prompt: 'Hello world',
-  model: 'gpt-5.1-pro',
+  model: 'gpt-5.2-pro',
   file: [],
   silent: false,
 };

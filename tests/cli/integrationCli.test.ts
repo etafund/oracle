@@ -73,13 +73,13 @@ describe('oracle CLI integration', () => {
       ORACLE_DISABLE_KEYTAR: '1',
     };
 
-    await expect(
-      execFileAsync(
-        process.execPath,
-        [TSX_BIN, CLI_ENTRY, '--prompt', 'conflict', '--model', 'gpt-5.1', '--models', 'gpt-5.1-pro'],
-        { env },
-      ),
-    ).rejects.toThrow(/--models cannot be combined with --model/i);
+	    await expect(
+	      execFileAsync(
+	        process.execPath,
+	        [TSX_BIN, CLI_ENTRY, '--prompt', 'conflict', '--model', 'gpt-5.1', '--models', 'gpt-5.2-pro'],
+	        { env },
+	      ),
+	    ).rejects.toThrow(/--models cannot be combined with --model/i);
 
     await rm(oracleHome, { recursive: true, force: true });
   }, INTEGRATION_TIMEOUT);

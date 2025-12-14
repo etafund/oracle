@@ -26,7 +26,7 @@ describe('runOracle no-file tip', () => {
     await runOracle(
       {
         prompt: 'hello',
-        model: 'gpt-5.1-pro',
+        model: 'gpt-5.2-pro',
         search: false,
         background: false,
       },
@@ -52,7 +52,7 @@ describe('api key logging', () => {
     await runOracle(
       {
         prompt: 'Key log test',
-        model: 'gpt-5.1-pro',
+        model: 'gpt-5.2-pro',
         background: false,
         verbose: true,
       },
@@ -95,13 +95,15 @@ describe('api key logging', () => {
 
   test('throws when OPENAI_API_KEY is missing for API engine', async () => {
     const originalOpenai = process.env.OPENAI_API_KEY;
+    const originalOpenRouter = process.env.OPENROUTER_API_KEY;
     delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
     try {
       await expect(
         runOracle(
           {
             prompt: 'Needs key',
-            model: 'gpt-5.1-pro',
+            model: 'gpt-5.2-pro',
             background: false,
           },
           {
@@ -115,6 +117,11 @@ describe('api key logging', () => {
         process.env.OPENAI_API_KEY = originalOpenai;
       } else {
         delete process.env.OPENAI_API_KEY;
+      }
+      if (originalOpenRouter !== undefined) {
+        process.env.OPENROUTER_API_KEY = originalOpenRouter;
+      } else {
+        delete process.env.OPENROUTER_API_KEY;
       }
     }
   });
@@ -150,7 +157,7 @@ describe('api key logging', () => {
     const client = new MockClient(stream);
     const logs: string[] = [];
     await runOracle(
-      { prompt: 'Summarize', model: 'gpt-5.1-pro', sessionId: 'abc123', background: false },
+      { prompt: 'Summarize', model: 'gpt-5.2-pro', sessionId: 'abc123', background: false },
       {
         apiKey: 'sk-test',
         client,
@@ -176,7 +183,7 @@ describe('api key logging', () => {
     const logs: string[] = [];
     const writes: string[] = [];
     await runOracle(
-      { prompt: 'hi', model: 'gpt-5.1-pro', verbose: true, background: false },
+      { prompt: 'hi', model: 'gpt-5.2-pro', verbose: true, background: false },
       {
         apiKey: 'sk-test-1234',
         client,
@@ -211,7 +218,7 @@ describe('api key logging', () => {
 
     logs.length = 0;
     await runOracle(
-      { prompt: 'hi', model: 'gpt-5.1-pro', background: false },
+      { prompt: 'hi', model: 'gpt-5.2-pro', background: false },
       {
         apiKey: 'sk-test',
         client,
@@ -243,7 +250,7 @@ describe('api key logging', () => {
     const logs: string[] = [];
     const writes: string[] = [];
     await runOracle(
-      { prompt: 'hi', model: 'gpt-5.1-pro', suppressAnswerHeader: true, background: false },
+      { prompt: 'hi', model: 'gpt-5.2-pro', suppressAnswerHeader: true, background: false },
       {
         apiKey: 'sk-test-1234',
         client,
@@ -272,7 +279,7 @@ describe('api key logging', () => {
     const writes: string[] = [];
 
     await runOracle(
-      { prompt: 'hi', model: 'gpt-5.1-pro', background: false },
+      { prompt: 'hi', model: 'gpt-5.2-pro', background: false },
       {
         apiKey: 'sk-test-1234',
         client,
@@ -294,7 +301,7 @@ describe('api key logging', () => {
     const logs: string[] = [];
     const writes: string[] = [];
     await runOracle(
-      { prompt: 'Greeting', model: 'gpt-5.1-pro', verbose: true, background: false },
+      { prompt: 'Greeting', model: 'gpt-5.2-pro', verbose: true, background: false },
       {
         apiKey: 'sk-test',
         client,
@@ -319,7 +326,7 @@ describe('api key logging', () => {
     await runOracle(
       {
         prompt: 'Verbose tokens',
-        model: 'gpt-5.1-pro',
+        model: 'gpt-5.2-pro',
         background: false,
         verbose: true,
       },
@@ -344,7 +351,7 @@ describe('api key logging', () => {
     await runOracle(
       {
         prompt: 'Short tokens',
-        model: 'gpt-5.1-pro',
+        model: 'gpt-5.2-pro',
         background: false,
         verbose: false,
       },
@@ -397,7 +404,7 @@ describe('api key logging', () => {
     await runOracle(
       {
         prompt: 'Greeting',
-        model: 'gpt-5.1-pro',
+        model: 'gpt-5.2-pro',
         background: false,
         verbose: true,
       },

@@ -31,13 +31,13 @@ describe('browser reattach end-to-end (simulated)', () => {
       const sessionMeta = await sessionStore.createSession(
         {
           prompt: 'Test prompt',
-          model: 'gpt-5.1-pro',
+          model: 'gpt-5.2-pro',
           mode: 'browser',
           browserConfig: {},
         },
         '/repo',
       );
-      await sessionStore.updateModelRun(sessionMeta.id, 'gpt-5.1-pro', {
+      await sessionStore.updateModelRun(sessionMeta.id, 'gpt-5.2-pro', {
         status: 'running',
         startedAt: new Date().toISOString(),
       });
@@ -91,13 +91,13 @@ describe('browser reattach end-to-end (simulated)', () => {
       const sessionMeta = await sessionStore.createSession(
         {
           prompt: 'Test prompt',
-          model: 'gpt-5.1-pro',
+          model: 'gpt-5.2-pro',
           mode: 'browser',
           browserConfig: {},
         },
         '/repo',
       );
-      await sessionStore.updateModelRun(sessionMeta.id, 'gpt-5.1-pro', {
+      await sessionStore.updateModelRun(sessionMeta.id, 'gpt-5.2-pro', {
         status: 'running',
         startedAt: new Date().toISOString(),
       });

@@ -53,9 +53,9 @@ ptyDescribe('TUI (interactive, PTY)', () => {
         const { sessionStore } = await import('../../../src/sessionStore.ts');
         setOracleHomeDirOverrideForTest(homeDir);
 
-        await sessionStore.ensureStorage();
-        await sessionStore.createSession({ prompt: 'one', model: 'gpt-5.1' }, process.cwd());
-        await sessionStore.createSession({ prompt: 'two', model: 'gpt-5.1-pro' }, process.cwd());
+	        await sessionStore.ensureStorage();
+	        await sessionStore.createSession({ prompt: 'one', model: 'gpt-5.1' }, process.cwd());
+	        await sessionStore.createSession({ prompt: 'two', model: 'gpt-5.2-pro' }, process.cwd());
 
         const { output } = await runOracleTuiWithPty({
           homeDir,

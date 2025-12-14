@@ -10,7 +10,7 @@ describe('runOracle request payload', () => {
     await runOracle(
       {
         prompt: 'Default search',
-        model: 'gpt-5.1-pro',
+        model: 'gpt-5.2-pro',
         background: false,
       },
       {
@@ -29,7 +29,7 @@ describe('runOracle request payload', () => {
     await runOracle(
       {
         prompt: 'Custom endpoint',
-        model: 'gpt-5.1-pro',
+        model: 'gpt-5.2-pro',
         baseUrl: 'https://litellm.test/v1',
         background: false,
       },
@@ -59,7 +59,7 @@ describe('runOracle request payload', () => {
     await runOracle(
       {
         prompt: 'Azure test',
-        model: 'gpt-5.1-pro',
+        model: 'gpt-5.2-pro',
         azure: azureOptions,
         background: false,
       },

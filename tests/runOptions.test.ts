@@ -24,7 +24,7 @@ describe('resolveRunOptionsFromConfig', () => {
     expect(resolvedEngine).toBe('api');
   });
 
-  it('defaults to gpt-5.1-pro when model not provided', () => {
+  it('defaults to gpt-5.2-pro when model not provided', () => {
     const { runOptions } = resolveRunOptionsFromConfig({
       prompt: basePrompt,
     });
@@ -144,7 +144,7 @@ describe('resolveRunOptionsFromConfig', () => {
   it('coerces browser engine to api for multi-model codex runs', () => {
     const { resolvedEngine } = resolveRunOptionsFromConfig({
       prompt: basePrompt,
-      models: ['gpt-5.1-codex', 'gpt-5.1-pro'],
+      models: ['gpt-5.1-codex', 'gpt-5.2-pro'],
       engine: 'browser',
     });
     expect(resolvedEngine).toBe('api');

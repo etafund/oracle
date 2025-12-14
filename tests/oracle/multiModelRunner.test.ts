@@ -40,16 +40,16 @@ describe('runMultiModelApiSession', () => {
     await rm(tmpRoot, { recursive: true, force: true });
   });
 
-  test('records partial success and rejection when one model is unavailable', async () => {
-    const sessionMeta: SessionMetadata = {
-      id: 'sess-multi-missing-model',
-      createdAt: new Date().toISOString(),
-      status: 'pending',
-      model: 'gpt-5.1-pro',
-      options: {},
-    };
+	  test('records partial success and rejection when one model is unavailable', async () => {
+	    const sessionMeta: SessionMetadata = {
+	      id: 'sess-multi-missing-model',
+	      createdAt: new Date().toISOString(),
+	      status: 'pending',
+	      model: 'gpt-5.2-pro',
+	      options: {},
+	    };
 
-    const models: ModelName[] = ['gpt-5.1-pro', 'gpt-5.1', 'gemini-3-pro'];
+	    const models: ModelName[] = ['gpt-5.2-pro', 'gpt-5.1', 'gemini-3-pro'];
 
     const updateModelRun = vi.fn();
 
@@ -88,29 +88,29 @@ describe('runMultiModelApiSession', () => {
       sessionsDir: () => tmpRoot,
     };
 
-    const runOracleImpl = vi.fn(async ({ model }: RunOracleOptions) => {
-      if (model === 'gpt-5.1-pro') {
-        throw new OracleResponseError('The requested model does not exist.');
-      }
-      return successResult(model as ModelName);
-    });
+	    const runOracleImpl = vi.fn(async ({ model }: RunOracleOptions) => {
+	      if (model === 'gpt-5.2-pro') {
+	        throw new OracleResponseError('The requested model does not exist.');
+	      }
+	      return successResult(model as ModelName);
+	    });
 
-    const summary = await runMultiModelApiSession(
-      {
-        sessionMeta,
-        runOptions: { prompt: 'Cross-check this design', model: 'gpt-5.1-pro', search: false },
-        models,
-        cwd: process.cwd(),
-        version: 'test',
-      },
-      { store, runOracleImpl },
-    );
+	    const summary = await runMultiModelApiSession(
+	      {
+	        sessionMeta,
+	        runOptions: { prompt: 'Cross-check this design', model: 'gpt-5.2-pro', search: false },
+	        models,
+	        cwd: process.cwd(),
+	        version: 'test',
+	      },
+	      { store, runOracleImpl },
+	    );
 
-    expect(runOracleImpl).toHaveBeenCalledTimes(models.length);
-    expect(summary.fulfilled.map((r) => r.model)).toEqual(expect.arrayContaining(['gpt-5.1', 'gemini-3-pro']));
-    expect(summary.rejected).toEqual([
-      expect.objectContaining({ model: 'gpt-5.1-pro', reason: expect.any(OracleResponseError) }),
-    ]);
+	    expect(runOracleImpl).toHaveBeenCalledTimes(models.length);
+	    expect(summary.fulfilled.map((r) => r.model)).toEqual(expect.arrayContaining(['gpt-5.1', 'gemini-3-pro']));
+	    expect(summary.rejected).toEqual([
+	      expect.objectContaining({ model: 'gpt-5.2-pro', reason: expect.any(OracleResponseError) }),
+	    ]);
 
     runOracleImpl.mock.calls.forEach(([options]) => {
       expect(options).toMatchObject({
@@ -125,20 +125,20 @@ describe('runMultiModelApiSession', () => {
         .filter(([, m]) => m === model)
         .map(([, , updates]) => updates?.status);
 
-    expect(statusUpdatesFor('gpt-5.1-pro')).toContain('running');
-    expect(statusUpdatesFor('gpt-5.1-pro')).toContain('error');
-    expect(statusUpdatesFor('gpt-5.1')).toContain('completed');
-    expect(statusUpdatesFor('gemini-3-pro')).toContain('completed');
-  });
+	    expect(statusUpdatesFor('gpt-5.2-pro')).toContain('running');
+	    expect(statusUpdatesFor('gpt-5.2-pro')).toContain('error');
+	    expect(statusUpdatesFor('gpt-5.1')).toContain('completed');
+	    expect(statusUpdatesFor('gemini-3-pro')).toContain('completed');
+	  });
 
-  test('runs grok alongside other models and logs per-model output', async () => {
-    const sessionMeta: SessionMetadata = {
-      id: 'sess-grok-multi',
-      createdAt: new Date().toISOString(),
-      status: 'pending',
-      model: 'gpt-5.1-pro',
-      options: {},
-    };
+	  test('runs grok alongside other models and logs per-model output', async () => {
+	    const sessionMeta: SessionMetadata = {
+	      id: 'sess-grok-multi',
+	      createdAt: new Date().toISOString(),
+	      status: 'pending',
+	      model: 'gpt-5.2-pro',
+	      options: {},
+	    };
 
     const models: ModelName[] = ['grok-4.1', 'gpt-5.1'];
     const logBodies = new Map<string, string>();
@@ -188,16 +188,16 @@ describe('runMultiModelApiSession', () => {
       return successResult(model as ModelName);
     });
 
-    const summary = await runMultiModelApiSession(
-      {
-        sessionMeta,
-        runOptions: { prompt: 'Cross-check this design', model: 'gpt-5.1-pro', search: false },
-        models,
-        cwd: process.cwd(),
-        version: 'test',
-      },
-      { store, runOracleImpl },
-    );
+	    const summary = await runMultiModelApiSession(
+	      {
+	        sessionMeta,
+	        runOptions: { prompt: 'Cross-check this design', model: 'gpt-5.2-pro', search: false },
+	        models,
+	        cwd: process.cwd(),
+	        version: 'test',
+	      },
+	      { store, runOracleImpl },
+	    );
 
     expect(runOracleImpl).toHaveBeenCalledTimes(models.length);
     expect(runOracleImpl.mock.calls.map(([opts]) => opts.model)).toEqual(models);
@@ -206,15 +206,15 @@ describe('runMultiModelApiSession', () => {
     expect(logBodies.get('gpt-5.1')).toBeDefined();
   });
 
-  test('invokes onModelDone callbacks in completion order', async () => {
-    vi.useFakeTimers();
-    const sessionMeta: SessionMetadata = {
-      id: 'sess-order',
-      createdAt: new Date().toISOString(),
-      status: 'pending',
-      model: 'gpt-5.1-pro',
-      options: {},
-    };
+	  test('invokes onModelDone callbacks in completion order', async () => {
+	    vi.useFakeTimers();
+	    const sessionMeta: SessionMetadata = {
+	      id: 'sess-order',
+	      createdAt: new Date().toISOString(),
+	      status: 'pending',
+	      model: 'gpt-5.2-pro',
+	      options: {},
+	    };
 
     const models: ModelName[] = ['gemini-3-pro', 'gpt-5.1'];
     const order: string[] = [];
@@ -261,14 +261,14 @@ describe('runMultiModelApiSession', () => {
       return successResult(model as ModelName);
     });
 
-    const promise = runMultiModelApiSession(
-      {
-        sessionMeta,
-        runOptions: { prompt: 'Cross-check this design', model: 'gpt-5.1-pro', search: false },
-        models,
-        cwd: process.cwd(),
-        version: 'test',
-        onModelDone: (result) => {
+	    const promise = runMultiModelApiSession(
+	      {
+	        sessionMeta,
+	        runOptions: { prompt: 'Cross-check this design', model: 'gpt-5.2-pro', search: false },
+	        models,
+	        cwd: process.cwd(),
+	        version: 'test',
+	        onModelDone: (result) => {
           order.push(result.model);
         },
       },
@@ -283,17 +283,17 @@ describe('runMultiModelApiSession', () => {
     expect(order.sort()).toEqual(['gemini-3-pro', 'gpt-5.1']);
   });
 
-  test('forwards OSC progress updates to stdout during multi-model runs', async () => {
-    const sessionMeta: SessionMetadata = {
-      id: 'sess-osc',
-      createdAt: new Date().toISOString(),
-      status: 'pending',
-      model: 'gpt-5.1-pro',
-      options: {},
-    };
+	  test('forwards OSC progress updates to stdout during multi-model runs', async () => {
+	    const sessionMeta: SessionMetadata = {
+	      id: 'sess-osc',
+	      createdAt: new Date().toISOString(),
+	      status: 'pending',
+	      model: 'gpt-5.2-pro',
+	      options: {},
+	    };
 
-    const models: ModelName[] = ['gpt-5.1-pro'];
-    let modelLogPath = '';
+	    const models: ModelName[] = ['gpt-5.2-pro'];
+	    let modelLogPath = '';
 
     const store: SessionStore = {
       ensureStorage: async () => {},
@@ -341,14 +341,14 @@ describe('runMultiModelApiSession', () => {
       return successResult(options.model as ModelName);
     });
 
-    await runMultiModelApiSession(
-      {
-        sessionMeta,
-        runOptions: { prompt: 'Cross-check this design', model: 'gpt-5.1-pro', search: false },
-        models,
-        cwd: process.cwd(),
-        version: 'test',
-      },
+	    await runMultiModelApiSession(
+	      {
+	        sessionMeta,
+	        runOptions: { prompt: 'Cross-check this design', model: 'gpt-5.2-pro', search: false },
+	        models,
+	        cwd: process.cwd(),
+	        version: 'test',
+	      },
       { store, runOracleImpl },
     );
 
@@ -365,17 +365,17 @@ describe('runMultiModelApiSession', () => {
     }
   });
 
-  test('does not forward OSC progress when stdout is not a TTY', async () => {
-    const sessionMeta: SessionMetadata = {
-      id: 'sess-osc-notty',
-      createdAt: new Date().toISOString(),
-      status: 'pending',
-      model: 'gpt-5.1-pro',
-      options: {},
-    };
+	  test('does not forward OSC progress when stdout is not a TTY', async () => {
+	    const sessionMeta: SessionMetadata = {
+	      id: 'sess-osc-notty',
+	      createdAt: new Date().toISOString(),
+	      status: 'pending',
+	      model: 'gpt-5.2-pro',
+	      options: {},
+	    };
 
-    const models: ModelName[] = ['gpt-5.1-pro'];
-    let modelLogPath = '';
+	    const models: ModelName[] = ['gpt-5.2-pro'];
+	    let modelLogPath = '';
 
     const store: SessionStore = {
       ensureStorage: async () => {},
@@ -423,14 +423,14 @@ describe('runMultiModelApiSession', () => {
       return successResult(options.model as ModelName);
     });
 
-    await runMultiModelApiSession(
-      {
-        sessionMeta,
-        runOptions: { prompt: 'Cross-check this design', model: 'gpt-5.1-pro', search: false },
-        models,
-        cwd: process.cwd(),
-        version: 'test',
-      },
+	    await runMultiModelApiSession(
+	      {
+	        sessionMeta,
+	        runOptions: { prompt: 'Cross-check this design', model: 'gpt-5.2-pro', search: false },
+	        models,
+	        cwd: process.cwd(),
+	        version: 'test',
+	      },
       { store, runOracleImpl },
     );
 

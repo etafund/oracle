@@ -75,23 +75,23 @@ describe('sessions MCP tool', () => {
     expect(readSession).toHaveBeenCalledWith('missing');
   });
 
-  it('returns summary entry when id is found and detail=false', async () => {
-    const meta: SessionMetadata = {
-      id: 's2',
-      createdAt: '2025-11-21T00:00:00Z',
-      status: 'running',
-      cwd: '/tmp',
-      model: 'gpt-5.1-pro',
-      mode: 'api',
-      options: { prompt: 'p', file: [], model: 'gpt-5.1-pro' },
-    };
-    readSession.mockResolvedValue(meta);
-    const result = (await handler?.({ id: 's2' })) as { structuredContent: { entries: SessionMetadata[] } };
-    expect(readSession).toHaveBeenCalledWith('s2');
-    expect(result.structuredContent.entries[0]).toEqual(
-      expect.objectContaining({ id: 's2', status: 'running', model: 'gpt-5.1-pro', mode: 'api' }),
-    );
-  });
+	  it('returns summary entry when id is found and detail=false', async () => {
+	    const meta: SessionMetadata = {
+	      id: 's2',
+	      createdAt: '2025-11-21T00:00:00Z',
+	      status: 'running',
+	      cwd: '/tmp',
+	      model: 'gpt-5.2-pro',
+	      mode: 'api',
+	      options: { prompt: 'p', file: [], model: 'gpt-5.2-pro' },
+	    };
+	    readSession.mockResolvedValue(meta);
+	    const result = (await handler?.({ id: 's2' })) as { structuredContent: { entries: SessionMetadata[] } };
+	    expect(readSession).toHaveBeenCalledWith('s2');
+	    expect(result.structuredContent.entries[0]).toEqual(
+	      expect.objectContaining({ id: 's2', status: 'running', model: 'gpt-5.2-pro', mode: 'api' }),
+	    );
+	  });
 
   it('returns metadata/log/request when detail=true', async () => {
     const meta: SessionMetadata = {
