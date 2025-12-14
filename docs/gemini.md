@@ -1,10 +1,11 @@
-# Gemini 3 Pro Integration
+# Gemini Integration
 
-This document outlines the integration of Google's Gemini 3 Pro model into the `oracle` CLI.
+Oracle supports Gemini in two distinct ways:
 
-## Usage
+1. **Gemini API mode** (`--engine api`) via `GEMINI_API_KEY`
+2. **Gemini web (cookie) mode** (`--engine browser`) via your signed-in Chrome cookies at `gemini.google.com` (no API key required)
 
-To use Gemini 3 Pro, you must provide a Google AI API key.
+## Usage (API)
 
 1. **Get an API Key:** Obtain a key from [Google AI Studio](https://aistudio.google.com/).
 2. **Set Environment Variable:** Export the key as `GEMINI_API_KEY`.
@@ -13,37 +14,60 @@ To use Gemini 3 Pro, you must provide a Google AI API key.
    ```
 3. **Run Oracle:** Use the `--model` (or `-m`) flag to select Gemini.
    ```bash
-   oracle --model gemini --prompt "Explain quantum entanglement"
+   oracle --engine api --model gemini --prompt "Explain quantum entanglement"
    ```
    You can also use the explicit model ID:
    ```bash
-   oracle --model gemini-3-pro --prompt "..."
+   oracle --engine api --model gemini-3-pro --prompt "..."
    ```
 
-## Implementation Details
+## Usage (Gemini web / cookies)
 
-The integration uses an **Adapter Pattern** to fit the Google Generative AI SDK into the existing `oracle` architecture, which was originally designed around the OpenAI API structure.
+Gemini web mode is a cookie-based client for `gemini.google.com`. It does **not** use `GEMINI_API_KEY` and does **not** drive ChatGPT.
 
-### Key Components
+Prereqs:
+- Chrome installed.
+- Signed into `gemini.google.com` in the Chrome profile Oracle uses (default: `Default` profile).
 
-* **`src/oracle/gemini.ts`**: Core adapter using the `@google/genai` SDK. It exports `createGeminiClient(apiKey)`, returning a `ClientLike`.
-  * **Model IDs**: `gemini-3-pro` maps to the current preview ID `gemini-3-pro-preview`.
-  * **Request Mapping**: Converts `OracleRequestBody` (system prompt, user messages) into Gemini's `GenerateContentRequest`. It maps the `web_search_preview` tool to Gemini's `googleSearch` tool.
-  * **Response Mapping**: Converts Gemini's `GenerateContentResponse` (both streaming and complete) back into the `OracleResponse` format expected by the CLI.
-  * **Streaming**: Wraps Gemini's async generator to match the `ResponseStreamLike` interface.
+Examples:
+```bash
+# Text run
+oracle --engine browser --model gemini-3-pro --prompt "Say OK."
 
-*   **`src/oracle/client.ts`**: The `createDefaultClientFactory` was updated to inspect the `model` parameter. If `gemini-3-pro` is requested, it instantiates the Gemini client instead of the OpenAI client.
+# Generate an image (writes an output file)
+oracle --engine browser --model gemini-3-pro \
+  --prompt "a cute robot holding a banana" \
+  --generate-image out.jpg --aspect 1:1
 
-*   **`src/oracle/run.ts`**: Logic was added to select the correct API key (`GEMINI_API_KEY` vs `OPENAI_API_KEY`) based on the requested model prefix. Log messages were generalized from "OpenAI" to "API".
+# Edit an image (input via --edit-image, output via --output)
+oracle --engine browser --model gemini-3-pro \
+  --prompt "add sunglasses" \
+  --edit-image in.png --output out.jpg
+```
 
-### Configuration
+Notes:
+- If your logged-in Gemini account can’t access “Pro”, Oracle will auto-fallback to a supported model for web runs (and logs the fallback in verbose mode).
+- This path runs fully in Node/TypeScript (no Python/venv dependency).
 
-*   **`src/oracle/config.ts`**: Added `gemini-3-pro` to `MODEL_CONFIGS` with a 200k token input limit and current preview pricing ($2/1M input, $12/1M output).
-*   **`src/oracle/types.ts`**: Updated `ModelName` type to include `gemini-3-pro`.
+## Implementation details
 
-## Development Notes
+### Gemini API adapter
 
-*   **Types**: We strictly use types from `@google/generative-ai` (e.g., `GenerateContentResponse`, `Tool`) to ensure type safety within the adapter.
-*   **Tokenizer**: Currently reuses the `gpt-5.1-pro` tokenizer for estimation. While not exact for Gemini, it provides a safe upper bound for token budgeting.
-*   **Search**: The integration supports Gemini's native Google Search tool.
-*   **Retrieval**: The `retrieve` method (fetching a past response by ID) is not supported by the Gemini API in the same way as OpenAI, so it currently returns a placeholder error.
+- `src/oracle/gemini.ts` — adapter using `@google/genai` that returns a `ClientLike`.
+  - Model IDs: `gemini-3-pro` maps to the provider ID (currently `gemini-3-pro-preview`).
+  - Request mapping: `OracleRequestBody` → Gemini request; `web_search_preview` maps to Gemini search tooling.
+  - Response mapping: Gemini responses → `OracleResponse`.
+  - Streaming: wraps Gemini’s async iterator as `ResponseStreamLike`.
+- `src/oracle/run.ts` — selects `GEMINI_API_KEY` vs `OPENAI_API_KEY` based on model prefix.
+- `src/oracle/config.ts` / `src/oracle/types.ts` — model config + `ModelName`.
+
+### Gemini web client (cookie-based)
+
+- `src/gemini-web/client.ts` — talks to `gemini.google.com` and downloads generated images via authenticated `gg-dl` redirects.
+- `src/gemini-web/executor.ts` — browser-engine executor for Gemini (loads Chrome cookies and runs the web client).
+
+## Testing
+
+- Unit/regression: `pnpm vitest run tests/gemini.test.ts tests/gemini-web`
+- Live (API): `ORACLE_LIVE_TEST=1 pnpm vitest run tests/live/gemini-live.test.ts`
+- Live (Gemini web/cookies): `ORACLE_LIVE_TEST=1 pnpm vitest run tests/live/gemini-web-live.test.ts`

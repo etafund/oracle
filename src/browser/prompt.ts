@@ -16,6 +16,18 @@ import { buildAttachmentPlan } from './policies.js';
 
 const DEFAULT_BROWSER_INLINE_CHAR_BUDGET = 60_000;
 
+const MEDIA_EXTENSIONS = new Set([
+  '.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v',
+  '.mp3', '.wav', '.aac', '.flac', '.ogg', '.m4a',
+  '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg', '.heic', '.heif',
+  '.pdf',
+]);
+
+export function isMediaFile(filePath: string): boolean {
+  const ext = path.extname(filePath).toLowerCase();
+  return MEDIA_EXTENSIONS.has(ext);
+}
+
 export interface BrowserPromptArtifacts {
   markdown: string;
   composerText: string;
@@ -45,7 +57,24 @@ export async function assembleBrowserPrompt(
 ): Promise<BrowserPromptArtifacts> {
   const cwd = deps.cwd ?? process.cwd();
   const readFilesFn = deps.readFilesImpl ?? readFiles;
-  const files = await readFilesFn(runOptions.file ?? [], { cwd });
+
+  const allFilePaths = runOptions.file ?? [];
+  const textFilePaths = allFilePaths.filter((f) => !isMediaFile(f));
+  const mediaFilePaths = allFilePaths.filter((f) => isMediaFile(f));
+
+  const mediaAttachments: BrowserAttachment[] = await Promise.all(
+    mediaFilePaths.map(async (filePath) => {
+      const resolvedPath = path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
+      const stats = await fs.stat(resolvedPath);
+      return {
+        path: resolvedPath,
+        displayPath: path.relative(cwd, resolvedPath) || path.basename(resolvedPath),
+        sizeBytes: stats.size,
+      };
+    }),
+  );
+
+  const files = await readFilesFn(textFilePaths, { cwd });
   const basePrompt = (runOptions.prompt ?? '').trim();
   const userPrompt = basePrompt;
   const systemPrompt = runOptions.system?.trim() || '';
@@ -83,10 +112,11 @@ export async function assembleBrowserPrompt(
     .join('\n\n')
     .trim();
 
-  const attachments: BrowserAttachment[] = selectedPlan.attachments.slice();
+  const attachments: BrowserAttachment[] = [...selectedPlan.attachments, ...mediaAttachments];
 
   const shouldBundle = selectedPlan.shouldBundle;
   let bundleText: string | null = null;
+  let bundled: { originalCount: number; bundlePath: string } | null = null;
   if (shouldBundle) {
     const bundleDir = await fs.mkdtemp(path.join(os.tmpdir(), 'oracle-browser-bundle-'));
     const bundlePath = path.join(bundleDir, 'attachments-bundle.txt');
@@ -103,6 +133,8 @@ export async function assembleBrowserPrompt(
       displayPath: bundlePath,
       sizeBytes: Buffer.byteLength(bundleText, 'utf8'),
     });
+    attachments.push(...mediaAttachments);
+    bundled = { originalCount: sections.length, bundlePath };
   }
 
   const inlineFileCount = selectedPlan.inlineFileCount;
@@ -139,7 +171,7 @@ export async function assembleBrowserPrompt(
   let fallback: BrowserPromptArtifacts['fallback'] = null;
   if (attachmentsPolicy === 'auto' && selectedPlan.mode === 'inline' && sections.length > 0) {
     const fallbackComposerText = baseComposerSections.join('\n\n').trim();
-    const fallbackAttachments = uploadPlan.attachments.slice();
+    const fallbackAttachments = [...uploadPlan.attachments, ...mediaAttachments];
     let fallbackBundled: { originalCount: number; bundlePath: string } | null = null;
     if (uploadPlan.shouldBundle) {
       const bundleDir = await fs.mkdtemp(path.join(os.tmpdir(), 'oracle-browser-bundle-'));
@@ -157,6 +189,7 @@ export async function assembleBrowserPrompt(
         displayPath: bundlePath,
         sizeBytes: Buffer.byteLength(fallbackBundleText, 'utf8'),
       });
+      fallbackAttachments.push(...mediaAttachments);
       fallbackBundled = { originalCount: sections.length, bundlePath };
     }
     fallback = {
@@ -176,9 +209,6 @@ export async function assembleBrowserPrompt(
     attachmentsPolicy,
     attachmentMode: selectedPlan.mode,
     fallback,
-    bundled:
-      shouldBundle && attachments.length === 1 && attachments[0]?.displayPath
-        ? { originalCount: sections.length, bundlePath: attachments[0].displayPath }
-        : null,
+    bundled,
   };
 }

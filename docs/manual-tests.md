@@ -21,6 +21,20 @@ and run the live API suite before shipping major transport changes.
 
 - `./runner pnpm test:browser` — launches headful Chrome and checks the DevTools endpoint is reachable. Set `ORACLE_BROWSER_PORT` (or `ORACLE_BROWSER_DEBUG_PORT`) to reuse a fixed port when you’ve already opened a firewall rule.
 
+### Gemini browser mode (Gemini web / cookies)
+
+Run this whenever you touch the Gemini web client or the `--generate-image` / `--edit-image` plumbing.
+
+Prereqs:
+- Chrome profile is signed into `gemini.google.com`.
+
+1. Generate an image:
+   `pnpm run oracle -- --engine browser --model gemini-3-pro --prompt "a cute robot holding a banana" --generate-image /tmp/gemini-gen.jpg --aspect 1:1 --wait --verbose`
+   - Confirm the output file exists and is a real image (`file /tmp/gemini-gen.jpg`).
+2. Edit an image:
+   `pnpm run oracle -- --engine browser --model gemini-3-pro --prompt "add sunglasses" --edit-image /tmp/gemini-gen.jpg --output /tmp/gemini-edit.jpg --wait --verbose`
+   - Confirm `/tmp/gemini-edit.jpg` exists.
+
 ### Multi-Model CLI fan-out
 
 Run this whenever you touch the session store, CLI session views, or TUI wiring for multi-model runs.
