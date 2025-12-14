@@ -189,7 +189,14 @@ function buildGeminiFReqPayload(
 ): string {
   const promptPayload =
     uploaded.length > 0
-      ? [prompt, 0, null, uploaded.map((file) => [[[file.id], file.name]])]
+      ? [
+          prompt,
+          0,
+          null,
+          // Matches gemini-webapi payload format: [[[fileId, 1]]] for a single attachment.
+          // Keep it extensible for multiple uploads by emitting one [[id, 1]] entry per file.
+          uploaded.map((file) => [[file.id, 1]]),
+        ]
       : [prompt];
 
   const innerList: unknown[] = [promptPayload, null, chatMetadata ?? null];
