@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { createGeminiWebExecutor } from '../../src/gemini-web/executor.js';
+import type { ChromeCookiesSecureModule } from '../../src/browser/types.js';
 
 const live = process.env.ORACLE_LIVE_TEST === '1';
 
@@ -10,7 +11,7 @@ async function assertHasGeminiChromeCookies(): Promise<void> {
   const mod = (await import('chrome-cookies-secure')) as unknown;
   const chromeCookies = (mod as { default?: unknown }).default ?? mod;
 
-  const cookies = (await (chromeCookies as { getCookiesPromised: Function }).getCookiesPromised(
+  const cookies = (await (chromeCookies as ChromeCookiesSecureModule).getCookiesPromised(
     'https://gemini.google.com',
     'puppeteer',
   )) as Array<{ name: string; value: string }>;
@@ -88,4 +89,3 @@ function looksLikeJpeg(bytes: Uint8Array): boolean {
     240_000,
   );
 });
-
