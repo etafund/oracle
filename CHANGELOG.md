@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.1 — Unreleased
+
+### Changed
+- Default model is now `gpt-5.2-pro` (API).
+
 ## 0.7.0 — 2025-12-14
 
 ### Added
