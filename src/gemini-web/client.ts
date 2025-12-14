@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-export type GeminiWebModelId = 'gemini-3.0-pro' | 'gemini-2.5-pro' | 'gemini-2.5-flash';
+export type GeminiWebModelId = 'gemini-3-pro' | 'gemini-2.5-pro' | 'gemini-2.5-flash';
 
 export interface GeminiWebRunInput {
   prompt: string;
@@ -33,7 +33,7 @@ const USER_AGENT =
 
 const MODEL_HEADER_NAME = 'x-goog-ext-525001261-jspb';
 const MODEL_HEADERS: Record<GeminiWebModelId, string> = {
-  'gemini-3.0-pro': '[1,null,null,null,"9d8ca3786ebdfbea",null,null,0,[4]]',
+  'gemini-3-pro': '[1,null,null,null,"9d8ca3786ebdfbea",null,null,0,[4]]',
   'gemini-2.5-pro': '[1,null,null,null,"4af6c7f5da75d65d",null,null,0,[4]]',
   'gemini-2.5-flash': '[1,null,null,null,"9ec249fc9ad08861",null,null,0,[4]]',
 };
@@ -117,17 +117,35 @@ function ensureFullSizeImageUrl(url: string): string {
   return `${url}=s2048`;
 }
 
+async function fetchWithCookiePreservingRedirects(
+  url: string,
+  init: Omit<RequestInit, 'redirect'>,
+  maxRedirects = 10,
+): Promise<Response> {
+  let current = url;
+  for (let i = 0; i <= maxRedirects; i += 1) {
+    const res = await fetch(current, { ...init, redirect: 'manual' });
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get('location');
+      if (!location) return res;
+      current = new URL(location, current).toString();
+      continue;
+    }
+    return res;
+  }
+  throw new Error(`Too many redirects while downloading image (>${maxRedirects}).`);
+}
+
 async function downloadGeminiImage(url: string, cookieMap: Record<string, string>, outputPath: string): Promise<void> {
   const cookieHeader = buildCookieHeader(cookieMap);
-  const res = await fetch(ensureFullSizeImageUrl(url), {
-    redirect: 'follow',
+  const res = await fetchWithCookiePreservingRedirects(ensureFullSizeImageUrl(url), {
     headers: {
       cookie: cookieHeader,
       'user-agent': USER_AGENT,
     },
   });
   if (!res.ok) {
-    throw new Error(`Failed to download image: ${res.status} ${res.statusText}`);
+    throw new Error(`Failed to download image: ${res.status} ${res.statusText} (${res.url})`);
   }
 
   const data = new Uint8Array(await res.arrayBuffer());
@@ -221,28 +239,28 @@ export function parseGeminiStreamGenerateResponse(
   }
 
   const hasGenerated = Boolean(getNestedValue<unknown>(firstCandidate, [12, 7, 0], null));
-    if (hasGenerated) {
-      let imgBody: unknown = null;
-      for (let i = bodyIndex; i < parts.length; i += 1) {
-        const partBody = getNestedValue<string | null>(parts[i], [2], null);
-        if (!partBody) continue;
-        try {
-          const parsed = JSON.parse(partBody) as unknown;
-          const candidateImages = getNestedValue<unknown | null>(parsed, [4, 0, 12, 7, 0], null);
-          if (candidateImages != null) {
-            imgBody = parsed;
-            break;
-          }
-        } catch {
-          // ignore
+  if (hasGenerated) {
+    let imgBody: unknown = null;
+    for (let i = bodyIndex; i < parts.length; i += 1) {
+      const partBody = getNestedValue<string | null>(parts[i], [2], null);
+      if (!partBody) continue;
+      try {
+        const parsed = JSON.parse(partBody) as unknown;
+        const candidateImages = getNestedValue<unknown | null>(parsed, [4, 0, 12, 7, 0], null);
+        if (candidateImages != null) {
+          imgBody = parsed;
+          break;
         }
+      } catch {
+        // ignore
       }
+    }
 
-      const imgCandidate = getNestedValue<unknown>(imgBody ?? body, [4, 0], null);
+    const imgCandidate = getNestedValue<unknown>(imgBody ?? body, [4, 0], null);
 
-      const generated = getNestedValue<unknown[]>(imgCandidate, [12, 7, 0], []);
-      for (const genImage of generated) {
-        const url = getNestedValue<string | null>(genImage, [0, 3, 3], null);
+    const generated = getNestedValue<unknown[]>(imgCandidate, [12, 7, 0], []);
+    for (const genImage of generated) {
+      const url = getNestedValue<string | null>(genImage, [0, 3, 3], null);
       if (!url) continue;
       images.push({
         kind: 'generated',

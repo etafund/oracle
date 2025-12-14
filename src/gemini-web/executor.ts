@@ -16,6 +16,26 @@ function resolveInvocationPath(value: string | undefined): string | undefined {
   return path.isAbsolute(trimmed) ? trimmed : path.resolve(process.cwd(), trimmed);
 }
 
+function resolveGeminiWebModel(desiredModel: string | null | undefined, log?: BrowserLogger): GeminiWebModelId {
+  const desired = typeof desiredModel === 'string' ? desiredModel.trim() : '';
+  if (!desired) return 'gemini-3-pro';
+
+  switch (desired) {
+    case 'gemini-3-pro':
+    case 'gemini-3.0-pro':
+      return 'gemini-3-pro';
+    case 'gemini-2.5-pro':
+      return 'gemini-2.5-pro';
+    case 'gemini-2.5-flash':
+      return 'gemini-2.5-flash';
+    default:
+      if (desired.startsWith('gemini-')) {
+        log?.(`[gemini-web] Unsupported Gemini web model "${desired}". Falling back to gemini-3-pro.`);
+      }
+      return 'gemini-3-pro';
+  }
+}
+
 async function loadGeminiCookiesFromChrome(
   browserConfig: BrowserRunOptions['config'],
   log?: BrowserLogger,
@@ -33,6 +53,7 @@ async function loadGeminiCookiesFromChrome(
       '__Secure-1PSID',
       '__Secure-1PSIDTS',
       '__Secure-1PSIDCC',
+      '__Secure-1PAPISID',
       'NID',
       'AEC',
       'SOCS',
@@ -65,7 +86,7 @@ async function loadGeminiCookiesFromChrome(
 
     if (!cookieMap['__Secure-1PSID'] || !cookieMap['__Secure-1PSIDTS']) {
       return {};
-    };
+    }
 
     log?.(`[gemini-web] Loaded Gemini cookies from Chrome (node): ${Object.keys(cookieMap).length} cookie(s).`);
     return cookieMap;
@@ -107,7 +128,7 @@ export function createGeminiWebExecutor(
       prompt = `Generate an image: ${prompt}`;
     }
 
-    const model: GeminiWebModelId = 'gemini-3.0-pro';
+    const model: GeminiWebModelId = resolveGeminiWebModel(runOptions.config?.desiredModel, log);
     let response: GeminiWebResponse;
 
     if (editImagePath) {

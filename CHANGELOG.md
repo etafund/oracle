@@ -15,7 +15,7 @@
 - Gemini browser mode: accept multiple `--file` inputs; CLI resolves image-operation paths relative to `cwd`.
 - Gemini browser mode: compatibility init for Gemini web token changes (keeps text runs working even when Gemini rotates the token key).
 - Gemini browser mode: auto-fallback when “Pro” models aren’t available on the logged-in Gemini account, plus clearer errors for failed file/image feature requests.
-- Gemini browser mode: image ops can save `gg-dl` artifacts even when generated images aren’t surfaced in the primary response.
+- Gemini browser mode: image ops now follow `gg-dl` redirects while preserving cookies, so `--generate-image`/`--edit-image` actually create output files again.
 
 ## 0.6.1 — 2025-12-13
 
