@@ -35,6 +35,9 @@ npx @steipete/oracle --dry-run summary -p "Check release notes" --file docs/rele
 # Browser run (no API key, will open ChatGPT)
 npx @steipete/oracle --engine browser -p "Walk through the UI smoke test" --file "src/**/*.ts"
 
+# Gemini browser mode (no API key; uses Chrome cookies from gemini.google.com)
+npx @steipete/oracle --engine browser --model gemini-3-pro --prompt "a cute robot holding a banana" --generate-image out.jpg --aspect 1:1
+
 # Sessions (list and replay)
 npx @steipete/oracle status --hours 72
 npx @steipete/oracle session <id> --render
@@ -49,7 +52,8 @@ Engine auto-picks API when `OPENAI_API_KEY` is set, otherwise browser; browser i
 
 **CLI**
 - API mode expects API keys in your environment: `OPENAI_API_KEY` (GPT-5.x), `GEMINI_API_KEY` (Gemini 3 Pro), `ANTHROPIC_API_KEY` (Claude Sonnet 4.5 / Opus 4.1).
-- Gemini browser mode uses Chrome cookies instead of an API key—just be logged into `gemini.google.com` in Chrome. Requires Python 3.8+.
+- Gemini browser mode uses Chrome cookies instead of an API key—just be logged into `gemini.google.com` in Chrome (no Python/venv required).
+- If your Gemini account can’t access “Pro”, Oracle auto-falls back to a supported model for web runs (and logs the fallback in verbose mode).
 - Prefer API mode or `--copy` + manual paste; browser automation is experimental.
 - Browser support: stable on macOS; works on Linux (add `--browser-chrome-path/--browser-cookie-path` when needed) and Windows (manual-login or inline cookies recommended when app-bound cookies block decryption).
 - Remote browser service: `oracle serve` on a signed-in host; clients use `--remote-host/--remote-token`.
