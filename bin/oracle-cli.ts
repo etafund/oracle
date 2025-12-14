@@ -253,7 +253,7 @@ program
   .addOption(
     new Option(
       '-e, --engine <mode>',
-      'Execution engine (api | browser). Engine is preferred; --mode is a legacy alias. If omitted, oracle picks api when OPENAI_API_KEY is set, otherwise browser.',
+      'Execution engine (api | browser). Browser engine: GPT models automate ChatGPT; Gemini models use a cookie-based client for gemini.google.com. If omitted, oracle picks api when OPENAI_API_KEY is set, otherwise browser.',
     ).choices(['api', 'browser'])
   )
   .addOption(
@@ -393,12 +393,27 @@ program
     new Option('--browser-inline-files', 'Alias for --browser-attachments never (force pasting file contents inline).').default(false),
   )
   .addOption(new Option('--browser-bundle-files', 'Bundle all attachments into a single archive before uploading.').default(false))
-  .addOption(new Option('--youtube <url>', 'YouTube video URL to analyze (Gemini browser mode only).'))
-  .addOption(new Option('--generate-image <file>', 'Generate image and save to file (Gemini browser mode only).'))
-  .addOption(new Option('--edit-image <file>', 'Edit existing image (use with --output, Gemini browser mode only).'))
-  .addOption(new Option('--output <file>', 'Output file path for image operations (Gemini browser mode only).'))
-  .addOption(new Option('--aspect <ratio>', 'Aspect ratio for image generation: 16:9, 1:1, 4:3, 3:4 (Gemini browser mode only).'))
-  .addOption(new Option('--gemini-show-thoughts', 'Display Gemini thinking process (Gemini browser mode only).').default(false))
+  .addOption(
+    new Option(
+      '--youtube <url>',
+      'YouTube video URL to analyze (Gemini web/cookie mode only; uses your signed-in Chrome cookies for gemini.google.com).',
+    ),
+  )
+  .addOption(
+    new Option(
+      '--generate-image <file>',
+      'Generate image and save to file (Gemini web/cookie mode only; requires gemini.google.com Chrome cookies).',
+    ),
+  )
+  .addOption(new Option('--edit-image <file>', 'Edit existing image (use with --output, Gemini web/cookie mode only).'))
+  .addOption(new Option('--output <file>', 'Output file path for image operations (Gemini web/cookie mode only).'))
+  .addOption(
+    new Option(
+      '--aspect <ratio>',
+      'Aspect ratio for image generation: 16:9, 1:1, 4:3, 3:4 (Gemini web/cookie mode only).',
+    ),
+  )
+  .addOption(new Option('--gemini-show-thoughts', 'Display Gemini thinking process (Gemini web/cookie mode only).').default(false))
   .option(
     '--retain-hours <hours>',
     'Prune stored sessions older than this many hours before running (set 0 to disable).',
