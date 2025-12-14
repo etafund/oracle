@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.0 — Unreleased
+## 0.7.0 — 2025-12-14
 
 ### Added
 - Browser: Gemini browser mode via direct Gemini web client (uses Chrome cookies; no API key required; runs fully in Node/TypeScript — no Python/venv). Includes `--youtube`, `--generate-image`, `--edit-image`, `--output`, `--aspect`, and `--gemini-show-thoughts`. Original PR #39 by Nico Bailon (@nicobailon) — thank you!
