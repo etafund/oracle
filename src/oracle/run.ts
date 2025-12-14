@@ -246,7 +246,6 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
     (options.model.startsWith('gemini')
       ? resolveGeminiModelId(options.model)
       : (modelConfig.apiModel ?? modelConfig.model));
-  const headerModelLabel = richTty ? chalk.cyan(modelConfig.model) : modelConfig.model;
   const requestBody = buildRequestBody({
     modelConfig,
     systemPrompt,
@@ -263,7 +262,14 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
   );
   const fileLabel = richTty ? chalk.magenta(fileCount.toString()) : fileCount.toString();
   const filesPhrase = fileCount === 0 ? 'no files' : `${fileLabel} files`;
-  const headerLine = `Calling ${headerModelLabel} — ${tokenLabel} tokens, ${filesPhrase}.`;
+  const headerModelLabelBase = richTty ? chalk.cyan(modelConfig.model) : modelConfig.model;
+  const headerModelSuffix =
+    effectiveModelId !== modelConfig.model
+      ? richTty
+        ? chalk.gray(` (API: ${effectiveModelId})`)
+        : ` (API: ${effectiveModelId})`
+      : '';
+  const headerLine = `Calling ${headerModelLabelBase}${headerModelSuffix} — ${tokenLabel} tokens, ${filesPhrase}.`;
   const shouldReportFiles =
     (options.filesReport || fileTokenInfo.totalTokens > inputTokenBudget) && fileTokenInfo.stats.length > 0;
   if (!isPreview) {
@@ -273,8 +279,15 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
     const maskedKey = maskApiKey(apiKey);
     if (maskedKey && options.verbose) {
       const resolvedSuffix =
-        effectiveModelId !== modelConfig.model ? ` (resolved: ${effectiveModelId})` : '';
+        effectiveModelId !== modelConfig.model ? ` (API: ${effectiveModelId})` : '';
       log(dim(`Using ${envVar}=${maskedKey} for model ${modelConfig.model}${resolvedSuffix}`));
+    }
+    if (
+      !options.suppressHeader &&
+      modelConfig.model === 'gpt-5.1-pro' &&
+      effectiveModelId === 'gpt-5.2-pro'
+    ) {
+      log(dim('Note: `gpt-5.1-pro` is a stable CLI alias; OpenAI API uses `gpt-5.2-pro`.'));
     }
     if (baseUrl) {
       log(dim(`Base URL: ${formatBaseUrlForLog(baseUrl)}`));
