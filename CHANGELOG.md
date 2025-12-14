@@ -3,22 +3,14 @@
 ## 0.7.0 — Unreleased
 
 ### Added
-- Browser: Gemini browser mode via direct Gemini web client (uses Chrome cookies; no API key required). Includes `--youtube`, `--generate-image`, `--edit-image`, `--output`, `--aspect`, and `--gemini-show-thoughts`.
+- Browser: Gemini browser mode via direct Gemini web client (uses Chrome cookies; no API key required; runs fully in Node/TypeScript — no Python/venv). Includes `--youtube`, `--generate-image`, `--edit-image`, `--output`, `--aspect`, and `--gemini-show-thoughts`. Original PR #39 by Nico Bailon (@nicobailon) — thank you!
 - Browser: media files passed via `--file` (images/video/audio/PDF) are treated as upload attachments instead of being inlined into the prompt (enables Gemini file analysis).
+- Browser: Gemini image ops follow `gg-dl` redirects while preserving cookies, so `--generate-image`/`--edit-image` actually create output files.
+- Browser: Gemini web runs support “Pro” auto-fallback when unavailable and include compatibility init for Gemini web token changes.
 - Live tests: add opt-in Gemini web smoke coverage for image generation/editing (cookie-based browser mode).
-
-- Thanks: Nico Bailon (@nicobailon) for the Gemini browser mode work (PR #39).
 
 ### Changed
 - Browser guard now allows Gemini models (browser engine supports GPT + Gemini; other models require `--engine api`).
-- Browser: Gemini mode no longer requires a Python venv (runs fully in Node/TypeScript).
-
-### Fixed
-- Gemini browser mode: avoid macOS Keychain hangs by preferring Node-based Chrome cookie extraction.
-- Gemini browser mode: accept multiple `--file` inputs; CLI resolves image-operation paths relative to `cwd`.
-- Gemini browser mode: compatibility init for Gemini web token changes (keeps text runs working even when Gemini rotates the token key).
-- Gemini browser mode: auto-fallback when “Pro” models aren’t available on the logged-in Gemini account, plus clearer errors for failed file/image feature requests.
-- Gemini browser mode: image ops now follow `gg-dl` redirects while preserving cookies, so `--generate-image`/`--edit-image` actually create output files again.
 
 ## 0.6.1 — 2025-12-13
 
