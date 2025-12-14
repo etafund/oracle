@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { mkdtemp } from 'node:fs/promises';
 
-const runGeminiWebWithFallback = vi.fn(async () => ({
+const runGeminiWebWithFallback = vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => ({
   rawResponseText: '',
   text: 'ok',
   thoughts: 'thinking',
@@ -12,7 +12,10 @@ const runGeminiWebWithFallback = vi.fn(async () => ({
   effectiveModel: 'gemini-3-pro',
 }));
 
-const saveFirstGeminiImageFromOutput = vi.fn(async () => ({ saved: true, imageCount: 1 }));
+const saveFirstGeminiImageFromOutput = vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => ({
+  saved: true,
+  imageCount: 1,
+}));
 
 vi.mock('../../src/gemini-web/client.js', () => ({
   runGeminiWebWithFallback,

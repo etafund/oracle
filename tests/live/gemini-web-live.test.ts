@@ -35,6 +35,58 @@ function looksLikeJpeg(bytes: Uint8Array): boolean {
 }
 
 (live ? describe : describe.skip)('Gemini web (cookie) live smoke', () => {
+  it('returns a short text answer (no image ops)', async () => {
+    await assertHasGeminiChromeCookies();
+
+    const exec = createGeminiWebExecutor({});
+    const result = await exec({
+      prompt: 'Say OK.',
+      config: { chromeProfile: 'Default', desiredModel: 'Gemini 3 Pro' },
+      log: () => {},
+    });
+
+    expect(result.answerText.toLowerCase()).toContain('ok');
+    expect(result.answerChars).toBeGreaterThan(1);
+  }, 120_000);
+
+  it('accepts an attachment upload (image) without failing', async () => {
+    await assertHasGeminiChromeCookies();
+
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'oracle-gemini-web-live-'));
+    const attachmentPath = path.join(tempDir, 'input.png');
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/Pm2zXwAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    await writeFile(attachmentPath, png);
+
+    const exec = createGeminiWebExecutor({});
+    const result = await exec({
+      prompt: 'Describe the attached image in one short sentence.',
+      attachments: [{ path: attachmentPath, displayPath: 'input.png' }],
+      config: { chromeProfile: 'Default', desiredModel: 'Gemini 3 Pro' },
+      log: () => {},
+    });
+
+    expect(result.answerChars).toBeGreaterThan(10);
+  }, 180_000);
+
+  it('youtube mode returns a short answer', async () => {
+    await assertHasGeminiChromeCookies();
+
+    const exec = createGeminiWebExecutor({
+      youtube: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+    });
+
+    const result = await exec({
+      prompt: 'Give one short sentence about the video.',
+      config: { chromeProfile: 'Default', desiredModel: 'Gemini 3 Pro' },
+      log: () => {},
+    });
+
+    expect(result.answerChars).toBeGreaterThan(20);
+  }, 240_000);
+
   it('generate-image writes an output file', async () => {
     await assertHasGeminiChromeCookies();
 
