@@ -321,7 +321,14 @@ async function verifyPromptCommitted(
   const script = `(() => {
     const editor = document.querySelector(${primarySelectorLiteral});
     const fallback = document.querySelector(${fallbackSelectorLiteral});
-    const normalize = (value) => value?.toLowerCase?.().replace(/\\s+/g, ' ').trim() ?? '';
+    const normalize = (value) => {
+      let text = value?.toLowerCase?.() ?? '';
+      // Strip markdown code fences and inline code (ChatGPT renders these differently)
+      text = text.replace(/\`\`\`[\\s\\S]*?\`\`\`/g, ' ');
+      text = text.replace(/\`[^\`]*\`/g, ' ');
+      // Collapse whitespace
+      return text.replace(/\\s+/g, ' ').trim();
+    };
     const normalizedPrompt = normalize(${encodedPrompt});
     const normalizedPromptPrefix = normalizedPrompt.slice(0, 120);
     const CONVERSATION_SELECTOR = ${JSON.stringify(CONVERSATION_TURN_SELECTOR)};
