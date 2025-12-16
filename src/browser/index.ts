@@ -354,7 +354,10 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           logger(`Uploading attachment: ${attachment.displayPath}`);
           await uploadAttachmentFile({ runtime: Runtime, dom: DOM }, attachment, logger);
         }
-        const waitBudget = Math.max(config.inputTimeoutMs ?? 30_000, 30_000);
+        // Scale timeout based on number of files: base 30s + 15s per additional file
+        const baseTimeout = config.inputTimeoutMs ?? 30_000;
+        const perFileTimeout = 15_000;
+        const waitBudget = Math.max(baseTimeout, 30_000) + (submissionAttachments.length - 1) * perFileTimeout;
         await waitForAttachmentCompletion(Runtime, waitBudget, attachmentNames, logger);
         logger('All attachments uploaded');
       }
@@ -794,7 +797,10 @@ async function runRemoteBrowserMode(
           logger(`Uploading attachment: ${attachment.displayPath}`);
           await uploadAttachmentViaDataTransfer({ runtime: Runtime, dom: DOM }, attachment, logger);
         }
-        const waitBudget = Math.max(config.inputTimeoutMs ?? 30_000, 30_000);
+        // Scale timeout based on number of files: base 30s + 15s per additional file
+        const baseTimeout = config.inputTimeoutMs ?? 30_000;
+        const perFileTimeout = 15_000;
+        const waitBudget = Math.max(baseTimeout, 30_000) + (submissionAttachments.length - 1) * perFileTimeout;
         await waitForAttachmentCompletion(Runtime, waitBudget, attachmentNames, logger);
         logger('All attachments uploaded');
       }

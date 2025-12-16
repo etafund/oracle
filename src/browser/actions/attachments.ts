@@ -256,14 +256,23 @@ export async function waitForAttachmentCompletion(
       attachedNames?: string[];
     } | undefined;
     if (value && !value.uploading) {
-      const attached = new Set((value.attachedNames ?? []).map((name) => name.toLowerCase()));
-      const missing = expectedNormalized.filter((name) => !attached.has(name));
+      const attachedNames = (value.attachedNames ?? []).map((name) => name.toLowerCase());
+      // Use fuzzy matching: check if any attached name CONTAINS the expected basename
+      const missing = expectedNormalized.filter((expected) => {
+        const baseName = expected.split('/').pop()?.split('\\').pop() ?? expected;
+        return !attachedNames.some((attached) => attached.includes(baseName) || baseName.includes(attached));
+      });
       if (missing.length === 0) {
         if (value.state === 'ready') {
           return;
         }
         if (value.state === 'missing' && value.filesAttached) {
           return;
+        }
+        // If files are attached but button isn't ready yet, give it more time but don't fail immediately
+        if (value.filesAttached) {
+          await delay(500);
+          continue;
         }
       }
     }
