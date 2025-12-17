@@ -6,6 +6,7 @@
 - API: default model is now `gpt-5.2-pro` (and “Pro” label inference prefers GPT‑5.2 Pro).
 - Tests: updated fixtures/defaults to use `gpt-5.2-pro` instead of `gpt-5.1-pro`.
 - API: clarify `gpt-5.1-pro` as a stable alias that targets `gpt-5.2-pro`.
+- Dependencies: refresh (notably `zod` 4.2.1 and `devtools-protocol` 0.0.1559729).
 
 ## 0.7.0 — 2025-12-14
 
