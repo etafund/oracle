@@ -526,10 +526,11 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
     if (response.id && response.status === 'in_progress') {
       const polishingStart = now();
       const pollIntervalMs = 2_000;
-      const maxWaitMs = 60_000;
+      const maxWaitMs = 180_000;
       log(chalk.dim('Response still in_progress; polling until completion...'));
       // Short polling loop — we don't want to hang forever, just catch late finalization.
       while (now() - polishingStart < maxWaitMs) {
+        throwIfTimedOut();
         await wait(pollIntervalMs);
         const refreshed = await clientInstance.responses.retrieve(response.id);
         if (refreshed.status === 'completed') {
