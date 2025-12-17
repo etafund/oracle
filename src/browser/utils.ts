@@ -120,3 +120,13 @@ export function normalizeChatgptUrl(raw: string | null | undefined, fallback: st
   // Preserve user-provided path/query; URL#toString will normalize trailing slashes appropriately.
   return parsed.toString();
 }
+
+export function isTemporaryChatUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const value = (parsed.searchParams.get('temporary-chat') ?? '').trim().toLowerCase();
+    return value === 'true' || value === '1' || value === 'yes';
+  } catch {
+    return false;
+  }
+}

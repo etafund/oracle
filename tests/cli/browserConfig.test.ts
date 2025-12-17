@@ -110,6 +110,24 @@ describe('buildBrowserConfig', () => {
     ).rejects.toThrow(/http/i);
   });
 
+  test('rejects temporary chat URLs when targeting Pro', async () => {
+    await expect(
+      buildBrowserConfig({
+        model: 'gpt-5.2-pro',
+        chatgptUrl: 'https://chatgpt.com/?temporary-chat=true',
+      }),
+    ).rejects.toThrow(/Temporary Chat/i);
+  });
+
+  test('allows temporary chat URLs when not targeting Pro', async () => {
+    const config = await buildBrowserConfig({
+      model: 'gpt-5.2',
+      chatgptUrl: 'https://chatgpt.com/?temporary-chat=true',
+    });
+    expect(config.url).toBe('https://chatgpt.com/?temporary-chat=true');
+    expect(config.desiredModel).toBe('GPT-5.2');
+  });
+
   test('accepts IPv6 remoteChrome targets wrapped in brackets', async () => {
     const config = await buildBrowserConfig({
       model: 'gpt-5.2-pro',

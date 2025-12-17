@@ -22,7 +22,7 @@ export async function ensureModelSelection(
     | { status: 'already-selected'; label?: string | null }
     | { status: 'switched'; label?: string | null }
     | { status: 'switched-best-effort'; label?: string | null }
-    | { status: 'option-not-found' }
+    | { status: 'option-not-found'; hint?: { temporaryChat?: boolean; availableOptions?: string[] } }
     | { status: 'button-missing' }
     | undefined;
 
@@ -36,7 +36,14 @@ export async function ensureModelSelection(
     }
     case 'option-not-found': {
       await logDomFailure(Runtime, logger, 'model-switcher-option');
-      throw new Error(`Unable to find model option matching "${desiredModel}" in the model switcher.`);
+      const isTemporary = result.hint?.temporaryChat ?? false;
+      const available = (result.hint?.availableOptions ?? []).filter(Boolean);
+      const availableHint = available.length > 0 ? ` Available: ${available.join(', ')}.` : '';
+      const tempHint =
+        isTemporary && /\bpro\b/i.test(desiredModel)
+          ? ' You are in Temporary Chat mode; Pro models are not available there. Remove "temporary-chat=true" from --chatgpt-url or use a non-Pro model (e.g. gpt-5.2).'
+          : '';
+      throw new Error(`Unable to find model option matching "${desiredModel}" in the model switcher.${availableHint}${tempHint}`);
     }
     default: {
       await logDomFailure(Runtime, logger, 'model-switcher-button');
@@ -256,6 +263,28 @@ function buildModelSelectionExpression(targetModel: string): string {
 
     return new Promise((resolve) => {
       const start = performance.now();
+      const detectTemporaryChat = () => {
+        try {
+          const url = new URL(window.location.href);
+          const flag = (url.searchParams.get('temporary-chat') ?? '').toLowerCase();
+          if (flag === 'true' || flag === '1' || flag === 'yes') return true;
+        } catch {}
+        const title = (document.title || '').toLowerCase();
+        if (title.includes('temporary chat')) return true;
+        const body = (document.body?.innerText || '').toLowerCase();
+        return body.includes('temporary chat');
+      };
+      const collectAvailableOptions = () => {
+        const menuRoots = Array.from(document.querySelectorAll(${menuContainerLiteral}));
+        const nodes = menuRoots.length > 0
+          ? menuRoots.flatMap((root) => Array.from(root.querySelectorAll(${menuItemLiteral})))
+          : Array.from(document.querySelectorAll(${menuItemLiteral}));
+        const labels = nodes
+          .map((node) => (node?.textContent ?? '').trim())
+          .filter(Boolean)
+          .filter((label, index, arr) => arr.indexOf(label) === index);
+        return labels.slice(0, 12);
+      };
       const ensureMenuOpen = () => {
         const menuOpen = document.querySelector('[role="menu"], [data-radix-collection-root]');
         if (!menuOpen && performance.now() - lastPointerClick > REOPEN_INTERVAL_MS) {
@@ -298,7 +327,10 @@ function buildModelSelectionExpression(targetModel: string): string {
           return;
         }
         if (performance.now() - start > MAX_WAIT_MS) {
-          resolve({ status: 'option-not-found' });
+          resolve({
+            status: 'option-not-found',
+            hint: { temporaryChat: detectTemporaryChat(), availableOptions: collectAvailableOptions() },
+          });
           return;
         }
         setTimeout(attempt, REOPEN_INTERVAL_MS / 2);

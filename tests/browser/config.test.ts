@@ -34,4 +34,13 @@ describe('resolveBrowserConfig', () => {
     expect(resolved.chromePath).toBe('/Applications/Chrome');
     expect(resolved.debug).toBe(true);
   });
+
+  test('rejects temporary chat URLs when desiredModel is Pro', () => {
+    expect(() =>
+      resolveBrowserConfig({
+        url: 'https://chatgpt.com/?temporary-chat=true',
+        desiredModel: 'GPT-5.2 Pro',
+      }),
+    ).toThrow(/Temporary Chat/i);
+  });
 });

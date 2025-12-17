@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { BrowserSessionConfig } from '../sessionStore.js';
 import type { ModelName } from '../oracle.js';
-import { CHATGPT_URL, DEFAULT_MODEL_TARGET, normalizeChatgptUrl, parseDuration } from '../browserMode.js';
+import { CHATGPT_URL, DEFAULT_MODEL_TARGET, isTemporaryChatUrl, normalizeChatgptUrl, parseDuration } from '../browserMode.js';
 import type { CookieParam } from '../browser/types.js';
 import { getOracleHomeDir } from '../oracleHome.js';
 
@@ -92,6 +92,19 @@ export async function buildBrowserConfig(options: BrowserFlagOptions): Promise<B
   const rawUrl = options.chatgptUrl ?? options.browserUrl;
   const url = rawUrl ? normalizeChatgptUrl(rawUrl, CHATGPT_URL) : undefined;
 
+  const desiredModel = isChatGptModel
+    ? mapModelToBrowserLabel(options.model)
+    : shouldUseOverride
+      ? desiredModelOverride
+      : mapModelToBrowserLabel(options.model);
+
+  if (url && isTemporaryChatUrl(url) && /\bpro\b/i.test(desiredModel ?? '')) {
+    throw new Error(
+      'Temporary Chat mode does not expose Pro models in the ChatGPT model picker. ' +
+        'Remove "temporary-chat=true" from --chatgpt-url (or omit --chatgpt-url), or use a non-Pro model (e.g. --model gpt-5.2).',
+    );
+  }
+
   return {
     chromeProfile: options.browserChromeProfile ?? DEFAULT_CHROME_PROFILE,
     chromePath: options.browserChromePath ?? null,
@@ -110,11 +123,7 @@ export async function buildBrowserConfig(options: BrowserFlagOptions): Promise<B
     keepBrowser: options.browserKeepBrowser ? true : undefined,
     manualLogin: options.browserManualLogin ? true : undefined,
     hideWindow: options.browserHideWindow ? true : undefined,
-    desiredModel: isChatGptModel
-      ? mapModelToBrowserLabel(options.model)
-      : shouldUseOverride
-        ? desiredModelOverride
-        : mapModelToBrowserLabel(options.model),
+    desiredModel,
     debug: options.verbose ? true : undefined,
     // Allow cookie failures by default so runs can continue without Chrome/Keychain secrets.
     allowCookieErrors: options.browserAllowCookieErrors ?? true,

@@ -1,6 +1,6 @@
 import { CHATGPT_URL, DEFAULT_MODEL_TARGET } from './constants.js';
 import type { BrowserAutomationConfig, ResolvedBrowserConfig } from './types.js';
-import { normalizeChatgptUrl } from './utils.js';
+import { isTemporaryChatUrl, normalizeChatgptUrl } from './utils.js';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -38,6 +38,13 @@ export function resolveBrowserConfig(config: BrowserAutomationConfig | undefined
     (process.env.ORACLE_BROWSER_ALLOW_COOKIE_ERRORS ?? '').trim() === '1';
   const rawUrl = config?.chatgptUrl ?? config?.url ?? DEFAULT_BROWSER_CONFIG.url;
   const normalizedUrl = normalizeChatgptUrl(rawUrl ?? DEFAULT_BROWSER_CONFIG.url, DEFAULT_BROWSER_CONFIG.url);
+  const desiredModel = config?.desiredModel ?? DEFAULT_BROWSER_CONFIG.desiredModel ?? DEFAULT_MODEL_TARGET;
+  if (isTemporaryChatUrl(normalizedUrl) && /\bpro\b/i.test(desiredModel)) {
+    throw new Error(
+      'Temporary Chat mode does not expose Pro models in the ChatGPT model picker. ' +
+        'Remove "temporary-chat=true" from your browser URL, or use a non-Pro model label (e.g. "GPT-5.2").',
+    );
+  }
   const isWindows = process.platform === 'win32';
   const manualLogin = config?.manualLogin ?? (isWindows ? true : DEFAULT_BROWSER_CONFIG.manualLogin);
   const cookieSyncDefault = isWindows ? false : DEFAULT_BROWSER_CONFIG.cookieSync;
@@ -60,7 +67,7 @@ export function resolveBrowserConfig(config: BrowserAutomationConfig | undefined
     headless: config?.headless ?? DEFAULT_BROWSER_CONFIG.headless,
     keepBrowser: config?.keepBrowser ?? DEFAULT_BROWSER_CONFIG.keepBrowser,
     hideWindow: config?.hideWindow ?? DEFAULT_BROWSER_CONFIG.hideWindow,
-    desiredModel: config?.desiredModel ?? DEFAULT_BROWSER_CONFIG.desiredModel,
+    desiredModel,
     chromeProfile: config?.chromeProfile ?? DEFAULT_BROWSER_CONFIG.chromeProfile,
     chromePath: config?.chromePath ?? DEFAULT_BROWSER_CONFIG.chromePath,
     chromeCookiePath: config?.chromeCookiePath ?? DEFAULT_BROWSER_CONFIG.chromeCookiePath,
