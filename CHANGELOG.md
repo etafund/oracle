@@ -7,7 +7,7 @@
 - Tests: updated fixtures/defaults to use `gpt-5.2-pro` instead of `gpt-5.1-pro`.
 - API: clarify `gpt-5.1-pro` as a stable alias that targets `gpt-5.2-pro`.
 - Dependencies: refresh (notably `zod` 4.2.1 and `devtools-protocol` 0.0.1559729).
-- Browser: browser engine “Pro” selection now always resolves to ChatGPT 5.2 Pro (ignores Legacy GPT‑5.1 Pro submenu) and waits for the top bar label to confirm the switch.
+- Browser: browser engine GPT selection now supports ChatGPT 5.2 (`gpt-5.2`) and ChatGPT 5.2 Pro (`gpt-5.2-pro`); legacy labels like `gpt-5.1` normalize to 5.2, and “Pro” always resolves to 5.2 Pro (ignores Legacy GPT‑5.1 Pro submenu) with a top-bar label confirmation.
 
 ### Fixed
 - Browser: prompt commit verification handles markdown code fences better; prompt-echo recovery is more robust (including remote browser mode); multi-file uploads are less flaky (dynamic timeouts + better filename matching). Original PR #41 by Muly Oved (@mulyoved) — thank you!
