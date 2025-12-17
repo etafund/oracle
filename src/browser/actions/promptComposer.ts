@@ -208,6 +208,45 @@ async function waitForDomReady(Runtime: ChromeClient['Runtime'], logger?: Browse
   logger?.('Page did not reach ready/composer state within 10s; continuing cautiously.');
 }
 
+function buildAttachmentReadyExpression(attachmentNames: string[]): string {
+  const namesLiteral = JSON.stringify(attachmentNames.map((name) => name.toLowerCase()));
+  return `(() => {
+    const names = ${namesLiteral};
+    const composer =
+      document.querySelector('[data-testid*="composer"]') ||
+      document.querySelector('form') ||
+      document.body ||
+      document;
+    const match = (node, name) => (node?.textContent || '').toLowerCase().includes(name);
+
+    // Restrict to attachment affordances; never scan generic div/span nodes (prompt text can contain the file name).
+    const attachmentSelectors = [
+      '[data-testid*="chip"]',
+      '[data-testid*="attachment"]',
+      '[data-testid*="upload"]',
+      '[aria-label="Remove file"]',
+      'button[aria-label="Remove file"]',
+    ];
+
+    const chipsReady = names.every((name) =>
+      Array.from(composer.querySelectorAll(attachmentSelectors.join(','))).some((node) => match(node, name)),
+    );
+    const inputsReady = names.every((name) =>
+      Array.from(composer.querySelectorAll('input[type="file"]')).some((el) =>
+        Array.from((el instanceof HTMLInputElement ? el.files : []) || []).some((file) =>
+          file?.name?.toLowerCase?.().includes(name),
+        ),
+      ),
+    );
+
+    return chipsReady || inputsReady;
+  })()`;
+}
+
+export function buildAttachmentReadyExpressionForTest(attachmentNames: string[]) {
+  return buildAttachmentReadyExpression(attachmentNames);
+}
+
 async function attemptSendButton(
   Runtime: ChromeClient['Runtime'],
   _logger?: BrowserLogger,
@@ -242,19 +281,7 @@ async function attemptSendButton(
     const needAttachment = Array.isArray(attachmentNames) && attachmentNames.length > 0;
     if (needAttachment) {
       const ready = await Runtime.evaluate({
-        expression: `(() => {
-          const names = ${JSON.stringify(attachmentNames.map((n) => n.toLowerCase()))};
-          const match = (n, name) => (n?.textContent || '').toLowerCase().includes(name);
-          const chipsReady = names.every((name) =>
-            Array.from(document.querySelectorAll('[data-testid*="chip"],[data-testid*="attachment"],a,div,span')).some((node) => match(node, name)),
-          );
-          const inputsReady = names.every((name) =>
-            Array.from(document.querySelectorAll('input[type="file"]')).some((el) =>
-              Array.from(el.files || []).some((f) => f?.name?.toLowerCase?.().includes(name)),
-            ),
-          );
-          return chipsReady || inputsReady;
-        })()`,
+        expression: buildAttachmentReadyExpression(attachmentNames),
         returnByValue: true,
       });
       if (!ready?.result?.value) {

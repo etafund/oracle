@@ -25,6 +25,7 @@ import {
   captureAssistantMarkdown,
   uploadAttachmentFile,
   waitForAttachmentCompletion,
+  waitForUserTurnAttachments,
   readAssistantSnapshot,
 } from './pageActions.js';
 import { uploadAttachmentViaDataTransfer } from './actions/remoteFileTransfer.js';
@@ -45,7 +46,7 @@ import {
 
 export type { BrowserAutomationConfig, BrowserRunOptions, BrowserRunResult } from './types.js';
 export { CHATGPT_URL, DEFAULT_MODEL_TARGET } from './constants.js';
-export { parseDuration, delay, normalizeChatgptUrl } from './utils.js';
+export { parseDuration, delay, normalizeChatgptUrl, isTemporaryChatUrl } from './utils.js';
 
 export async function runBrowserMode(options: BrowserRunOptions): Promise<BrowserRunResult> {
   const promptText = options.prompt?.trim();
@@ -362,6 +363,10 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         logger('All attachments uploaded');
       }
       await submitPrompt({ runtime: Runtime, input: Input, attachmentNames }, prompt, logger);
+      if (attachmentNames.length > 0) {
+        await waitForUserTurnAttachments(Runtime, attachmentNames, 20_000, logger);
+        logger('Verified attachments present on sent user message');
+      }
     };
 
     try {
