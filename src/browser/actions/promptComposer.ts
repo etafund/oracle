@@ -155,8 +155,6 @@ export async function submitPrompt(
   }
 
   await verifyPromptCommitted(runtime, prompt, 30_000, logger);
-
-  await clickAnswerNowIfPresent(runtime, logger);
 }
 
 export async function clearPromptComposer(Runtime: ChromeClient['Runtime'], logger: BrowserLogger) {
@@ -274,38 +272,6 @@ async function attemptSendButton(
     await delay(100);
   }
   return false;
-}
-
-async function clickAnswerNowIfPresent(Runtime: ChromeClient['Runtime'], logger?: BrowserLogger) {
-  const script = `(() => {
-    ${buildClickDispatcher()}
-    const matchesText = (el) => (el?.textContent || '').trim().toLowerCase() === 'answer now';
-    const candidate = Array.from(document.querySelectorAll('button,span')).find(matchesText);
-    if (!candidate) return 'missing';
-    const button = candidate.closest('button') ?? candidate;
-    const style = window.getComputedStyle(button);
-    const disabled =
-      button.hasAttribute('disabled') ||
-      button.getAttribute('aria-disabled') === 'true' ||
-      style.pointerEvents === 'none' ||
-      style.display === 'none';
-    if (disabled) return 'disabled';
-    dispatchClickSequence(button);
-    return 'clicked';
-  })()`;
-
-  const deadline = Date.now() + 3_000;
-  while (Date.now() < deadline) {
-    const { result } = await Runtime.evaluate({ expression: script, returnByValue: true });
-    const status = result.value as string;
-    if (status === 'clicked') {
-      logger?.('Clicked "Answer now" gate');
-      await delay(500);
-      return;
-    }
-    if (status === 'missing') return;
-    await delay(100);
-  }
 }
 
 async function verifyPromptCommitted(

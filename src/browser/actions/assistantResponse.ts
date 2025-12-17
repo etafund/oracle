@@ -18,6 +18,7 @@ export async function waitForAssistantResponse(
   timeoutMs: number,
   logger: BrowserLogger,
 ): Promise<{ text: string; html?: string; meta: { turnId?: string | null; messageId?: string | null } }> {
+  const start = Date.now();
   logger('Waiting for ChatGPT response');
   const expression = buildResponseObserverExpression(timeoutMs);
   const evaluationPromise = Runtime.evaluate({ expression, awaitPromise: true, returnByValue: true });
@@ -81,7 +82,25 @@ export async function waitForAssistantResponse(
   }
 
   const refreshed = await refreshAssistantSnapshot(Runtime, parsed, logger);
-  return refreshed ?? parsed;
+  const candidate = refreshed ?? parsed;
+  // The evaluation path can race ahead of completion. If ChatGPT is still streaming, wait for the watchdog poller.
+  const elapsedMs = Date.now() - start;
+  const remainingMs = Math.max(0, timeoutMs - elapsedMs);
+  if (remainingMs > 0) {
+    const [stopVisible, completionVisible] = await Promise.all([
+      isStopButtonVisible(Runtime),
+      isCompletionVisible(Runtime),
+    ]);
+    if (stopVisible && !completionVisible) {
+      logger('Assistant still generating; waiting for completion');
+      const completed = await pollAssistantCompletion(Runtime, remainingMs);
+      if (completed) {
+        return completed;
+      }
+    }
+  }
+
+  return candidate;
 }
 
 export async function readAssistantSnapshot(Runtime: ChromeClient['Runtime']): Promise<AssistantSnapshot | null> {
@@ -160,11 +179,16 @@ async function parseAssistantEvaluationResult(
       typeof (result.value as { messageId?: unknown }).messageId === 'string'
         ? ((result.value as { messageId?: string }).messageId ?? undefined)
         : undefined;
-    return {
-      text: cleanAssistantText(String((result.value as { text: unknown }).text ?? '')),
-      html,
-      meta: { turnId, messageId },
-    };
+    const text = cleanAssistantText(String((result.value as { text: unknown }).text ?? ''));
+    const normalized = text.toLowerCase();
+    if (
+      normalized.includes('answer now') &&
+      (normalized.includes('pro thinking') || normalized.includes('chatgpt said'))
+    ) {
+      const recovered = await recoverAssistantResponse(Runtime, Math.min(timeoutMs, 10_000), logger);
+      return recovered ?? null;
+    }
+    return { text, html, meta: { turnId, messageId } };
   }
   const fallbackText = typeof result.value === 'string' ? cleanAssistantText(result.value as string) : '';
   if (!fallbackText) {
@@ -313,7 +337,7 @@ function normalizeAssistantSnapshot(
   }
   const normalized = text.toLowerCase();
   // "Pro thinking" often renders a placeholder turn containing an "Answer now" gate.
-  // Treat it as incomplete so browser mode keeps waiting (and can click the gate).
+  // Treat it as incomplete so browser mode keeps waiting for the real assistant text.
   if (normalized.includes('answer now') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'))) {
     return null;
   }
@@ -359,7 +383,10 @@ function buildResponseObserverExpression(timeoutMs: number): string {
     const CONVERSATION_SELECTOR = ${conversationLiteral};
     const ASSISTANT_SELECTOR = ${assistantLiteral};
     const settleDelayMs = 800;
-    const ANSWER_NOW_LABEL = 'answer now';
+    const isAnswerNowPlaceholder = (snapshot) => {
+      const normalized = String(snapshot?.text ?? '').toLowerCase();
+      return normalized.includes('answer now') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'));
+    };
 
     // Helper to detect assistant turns - matches buildAssistantExtractor logic
     const isAssistantTurn = (node) => {
@@ -380,7 +407,8 @@ function buildResponseObserverExpression(timeoutMs: number): string {
         const deadline = Date.now() + ${timeoutMs};
         let stopInterval = null;
         const observer = new MutationObserver(() => {
-          const extracted = extractFromTurns();
+          const extractedRaw = extractFromTurns();
+          const extracted = extractedRaw && !isAnswerNowPlaceholder(extractedRaw) ? extractedRaw : null;
           if (extracted) {
             observer.disconnect();
             if (stopInterval) {
@@ -397,11 +425,6 @@ function buildResponseObserverExpression(timeoutMs: number): string {
         });
         observer.observe(document.body, { childList: true, subtree: true, characterData: true });
         stopInterval = setInterval(() => {
-          // Pro thinking can gate the response behind an "Answer now" button. Keep clicking it while present.
-          const answerNow = Array.from(document.querySelectorAll('button,span')).find((el) => (el?.textContent || '').trim().toLowerCase() === ANSWER_NOW_LABEL);
-          if (answerNow) {
-            dispatchClickSequence(answerNow.closest('button') ?? answerNow);
-          }
           const stop = document.querySelector(STOP_SELECTOR);
           if (!stop) {
             return;
@@ -443,28 +466,28 @@ function buildResponseObserverExpression(timeoutMs: number): string {
     const waitForSettle = async (snapshot) => {
       const settleWindowMs = 5000;
       const settleIntervalMs = 400;
-      const deadline = Date.now() + settleWindowMs;
-      let latest = snapshot;
-      let lastLength = snapshot?.text?.length ?? 0;
-      while (Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, settleIntervalMs));
-        const refreshed = extractFromTurns();
-        if (refreshed && (refreshed.text?.length ?? 0) >= lastLength) {
-          latest = refreshed;
-          lastLength = refreshed.text?.length ?? lastLength;
-        }
-        const stopVisible = Boolean(document.querySelector(STOP_SELECTOR));
-        const answerNowVisible = Boolean(Array.from(document.querySelectorAll('button,span')).find((el) => (el?.textContent || '').trim().toLowerCase() === ANSWER_NOW_LABEL));
-        const finishedVisible = isLastAssistantTurnFinished();
+        const deadline = Date.now() + settleWindowMs;
+        let latest = snapshot;
+        let lastLength = snapshot?.text?.length ?? 0;
+        while (Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, settleIntervalMs));
+          const refreshed = extractFromTurns();
+          if (refreshed && !isAnswerNowPlaceholder(refreshed) && (refreshed.text?.length ?? 0) >= lastLength) {
+            latest = refreshed;
+            lastLength = refreshed.text?.length ?? lastLength;
+          }
+          const stopVisible = Boolean(document.querySelector(STOP_SELECTOR));
+          const finishedVisible = isLastAssistantTurnFinished();
 
-        if ((!stopVisible && !answerNowVisible) || finishedVisible) {
-          break;
+          if (!stopVisible || finishedVisible) {
+            break;
+          }
         }
-      }
-      return latest ?? snapshot;
-    };
+        return latest ?? snapshot;
+      };
 
-    const extracted = extractFromTurns();
+    const extractedRaw = extractFromTurns();
+    const extracted = extractedRaw && !isAnswerNowPlaceholder(extractedRaw) ? extractedRaw : null;
     if (extracted) {
       return waitForSettle(extracted);
     }

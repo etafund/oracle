@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.2 — Unreleased
+
+### Fixed
+- Browser: stop auto-clicking the “Answer now” gate; wait for the full Pro-thinking response instead of skipping it.
+- Live tests: make the `gpt-5.2-instant` OpenAI smoke test resilient to transient API stalls/errors.
+
 ## 0.7.1 — 2025-12-17
 
 ### Changed
