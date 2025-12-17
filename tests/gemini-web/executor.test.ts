@@ -61,7 +61,12 @@ describe('gemini-web executor', () => {
         files: ['/tmp/attach.txt'],
       }),
     );
-    expect(saveFirstGeminiImageFromOutput).toHaveBeenCalledWith(expect.anything(), expect.anything(), outPath);
+    expect(saveFirstGeminiImageFromOutput).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      outPath,
+      expect.any(AbortSignal),
+    );
     expect(result.answerMarkdown).toContain('## Thinking');
     expect(result.answerMarkdown).toContain('Generated 1 image(s).');
   });
@@ -106,6 +111,11 @@ describe('gemini-web executor', () => {
       2,
       expect.objectContaining({ chatMetadata: { chat: 'meta' } }),
     );
-    expect(saveFirstGeminiImageFromOutput).toHaveBeenCalledWith(expect.anything(), expect.anything(), outPath);
+    expect(saveFirstGeminiImageFromOutput).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      outPath,
+      expect.any(AbortSignal),
+    );
   });
 });

@@ -9,6 +9,7 @@ export interface GeminiWebRunInput {
   model: GeminiWebModelId;
   cookieMap: Record<string, string>;
   chatMetadata?: unknown;
+  signal?: AbortSignal;
 }
 
 export interface GeminiWebCandidateImage {
@@ -66,10 +67,14 @@ function buildCookieHeader(cookieMap: Record<string, string>): string {
     .join('; ');
 }
 
-export async function fetchGeminiAccessToken(cookieMap: Record<string, string>): Promise<string> {
+export async function fetchGeminiAccessToken(
+  cookieMap: Record<string, string>,
+  signal?: AbortSignal,
+): Promise<string> {
   const cookieHeader = buildCookieHeader(cookieMap);
   const res = await fetch(GEMINI_APP_URL, {
     redirect: 'follow',
+    signal,
     headers: {
       cookie: cookieHeader,
       'user-agent': USER_AGENT,
@@ -122,11 +127,12 @@ function ensureFullSizeImageUrl(url: string): string {
 async function fetchWithCookiePreservingRedirects(
   url: string,
   init: Omit<RequestInit, 'redirect'>,
+  signal?: AbortSignal,
   maxRedirects = 10,
 ): Promise<Response> {
   let current = url;
   for (let i = 0; i <= maxRedirects; i += 1) {
-    const res = await fetch(current, { ...init, redirect: 'manual' });
+    const res = await fetch(current, { ...init, redirect: 'manual', signal });
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get('location');
       if (!location) return res;
@@ -142,6 +148,7 @@ async function downloadGeminiImage(
   url: string,
   cookieMap: Record<string, string>,
   outputPath: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   const cookieHeader = buildCookieHeader(cookieMap);
   const res = await fetchWithCookiePreservingRedirects(ensureFullSizeImageUrl(url), {
@@ -149,7 +156,7 @@ async function downloadGeminiImage(
       cookie: cookieHeader,
       'user-agent': USER_AGENT,
     },
-  });
+  }, signal);
   if (!res.ok) {
     throw new Error(`Failed to download image: ${res.status} ${res.statusText} (${res.url})`);
   }
@@ -159,7 +166,7 @@ async function downloadGeminiImage(
   await writeFile(outputPath, data);
 }
 
-async function uploadGeminiFile(filePath: string): Promise<{ id: string; name: string }> {
+async function uploadGeminiFile(filePath: string, signal?: AbortSignal): Promise<{ id: string; name: string }> {
   const absPath = path.resolve(process.cwd(), filePath);
   const data = await readFile(absPath);
   const fileName = path.basename(absPath);
@@ -169,6 +176,7 @@ async function uploadGeminiFile(filePath: string): Promise<{ id: string; name: s
   const res = await fetch(GEMINI_UPLOAD_URL, {
     method: 'POST',
     redirect: 'follow',
+    signal,
     headers: {
       'push-id': GEMINI_UPLOAD_PUSH_ID,
       'user-agent': USER_AGENT,
@@ -298,11 +306,14 @@ export function isGeminiModelUnavailable(errorCode: number | undefined): boolean
 
 export async function runGeminiWebOnce(input: GeminiWebRunInput): Promise<GeminiWebRunOutput> {
   const cookieHeader = buildCookieHeader(input.cookieMap);
-  const at = await fetchGeminiAccessToken(input.cookieMap);
+  const at = await fetchGeminiAccessToken(input.cookieMap, input.signal);
 
   const uploaded: Array<{ id: string; name: string }> = [];
   for (const file of input.files ?? []) {
-    uploaded.push(await uploadGeminiFile(file));
+    if (input.signal?.aborted) {
+      throw new Error('Gemini web run aborted before upload.');
+    }
+    uploaded.push(await uploadGeminiFile(file, input.signal));
   }
 
   const fReq = buildGeminiFReqPayload(input.prompt, uploaded, input.chatMetadata ?? null);
@@ -313,6 +324,7 @@ export async function runGeminiWebOnce(input: GeminiWebRunInput): Promise<Gemini
   const res = await fetch(GEMINI_STREAM_GENERATE_URL, {
     method: 'POST',
     redirect: 'follow',
+    signal: input.signal,
     headers: {
       'content-type': 'application/x-www-form-urlencoded;charset=utf-8',
       origin: 'https://gemini.google.com',
@@ -383,16 +395,17 @@ export async function saveFirstGeminiImageFromOutput(
   output: GeminiWebRunOutput,
   cookieMap: Record<string, string>,
   outputPath: string,
+  signal?: AbortSignal,
 ): Promise<{ saved: boolean; imageCount: number }> {
   const generatedOrWeb = output.images.find((img) => img.kind === 'generated') ?? output.images[0];
   if (generatedOrWeb?.url) {
-    await downloadGeminiImage(generatedOrWeb.url, cookieMap, outputPath);
+    await downloadGeminiImage(generatedOrWeb.url, cookieMap, outputPath, signal);
     return { saved: true, imageCount: output.images.length };
   }
 
   const ggdl = extractGgdlUrls(output.rawResponseText);
   if (ggdl[0]) {
-    await downloadGeminiImage(ggdl[0], cookieMap, outputPath);
+    await downloadGeminiImage(ggdl[0], cookieMap, outputPath, signal);
     return { saved: true, imageCount: ggdl.length };
   }
 

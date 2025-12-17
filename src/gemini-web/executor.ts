@@ -135,6 +135,21 @@ export function createGeminiWebExecutor(
       );
     }
 
+    const configTimeout =
+      typeof runOptions.config?.timeoutMs === 'number' && Number.isFinite(runOptions.config.timeoutMs)
+        ? Math.max(1_000, runOptions.config.timeoutMs)
+        : null;
+
+    const defaultTimeoutMs = geminiOptions.youtube
+      ? 240_000
+      : geminiOptions.generateImage || geminiOptions.editImage
+        ? 300_000
+        : 120_000;
+
+    const timeoutMs = Math.min(configTimeout ?? defaultTimeoutMs, 600_000);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
     const generateImagePath = resolveInvocationPath(geminiOptions.generateImage);
     const editImagePath = resolveInvocationPath(geminiOptions.editImage);
     const outputPath = resolveInvocationPath(geminiOptions.outputPath);
@@ -154,70 +169,78 @@ export function createGeminiWebExecutor(
     const model: GeminiWebModelId = resolveGeminiWebModel(runOptions.config?.desiredModel, log);
     let response: GeminiWebResponse;
 
-    if (editImagePath) {
-      const intro = await runGeminiWebWithFallback({
-        prompt: 'Here is an image to edit',
-        files: [editImagePath],
-        model,
-        cookieMap,
-        chatMetadata: null,
-      });
-      const editPrompt = `Use image generation tool to ${prompt}`;
-      const out = await runGeminiWebWithFallback({
-        prompt: editPrompt,
-        files: attachmentPaths,
-        model,
-        cookieMap,
-        chatMetadata: intro.metadata,
-      });
-      response = {
-        text: out.text ?? null,
-        thoughts: geminiOptions.showThoughts ? out.thoughts : null,
-        has_images: false,
-        image_count: 0,
-      };
+    try {
+      if (editImagePath) {
+        const intro = await runGeminiWebWithFallback({
+          prompt: 'Here is an image to edit',
+          files: [editImagePath],
+          model,
+          cookieMap,
+          chatMetadata: null,
+          signal: controller.signal,
+        });
+        const editPrompt = `Use image generation tool to ${prompt}`;
+        const out = await runGeminiWebWithFallback({
+          prompt: editPrompt,
+          files: attachmentPaths,
+          model,
+          cookieMap,
+          chatMetadata: intro.metadata,
+          signal: controller.signal,
+        });
+        response = {
+          text: out.text ?? null,
+          thoughts: geminiOptions.showThoughts ? out.thoughts : null,
+          has_images: false,
+          image_count: 0,
+        };
 
-      const resolvedOutputPath = outputPath ?? generateImagePath ?? 'generated.png';
-      const imageSave = await saveFirstGeminiImageFromOutput(out, cookieMap, resolvedOutputPath);
-      response.has_images = imageSave.saved;
-      response.image_count = imageSave.imageCount;
-      if (!imageSave.saved) {
-        throw new Error(`No images generated. Response text:\n${out.text || '(empty response)'}`);
+        const resolvedOutputPath = outputPath ?? generateImagePath ?? 'generated.png';
+        const imageSave = await saveFirstGeminiImageFromOutput(out, cookieMap, resolvedOutputPath, controller.signal);
+        response.has_images = imageSave.saved;
+        response.image_count = imageSave.imageCount;
+        if (!imageSave.saved) {
+          throw new Error(`No images generated. Response text:\n${out.text || '(empty response)'}`);
+        }
+      } else if (generateImagePath) {
+        const out = await runGeminiWebWithFallback({
+          prompt,
+          files: attachmentPaths,
+          model,
+          cookieMap,
+          chatMetadata: null,
+          signal: controller.signal,
+        });
+        response = {
+          text: out.text ?? null,
+          thoughts: geminiOptions.showThoughts ? out.thoughts : null,
+          has_images: false,
+          image_count: 0,
+        };
+        const imageSave = await saveFirstGeminiImageFromOutput(out, cookieMap, generateImagePath, controller.signal);
+        response.has_images = imageSave.saved;
+        response.image_count = imageSave.imageCount;
+        if (!imageSave.saved) {
+          throw new Error(`No images generated. Response text:\n${out.text || '(empty response)'}`);
+        }
+      } else {
+        const out = await runGeminiWebWithFallback({
+          prompt,
+          files: attachmentPaths,
+          model,
+          cookieMap,
+          chatMetadata: null,
+          signal: controller.signal,
+        });
+        response = {
+          text: out.text ?? null,
+          thoughts: geminiOptions.showThoughts ? out.thoughts : null,
+          has_images: out.images.length > 0,
+          image_count: out.images.length,
+        };
       }
-    } else if (generateImagePath) {
-      const out = await runGeminiWebWithFallback({
-        prompt,
-        files: attachmentPaths,
-        model,
-        cookieMap,
-        chatMetadata: null,
-      });
-      response = {
-        text: out.text ?? null,
-        thoughts: geminiOptions.showThoughts ? out.thoughts : null,
-        has_images: false,
-        image_count: 0,
-      };
-      const imageSave = await saveFirstGeminiImageFromOutput(out, cookieMap, generateImagePath);
-      response.has_images = imageSave.saved;
-      response.image_count = imageSave.imageCount;
-      if (!imageSave.saved) {
-        throw new Error(`No images generated. Response text:\n${out.text || '(empty response)'}`);
-      }
-    } else {
-      const out = await runGeminiWebWithFallback({
-        prompt,
-        files: attachmentPaths,
-        model,
-        cookieMap,
-        chatMetadata: null,
-      });
-      response = {
-        text: out.text ?? null,
-        thoughts: geminiOptions.showThoughts ? out.thoughts : null,
-        has_images: out.images.length > 0,
-        image_count: out.images.length,
-      };
+    } finally {
+      clearTimeout(timeout);
     }
 
     const answerText = response.text ?? '';
