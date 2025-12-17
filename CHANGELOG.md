@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.2 — Unreleased
+## 0.7.2 — 2025-12-17
 
 ### Fixed
 - Browser: stop auto-clicking the “Answer now” gate; wait for the full Pro-thinking response instead of skipping it.
