@@ -8,6 +8,6 @@ tmpfile="$(mktemp -t oracle-browser-smoke)"
 echo "smoke-attachment" >"$tmpfile"
 
 echo "[browser-smoke-upload-only] pro upload attachment (non-inline)"
-"${CMD[@]}" --model gpt-5.1-pro --prompt "Read the attached file and return exactly one markdown bullet '- upload: <content>' where <content> is the file text." --file "$tmpfile" --slug browser-smoke-upload --force
+"${CMD[@]}" --model gpt-5.2-pro --prompt "Read the attached file and return exactly one markdown bullet '- upload: <content>' where <content> is the file text." --file "$tmpfile" --slug browser-smoke-upload --force
 
 rm -f "$tmpfile"

@@ -82,10 +82,39 @@ function buildModelSelectionExpression(targetModel: string): string {
       .map((token) => normalizeText(token))
       .filter(Boolean);
     const targetWords = normalizedTarget.split(' ').filter(Boolean);
+    const desiredVersion = normalizedTarget.includes('5 2')
+      ? '5-2'
+      : normalizedTarget.includes('5 1')
+        ? '5-1'
+        : normalizedTarget.includes('5 0')
+          ? '5-0'
+          : null;
+    const wantsPro = normalizedTarget.includes(' pro') || normalizedTarget.endsWith(' pro') || normalizedTokens.includes('pro');
+    const wantsInstant = normalizedTarget.includes('instant');
+    const wantsThinking = normalizedTarget.includes('thinking');
 
     const button = document.querySelector(BUTTON_SELECTOR);
     if (!button) {
       return { status: 'button-missing' };
+    }
+
+    const getButtonLabel = () => (button.textContent ?? '').trim();
+    const buttonMatchesTarget = () => {
+      const normalizedLabel = normalizeText(getButtonLabel());
+      if (!normalizedLabel) return false;
+      if (desiredVersion) {
+        if (desiredVersion === '5-2' && !normalizedLabel.includes('5 2')) return false;
+        if (desiredVersion === '5-1' && !normalizedLabel.includes('5 1')) return false;
+        if (desiredVersion === '5-0' && !normalizedLabel.includes('5 0')) return false;
+      }
+      if (wantsPro && !normalizedLabel.includes(' pro')) return false;
+      if (wantsInstant && !normalizedLabel.includes('instant')) return false;
+      if (wantsThinking && !normalizedLabel.includes('thinking')) return false;
+      return true;
+    };
+
+    if (buttonMatchesTarget()) {
+      return { status: 'already-selected', label: getButtonLabel() };
     }
 
     let lastPointerClick = 0;
@@ -125,8 +154,30 @@ function buildModelSelectionExpression(targetModel: string): string {
       }
       let score = 0;
       const normalizedTestId = (testid ?? '').toLowerCase();
-      if (normalizedTestId && TEST_IDS.some((id) => normalizedTestId.includes(id))) {
-        score += 1000;
+      if (normalizedTestId) {
+        if (desiredVersion) {
+          const has52 = normalizedTestId.includes('5-2') || normalizedTestId.includes('gpt52');
+          const has51 = normalizedTestId.includes('5-1') || normalizedTestId.includes('gpt51');
+          const has50 = normalizedTestId.includes('5-0') || normalizedTestId.includes('gpt50');
+          const candidateVersion = has52 ? '5-2' : has51 ? '5-1' : has50 ? '5-0' : null;
+          // If a candidate advertises a different version, ignore it entirely.
+          if (candidateVersion && candidateVersion !== desiredVersion) {
+            return 0;
+          }
+          // When targeting an explicit version, avoid selecting submenu wrappers that can contain legacy models.
+          if (normalizedTestId.includes('submenu') && candidateVersion === null) {
+            return 0;
+          }
+        }
+        const matches = TEST_IDS.filter((id) => id && normalizedTestId.includes(id));
+        if (matches.length > 0) {
+          // Prefer the most specific match (longest token) instead of treating any hit as equal.
+          // This prevents generic tokens (e.g. "pro") from outweighing version-specific targets.
+          const best = matches.reduce((acc, token) => (token.length > acc.length ? token : acc), '');
+          score += 200 + Math.min(900, best.length * 25);
+          if (best.startsWith('model-switcher-')) score += 120;
+          if (best.includes('gpt-')) score += 60;
+        }
       }
       if (normalizedText && normalizedTarget) {
         if (normalizedText === normalizedTarget) {
@@ -172,7 +223,7 @@ function buildModelSelectionExpression(targetModel: string): string {
           }
           const label = getOptionLabel(option);
           if (!bestMatch || score > bestMatch.score) {
-            bestMatch = { node: option, label, score };
+            bestMatch = { node: option, label, score, testid, normalizedText };
           }
         }
       }
@@ -201,11 +252,25 @@ function buildModelSelectionExpression(targetModel: string): string {
         const match = findBestOption();
         if (match) {
           if (optionIsSelected(match.node)) {
-            resolve({ status: 'already-selected', label: match.label });
+            resolve({ status: 'already-selected', label: getButtonLabel() || match.label });
             return;
           }
           dispatchClickSequence(match.node);
-          resolve({ status: 'switched', label: match.label });
+          // Submenus (e.g. "Legacy models") need a second pass to pick the actual model option.
+          // Keep scanning once the submenu opens instead of treating the submenu click as a final switch.
+          const isSubmenu = (match.testid ?? '').toLowerCase().includes('submenu');
+          if (isSubmenu) {
+            setTimeout(attempt, REOPEN_INTERVAL_MS / 2);
+            return;
+          }
+          // Wait for the top bar label to reflect the requested model; otherwise keep scanning.
+          setTimeout(() => {
+            if (buttonMatchesTarget()) {
+              resolve({ status: 'switched', label: getButtonLabel() || match.label });
+              return;
+            }
+            attempt();
+          }, Math.max(120, INITIAL_WAIT_MS));
           return;
         }
         if (performance.now() - start > MAX_WAIT_MS) {

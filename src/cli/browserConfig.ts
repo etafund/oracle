@@ -12,7 +12,8 @@ const DEFAULT_CHROME_PROFILE = 'Default';
 
 const BROWSER_MODEL_LABELS: Partial<Record<ModelName, string>> = {
   'gpt-5-pro': 'GPT-5 Pro',
-  'gpt-5.1-pro': 'GPT-5.1 Pro',
+  // Keep `gpt-5.1-pro` as a stable "Pro" alias, but prefer the latest Pro picker in browser mode.
+  'gpt-5.1-pro': 'GPT-5.2 Pro',
   'gpt-5.1': 'GPT-5.1',
   'gpt-5.2': 'GPT-5.2 Thinking',
   'gpt-5.2-instant': 'GPT-5.2 Instant',
