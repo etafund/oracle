@@ -6,6 +6,7 @@ import { resolveEngine } from './engine.js';
 import { normalizeModelOption, inferModelFromLabel, resolveApiModel, normalizeBaseUrl } from './options.js';
 import { resolveGeminiModelId } from '../oracle/gemini.js';
 import { PromptValidationError } from '../oracle/errors.js';
+import { normalizeChatGptModelForBrowser } from './browserConfig.js';
 
 export interface ResolveRunOptionsInput {
   prompt: string;
@@ -43,12 +44,8 @@ export function resolveRunOptionsFromConfig({
     resolvedEngine === 'browser' && normalizedRequestedModels.length === 0
       ? inferModelFromLabel(cliModelArg)
       : resolveApiModel(cliModelArg);
-  // Browser engine (ChatGPT automation) is intentionally pinned to the latest Pro model.
-  // We keep the API surface flexible, but the browser path only supports GPT-5.2 Pro for GPT models.
-  const resolvedModel =
-    resolvedEngine === 'browser' && inferredModel.startsWith('gpt-') && !inferredModel.includes('codex')
-      ? 'gpt-5.2-pro'
-      : inferredModel;
+  // Browser engine maps Pro/legacy aliases to the latest ChatGPT picker targets (GPT-5.2 / GPT-5.2 Pro).
+  const resolvedModel = resolvedEngine === 'browser' ? normalizeChatGptModelForBrowser(inferredModel) : inferredModel;
   const isCodex = resolvedModel.startsWith('gpt-5.1-codex');
   const isClaude = resolvedModel.startsWith('claude');
   const isGrok = resolvedModel.startsWith('grok');

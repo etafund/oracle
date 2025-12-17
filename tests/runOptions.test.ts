@@ -122,10 +122,20 @@ describe('resolveRunOptionsFromConfig', () => {
     expect(runOptions.model).toBe('gemini-3-pro');
   });
 
-  it('pins browser engine GPT models to gpt-5.2-pro', () => {
+  it('maps browser engine legacy GPT targets to gpt-5.2', () => {
     const { resolvedEngine, runOptions } = resolveRunOptionsFromConfig({
       prompt: basePrompt,
       model: 'gpt-5.1',
+      engine: 'browser',
+    });
+    expect(resolvedEngine).toBe('browser');
+    expect(runOptions.model).toBe('gpt-5.2');
+  });
+
+  it('maps browser engine Pro aliases to gpt-5.2-pro', () => {
+    const { resolvedEngine, runOptions } = resolveRunOptionsFromConfig({
+      prompt: basePrompt,
+      model: 'gpt-5.1-pro',
       engine: 'browser',
     });
     expect(resolvedEngine).toBe('browser');

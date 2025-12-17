@@ -19,11 +19,11 @@ Shared prereqs
 ## CLI smokes
 - API:
   ```bash
-  pnpm run oracle -- --engine api --model gpt-5.1 --prompt "API smoke: say two words"
+  pnpm run oracle -- --engine api --model gpt-5.2 --prompt "API smoke: say two words"
   ```
 - Browser:
   ```bash
-  pnpm run oracle -- --engine browser --model "5.1 Instant" --prompt "Browser smoke: say two words"
+  pnpm run oracle -- --engine browser --model "GPT-5.2" --prompt "Browser smoke: say two words"
   ```
 
 ## MCP via mcporter
@@ -32,11 +32,11 @@ Shared prereqs
    mcporter list oracle-local --schema --config config/mcporter.json
    ```
 
-2) API consult (GPT-5.1):
+2) API consult (GPT-5.2):
    ```bash
    mcporter call oracle-local.consult \
-     prompt:"Say hello from GPT-5.1" \
-     model:"gpt-5.1" \
+     prompt:"Say hello from GPT-5.2" \
+     model:"gpt-5.2" \
      engine:"api" \
      --config config/mcporter.json
    ```
@@ -48,14 +48,14 @@ Shared prereqs
 
 4) Session detail:
    ```bash
-   mcporter call oracle-local.sessions id:"say-hello-from-gpt-5" detail:true --config config/mcporter.json
+   mcporter call oracle-local.sessions id:"say-hello-from-gpt-5-2" detail:true --config config/mcporter.json
    ```
 
 5) Browser smoke:
    ```bash
    mcporter call oracle-local.consult \
      prompt:"Browser smoke" \
-     model:"5.1 Instant" \
+     model:"GPT-5.2" \
      engine:"browser" \
      --config config/mcporter.json
    ```

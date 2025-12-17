@@ -220,6 +220,14 @@ function buildModelSelectionExpression(targetModel: string): string {
         }
         score -= missing * 12;
       }
+      // If the caller didn't explicitly ask for Pro, prefer non-Pro options when both exist.
+      if (wantsPro) {
+        if (!normalizedText.includes(' pro')) {
+          score -= 80;
+        }
+      } else if (normalizedText.includes(' pro')) {
+        score -= 40;
+      }
       return Math.max(score, 0);
     };
 
