@@ -34,6 +34,7 @@ import { createFsAdapter } from './fsAdapter.js';
 import { resolveGeminiModelId } from './gemini.js';
 import { resolveClaudeModelId } from './claude.js';
 import { renderMarkdownAnsi } from '../cli/markdownRenderer.js';
+import { createLiveRenderer } from 'markdansi';
 import { executeBackgroundResponse } from './background.js';
 import { formatTokenEstimate, formatTokenValue, resolvePreviewMode } from './runUtils.js';
 import {
@@ -382,8 +383,8 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
   let response: OracleResponse | null = null;
   let elapsedMs = 0;
   let sawTextDelta = false;
-  // Buffer streamed text so we can re-render markdown once the stream ends (TTY + non-plain mode).
-  const streamedChunks: string[] = [];
+  let streamedText = '';
+  let lastLiveFrameAtMs = 0;
   let answerHeaderPrinted = false;
   const allowAnswerHeader = options.suppressAnswerHeader !== true;
   const timeoutExceeded = (): boolean => now() - runStart >= timeoutMs;
@@ -453,30 +454,56 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
             },
           });
         }
+      let liveRenderer: ReturnType<typeof createLiveRenderer> | null = null;
       try {
+        liveRenderer =
+          isTty && !renderPlain
+            ? createLiveRenderer({
+                write: stdoutWrite,
+                renderFrame: renderMarkdownAnsi,
+              })
+            : null;
+
         for await (const event of stream) {
           throwIfTimedOut();
           const isTextDelta =
             event.type === 'chunk' || event.type === 'response.output_text.delta';
-          if (isTextDelta) {
-            stopOscProgress();
-            stopHeartbeatNow();
-            sawTextDelta = true;
-            ensureAnswerHeader();
-            if (!options.silent && typeof event.delta === 'string') {
-              // Always keep the log/bookkeeping sink up to date.
-              sinkWrite(event.delta);
-              if (renderPlain) {
-                // Plain mode: stream directly to stdout regardless of write sink.
-                stdoutWrite(event.delta);
-              } else if (isTty) {
-                // Buffer for end-of-stream markdown rendering on TTY.
-                streamedChunks.push(event.delta);
-              } else {
-                // Non-TTY streams should still surface output; fall back to raw stdout.
-                stdoutWrite(event.delta);
-              }
+          if (!isTextDelta) continue;
+
+          stopOscProgress();
+          stopHeartbeatNow();
+          sawTextDelta = true;
+          ensureAnswerHeader();
+          if (options.silent || typeof event.delta !== 'string') continue;
+
+          // Always keep the log/bookkeeping sink up to date.
+          sinkWrite(event.delta);
+          if (renderPlain) {
+            // Plain mode: stream directly to stdout regardless of write sink.
+            stdoutWrite(event.delta);
+            continue;
+          }
+
+          if (liveRenderer) {
+            streamedText += event.delta;
+            const currentMs = now();
+            const due = currentMs - lastLiveFrameAtMs >= 120;
+            const hasNewline = event.delta.includes('\n');
+            if (hasNewline || due) {
+              liveRenderer.render(streamedText);
+              lastLiveFrameAtMs = currentMs;
             }
+            continue;
+          }
+
+          // Non-TTY streams should still surface output; fall back to raw stdout.
+          stdoutWrite(event.delta);
+        }
+
+        if (liveRenderer) {
+          streamedText = streamedText.trim();
+          if (streamedText.length > 0) {
+            liveRenderer.render(streamedText);
           }
         }
         throwIfTimedOut();
@@ -486,6 +513,8 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
         const transportError = toTransportError(streamError, requestBody.model);
         log(chalk.yellow(describeTransportError(transportError, timeoutMs)));
         throw transportError;
+      } finally {
+        liveRenderer?.finish();
       }
       response = await stream.finalResponse();
       throwIfTimedOut();
@@ -502,19 +531,15 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
 
   // We only add spacing when streamed text was printed.
   if (sawTextDelta && !options.silent) {
-    const fullStreamedText = streamedChunks.join('');
-    const shouldRenderAfterStream = isTty && !renderPlain && fullStreamedText.length > 0;
-    if (shouldRenderAfterStream) {
-      const rendered = renderMarkdownAnsi(fullStreamedText);
-      stdoutWrite(rendered);
-      if (!rendered.endsWith('\n')) {
-        stdoutWrite('\n');
-      }
-      log('');
-    } else if (renderPlain) {
+    const shouldRenderAfterStream = isTty && !renderPlain && streamedText.length > 0;
+    if (renderPlain) {
       // Plain streaming already wrote chunks; ensure clean separation.
       stdoutWrite('\n');
+    } else if (!shouldRenderAfterStream) {
+      // Non-TTY streams should still surface output; ensure separation.
+      log('');
     } else {
+      // Live-rendered mode already drew the final frame; only separate from logs.
       log('');
     }
   }
