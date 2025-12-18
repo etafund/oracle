@@ -651,6 +651,9 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
   }
 
   const sessionPrefix = options.sessionId ? `${options.sessionId} ` : '';
+  if (!options.silent) {
+    log('');
+  }
   log(chalk.blue(`Finished ${sessionPrefix}in ${elapsedDisplay} (${statsParts.join(' | ')})`));
 
   return {
