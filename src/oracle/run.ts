@@ -460,6 +460,7 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
           isTty && !renderPlain
             ? createLiveRenderer({
                 write: stdoutWrite,
+                width: process.stdout.columns ?? 80,
                 renderFrame: renderMarkdownAnsi,
               })
             : null;
