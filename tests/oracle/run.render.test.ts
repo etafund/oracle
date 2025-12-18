@@ -8,6 +8,14 @@ async function loadRunOracleWithTty(isTty: boolean, mockRendered?: string) {
   (process.stdout as { isTTY?: boolean }).isTTY = isTty;
   process.env.FORCE_COLOR = '1';
   vi.resetModules();
+  // `runOracle` treats a "rich TTY" as `stdout.isTTY && chalk.level > 0`.
+  // In Vitest, Chalk can be preloaded before FORCE_COLOR is set, so force a non-zero level.
+  vi.doMock('chalk', async () => {
+    const actual = await vi.importActual<typeof import('chalk')>('chalk');
+    const ChalkCtor = (actual as unknown as { Chalk?: new (opts: { level: number }) => unknown }).Chalk;
+    const forced = ChalkCtor ? new ChalkCtor({ level: 1 }) : actual.default;
+    return { ...(actual as unknown as Record<string, unknown>), default: forced };
+  });
   if (mockRendered) {
     vi.doMock('../../src/cli/markdownRenderer.js', () => ({
       renderMarkdownAnsi: vi.fn(() => mockRendered),
@@ -35,16 +43,20 @@ async function loadRunOracleWithTty(isTty: boolean, mockRendered?: string) {
   };
 }
 
-function makeStreamingClient(delta: string): RunOracleDeps['clientFactory'] {
+function makeStreamingClient(delta: string | string[]): RunOracleDeps['clientFactory'] {
+  const deltas = Array.isArray(delta) ? delta : [delta];
+  const fullText = deltas.join('');
   const finalResponse: OracleResponse = {
     id: 'resp-1',
     status: 'completed',
-    usage: { input_tokens: 0, output_tokens: delta.length, total_tokens: delta.length },
-    output: [{ type: 'text', text: delta }],
+    usage: { input_tokens: 0, output_tokens: fullText.length, total_tokens: fullText.length },
+    output: [{ type: 'text', text: fullText }],
   };
   const stream = {
     async *[Symbol.asyncIterator]() {
-      yield { type: 'chunk', delta };
+      for (const chunk of deltas) {
+        yield { type: 'chunk', delta: chunk };
+      }
     },
     finalResponse: async () => finalResponse,
   };
@@ -84,8 +96,34 @@ describe('runOracle streaming rendering', () => {
 
     const rendered = stdoutSink.join('');
     const combined = rendered + logSink.join('');
-    expect(combined).toContain('# Title');
+    expect(combined).toContain('Title');
+    expect(combined).toContain('item');
     expect(rendered.length).toBeGreaterThan(0); // stdout receives rendered markdown on TTY
+    stdoutSpy.mockRestore();
+    restoreEnv();
+  }, 15_000);
+
+  it('uses Markdansi live renderer framing sequences when streaming markdown in a rich TTY', async () => {
+    const { runOracle, restoreEnv } = await loadRunOracleWithTty(true);
+    const stdoutSink: string[] = [];
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+      stdoutSink.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write);
+
+    await runOracle(baseOptions, {
+      clientFactory: makeStreamingClient(['Hello\n', '**bold**\n']),
+      write: () => true,
+      wait: async () => {},
+    });
+
+    const output = stdoutSink.join('');
+    expect(output).toContain('\u001b[?2026h'); // synchronized output begin
+    expect(output).toContain('\u001b[?2026l'); // synchronized output end
+    expect(output).toContain('\u001b[0J'); // clear-to-end for redraw
+    expect(output).toContain('\u001b[?25l'); // cursor hidden
+    expect(output).toContain('\u001b[?25h'); // cursor shown on finish
+
     stdoutSpy.mockRestore();
     restoreEnv();
   }, 15_000);

@@ -2,6 +2,10 @@
 
 ## 0.7.3 — Unreleased
 
+### Changed
+- API: streaming answers in a rich TTY now use Markdansi’s live renderer (`createLiveRenderer`) so we can stream *and* render Markdown in-place.
+- Dependencies: update `markdansi` to 0.1.5.
+
 ## 0.7.2 — 2025-12-17
 
 ### Fixed
