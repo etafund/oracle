@@ -82,7 +82,7 @@
     "osc-progress": "^0.1.0",
     "shiki": "^3.20.0",
     "sqlite3": "^5.1.7",
-    "tokentally": "^0.1.0",
+    "tokentally": "github:steipete/tokentally#v0.1.0",
     "toasted-notifier": "^10.1.0",
     "zod": "^4.2.1"
   },
