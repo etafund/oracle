@@ -82,8 +82,8 @@ importers:
         specifier: ^10.1.0
         version: 10.1.0
       tokentally:
-        specifier: github:steipete/tokentally#6c11adf31fa171c1218659ab5aa8b2b889c53cd6
-        version: https://codeload.github.com/steipete/tokentally/tar.gz/6c11adf31fa171c1218659ab5aa8b2b889c53cd6
+        specifier: ^0.1.0
+        version: 0.1.0
       zod:
         specifier: ^4.2.1
         version: 4.2.1
@@ -2495,9 +2495,8 @@ packages:
     resolution: {integrity: sha512-o5sSPKEkg/DIQNmH43V0/uerLrpzVedkUh8tGNvaeXpfpuwjKenlSox/2O/BTlZUtEe+JG7s5YhEz608PlAHRA==}
     engines: {node: '>=0.6'}
 
-  tokentally@https://codeload.github.com/steipete/tokentally/tar.gz/6c11adf31fa171c1218659ab5aa8b2b889c53cd6:
-    resolution: {tarball: https://codeload.github.com/steipete/tokentally/tar.gz/6c11adf31fa171c1218659ab5aa8b2b889c53cd6}
-    version: 0.0.1
+  tokentally@0.1.0:
+    resolution: {integrity: sha512-G2gJiIFz543bcyKHruXzV6D56RqIEmihht8IFGN3SvgYV4OJs7ZfaJqjyueD5sFjweWLHWMBh7tPhGIXlS0aUA==}
     engines: {node: '>=20'}
 
   tough-cookie@5.1.2:
@@ -5422,7 +5421,7 @@ snapshots:
 
   toidentifier@1.0.1: {}
 
-  tokentally@https://codeload.github.com/steipete/tokentally/tar.gz/6c11adf31fa171c1218659ab5aa8b2b889c53cd6: {}
+  tokentally@0.1.0: {}
 
   tough-cookie@5.1.2:
     dependencies:
