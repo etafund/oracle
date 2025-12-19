@@ -78,7 +78,7 @@
     "keytar": "^7.9.0",
     "kleur": "^4.1.5",
     "markdansi": "0.1.7",
-    "openai": "^6.14.0",
+    "openai": "^6.15.0",
     "osc-progress": "^0.1.0",
     "shiki": "^3.20.0",
     "sqlite3": "^5.1.7",
@@ -88,16 +88,16 @@
   },
   "devDependencies": {
     "@anthropic-ai/tokenizer": "^0.0.4",
-    "@biomejs/biome": "^2.3.9",
+    "@biomejs/biome": "^2.3.10",
     "@cdktf/node-pty-prebuilt-multiarch": "0.10.2",
     "@types/chrome-remote-interface": "^0.33.0",
     "@types/inquirer": "^9.0.9",
     "@types/node": "^25.0.3",
     "@vitest/coverage-v8": "4.0.16",
-    "devtools-protocol": "0.0.1559729",
+    "devtools-protocol": "0.0.1560991",
     "es-toolkit": "^1.43.0",
     "esbuild": "^0.27.2",
-    "puppeteer-core": "^24.33.0",
+    "puppeteer-core": "^24.34.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vitest": "^4.0.16"
@@ -107,7 +107,7 @@
   },
   "pnpm": {
     "overrides": {
-      "devtools-protocol": "0.0.1559729",
+      "devtools-protocol": "0.0.1560991",
       "win-dpapi": "npm:@primno/dpapi@2.0.1"
     },
     "onlyBuiltDependencies": [
