@@ -70,8 +70,8 @@ importers:
         specifier: ^6.14.0
         version: 6.14.0(ws@8.18.3)(zod@4.2.1)
       osc-progress:
-        specifier: github:steipete/osc-progress#e43bd6afebe4f4a88b6ce71d00f657c51e1ac98a
-        version: https://codeload.github.com/steipete/osc-progress/tar.gz/e43bd6afebe4f4a88b6ce71d00f657c51e1ac98a
+        specifier: ^0.1.0
+        version: 0.1.0
       shiki:
         specifier: ^3.20.0
         version: 3.20.0
@@ -2064,9 +2064,8 @@ packages:
       zod:
         optional: true
 
-  osc-progress@https://codeload.github.com/steipete/osc-progress/tar.gz/e43bd6afebe4f4a88b6ce71d00f657c51e1ac98a:
-    resolution: {tarball: https://codeload.github.com/steipete/osc-progress/tar.gz/e43bd6afebe4f4a88b6ce71d00f657c51e1ac98a}
-    version: 0.1.0
+  osc-progress@0.1.0:
+    resolution: {integrity: sha512-9HrEuN+6C/ZsbLI58ZVIOMMfk3K9y1wEf7v1KA9eiChfWoe/HCOVJrRdPhP815tY/CB4wt5snJMfFMEBPZDhng==}
     engines: {node: '>=20'}
 
   p-map@4.0.0:
@@ -4872,7 +4871,7 @@ snapshots:
       ws: 8.18.3
       zod: 4.2.1
 
-  osc-progress@https://codeload.github.com/steipete/osc-progress/tar.gz/e43bd6afebe4f4a88b6ce71d00f657c51e1ac98a: {}
+  osc-progress@0.1.0: {}
 
   p-map@4.0.0:
     dependencies:
