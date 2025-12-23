@@ -52,4 +52,5 @@
       - Confirm the auto `Source code (zip|tar.gz)` assets are present.
    - [ ] From a clean temp directory (no package.json/node_modules), run `npx @steipete/oracle@X.Y.Z "Smoke from empty dir" --dry-run` to confirm the package installs/executes via npx.
    - [ ] After uploading assets, verify they are reachable (e.g., `curl -I <GitHub-asset-URL>` or download and re-check SHA).
+   - [ ] After verification, remove the untracked tarball/checksum assets from the repo root (`trash oracle-<version>.tgz*`).
    - [ ] Announce / share release notes.
