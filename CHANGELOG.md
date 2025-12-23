@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.5 — 2025-12-23
+
+### Fixed
+- Packaging: switch tokentally to npm release so Homebrew installs don't trigger git prepare builds.
+
 ## 0.7.4 — 2025-12-23
 
 ### Changed

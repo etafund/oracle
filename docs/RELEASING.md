@@ -1,4 +1,4 @@
-# Release Checklist (npm)
+# Release Checklist (npm + Homebrew)
 
 > For a guarded, phased flow, run `./scripts/release.sh <phase>` (gates | artifacts | publish | smoke | tag | all); it stops on the first error so you can resume after fixing issues.
 
@@ -31,7 +31,7 @@
    - [ ] `pnpm run lint`
    - [ ] Optional live smoke (with real `OPENAI_API_KEY`): `ORACLE_LIVE_TEST=1 pnpm vitest run tests/live/openai-live.test.ts`
    - [ ] MCP sanity check: with `config/mcporter.json` pointed at the local stdio server (`oracle-local`), run `mcporter list oracle-local --schema --config config/mcporter.json` after building (`pnpm build`) to ensure tools/resources are discoverable.
-5. **Publish**
+5. **Publish (npm)**
    - [ ] Ensure git status is clean; commit and push any pending changes.
    - [ ] Avoid repeated browser auth: create a granular access token with **write** + **Bypass 2FA** at npmjs.com/settings/~/tokens, then export it (e.g., `export NPM_TOKEN=...` in `~/.profile`) and set `//registry.npmjs.org/:_authToken=${NPM_TOKEN}` in `~/.npmrc`.
    - [ ] Use the `NPM_TOKEN` from `~/.profile` (our “NPM out token”). If `npm publish` opens browser auth, the token wasn’t loaded—rerun with `source ~/.profile`.
@@ -39,7 +39,17 @@
    - [ ] `npm publish --access public --tag latest`.
    - [ ] `npm view @steipete/oracle version` (and optionally `npm view @steipete/oracle time`) to confirm the registry shows the new version.
    - [ ] Verify positional prompt still works: `npx -y @steipete/oracle "Test prompt" --dry-run`.
-6. **Post-publish**
+6. **Homebrew (tap)**
+   - [ ] Update formula in `~/Projects/homebrew-tap/Formula/oracle.rb` (or create it if missing).
+   - [ ] Bump version, URL, and SHA256 to match the GitHub release asset you want Homebrew to install.
+   - [ ] Commit + push the tap update only after assets are live.
+   - [ ] Verify install:
+      - `brew uninstall oracle || true`
+      - `brew tap steipete/tap || true`
+      - `brew install steipete/tap/oracle`
+      - `oracle --version`
+      - `brew uninstall oracle`
+7. **Post-publish**
   - [ ] Verify GitHub release exists for `vX.Y.Z` and has the intended assets (tarball + checksums if produced). Add missing assets before announcing.
   - [ ] Confirm npm shows the new version: `npm view @steipete/oracle version` and `npx -y @steipete/oracle@X.Y.Z --version`.
   - [ ] Promote desired dist-tag (e.g., `npm dist-tag add @steipete/oracle@X.Y.Z latest`).

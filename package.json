@@ -1,6 +1,6 @@
 {
   "name": "@steipete/oracle",
-  "version": "0.7.4",
+  "version": "0.7.5",
   "description": "CLI wrapper around OpenAI Responses API with GPT-5.2 Pro (via gpt-5.1-pro alias), GPT-5.2, GPT-5.1, and GPT-5.1 Codex high reasoning modes.",
   "type": "module",
   "main": "dist/bin/oracle-cli.js",
@@ -83,7 +83,7 @@
     "shiki": "^3.20.0",
     "sqlite3": "^5.1.7",
     "toasted-notifier": "^10.1.0",
-    "tokentally": "github:steipete/tokentally#v0.1.0",
+    "tokentally": "^0.1.1",
     "zod": "^4.2.1"
   },
   "devDependencies": {
