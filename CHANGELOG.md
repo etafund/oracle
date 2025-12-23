@@ -12,6 +12,7 @@
 - Browser: prevent `chrome-launcher` from auto-killing Chrome on SIGINT so reattach sessions survive Ctrl+C.
 - Sessions: running browser sessions now mark as errored when the Chrome PID/port are no longer reachable.
 - Browser: reattach now recovers even if Chrome was closed by reopening, locating the conversation in the sidebar, and resuming the response.
+- Browser: throttle attachment upload pokes and pace multi-file uploads to avoid duplicate “already attached” warnings.
 
 ## 0.7.2 — 2025-12-17
 

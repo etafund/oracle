@@ -356,6 +356,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         for (const attachment of submissionAttachments) {
           logger(`Uploading attachment: ${attachment.displayPath}`);
           await uploadAttachmentFile({ runtime: Runtime, dom: DOM }, attachment, logger);
+          await delay(500);
         }
         // Scale timeout based on number of files: base 30s + 15s per additional file
         const baseTimeout = config.inputTimeoutMs ?? 30_000;
@@ -807,6 +808,7 @@ async function runRemoteBrowserMode(
         for (const attachment of submissionAttachments) {
           logger(`Uploading attachment: ${attachment.displayPath}`);
           await uploadAttachmentViaDataTransfer({ runtime: Runtime, dom: DOM }, attachment, logger);
+          await delay(500);
         }
         // Scale timeout based on number of files: base 30s + 15s per additional file
         const baseTimeout = config.inputTimeoutMs ?? 30_000;

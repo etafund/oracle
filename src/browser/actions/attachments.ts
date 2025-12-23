@@ -201,13 +201,16 @@ export async function uploadAttachmentFile(
     }
     await dom.setFileInputFiles({ nodeId: resultNode.nodeId, files: [attachment.path] });
     await runtime.evaluate({ expression: dispatchEventsFor(idx), returnByValue: true }).catch(() => undefined);
+    await delay(350);
 
-    const probeDeadline = Date.now() + 4000;
+    const probeDeadline = Date.now() + 6500;
+    const pokeIntervalMs = 1200;
     let lastPoke = 0;
+    let seenInputHasFile = false;
     while (Date.now() < probeDeadline) {
       // ChatGPT's composer can take a moment to hydrate the file-input onChange handler after navigation/model switches.
       // If the UI hasn't reacted yet, poke the input a few times to ensure the handler fires once it's mounted.
-      if (Date.now() - lastPoke > 650) {
+      if (!seenInputHasFile && Date.now() - lastPoke > pokeIntervalMs) {
         lastPoke = Date.now();
         await runtime.evaluate({ expression: dispatchEventsFor(idx), returnByValue: true }).catch(() => undefined);
       }
@@ -233,6 +236,7 @@ export async function uploadAttachmentFile(
         const inputHasFile = finalSnapshot.inputNames.some((name) =>
           name.toLowerCase().includes(expectedName.toLowerCase()),
         );
+        seenInputHasFile = seenInputHasFile || inputHasFile;
         const expectedLower = expectedName.toLowerCase();
         const expectedNoExt = expectedLower.replace(/\.[a-z0-9]{1,10}$/i, '');
         const uiAcknowledged =
@@ -247,7 +251,7 @@ export async function uploadAttachmentFile(
           break;
         }
       }
-      await delay(200);
+      await delay(250);
     }
     const inputHasFile =
       finalSnapshot?.inputNames?.some((name) => name.toLowerCase().includes(expectedName.toLowerCase())) ?? false;
