@@ -33,8 +33,9 @@
    - [ ] MCP sanity check: with `config/mcporter.json` pointed at the local stdio server (`oracle-local`), run `mcporter list oracle-local --schema --config config/mcporter.json` after building (`pnpm build`) to ensure tools/resources are discoverable.
 5. **Publish**
    - [ ] Ensure git status is clean; commit and push any pending changes.
-   - [ ] `npm login` (or confirm session) & check 2FA.
-   - [ ] `npm publish --access public` (default tag = `latest`).
+   - [ ] Avoid repeated browser auth: create a granular access token with **write** + **Bypass 2FA** at npmjs.com/settings/~/tokens, then export it (e.g., `export NPM_TOKEN=...` in `~/.profile`) and set `//registry.npmjs.org/:_authToken=${NPM_TOKEN}` in `~/.npmrc`.
+   - [ ] Confirm auth: `npm whoami`.
+   - [ ] `npm publish --access public --tag latest`.
    - [ ] `npm view @steipete/oracle version` (and optionally `npm view @steipete/oracle time`) to confirm the registry shows the new version.
    - [ ] Verify positional prompt still works: `npx -y @steipete/oracle "Test prompt" --dry-run`.
 6. **Post-publish**
