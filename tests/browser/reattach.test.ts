@@ -97,6 +97,8 @@ describe('resumeBrowserSession', () => {
 
 describe('reattach helpers', () => {
   const { pickTarget, extractConversationIdFromUrl, buildConversationUrl, openConversationFromSidebar } = __test__;
+  type EvaluateParams = { expression: string };
+  type EvaluateResult<T> = { result: { value: T } };
 
   test('extracts conversation id from a chat URL', () => {
     expect(extractConversationIdFromUrl('https://chatgpt.com/c/abc-123')).toBe('abc-123');
@@ -122,7 +124,9 @@ describe('reattach helpers', () => {
   });
 
   test('openConversationFromSidebar passes conversationId and projects preference', async () => {
-    const evaluate = vi.fn(async () => ({
+    const evaluate = vi.fn<
+      (params: EvaluateParams) => Promise<EvaluateResult<{ ok: boolean; href?: string; count: number }>>
+    >(async () => ({
       result: { value: { ok: true, href: 'https://chatgpt.com/c/abc', count: 3 } },
     }));
     const runtime = { evaluate } as unknown as ChromeClient['Runtime'];
@@ -130,21 +134,23 @@ describe('reattach helpers', () => {
     const ok = await openConversationFromSidebar(runtime, { conversationId: 'abc', preferProjects: true });
 
     expect(ok).toBe(true);
-    const call = evaluate.mock.calls[0]?.[0];
+    const call = evaluate.mock.calls[0]?.[0] as EvaluateParams | undefined;
     expect(call?.expression).toContain('const conversationId = "abc"');
     expect(call?.expression).toContain('const preferProjects = true');
   });
 
   test('openConversationFromSidebar handles missing conversationId', async () => {
-    const evaluate = vi.fn(async () => ({
-      result: { value: { ok: false, count: 0 } },
-    }));
+    const evaluate = vi.fn<(params: EvaluateParams) => Promise<EvaluateResult<{ ok: boolean; count: number }>>>(
+      async () => ({
+        result: { value: { ok: false, count: 0 } },
+      }),
+    );
     const runtime = { evaluate } as unknown as ChromeClient['Runtime'];
 
     const ok = await openConversationFromSidebar(runtime, { preferProjects: false });
 
     expect(ok).toBe(false);
-    const call = evaluate.mock.calls[0]?.[0];
+    const call = evaluate.mock.calls[0]?.[0] as EvaluateParams | undefined;
     expect(call?.expression).toContain('const conversationId = null');
     expect(call?.expression).toContain('const preferProjects = false');
   });
