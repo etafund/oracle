@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.4 — Unreleased
+## 0.7.4 — 2025-12-23
 
 ### Changed
 - Browser: add `--browser-thinking-time <light|standard|extended|heavy>` to select thinking-time intensity in ChatGPT.
