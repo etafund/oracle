@@ -28,6 +28,7 @@ export async function launchChrome(config: ResolvedBrowserConfig, userDataDir: s
         chromePath: config.chromePath ?? undefined,
         chromeFlags,
         userDataDir,
+        handleSIGINT: false,
         port: debugPort ?? undefined,
       });
   const pidLabel = typeof launcher.pid === 'number' ? ` (pid ${launcher.pid})` : '';
@@ -266,6 +267,7 @@ async function launchWithCustomHost({
     chromePath: chromePath ?? undefined,
     chromeFlags,
     userDataDir,
+    handleSIGINT: false,
     port: requestedPort ?? undefined,
   });
 
