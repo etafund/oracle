@@ -1,9 +1,6 @@
 # Changelog
 
-## 0.7.6 — 2025-12-23
-
-### Changed
-- Docs: add Homebrew install one-liner.
+## Unreleased
 
 ## 0.7.5 — 2025-12-23
 
