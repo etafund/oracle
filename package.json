@@ -107,7 +107,7 @@
   },
   "pnpm": {
     "overrides": {
-      "devtools-protocol": "0.0.1560991",
+      "devtools-protocol": "0.0.1561482",
       "win-dpapi": "npm:@primno/dpapi@2.0.1"
     },
     "onlyBuiltDependencies": [

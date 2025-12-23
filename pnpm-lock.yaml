@@ -5,7 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
-  devtools-protocol: 0.0.1560991
+  devtools-protocol: 0.0.1561482
   win-dpapi: npm:@primno/dpapi@2.0.1
 
 importers:
@@ -1034,7 +1034,7 @@ packages:
   chromium-bidi@12.0.1:
     resolution: {integrity: sha512-fGg+6jr0xjQhzpy5N4ErZxQ4wF7KLEvhGZXD6EgvZKDhu7iOhZXnZhcDxPJDcwTcrD48NPzOCo84RP2lv3Z+Cg==}
     peerDependencies:
-      devtools-protocol: 0.0.1560991
+      devtools-protocol: 0.0.1561482
 
   clean-stack@2.2.0:
     resolution: {integrity: sha512-4diC9HaTE+KRAMWhDhrGOECgWZxoevMc5TlkObMqNSsVU62PYzXZ/SMTjzyGAFF1YusgxGcSWTEXBhp0CPwQ1A==}
@@ -1152,9 +1152,6 @@ packages:
 
   devlop@1.1.0:
     resolution: {integrity: sha512-RWmIqhcFf1lRYBvNmr7qTNuyCt/7/ns2jbpp1+PalgE/rDQcBT0fioSMUpJ93irlUhC5hrg4cYqe6U+0ImW0rA==}
-
-  devtools-protocol@0.0.1560991:
-    resolution: {integrity: sha512-6rxdHkNi7nRg3lnKdx8hrc14zfcKtjpOVYIOkfNzqkxTNZ0NAghqex36RREWcdbUcBAWIuMDBkcS5joOM7m+rw==}
 
   devtools-protocol@0.0.1561482:
     resolution: {integrity: sha512-nSXIMgdQxupOkVN94VPoE01UWJVXPOJ/IkEDQOlDbx3tmGzlKgVd3b54AT1cy8XIb4TQPcYac1nxYntEhiFKAQ==}
@@ -3233,7 +3230,7 @@ snapshots:
 
   '@types/chrome-remote-interface@0.33.0':
     dependencies:
-      devtools-protocol: 0.0.1560991
+      devtools-protocol: 0.0.1561482
 
   '@types/debug@4.1.12':
     dependencies:
@@ -3583,9 +3580,9 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  chromium-bidi@12.0.1(devtools-protocol@0.0.1560991):
+  chromium-bidi@12.0.1(devtools-protocol@0.0.1561482):
     dependencies:
-      devtools-protocol: 0.0.1560991
+      devtools-protocol: 0.0.1561482
       mitt: 3.0.1
       zod: 3.25.76
 
@@ -3683,8 +3680,6 @@ snapshots:
   devlop@1.1.0:
     dependencies:
       dequal: 2.0.3
-
-  devtools-protocol@0.0.1560991: {}
 
   devtools-protocol@0.0.1561482: {}
 
@@ -5001,9 +4996,9 @@ snapshots:
   puppeteer-core@24.34.0:
     dependencies:
       '@puppeteer/browsers': 2.11.0
-      chromium-bidi: 12.0.1(devtools-protocol@0.0.1560991)
+      chromium-bidi: 12.0.1(devtools-protocol@0.0.1561482)
       debug: 4.4.3
-      devtools-protocol: 0.0.1560991
+      devtools-protocol: 0.0.1561482
       typed-query-selector: 2.12.0
       webdriver-bidi-protocol: 0.3.10
       ws: 8.18.3
