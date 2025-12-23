@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { BrowserSessionConfig } from '../sessionStore.js';
-import type { ModelName } from '../oracle.js';
+import type { ModelName, ThinkingTimeLevel } from '../oracle.js';
 import { CHATGPT_URL, DEFAULT_MODEL_TARGET, isTemporaryChatUrl, normalizeChatgptUrl, parseDuration } from '../browserMode.js';
 import type { CookieParam } from '../browser/types.js';
 import { getOracleHomeDir } from '../oracleHome.js';
@@ -10,17 +10,20 @@ const DEFAULT_BROWSER_TIMEOUT_MS = 1_200_000;
 const DEFAULT_BROWSER_INPUT_TIMEOUT_MS = 30_000;
 const DEFAULT_CHROME_PROFILE = 'Default';
 
-const BROWSER_MODEL_LABELS: Partial<Record<ModelName, string>> = {
-  // Browser engine supports GPT-5.2 and GPT-5.2 Pro (legacy/Pro aliases normalize to those targets).
-  'gpt-5-pro': 'GPT-5.2 Pro',
-  'gpt-5.1-pro': 'GPT-5.2 Pro',
-  'gpt-5.1': 'GPT-5.2',
-  'gpt-5.2': 'GPT-5.2',
-  // ChatGPT UI doesn't expose "instant" as a separate picker option; treat it as GPT-5.2 for browser automation.
-  'gpt-5.2-instant': 'GPT-5.2',
-  'gpt-5.2-pro': 'GPT-5.2 Pro',
-  'gemini-3-pro': 'Gemini 3 Pro',
-};
+// Ordered array: most specific models first to ensure correct selection.
+// The browser label is passed to the model picker which fuzzy-matches against ChatGPT's UI.
+const BROWSER_MODEL_LABELS: [ModelName, string][] = [
+  // Most specific first (e.g., "gpt-5.2-thinking" before "gpt-5.2")
+  ['gpt-5.2-thinking', 'GPT-5.2 Thinking'],
+  ['gpt-5.2-instant', 'GPT-5.2 Instant'],
+  ['gpt-5.2-pro', 'GPT-5.2 Pro'],
+  ['gpt-5.1-pro', 'GPT-5.2 Pro'],
+  ['gpt-5-pro', 'GPT-5.2 Pro'],
+  // Base models last (least specific)
+  ['gpt-5.2', 'GPT-5.2'],       // Selects "Auto" in ChatGPT UI
+  ['gpt-5.1', 'GPT-5.2'],       // Legacy alias → Auto
+  ['gemini-3-pro', 'Gemini 3 Pro'],
+];
 
 export interface BrowserFlagOptions {
   browserChromeProfile?: string;
@@ -38,6 +41,9 @@ export interface BrowserFlagOptions {
   browserHideWindow?: boolean;
   browserKeepBrowser?: boolean;
   browserManualLogin?: boolean;
+  /** Thinking time intensity: 'light', 'standard', 'extended', 'heavy' */
+  browserThinkingTime?: ThinkingTimeLevel;
+  /** @deprecated Use browserThinkingTime instead */
   browserExtendedThinking?: boolean;
   browserModelLabel?: string;
   browserAllowCookieErrors?: boolean;
@@ -59,10 +65,12 @@ export function normalizeChatGptModelForBrowser(model: ModelName): ModelName {
     return 'gpt-5.2-pro';
   }
 
-  // Legacy / UI-mismatch variants: map to the closest ChatGPT picker target.
-  if (normalized === 'gpt-5.2-instant') {
-    return 'gpt-5.2';
+  // Explicit model variants: keep as-is (they have their own browser labels)
+  if (normalized === 'gpt-5.2-thinking' || normalized === 'gpt-5.2-instant') {
+    return normalized;
   }
+
+  // Legacy aliases: map to base GPT-5.2 (Auto)
   if (normalized === 'gpt-5.1') {
     return 'gpt-5.2';
   }
@@ -128,7 +136,8 @@ export async function buildBrowserConfig(options: BrowserFlagOptions): Promise<B
     // Allow cookie failures by default so runs can continue without Chrome/Keychain secrets.
     allowCookieErrors: options.browserAllowCookieErrors ?? true,
     remoteChrome,
-    extendedThinking: options.browserExtendedThinking ? true : undefined,
+    // --browser-thinking-time takes precedence; fall back to deprecated --browser-extended-thinking
+    thinkingTime: options.browserThinkingTime ?? (options.browserExtendedThinking ? 'extended' : undefined),
   };
 }
 
@@ -143,7 +152,13 @@ function selectBrowserPort(options: BrowserFlagOptions): number | null {
 
 export function mapModelToBrowserLabel(model: ModelName): string {
   const normalized = normalizeChatGptModelForBrowser(model);
-  return BROWSER_MODEL_LABELS[normalized] ?? DEFAULT_MODEL_TARGET;
+  // Iterate ordered array to find first match (most specific first)
+  for (const [key, label] of BROWSER_MODEL_LABELS) {
+    if (key === normalized) {
+      return label;
+    }
+  }
+  return DEFAULT_MODEL_TARGET;
 }
 
 export function resolveBrowserModelLabel(input: string | undefined, model: ModelName): string {

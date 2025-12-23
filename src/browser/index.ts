@@ -29,7 +29,7 @@ import {
   readAssistantSnapshot,
 } from './pageActions.js';
 import { uploadAttachmentViaDataTransfer } from './actions/remoteFileTransfer.js';
-import { ensureExtendedThinking } from './actions/thinkingTime.js';
+import { ensureThinkingTime } from './actions/thinkingTime.js';
 import { estimateTokenCount, withRetries, delay } from './utils.js';
 import { formatElapsed } from '../oracle/format.js';
 import { CHATGPT_URL } from './constants.js';
@@ -334,14 +334,15 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
       logger(`Prompt textarea ready (after model switch, ${promptText.length.toLocaleString()} chars queued)`);
     }
-    if (config.extendedThinking) {
+    // Handle thinking time selection if specified
+    if (config.thinkingTime) {
       await raceWithDisconnect(
-        withRetries(() => ensureExtendedThinking(Runtime, logger), {
+        withRetries(() => ensureThinkingTime(Runtime, config.thinkingTime!, logger), {
           retries: 2,
           delayMs: 300,
           onRetry: (attempt, error) => {
             if (options.verbose) {
-              logger(`[retry] Extended thinking attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`);
+              logger(`[retry] Thinking time (${config.thinkingTime}) attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`);
             }
           },
         }),
@@ -388,6 +389,16 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       }
     }
     stopThinkingMonitor = startThinkingStatusMonitor(Runtime, logger, options.verbose ?? false);
+    // After submitting a prompt, ChatGPT redirects to a conversation URL (e.g., /c/abc123).
+    // However, the UI sometimes stalls with a "thinking" indicator that never resolves,
+    // even though the response is ready. Refreshing the conversation URL forces the page
+    // to re-render with the completed response. We wait 5 seconds to ensure the URL has
+    // updated before capturing it (Pro models may take longer to generate the conversation ID).
+    await delay(5000);
+    const currentUrl = await Runtime.evaluate({ expression: 'location.href', returnByValue: true });
+    const urlToReload = (currentUrl.result?.value as string) || config.url || CHATGPT_URL;
+    await Page.navigate({ url: urlToReload });
+    await delay(1000);
     const answer = await raceWithDisconnect(waitForAssistantResponse(Runtime, config.timeoutMs, logger));
     answerText = answer.text;
     answerHtml = answer.html ?? '';
@@ -786,13 +797,14 @@ async function runRemoteBrowserMode(
       await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
       logger(`Prompt textarea ready (after model switch, ${promptText.length.toLocaleString()} chars queued)`);
     }
-    if (config.extendedThinking) {
-      await withRetries(() => ensureExtendedThinking(Runtime, logger), {
+    // Handle thinking time selection if specified
+    if (config.thinkingTime) {
+      await withRetries(() => ensureThinkingTime(Runtime, config.thinkingTime!, logger), {
         retries: 2,
         delayMs: 300,
         onRetry: (attempt, error) => {
           if (options.verbose) {
-            logger(`[retry] Extended thinking attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`);
+            logger(`[retry] Thinking time (${config.thinkingTime}) attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`);
           }
         },
       });

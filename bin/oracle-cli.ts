@@ -117,6 +117,7 @@ interface CliOptions extends OptionValues {
   browserHideWindow?: boolean;
   browserKeepBrowser?: boolean;
   browserManualLogin?: boolean;
+  browserThinkingTime?: 'light' | 'standard' | 'extended' | 'heavy';
   browserExtendedThinking?: boolean;
   browserAllowCookieErrors?: boolean;
   browserAttachments?: string;
@@ -369,7 +370,15 @@ program
   .addOption(new Option('--browser-headless', 'Launch Chrome in headless mode.').hideHelp())
   .addOption(new Option('--browser-hide-window', 'Hide the Chrome window after launch (macOS headful only).').hideHelp())
   .addOption(new Option('--browser-keep-browser', 'Keep Chrome running after completion.').hideHelp())
-  .addOption(new Option('--browser-extended-thinking', 'Select Extended thinking time for GPT-5.2 Thinking model.').hideHelp())
+  .addOption(
+    new Option('--browser-thinking-time <level>', 'Thinking time intensity for Thinking/Pro models: light, standard, extended, heavy.')
+      .choices(['light', 'standard', 'extended', 'heavy'])
+      .hideHelp(),
+  )
+  .addOption(
+    new Option('--browser-extended-thinking', 'Deprecated: use --browser-thinking-time extended instead.')
+      .hideHelp(),
+  )
   .addOption(
     new Option('--browser-allow-cookie-errors', 'Continue even if Chrome cookies cannot be copied.').hideHelp(),
   )

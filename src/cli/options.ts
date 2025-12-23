@@ -206,6 +206,13 @@ export function inferModelFromLabel(modelValue: string): ModelName {
   if ((normalized.includes('5.2') || normalized.includes('5_2')) && normalized.includes('pro')) {
     return 'gpt-5.2-pro';
   }
+  // Browser-only: pass through 5.2 thinking/instant variants for browser label mapping
+  if ((normalized.includes('5.2') || normalized.includes('5_2')) && normalized.includes('thinking')) {
+    return 'gpt-5.2-thinking' as ModelName;
+  }
+  if ((normalized.includes('5.2') || normalized.includes('5_2')) && normalized.includes('instant')) {
+    return 'gpt-5.2-instant';
+  }
   if (normalized.includes('5.0') || normalized.includes('5-pro')) {
     return 'gpt-5-pro';
   }
@@ -226,8 +233,11 @@ export function inferModelFromLabel(modelValue: string): ModelName {
   if (normalized.includes('5.1') || normalized.includes('5_1')) {
     return 'gpt-5.1';
   }
-  if (normalized.includes('instant') || normalized.includes('thinking') || normalized.includes('fast')) {
-    return 'gpt-5.1';
+  if (normalized.includes('thinking')) {
+    return 'gpt-5.2-thinking' as ModelName;
   }
-  return 'gpt-5.1';
+  if (normalized.includes('instant') || normalized.includes('fast')) {
+    return 'gpt-5.2-instant';
+  }
+  return 'gpt-5.2';
 }
