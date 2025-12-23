@@ -14,4 +14,13 @@ describe('browser thinking-time selection expression', () => {
     expect(expression).toContain('normalize');
     expect(expression).toContain('extended');
   });
+
+  it('targets the requested thinking time level', () => {
+    const levels = ['light', 'standard', 'extended', 'heavy'] as const;
+    for (const level of levels) {
+      const expression = buildThinkingTimeExpressionForTest(level);
+      expect(expression).toContain('const TARGET_LEVEL');
+      expect(expression).toContain(`"${level}"`);
+    }
+  });
 });

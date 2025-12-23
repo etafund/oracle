@@ -389,17 +389,9 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       }
     }
     stopThinkingMonitor = startThinkingStatusMonitor(Runtime, logger, options.verbose ?? false);
-    // After submitting a prompt, ChatGPT redirects to a conversation URL (e.g., /c/abc123).
-    // However, the UI sometimes stalls with a "thinking" indicator that never resolves,
-    // even though the response is ready. Refreshing the conversation URL forces the page
-    // to re-render with the completed response. We wait 5 seconds to ensure the URL has
-    // updated before capturing it (Pro models may take longer to generate the conversation ID).
-    await delay(5000);
-    const currentUrl = await Runtime.evaluate({ expression: 'location.href', returnByValue: true });
-    const urlToReload = (currentUrl.result?.value as string) || config.url || CHATGPT_URL;
-    await Page.navigate({ url: urlToReload });
-    await delay(1000);
-    const answer = await raceWithDisconnect(waitForAssistantResponse(Runtime, config.timeoutMs, logger));
+    const answer = await raceWithDisconnect(
+      waitForAssistantResponseWithReload(Runtime, Page, config.timeoutMs, logger),
+    );
     answerText = answer.text;
     answerHtml = answer.html ?? '';
     const copiedMarkdown = await raceWithDisconnect(
@@ -848,7 +840,7 @@ async function runRemoteBrowserMode(
       }
     }
     stopThinkingMonitor = startThinkingStatusMonitor(Runtime, logger, options.verbose ?? false);
-    const answer = await waitForAssistantResponse(Runtime, config.timeoutMs, logger);
+    const answer = await waitForAssistantResponseWithReload(Runtime, Page, config.timeoutMs, logger);
     answerText = answer.text;
     answerHtml = answer.html ?? '';
 
@@ -1027,6 +1019,48 @@ export function formatThinkingLog(startedAt: number, now: number, message: strin
     .padStart(3, ' ');
   const statusLabel = message ? ` — ${message}` : '';
   return `${pct}% [${elapsedText} / ~10m]${statusLabel}${locatorSuffix}`;
+}
+
+async function waitForAssistantResponseWithReload(
+  Runtime: ChromeClient['Runtime'],
+  Page: ChromeClient['Page'],
+  timeoutMs: number,
+  logger: BrowserLogger,
+) {
+  try {
+    return await waitForAssistantResponse(Runtime, timeoutMs, logger);
+  } catch (error) {
+    if (!shouldReloadAfterAssistantError(error)) {
+      throw error;
+    }
+    const conversationUrl = await readConversationUrl(Runtime);
+    if (!conversationUrl || !isConversationUrl(conversationUrl)) {
+      throw error;
+    }
+    logger('Assistant response stalled; reloading conversation and retrying once');
+    await Page.navigate({ url: conversationUrl });
+    await delay(1000);
+    return await waitForAssistantResponse(Runtime, timeoutMs, logger);
+  }
+}
+
+function shouldReloadAfterAssistantError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return message.includes('assistant-response') || message.includes('watchdog') || message.includes('timeout');
+}
+
+async function readConversationUrl(Runtime: ChromeClient['Runtime']): Promise<string | null> {
+  try {
+    const currentUrl = await Runtime.evaluate({ expression: 'location.href', returnByValue: true });
+    return typeof currentUrl.result?.value === 'string' ? currentUrl.result.value : null;
+  } catch {
+    return null;
+  }
+}
+
+function isConversationUrl(url: string): boolean {
+  return /\/c\/[a-z0-9-]+/i.test(url);
 }
 
 function startThinkingStatusMonitor(

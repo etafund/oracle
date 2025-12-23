@@ -172,10 +172,16 @@ describe('inferModelFromLabel', () => {
     expect(inferModelFromLabel('gpt-5.1-codex')).toBe('gpt-5.1-codex');
   });
 
-  test('infers ChatGPT Instant variants as gpt-5.1', () => {
+  test('infers 5.1 variants as gpt-5.1', () => {
     expect(inferModelFromLabel('ChatGPT 5.1 Instant')).toBe('gpt-5.1');
     expect(inferModelFromLabel('5.1 thinking')).toBe('gpt-5.1');
     expect(inferModelFromLabel(' 5.1 FAST ')).toBe('gpt-5.1');
+  });
+
+  test('infers 5.2 thinking/instant variants', () => {
+    expect(inferModelFromLabel('ChatGPT 5.2 Instant')).toBe('gpt-5.2-instant');
+    expect(inferModelFromLabel('5.2 thinking')).toBe('gpt-5.2-thinking');
+    expect(inferModelFromLabel('5_2 FAST')).toBe('gpt-5.2-instant');
   });
 
   test('infers Codex labels', () => {
@@ -200,8 +206,8 @@ describe('inferModelFromLabel', () => {
     expect(inferModelFromLabel('Grok-4-1')).toBe('grok-4.1');
   });
 
-  test('falls back to gpt-5.2-pro when label empty and to gpt-5.1 for other ambiguous strings', () => {
+  test('falls back to gpt-5.2-pro when label empty and to gpt-5.2 for other ambiguous strings', () => {
     expect(inferModelFromLabel('')).toBe('gpt-5.2-pro');
-    expect(inferModelFromLabel('something else')).toBe('gpt-5.1');
+    expect(inferModelFromLabel('something else')).toBe('gpt-5.2');
   });
 });

@@ -29,4 +29,20 @@ describe('browser model selection matchers', () => {
     expect(labelTokens.some((t) => t.includes('5.2') || t.includes('5-2'))).toBe(true);
     expect(testIdTokens.some((t) => t.includes('gpt-5.2-pro') || t.includes('gpt-5-2-pro'))).toBe(true);
   });
+
+  it('includes thinking tokens for gpt-5.2-thinking', () => {
+    const { labelTokens, testIdTokens } = buildModelMatchersLiteralForTest('gpt-5.2-thinking');
+    expect(labelTokens.some((t) => t.includes('thinking'))).toBe(true);
+    expect(labelTokens.some((t) => t.includes('5.2') || t.includes('5-2'))).toBe(true);
+    expect(testIdTokens).toContain('model-switcher-gpt-5-2-thinking');
+    expect(testIdTokens).toContain('gpt-5.2-thinking');
+  });
+
+  it('includes instant tokens for gpt-5.2-instant', () => {
+    const { labelTokens, testIdTokens } = buildModelMatchersLiteralForTest('gpt-5.2-instant');
+    expect(labelTokens.some((t) => t.includes('instant'))).toBe(true);
+    expect(labelTokens.some((t) => t.includes('5.2') || t.includes('5-2'))).toBe(true);
+    expect(testIdTokens).toContain('model-switcher-gpt-5-2-instant');
+    expect(testIdTokens).toContain('gpt-5.2-instant');
+  });
 });

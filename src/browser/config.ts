@@ -29,6 +29,8 @@ export const DEFAULT_BROWSER_CONFIG: ResolvedBrowserConfig = {
 };
 
 export function resolveBrowserConfig(config: BrowserAutomationConfig | undefined): ResolvedBrowserConfig {
+  const legacyExtendedThinking = (config as { extendedThinking?: boolean } | undefined)?.extendedThinking;
+  const thinkingTime = config?.thinkingTime ?? (legacyExtendedThinking ? 'extended' : undefined);
   const debugPortEnv = parseDebugPort(
     process.env.ORACLE_BROWSER_PORT ?? process.env.ORACLE_BROWSER_DEBUG_PORT,
   );
@@ -72,6 +74,7 @@ export function resolveBrowserConfig(config: BrowserAutomationConfig | undefined
     chromeCookiePath: config?.chromeCookiePath ?? DEFAULT_BROWSER_CONFIG.chromeCookiePath,
     debug: config?.debug ?? DEFAULT_BROWSER_CONFIG.debug,
     allowCookieErrors: config?.allowCookieErrors ?? envAllowCookieErrors ?? DEFAULT_BROWSER_CONFIG.allowCookieErrors,
+    thinkingTime,
     manualLogin,
     manualLoginProfileDir: manualLogin ? resolvedProfileDir : null,
   };
