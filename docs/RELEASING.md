@@ -1,12 +1,13 @@
 # Release Checklist (npm)
 
-> Use the runner unless noted: `export MCP_RUNNER="$PWD/runner"` then prefix commands with `$MCP_RUNNER`. For a guarded, phased flow, run `./scripts/release.sh <phase>` (gates | artifacts | publish | smoke | tag | all); it stops on the first error so you can resume after fixing issues.
+> For a guarded, phased flow, run `./scripts/release.sh <phase>` (gates | artifacts | publish | smoke | tag | all); it stops on the first error so you can resume after fixing issues.
 
 1. **Version & metadata**
    - [ ] Update `package.json` version (e.g., `1.0.0`).
    - [ ] Update any mirrored version strings (CLI banner/help, docs metadata) to match.
    - [ ] Confirm package metadata (name, description, repository, keywords, license, `files`/`.npmignore`).
    - [ ] If dependencies changed, run `pnpm install` so `pnpm-lock.yaml` is current.
+   - [ ] Source `~/.profile` so codesign/notary env vars are available before building the notifier.
 2. **Artifacts**
    - [ ] Run `pnpm run build` (ensure `dist/` is current).
    - [ ] Verify `bin` mapping in `package.json` points to `dist/bin/oracle-cli.js`.
@@ -33,7 +34,7 @@
 5. **Publish**
    - [ ] Ensure git status is clean; commit and push any pending changes.
    - [ ] `npm login` (or confirm session) & check 2FA.
-   - [ ] `npm publish --tag beta --access public` (adjust tag if needed).
+   - [ ] `npm publish --access public` (default tag = `latest`).
    - [ ] `npm view @steipete/oracle version` (and optionally `npm view @steipete/oracle time`) to confirm the registry shows the new version.
    - [ ] Verify positional prompt still works: `npx -y @steipete/oracle "Test prompt" --dry-run`.
 6. **Post-publish**
