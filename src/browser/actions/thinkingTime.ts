@@ -1,27 +1,34 @@
 import type { ChromeClient, BrowserLogger } from '../types.js';
+import type { ThinkingTimeLevel } from '../../oracle/types.js';
 import { MENU_CONTAINER_SELECTOR, MENU_ITEM_SELECTOR } from '../constants.js';
 import { logDomFailure } from '../domDebug.js';
 import { buildClickDispatcher } from './domEvents.js';
 
 type ThinkingTimeOutcome =
-  | { status: 'already-extended'; label?: string | null }
+  | { status: 'already-selected'; label?: string | null }
   | { status: 'switched'; label?: string | null }
   | { status: 'chip-not-found' }
   | { status: 'menu-not-found' }
-  | { status: 'extended-not-found' };
+  | { status: 'option-not-found' };
 
-export async function ensureExtendedThinking(
+/**
+ * Selects a specific thinking time level in ChatGPT's composer pill menu.
+ * @param level - The thinking time intensity: 'light', 'standard', 'extended', or 'heavy'
+ */
+export async function ensureThinkingTime(
   Runtime: ChromeClient['Runtime'],
+  level: ThinkingTimeLevel,
   logger: BrowserLogger,
 ) {
-  const result = await evaluateThinkingTimeSelection(Runtime);
+  const result = await evaluateThinkingTimeSelection(Runtime, level);
+  const capitalizedLevel = level.charAt(0).toUpperCase() + level.slice(1);
 
   switch (result?.status) {
-    case 'already-extended':
-      logger(`Thinking time: ${result.label ?? 'Extended'} (already selected)`);
+    case 'already-selected':
+      logger(`Thinking time: ${result.label ?? capitalizedLevel} (already selected)`);
       return;
     case 'switched':
-      logger(`Thinking time: ${result.label ?? 'Extended'}`);
+      logger(`Thinking time: ${result.label ?? capitalizedLevel}`);
       return;
     case 'chip-not-found': {
       await logDomFailure(Runtime, logger, 'thinking-chip');
@@ -31,38 +38,41 @@ export async function ensureExtendedThinking(
       await logDomFailure(Runtime, logger, 'thinking-time-menu');
       throw new Error('Unable to find the Thinking time dropdown menu.');
     }
-    case 'extended-not-found': {
-      await logDomFailure(Runtime, logger, 'extended-option');
-      throw new Error('Unable to find the Extended option in the Thinking time menu.');
+    case 'option-not-found': {
+      await logDomFailure(Runtime, logger, `${level}-option`);
+      throw new Error(`Unable to find the ${capitalizedLevel} option in the Thinking time menu.`);
     }
     default: {
       await logDomFailure(Runtime, logger, 'thinking-time-unknown');
-      throw new Error('Unknown error selecting Extended thinking time.');
+      throw new Error(`Unknown error selecting ${capitalizedLevel} thinking time.`);
     }
   }
 }
 
 /**
- * Best-effort selection of the "Extended" thinking-time option in ChatGPT's composer pill menu.
+ * Best-effort selection of a thinking time level in ChatGPT's composer pill menu.
  * Safe by default: if the pill/menu/option isn't present, we continue without throwing.
+ * @param level - The thinking time intensity: 'light', 'standard', 'extended', or 'heavy'
  */
-export async function ensureExtendedThinkingIfAvailable(
+export async function ensureThinkingTimeIfAvailable(
   Runtime: ChromeClient['Runtime'],
+  level: ThinkingTimeLevel,
   logger: BrowserLogger,
 ): Promise<boolean> {
   try {
-    const result = await evaluateThinkingTimeSelection(Runtime);
+    const result = await evaluateThinkingTimeSelection(Runtime, level);
+    const capitalizedLevel = level.charAt(0).toUpperCase() + level.slice(1);
 
     switch (result?.status) {
-      case 'already-extended':
-        logger(`Thinking time: ${result.label ?? 'Extended'} (already selected)`);
+      case 'already-selected':
+        logger(`Thinking time: ${result.label ?? capitalizedLevel} (already selected)`);
         return true;
       case 'switched':
-        logger(`Thinking time: ${result.label ?? 'Extended'}`);
+        logger(`Thinking time: ${result.label ?? capitalizedLevel}`);
         return true;
       case 'chip-not-found':
       case 'menu-not-found':
-      case 'extended-not-found':
+      case 'option-not-found':
         if (logger.verbose) {
           logger(`Thinking time: ${result.status.replaceAll('-', ' ')}; continuing with default.`);
         }
@@ -85,9 +95,10 @@ export async function ensureExtendedThinkingIfAvailable(
 
 async function evaluateThinkingTimeSelection(
   Runtime: ChromeClient['Runtime'],
+  level: ThinkingTimeLevel,
 ): Promise<ThinkingTimeOutcome | undefined> {
   const outcome = await Runtime.evaluate({
-    expression: buildThinkingTimeExpression(),
+    expression: buildThinkingTimeExpression(level),
     awaitPromise: true,
     returnByValue: true,
   });
@@ -95,15 +106,17 @@ async function evaluateThinkingTimeSelection(
   return outcome.result?.value as ThinkingTimeOutcome | undefined;
 }
 
-function buildThinkingTimeExpression(): string {
+function buildThinkingTimeExpression(level: ThinkingTimeLevel): string {
   const menuContainerLiteral = JSON.stringify(MENU_CONTAINER_SELECTOR);
   const menuItemLiteral = JSON.stringify(MENU_ITEM_SELECTOR);
+  const targetLevelLiteral = JSON.stringify(level.toLowerCase());
 
   return `(async () => {
     ${buildClickDispatcher()}
 
     const MENU_CONTAINER_SELECTOR = ${menuContainerLiteral};
     const MENU_ITEM_SELECTOR = ${menuItemLiteral};
+    const TARGET_LEVEL = ${targetLevelLiteral};
 
     const CHIP_SELECTORS = [
       '[data-testid="composer-footer-actions"] button[aria-haspopup="menu"]',
@@ -159,11 +172,11 @@ function buildThinkingTimeExpression(): string {
         return null;
       };
 
-      const findExtendedOption = (menu) => {
+      const findTargetOption = (menu) => {
         const items = menu.querySelectorAll(MENU_ITEM_SELECTOR);
         for (const item of items) {
           const text = normalize(item.textContent ?? '');
-          if (text.includes('extended')) {
+          if (text.includes(TARGET_LEVEL)) {
             return item;
           }
         }
@@ -190,18 +203,18 @@ function buildThinkingTimeExpression(): string {
           return;
         }
 
-        const extendedOption = findExtendedOption(menu);
-        if (!extendedOption) {
-          resolve({ status: 'extended-not-found' });
+        const targetOption = findTargetOption(menu);
+        if (!targetOption) {
+          resolve({ status: 'option-not-found' });
           return;
         }
 
         const alreadySelected =
-          optionIsSelected(extendedOption) ||
-          optionIsSelected(extendedOption.querySelector?.('[aria-checked="true"], [data-state="checked"], [data-state="selected"]'));
-        const label = extendedOption.textContent?.trim?.() || null;
-        dispatchClickSequence(extendedOption);
-        resolve({ status: alreadySelected ? 'already-extended' : 'switched', label });
+          optionIsSelected(targetOption) ||
+          optionIsSelected(targetOption.querySelector?.('[aria-checked="true"], [data-state="checked"], [data-state="selected"]'));
+        const label = targetOption.textContent?.trim?.() || null;
+        dispatchClickSequence(targetOption);
+        resolve({ status: alreadySelected ? 'already-selected' : 'switched', label });
       };
 
       setTimeout(attempt, INITIAL_WAIT_MS);
@@ -209,6 +222,6 @@ function buildThinkingTimeExpression(): string {
   })()`;
 }
 
-export function buildThinkingTimeExpressionForTest(): string {
-  return buildThinkingTimeExpression();
+export function buildThinkingTimeExpressionForTest(level: ThinkingTimeLevel = 'extended'): string {
+  return buildThinkingTimeExpression(level);
 }

@@ -4,7 +4,7 @@ import { createWriteStream } from 'node:fs';
 import type { WriteStream } from 'node:fs';
 import net from 'node:net';
 import type { CookieParam } from './browser/types.js';
-import type { TransportFailureReason, AzureOptions, ModelName } from './oracle.js';
+import type { TransportFailureReason, AzureOptions, ModelName, ThinkingTimeLevel } from './oracle.js';
 import { DEFAULT_MODEL } from './oracle.js';
 import { safeModelSlug } from './oracle/modelResolver.js';
 import { getOracleHomeDir } from './oracleHome.js';
@@ -33,7 +33,8 @@ export interface BrowserSessionConfig {
   remoteChrome?: { host: string; port: number } | null;
   manualLogin?: boolean;
   manualLoginProfileDir?: string | null;
-  extendedThinking?: boolean;
+  /** Thinking time intensity: 'light', 'standard', 'extended', 'heavy' */
+  thinkingTime?: ThinkingTimeLevel;
 }
 
 export interface BrowserRuntimeMetadata {

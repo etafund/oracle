@@ -117,6 +117,10 @@ function buildModelSelectionExpression(targetModel: string): string {
       if (wantsPro && !normalizedLabel.includes(' pro')) return false;
       if (wantsInstant && !normalizedLabel.includes('instant')) return false;
       if (wantsThinking && !normalizedLabel.includes('thinking')) return false;
+      // Also reject if button has variants we DON'T want
+      if (!wantsPro && normalizedLabel.includes(' pro')) return false;
+      if (!wantsInstant && normalizedLabel.includes('instant')) return false;
+      if (!wantsThinking && normalizedLabel.includes('thinking')) return false;
       return true;
     };
 
@@ -192,14 +196,21 @@ function buildModelSelectionExpression(targetModel: string): string {
             return 0;
           }
         }
-        const matches = TEST_IDS.filter((id) => id && normalizedTestId.includes(id));
-        if (matches.length > 0) {
-          // Prefer the most specific match (longest token) instead of treating any hit as equal.
-          // This prevents generic tokens (e.g. "pro") from outweighing version-specific targets.
-          const best = matches.reduce((acc, token) => (token.length > acc.length ? token : acc), '');
-          score += 200 + Math.min(900, best.length * 25);
-          if (best.startsWith('model-switcher-')) score += 120;
-          if (best.includes('gpt-')) score += 60;
+        // Exact testid matches take priority over substring matches
+        const exactMatch = TEST_IDS.find((id) => id && normalizedTestId === id);
+        if (exactMatch) {
+          score += 1500;
+          if (exactMatch.startsWith('model-switcher-')) score += 200;
+        } else {
+          const matches = TEST_IDS.filter((id) => id && normalizedTestId.includes(id));
+          if (matches.length > 0) {
+            // Prefer the most specific match (longest token) instead of treating any hit as equal.
+            // This prevents generic tokens (e.g. "pro") from outweighing version-specific targets.
+            const best = matches.reduce((acc, token) => (token.length > acc.length ? token : acc), '');
+            score += 200 + Math.min(900, best.length * 25);
+            if (best.startsWith('model-switcher-')) score += 120;
+            if (best.includes('gpt-')) score += 60;
+          }
         }
       }
       if (normalizedText && normalizedTarget) {
@@ -233,6 +244,22 @@ function buildModelSelectionExpression(targetModel: string): string {
           score -= 80;
         }
       } else if (normalizedText.includes(' pro')) {
+        score -= 40;
+      }
+      // Similarly for Thinking variant
+      if (wantsThinking) {
+        if (!normalizedText.includes('thinking') && !normalizedTestId.includes('thinking')) {
+          score -= 80;
+        }
+      } else if (normalizedText.includes('thinking') || normalizedTestId.includes('thinking')) {
+        score -= 40;
+      }
+      // Similarly for Instant variant
+      if (wantsInstant) {
+        if (!normalizedText.includes('instant') && !normalizedTestId.includes('instant')) {
+          score -= 80;
+        }
+      } else if (normalizedText.includes('instant') || normalizedTestId.includes('instant')) {
         score -= 40;
       }
       return Math.max(score, 0);
@@ -401,8 +428,24 @@ function buildModelMatchersLiteral(targetModel: string): { labelTokens: string[]
     push('gpt5-2', labelTokens);
     push('gpt52', labelTokens);
     push('chatgpt 5.2', labelTokens);
-    if (base.includes('thinking')) push('thinking', labelTokens);
-    if (base.includes('instant')) push('instant', labelTokens);
+    // Thinking variant: explicit testid for "Thinking" picker option
+    if (base.includes('thinking')) {
+      push('thinking', labelTokens);
+      testIdTokens.add('model-switcher-gpt-5-2-thinking');
+      testIdTokens.add('gpt-5-2-thinking');
+      testIdTokens.add('gpt-5.2-thinking');
+    }
+    // Instant variant: explicit testid for "Instant" picker option
+    if (base.includes('instant')) {
+      push('instant', labelTokens);
+      testIdTokens.add('model-switcher-gpt-5-2-instant');
+      testIdTokens.add('gpt-5-2-instant');
+      testIdTokens.add('gpt-5.2-instant');
+    }
+    // Base 5.2 testids (for "Auto" mode when no suffix specified)
+    if (!base.includes('thinking') && !base.includes('instant') && !base.includes('pro')) {
+      testIdTokens.add('model-switcher-gpt-5-2');
+    }
     testIdTokens.add('gpt-5-2');
     testIdTokens.add('gpt5-2');
     testIdTokens.add('gpt52');

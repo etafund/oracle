@@ -20,6 +20,8 @@ export type ProModelName = 'gpt-5.1-pro' | 'gpt-5-pro' | 'gpt-5.2-pro' | 'claude
 
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 
+export type ThinkingTimeLevel = 'light' | 'standard' | 'extended' | 'heavy';
+
 export interface AzureOptions {
   endpoint?: string;
   apiVersion?: string;

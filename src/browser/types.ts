@@ -1,6 +1,7 @@
 import type CDP from 'chrome-remote-interface';
 import type Protocol from 'devtools-protocol';
 import type { BrowserRuntimeMetadata } from '../sessionStore.js';
+import type { ThinkingTimeLevel } from '../oracle/types.js';
 
 export type ChromeClient = Awaited<ReturnType<typeof CDP>>;
 export type CookieParam = Protocol.Network.CookieParam;
@@ -58,7 +59,8 @@ export interface BrowserAutomationConfig {
   remoteChrome?: { host: string; port: number } | null;
   manualLogin?: boolean;
   manualLoginProfileDir?: string | null;
-  extendedThinking?: boolean;
+  /** Thinking time intensity level for Thinking/Pro models: light, standard, extended, heavy */
+  thinkingTime?: ThinkingTimeLevel;
 }
 
 export interface BrowserRunOptions {
@@ -94,12 +96,13 @@ export interface BrowserRunResult {
 }
 
 export type ResolvedBrowserConfig = Required<
-  Omit<BrowserAutomationConfig, 'chromeProfile' | 'chromePath' | 'chromeCookiePath' | 'desiredModel' | 'remoteChrome'>
+  Omit<BrowserAutomationConfig, 'chromeProfile' | 'chromePath' | 'chromeCookiePath' | 'desiredModel' | 'remoteChrome' | 'thinkingTime'>
 > & {
   chromeProfile?: string | null;
   chromePath?: string | null;
   chromeCookiePath?: string | null;
   desiredModel?: string | null;
+  thinkingTime?: ThinkingTimeLevel;
   debugPort?: number | null;
   inlineCookiesSource?: string | null;
   remoteChrome?: { host: string; port: number } | null;
