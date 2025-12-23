@@ -64,6 +64,12 @@ Engine auto-picks API when `OPENAI_API_KEY` is set, otherwise browser; browser i
   ```
 - Tip: set `browser.chatgptUrl` in config (or `--chatgpt-url`) to a dedicated ChatGPT project folder so browser runs don’t clutter your main history.
 
+**Codex skill**
+- Copy the bundled skill from this repo to your Codex skills folder:
+  - `mkdir -p ~/.codex/skills`
+  - `cp -R skills/oracle ~/.codex/skills/oracle`
+- Then reference it in your `AGENTS.md`/`CLAUDE.md` so Codex loads it.
+
 **MCP**
 - Run the stdio server via `oracle-mcp`.
 - Configure clients via [steipete/mcporter](https://github.com/steipete/mcporter) or `.mcp.json`; see [docs/mcp.md](docs/mcp.md) for connection examples.
