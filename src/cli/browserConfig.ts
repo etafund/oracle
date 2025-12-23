@@ -43,8 +43,6 @@ export interface BrowserFlagOptions {
   browserManualLogin?: boolean;
   /** Thinking time intensity: 'light', 'standard', 'extended', 'heavy' */
   browserThinkingTime?: ThinkingTimeLevel;
-  /** @deprecated Use browserThinkingTime instead */
-  browserExtendedThinking?: boolean;
   browserModelLabel?: string;
   browserAllowCookieErrors?: boolean;
   remoteChrome?: string;
@@ -136,8 +134,7 @@ export async function buildBrowserConfig(options: BrowserFlagOptions): Promise<B
     // Allow cookie failures by default so runs can continue without Chrome/Keychain secrets.
     allowCookieErrors: options.browserAllowCookieErrors ?? true,
     remoteChrome,
-    // --browser-thinking-time takes precedence; fall back to deprecated --browser-extended-thinking
-    thinkingTime: options.browserThinkingTime ?? (options.browserExtendedThinking ? 'extended' : undefined),
+    thinkingTime: options.browserThinkingTime,
   };
 }
 

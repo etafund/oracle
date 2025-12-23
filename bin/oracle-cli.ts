@@ -118,7 +118,6 @@ interface CliOptions extends OptionValues {
   browserKeepBrowser?: boolean;
   browserManualLogin?: boolean;
   browserThinkingTime?: 'light' | 'standard' | 'extended' | 'heavy';
-  browserExtendedThinking?: boolean;
   browserAllowCookieErrors?: boolean;
   browserAttachments?: string;
   browserInlineFiles?: boolean;
@@ -373,10 +372,6 @@ program
   .addOption(
     new Option('--browser-thinking-time <level>', 'Thinking time intensity for Thinking/Pro models: light, standard, extended, heavy.')
       .choices(['light', 'standard', 'extended', 'heavy'])
-      .hideHelp(),
-  )
-  .addOption(
-    new Option('--browser-extended-thinking', 'Deprecated: use --browser-thinking-time extended instead.')
       .hideHelp(),
   )
   .addOption(

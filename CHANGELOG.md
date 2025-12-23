@@ -7,7 +7,7 @@
 - Dependencies: update `markdansi` to 0.1.7.
 - Dependencies: update `devtools-protocol` to 0.0.1561482.
 - CI: bump GitHub Actions to `actions/checkout@v6`, `actions/setup-node@v6`, and `pnpm/action-setup@v4` (pnpm version now comes from `packageManager`).
-- Browser: add `--browser-thinking-time <light|standard|extended|heavy>` to select thinking-time intensity in ChatGPT (legacy `--browser-extended-thinking` remains as a hidden alias).
+- Browser: add `--browser-thinking-time <light|standard|extended|heavy>` to select thinking-time intensity in ChatGPT.
 
 ### Fixed
 - Browser: prevent `chrome-launcher` from auto-killing Chrome on SIGINT so reattach sessions survive Ctrl+C.
@@ -16,7 +16,6 @@
 - Browser: throttle attachment upload pokes and pace multi-file uploads to avoid duplicate “already attached” warnings.
 - Browser: correct GPT-5.2 variant selection (Auto/Thinking/Instant/Pro) with stricter matching and improved testid scoring; thinking-time selection now supports multiple levels. Original PR #45 by Manish Malhotra (@manmal) — thank you!
 - Browser: only reload stalled conversations after an assistant-response failure (and only once), instead of always refreshing after submit.
-- Browser: preserve legacy `extendedThinking` session configs by mapping them to `thinkingTime: "extended"`.
 
 ## 0.7.2 — 2025-12-17
 
@@ -66,7 +65,7 @@
 ## 0.6.0 — 2025-12-12
 
 ### Added
-- GPT-5.2 model support (`gpt-5.2` Thinking, `gpt-5.2-instant`, `gpt-5.2-pro`) plus browser `--browser-extended-thinking` automation. Original PR #37 by Nico Bailon (@nicobailon) — thank you!
+- GPT-5.2 model support (`gpt-5.2` Thinking, `gpt-5.2-instant`, `gpt-5.2-pro`) plus browser thinking-time automation. Original PR #37 by Nico Bailon (@nicobailon) — thank you!
 
 ### Changed
 - API: `gpt-5.1-pro` now targets `gpt-5.2-pro` instead of older Pro fallbacks.
