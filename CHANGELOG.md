@@ -1,14 +1,16 @@
 # Changelog
 
-## 0.7.3 — Unreleased
+## 0.7.3 — 2025-12-23
 
 ### Changed
 - API: streaming answers in a rich TTY now use Markdansi’s live renderer (`createLiveRenderer`) so we can stream *and* render Markdown in-place.
 - Dependencies: update `markdansi` to 0.1.5.
+- Dependencies: update `devtools-protocol` to 0.0.1561482.
 
 ### Fixed
 - Browser: prevent `chrome-launcher` from auto-killing Chrome on SIGINT so reattach sessions survive Ctrl+C.
 - Sessions: running browser sessions now mark as errored when the Chrome PID/port are no longer reachable.
+- Browser: reattach now recovers even if Chrome was closed by reopening, locating the conversation in the sidebar, and resuming the response.
 
 ## 0.7.2 — 2025-12-17
 
