@@ -36,7 +36,11 @@
    - [ ] Avoid repeated browser auth: create a granular access token with **write** + **Bypass 2FA** at npmjs.com/settings/~/tokens, then export it (e.g., `export NPM_TOKEN=...` in `~/.profile`) and set `//registry.npmjs.org/:_authToken=${NPM_TOKEN}` in `~/.npmrc`.
    - [ ] Use the `NPM_TOKEN` from `~/.profile` (our “NPM out token”). If `npm publish` opens browser auth, the token wasn’t loaded—rerun with `source ~/.profile`.
    - [ ] Confirm auth: `npm whoami`.
-   - [ ] `npm publish --access public --tag latest`.
+   - [ ] Decide tag before publish:
+      - If npm `latest` is ahead (e.g., `npm view @steipete/oracle version` shows a higher major), publish with `--tag legacy`.
+      - If this should become latest, publish with `--tag latest` (or publish then `npm dist-tag add @steipete/oracle@X.Y.Z latest`).
+   - [ ] `npm publish --access public --tag <legacy|latest>` (2FA OTP required even with token).
+   - [ ] If promoting later: `npm dist-tag add @steipete/oracle@X.Y.Z latest --otp <code>` (OTP required).
    - [ ] `npm view @steipete/oracle version` (and optionally `npm view @steipete/oracle time`) to confirm the registry shows the new version.
    - [ ] Verify positional prompt still works: `npx -y @steipete/oracle "Test prompt" --dry-run`.
 6. **Homebrew (tap)**
