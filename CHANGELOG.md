@@ -3,8 +3,6 @@
 ## 0.7.4 — Unreleased
 
 ### Changed
-- Dependencies: update `markdansi` to 0.1.7.
-- CI: bump GitHub Actions to `actions/checkout@v6`, `actions/setup-node@v6`, and `pnpm/action-setup@v4` (pnpm version now comes from `packageManager`).
 - Browser: add `--browser-thinking-time <light|standard|extended|heavy>` to select thinking-time intensity in ChatGPT.
 
 ### Fixed
@@ -16,8 +14,6 @@
 
 ### Changed
 - API: streaming answers in a rich TTY now use Markdansi’s live renderer (`createLiveRenderer`) so we can stream *and* render Markdown in-place.
-- Dependencies: update `markdansi` to 0.1.5.
-- Dependencies: update `devtools-protocol` to 0.0.1561482.
 
 ### Fixed
 - Browser: prevent `chrome-launcher` from auto-killing Chrome on SIGINT so reattach sessions survive Ctrl+C.
@@ -38,7 +34,6 @@
 - API: default model is now `gpt-5.2-pro` (and “Pro” label inference prefers GPT‑5.2 Pro).
 - Tests: updated fixtures/defaults to use `gpt-5.2-pro` instead of `gpt-5.1-pro`.
 - API: clarify `gpt-5.1-pro` as a stable alias that targets `gpt-5.2-pro`.
-- Dependencies: refresh (notably `zod` 4.2.1 and `devtools-protocol` 0.0.1559729).
 - Browser: browser engine GPT selection now supports ChatGPT 5.2 (`gpt-5.2`) and ChatGPT 5.2 Pro (`gpt-5.2-pro`); legacy labels like `gpt-5.1` normalize to 5.2, and “Pro” always resolves to 5.2 Pro (ignores Legacy GPT‑5.1 Pro submenu) with a top-bar label confirmation.
 
 ### Fixed
