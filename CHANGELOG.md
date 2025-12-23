@@ -1,11 +1,12 @@
 # Changelog
 
-## 0.7.4 — 2025-12-23
+## 0.7.4 — Unreleased
 
 ### Changed
 - API: streaming answers in a rich TTY now use Markdansi’s live renderer (`createLiveRenderer`) so we can stream *and* render Markdown in-place.
-- Dependencies: update `markdansi` to 0.1.5.
+- Dependencies: update `markdansi` to 0.1.7.
 - Dependencies: update `devtools-protocol` to 0.0.1561482.
+- CI: bump GitHub Actions to `actions/checkout@v6`, `actions/setup-node@v6`, and `pnpm/action-setup@v4` (pnpm version now comes from `packageManager`).
 
 ### Fixed
 - Browser: prevent `chrome-launcher` from auto-killing Chrome on SIGINT so reattach sessions survive Ctrl+C.
