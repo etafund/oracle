@@ -34,6 +34,7 @@
 5. **Publish**
    - [ ] Ensure git status is clean; commit and push any pending changes.
    - [ ] Avoid repeated browser auth: create a granular access token with **write** + **Bypass 2FA** at npmjs.com/settings/~/tokens, then export it (e.g., `export NPM_TOKEN=...` in `~/.profile`) and set `//registry.npmjs.org/:_authToken=${NPM_TOKEN}` in `~/.npmrc`.
+   - [ ] Use the `NPM_TOKEN` from `~/.profile` (our “NPM out token”). If `npm publish` opens browser auth, the token wasn’t loaded—rerun with `source ~/.profile`.
    - [ ] Confirm auth: `npm whoami`.
    - [ ] `npm publish --access public --tag latest`.
    - [ ] `npm view @steipete/oracle version` (and optionally `npm view @steipete/oracle time`) to confirm the registry shows the new version.
