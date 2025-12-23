@@ -3,19 +3,26 @@
 ## 0.7.4 — Unreleased
 
 ### Changed
-- API: streaming answers in a rich TTY now use Markdansi’s live renderer (`createLiveRenderer`) so we can stream *and* render Markdown in-place.
 - Dependencies: update `markdansi` to 0.1.7.
-- Dependencies: update `devtools-protocol` to 0.0.1561482.
 - CI: bump GitHub Actions to `actions/checkout@v6`, `actions/setup-node@v6`, and `pnpm/action-setup@v4` (pnpm version now comes from `packageManager`).
 - Browser: add `--browser-thinking-time <light|standard|extended|heavy>` to select thinking-time intensity in ChatGPT.
+
+### Fixed
+- Browser: throttle attachment upload pokes and pace multi-file uploads to avoid duplicate “already attached” warnings.
+- Browser: correct GPT-5.2 variant selection (Auto/Thinking/Instant/Pro) with stricter matching and improved testid scoring; thinking-time selection now supports multiple levels. Original PR #45 by Manish Malhotra (@manmal) — thank you!
+- Browser: only reload stalled conversations after an assistant-response failure (and only once), instead of always refreshing after submit.
+
+## 0.7.3 — 2025-12-23
+
+### Changed
+- API: streaming answers in a rich TTY now use Markdansi’s live renderer (`createLiveRenderer`) so we can stream *and* render Markdown in-place.
+- Dependencies: update `markdansi` to 0.1.5.
+- Dependencies: update `devtools-protocol` to 0.0.1561482.
 
 ### Fixed
 - Browser: prevent `chrome-launcher` from auto-killing Chrome on SIGINT so reattach sessions survive Ctrl+C.
 - Sessions: running browser sessions now mark as errored when the Chrome PID/port are no longer reachable.
 - Browser: reattach now recovers even if Chrome was closed by reopening, locating the conversation in the sidebar, and resuming the response.
-- Browser: throttle attachment upload pokes and pace multi-file uploads to avoid duplicate “already attached” warnings.
-- Browser: correct GPT-5.2 variant selection (Auto/Thinking/Instant/Pro) with stricter matching and improved testid scoring; thinking-time selection now supports multiple levels. Original PR #45 by Manish Malhotra (@manmal) — thank you!
-- Browser: only reload stalled conversations after an assistant-response failure (and only once), instead of always refreshing after submit.
 
 ## 0.7.2 — 2025-12-17
 
