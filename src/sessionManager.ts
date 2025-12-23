@@ -2,6 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import type { WriteStream } from 'node:fs';
+import net from 'node:net';
 import type { CookieParam } from './browser/types.js';
 import type { TransportFailureReason, AzureOptions, ModelName } from './oracle.js';
 import { DEFAULT_MODEL } from './oracle.js';
@@ -175,6 +176,7 @@ const MODEL_JSON_EXTENSION = '.json';
 const MODEL_LOG_EXTENSION = '.log';
 const MAX_STATUS_LIMIT = 1000;
 const ZOMBIE_MAX_AGE_MS = 60 * 60 * 1000; // 60 minutes
+const CHROME_RUNTIME_TIMEOUT_MS = 250;
 const DEFAULT_SLUG = 'session';
 const MAX_SLUG_WORDS = 5;
 const MIN_CUSTOM_SLUG_WORDS = 3;
@@ -444,7 +446,8 @@ async function readModernSessionMetadata(sessionId: string): Promise<SessionMeta
       return null;
     }
     const enriched = await attachModelRuns(parsed, sessionId);
-    return await markZombie(enriched, { persist: false });
+    const runtimeChecked = await markDeadBrowser(enriched, { persist: false });
+    return await markZombie(runtimeChecked, { persist: false });
   } catch {
     return null;
   }
@@ -455,7 +458,8 @@ async function readLegacySessionMetadata(sessionId: string): Promise<SessionMeta
     const raw = await fs.readFile(legacySessionPath(sessionId), 'utf8');
     const parsed = JSON.parse(raw) as SessionMetadata;
     const enriched = await attachModelRuns(parsed, sessionId);
-    return await markZombie(enriched, { persist: false });
+    const runtimeChecked = await markDeadBrowser(enriched, { persist: false });
+    return await markZombie(runtimeChecked, { persist: false });
   } catch {
     return null;
   }
@@ -496,6 +500,7 @@ export async function listSessionsMetadata(): Promise<SessionMetadata[]> {
   for (const entry of entries) {
     let meta = await readSessionMetadata(entry);
     if (meta) {
+      meta = await markDeadBrowser(meta, { persist: true });
       meta = await markZombie(meta, { persist: true }); // keep stored metadata consistent with zombie detection
       metas.push(meta);
     }
@@ -673,6 +678,45 @@ async function markZombie(meta: SessionMetadata, { persist }: { persist: boolean
   return updated;
 }
 
+async function markDeadBrowser(meta: SessionMetadata, { persist }: { persist: boolean }): Promise<SessionMetadata> {
+  if (meta.status !== 'running' || meta.mode !== 'browser') {
+    return meta;
+  }
+  const runtime = meta.browser?.runtime;
+  if (!runtime) {
+    return meta;
+  }
+  const signals: boolean[] = [];
+  if (runtime.chromePid) {
+    signals.push(isProcessAlive(runtime.chromePid));
+  }
+  if (runtime.chromePort) {
+    const host = runtime.chromeHost ?? '127.0.0.1';
+    signals.push(await isPortOpen(host, runtime.chromePort));
+  }
+  if (signals.length === 0 || signals.some(Boolean)) {
+    return meta;
+  }
+  const response = meta.response
+    ? {
+        ...meta.response,
+        status: 'error',
+        incompleteReason: meta.response.incompleteReason ?? 'chrome-disconnected',
+      }
+    : { status: 'error', incompleteReason: 'chrome-disconnected' };
+  const updated: SessionMetadata = {
+    ...meta,
+    status: 'error',
+    errorMessage: 'Browser session ended (Chrome is no longer reachable)',
+    completedAt: new Date().toISOString(),
+    response,
+  };
+  if (persist) {
+    await fs.writeFile(metaPath(meta.id), JSON.stringify(updated, null, 2), 'utf8');
+  }
+  return updated;
+}
+
 function isZombie(meta: SessionMetadata): boolean {
   if (meta.status !== 'running') {
     return false;
@@ -686,4 +730,49 @@ function isZombie(meta: SessionMetadata): boolean {
     return false;
   }
   return Date.now() - startedMs > ZOMBIE_MAX_AGE_MS;
+}
+
+function isProcessAlive(pid?: number): boolean {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+    if (code === 'ESRCH' || code === 'EINVAL') {
+      return false;
+    }
+    if (code === 'EPERM') {
+      return true;
+    }
+    return true;
+  }
+}
+
+async function isPortOpen(host: string, port: number): Promise<boolean> {
+  if (!port || port <= 0 || port > 65535) {
+    return false;
+  }
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host, port });
+    let settled = false;
+    const cleanup = (result: boolean) => {
+      if (settled) return;
+      settled = true;
+      socket.removeAllListeners();
+      socket.end();
+      socket.destroy();
+      socket.unref();
+      resolve(result);
+    };
+    const timer = setTimeout(() => cleanup(false), CHROME_RUNTIME_TIMEOUT_MS);
+    socket.once('connect', () => {
+      clearTimeout(timer);
+      cleanup(true);
+    });
+    socket.once('error', () => {
+      clearTimeout(timer);
+      cleanup(false);
+    });
+  });
 }

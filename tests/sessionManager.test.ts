@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { mkdtemp, rm, readFile, stat } from 'node:fs/promises';
+import { createServer } from 'node:net';
+import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import os from 'node:os';
 import { setOracleHomeDirOverrideForTest } from '../src/oracleHome.js';
@@ -143,6 +145,51 @@ describe('session lifecycle', () => {
     expect(zombie?.errorMessage).toMatch(/zombie/i);
     const persisted = await sessionModule.readSessionMetadata(meta.id);
     expect(persisted?.status).toBe('error');
+  });
+
+  test('keeps running browser sessions when Chrome runtime is reachable', async () => {
+    const server = createServer();
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as AddressInfo).port;
+    const meta = await sessionModule.initializeSession(
+      { prompt: 'Browser live', model: 'gpt-5.2-pro', mode: 'browser' },
+      '/tmp/cwd',
+    );
+    await sessionModule.updateSessionMetadata(meta.id, {
+      status: 'running',
+      mode: 'browser',
+      browser: {
+        runtime: {
+          chromePid: process.pid,
+          chromePort: port,
+          chromeHost: '127.0.0.1',
+        },
+      },
+    });
+    const refreshed = await sessionModule.readSessionMetadata(meta.id);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    expect(refreshed?.status).toBe('running');
+  });
+
+  test('marks running browser sessions as error when Chrome runtime is gone', async () => {
+    const meta = await sessionModule.initializeSession(
+      { prompt: 'Browser dead', model: 'gpt-5.2-pro', mode: 'browser' },
+      '/tmp/cwd',
+    );
+    await sessionModule.updateSessionMetadata(meta.id, {
+      status: 'running',
+      mode: 'browser',
+      browser: {
+        runtime: {
+          chromePid: 999999,
+          chromePort: 1,
+          chromeHost: '127.0.0.1',
+        },
+      },
+    });
+    const refreshed = await sessionModule.readSessionMetadata(meta.id);
+    expect(refreshed?.status).toBe('error');
+    expect(refreshed?.errorMessage).toMatch(/chrome/i);
   });
 });
 
