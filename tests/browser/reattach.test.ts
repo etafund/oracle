@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
-import { resumeBrowserSession } from '../../src/browser/reattach.js';
+import { resumeBrowserSession, __test__ } from '../../src/browser/reattach.js';
 import type { BrowserLogger, ChromeClient } from '../../src/browser/types.js';
 
 type FakeTarget = { targetId?: string; type?: string; url?: string };
@@ -56,5 +56,96 @@ describe('resumeBrowserSession', () => {
     );
     expect(waitForAssistantResponse).toHaveBeenCalled();
     expect(captureAssistantMarkdown).toHaveBeenCalled();
+  });
+
+  test('falls back to recovery when chrome port is missing', async () => {
+    const runtime = {
+      tabUrl: 'https://chatgpt.com/c/abc',
+    };
+    const recoverSession = vi.fn(async () => ({
+      answerText: 'fallback',
+      answerMarkdown: 'fallback-md',
+    }));
+    const logger = vi.fn() as BrowserLogger;
+
+    const result = await resumeBrowserSession(runtime, {}, logger, { recoverSession });
+
+    expect(result.answerMarkdown).toBe('fallback-md');
+    expect(recoverSession).toHaveBeenCalled();
+  });
+
+  test('falls back to recovery when existing chrome attach fails', async () => {
+    const runtime = {
+      chromePort: 51559,
+      chromeHost: '127.0.0.1',
+    };
+    const listTargets = vi.fn(async () => {
+      throw new Error('no targets');
+    }) as unknown as () => Promise<FakeTarget[]>;
+    const recoverSession = vi.fn(async () => ({
+      answerText: 'fallback',
+      answerMarkdown: 'fallback-md',
+    }));
+    const logger = vi.fn() as BrowserLogger;
+
+    const result = await resumeBrowserSession(runtime, {}, logger, { listTargets, recoverSession });
+
+    expect(result.answerText).toBe('fallback');
+    expect(recoverSession).toHaveBeenCalled();
+  });
+});
+
+describe('reattach helpers', () => {
+  const { pickTarget, extractConversationIdFromUrl, buildConversationUrl, openConversationFromSidebar } = __test__;
+
+  test('extracts conversation id from a chat URL', () => {
+    expect(extractConversationIdFromUrl('https://chatgpt.com/c/abc-123')).toBe('abc-123');
+    expect(extractConversationIdFromUrl('')).toBeUndefined();
+  });
+
+  test('builds conversation URL from tabUrl or conversationId', () => {
+    expect(
+      buildConversationUrl({ tabUrl: 'https://chatgpt.com/c/live', conversationId: 'ignored' }, 'https://chatgpt.com/'),
+    ).toBe('https://chatgpt.com/c/live');
+    expect(buildConversationUrl({ conversationId: 'abc' }, 'https://chatgpt.com/')).toBe('https://chatgpt.com/c/abc');
+  });
+
+  test('pickTarget prefers chromeTargetId, then tabUrl, then first page', () => {
+    const targets = [
+      { targetId: 't-1', type: 'page', url: 'https://chatgpt.com/c/first' },
+      { targetId: 't-2', type: 'page', url: 'https://chatgpt.com/c/second' },
+      { targetId: 't-3', type: 'page', url: 'about:blank' },
+    ];
+    expect(pickTarget(targets, { chromeTargetId: 't-2' })).toEqual(targets[1]);
+    expect(pickTarget(targets, { tabUrl: 'https://chatgpt.com/c/first' })).toEqual(targets[0]);
+    expect(pickTarget(targets, {})).toEqual(targets[0]);
+  });
+
+  test('openConversationFromSidebar passes conversationId and projects preference', async () => {
+    const evaluate = vi.fn(async () => ({
+      result: { value: { ok: true, href: 'https://chatgpt.com/c/abc', count: 3 } },
+    }));
+    const runtime = { evaluate } as unknown as ChromeClient['Runtime'];
+
+    const ok = await openConversationFromSidebar(runtime, { conversationId: 'abc', preferProjects: true });
+
+    expect(ok).toBe(true);
+    const call = evaluate.mock.calls[0]?.[0];
+    expect(call?.expression).toContain('const conversationId = "abc"');
+    expect(call?.expression).toContain('const preferProjects = true');
+  });
+
+  test('openConversationFromSidebar handles missing conversationId', async () => {
+    const evaluate = vi.fn(async () => ({
+      result: { value: { ok: false, count: 0 } },
+    }));
+    const runtime = { evaluate } as unknown as ChromeClient['Runtime'];
+
+    const ok = await openConversationFromSidebar(runtime, { preferProjects: false });
+
+    expect(ok).toBe(false);
+    const call = evaluate.mock.calls[0]?.[0];
+    expect(call?.expression).toContain('const conversationId = null');
+    expect(call?.expression).toContain('const preferProjects = false');
   });
 });

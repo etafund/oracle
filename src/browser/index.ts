@@ -72,12 +72,14 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     if (!runtimeHintCb || !chrome?.port) {
       return;
     }
+    const conversationId = lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined;
     const hint = {
       chromePid: chrome.pid,
       chromePort: chrome.port,
       chromeHost,
       chromeTargetId: lastTargetId,
       tabUrl: lastUrl,
+      conversationId,
       userDataDir,
       controllerPid: process.pid,
     };
@@ -1101,6 +1103,11 @@ function isWsl(): boolean {
   if (process.platform !== 'linux') return false;
   if (process.env.WSL_DISTRO_NAME) return true;
   return os.release().toLowerCase().includes('microsoft');
+}
+
+function extractConversationIdFromUrl(url: string): string | undefined {
+  const match = url.match(/\/c\/([a-zA-Z0-9-]+)/);
+  return match?.[1];
 }
 
 async function resolveUserDataBaseDir(): Promise<string> {

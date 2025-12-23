@@ -12,8 +12,9 @@ async function loadRunOracleWithTty(isTty: boolean, mockRendered?: string) {
   // In Vitest, Chalk can be preloaded before FORCE_COLOR is set, so force a non-zero level.
   vi.doMock('chalk', async () => {
     const actual = await vi.importActual<typeof import('chalk')>('chalk');
-    const ChalkCtor = (actual as unknown as { Chalk?: new (opts: { level: number }) => unknown }).Chalk;
-    const forced = ChalkCtor ? new ChalkCtor({ level: 1 }) : actual.default;
+    // biome-ignore lint/style/useNamingConvention: Chalk exports use PascalCase
+    const CHALK_CTOR = (actual as unknown as { Chalk?: new (opts: { level: number }) => unknown }).Chalk;
+    const forced = CHALK_CTOR ? new CHALK_CTOR({ level: 1 }) : actual.default;
     return { ...(actual as unknown as Record<string, unknown>), default: forced };
   });
   if (mockRendered) {

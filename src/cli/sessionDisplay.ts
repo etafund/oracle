@@ -124,11 +124,14 @@ export async function attachSession(sessionId: string, options?: AttachSessionOp
   const runtime = metadata.browser?.runtime;
   const controllerAlive = isProcessAlive(runtime?.controllerPid);
 
+  const hasChromeDisconnect = metadata.response?.incompleteReason === 'chrome-disconnected';
+  const statusAllowsReattach = metadata.status === 'running' || (metadata.status === 'error' && hasChromeDisconnect);
+  const hasFallbackSessionInfo = Boolean(runtime?.chromePort || runtime?.tabUrl || runtime?.conversationId);
   const canReattach =
-    metadata.status === 'running' &&
+    statusAllowsReattach &&
     metadata.mode === 'browser' &&
-    runtime?.chromePort &&
-    (metadata.response?.incompleteReason === 'chrome-disconnected' || (runtime.controllerPid && !controllerAlive));
+    hasFallbackSessionInfo &&
+    (hasChromeDisconnect || (runtime?.controllerPid && !controllerAlive));
 
   if (canReattach) {
     const portInfo = runtime?.chromePort ? `port ${runtime.chromePort}` : 'unknown port';

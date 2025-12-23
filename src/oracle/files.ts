@@ -28,7 +28,15 @@ export async function readFiles(
 
   let candidatePaths: string[] = [];
   if (useNativeFilesystem) {
-    candidatePaths = await expandWithNativeGlob(partitioned, cwd);
+    if (
+      partitioned.globPatterns.length === 0 &&
+      partitioned.excludePatterns.length === 0 &&
+      partitioned.literalDirectories.length === 0
+    ) {
+      candidatePaths = Array.from(new Set(partitioned.literalFiles));
+    } else {
+      candidatePaths = await expandWithNativeGlob(partitioned, cwd);
+    }
   } else {
     if (partitioned.globPatterns.length > 0 || partitioned.excludePatterns.length > 0) {
       throw new Error('Glob patterns and exclusions are only supported for on-disk files.');
