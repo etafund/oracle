@@ -16,6 +16,7 @@ Oracle bundles your prompt and files so another AI can answer with real context.
 ## Quick start
 
 Install globally: `npm install -g @steipete/oracle`
+Homebrew: `brew install steipete/tap/oracle`
 
 Use `npx -y @steipete/oracle …` (not `pnpx`)—pnpx's sandboxed cache can’t load the sqlite bindings and will throw missing `node_sqlite3.node` errors.
 
