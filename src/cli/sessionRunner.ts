@@ -280,13 +280,18 @@ export async function performSessionRun({
           ),
         )
         .join('/');
+      const tokensPart = (() => {
+        const parts = tokensDisplay.split('/');
+        if (parts.length !== 4) return tokensDisplay;
+        return `↑${parts[0]} ↓${parts[1]} ↻${parts[2]} Δ${parts[3]}`;
+      })();
       const statusColor = summary.rejected.length === 0 ? kleur.green : summary.fulfilled.length > 0 ? kleur.yellow : kleur.red;
       const overallText = `${summary.fulfilled.length}/${multiModels.length} models`;
       const { line1 } = formatFinishLine({
         elapsedMs: summary.elapsedMs,
         model: overallText,
         costUsd: aggregateUsage.cost ?? null,
-        tokensPart: `${tokensDisplay} (i/o/r/Σ)`,
+        tokensPart,
       });
       log(statusColor(line1));
 

@@ -624,6 +624,11 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
   const tokensDisplay = [inputTokens, outputTokens, reasoningTokens, totalTokens]
     .map((value, index) => formatTokenValue(value, usage, index))
     .join('/');
+  const tokensPart = (() => {
+    const parts = tokensDisplay.split('/');
+    if (parts.length !== 4) return tokensDisplay;
+    return `↑${parts[0]} ↓${parts[1]} ↻${parts[2]} Δ${parts[3]}`;
+  })();
 
   const modelPart = sessionIdContainsModel ? null : modelLabel;
   const actualInput = usage.input_tokens;
@@ -639,7 +644,7 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
     elapsedMs,
     model: modelPart,
     costUsd: cost ?? null,
-    tokensPart: `${tokensDisplay} (i/o/r/Σ)`,
+    tokensPart,
     summaryExtraParts: options.sessionId ? [`sid=${options.sessionId}`] : null,
     detailParts: [
       estActualPart,

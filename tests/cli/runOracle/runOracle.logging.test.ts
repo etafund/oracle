@@ -418,7 +418,7 @@ describe('api key logging', () => {
       },
     );
 
-    const finished = logs.find((line) => line.includes('(i/o/r/Σ)'));
+    const finished = logs.find((line) => line.includes('↑') && line.includes('↓') && line.includes('Δ'));
     expect(finished).toBeDefined();
     expect(finished).not.toContain('tok(');
     expect(finished).not.toContain('tokens (');
@@ -444,7 +444,7 @@ describe('api key logging', () => {
       },
     );
 
-    const finished = logs.find((line) => line.includes('(i/o/r/Σ)'));
+    const finished = logs.find((line) => line.includes('↑') && line.includes('↓') && line.includes('Δ'));
     expect(finished).toBeDefined();
     expect(finished).not.toContain('tok(');
     expect(finished).not.toContain('tokens (');

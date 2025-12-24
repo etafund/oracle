@@ -45,7 +45,7 @@ describe('runOracle streaming output', () => {
     expect(result.mode).toBe('live');
     expect(writes.join('')).toBe('Hello world');
     expect(logs.some((line) => line.includes('Calling '))).toBe(true);
-    expect(logs.some((line) => line.includes('(i/o/r/Σ)'))).toBe(true);
+    expect(logs.some((line) => line.includes('↑') && line.includes('↓') && line.includes('Δ'))).toBe(true);
   });
 
   test('silent mode suppresses streamed answer output', async () => {
@@ -76,7 +76,7 @@ describe('runOracle streaming output', () => {
 
     expect(writes).toEqual([]);
     expect(logs.some((line) => line.includes('Calling '))).toBe(true);
-    const finishedLine = logs.find((line) => line.includes('(i/o/r/Σ)'));
+    const finishedLine = logs.find((line) => line.includes('↑') && line.includes('↓') && line.includes('Δ'));
     expect(finishedLine).toBeDefined();
   });
 

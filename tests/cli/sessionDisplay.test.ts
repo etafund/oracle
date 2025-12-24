@@ -315,7 +315,9 @@ describe('attachSession rendering', () => {
 
     await attachSession('sess', { renderMarkdown: true });
 
-    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('(i/o/r/Σ)'));
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('↑'));
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('↓'));
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Δ'));
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('$1.23'));
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('slug=sess'));
   });

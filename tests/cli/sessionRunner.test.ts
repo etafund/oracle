@@ -424,7 +424,9 @@ describe('performSessionRun', () => {
     expect((logsCombined.match(/Tip: no files attached/g) ?? []).length).toBe(1);
     expect((logsCombined.match(/Tip: brief prompts often yield generic answers/g) ?? []).length).toBe(1);
     expect(logsCombined).toContain('2/2 models');
-    expect(logsCombined).toContain('(i/o/r/Σ)');
+    expect(logsCombined).toContain('↑');
+    expect(logsCombined).toContain('↓');
+    expect(logsCombined).toContain('Δ');
 
     writeSpy.mockRestore();
     logSpy.mockRestore();

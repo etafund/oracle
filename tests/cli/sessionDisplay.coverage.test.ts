@@ -107,7 +107,7 @@ describe('sessionDisplay helpers', () => {
       options: { file: ['a'] },
     };
     const summary = formatCompletionSummary(summaryMeta, { includeSlug: true });
-    expect(summary).toContain('10/20/0/30 (i/o/r/Σ)');
+    expect(summary).toContain('↑10 ↓20 ↻0 Δ30');
     expect(summary).toContain('slug=s2');
   });
 });

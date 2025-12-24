@@ -237,7 +237,7 @@ describe('runBrowserSessionExecution', () => {
       },
     );
 
-    const finishedLine = log.mock.calls.map((c) => String(c[0])).find((line) => line.includes('(i/o/r/Σ)'));
+    const finishedLine = log.mock.calls.map((c) => String(c[0])).find((line) => line.includes('↑') && line.includes('↓') && line.includes('Δ'));
     expect(finishedLine).toBeDefined();
     expect(finishedLine).toContain('[browser]');
     expect(finishedLine).not.toContain('tok(');
@@ -275,7 +275,7 @@ describe('runBrowserSessionExecution', () => {
       },
     );
 
-    const finishedLine = log.mock.calls.map((c) => String(c[0])).find((line) => line.includes('(i/o/r/Σ)'));
+    const finishedLine = log.mock.calls.map((c) => String(c[0])).find((line) => line.includes('↑') && line.includes('↓') && line.includes('Δ'));
     expect(finishedLine).toBeDefined();
     expect(finishedLine).toContain('[browser]');
     expect(finishedLine).not.toContain('tok(');

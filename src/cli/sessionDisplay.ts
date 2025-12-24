@@ -616,6 +616,11 @@ export function formatCompletionSummary(
       }, index),
     )
     .join('/');
+  const tokensPart = (() => {
+    const parts = tokensDisplay.split('/');
+    if (parts.length !== 4) return tokensDisplay;
+    return `↑${parts[0]} ↓${parts[1]} ↻${parts[2]} Δ${parts[3]}`;
+  })();
   const filesCount = metadata.options?.file?.length ?? 0;
   const filesPart = filesCount > 0 ? `files=${filesCount}` : null;
   const slugPart = options.includeSlug ? `slug=${metadata.id}` : null;
@@ -623,7 +628,7 @@ export function formatCompletionSummary(
     elapsedMs: metadata.elapsedMs,
     model: modeLabel,
     costUsd: cost ?? null,
-    tokensPart: `${tokensDisplay} (i/o/r/Σ)`,
+    tokensPart,
     detailParts: [filesPart, slugPart],
   });
   return line2 ? `${line1} | ${line2}` : line1;

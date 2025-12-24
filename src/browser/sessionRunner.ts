@@ -127,10 +127,15 @@ export async function runBrowserSessionExecution(
   ]
     .map((value) => formatTokenCount(value))
     .join('/');
+  const tokensPart = (() => {
+    const parts = tokensDisplay.split('/');
+    if (parts.length !== 4) return tokensDisplay;
+    return `↑${parts[0]} ↓${parts[1]} ↻${parts[2]} Δ${parts[3]}`;
+  })();
   const { line1, line2 } = formatFinishLine({
     elapsedMs: browserResult.tookMs,
     model: `${runOptions.model}[browser]`,
-    tokensPart: `${tokensDisplay} (i/o/r/Σ)`,
+    tokensPart,
     detailParts: [runOptions.file && runOptions.file.length > 0 ? `files=${runOptions.file.length}` : null],
   });
   log(chalk.blue(line1));
