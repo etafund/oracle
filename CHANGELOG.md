@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- CLI: compact finish line summary across API, browser, and session views.
+
 ## 0.7.5 — 2025-12-23
 
 ### Fixed

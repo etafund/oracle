@@ -423,7 +423,8 @@ describe('performSessionRun', () => {
     expect((logsCombined.match(/Calling gpt-5.1/g) ?? []).length).toBe(1);
     expect((logsCombined.match(/Tip: no files attached/g) ?? []).length).toBe(1);
     expect((logsCombined.match(/Tip: brief prompts often yield generic answers/g) ?? []).length).toBe(1);
-    expect(logsCombined).toMatch(/Finished in .*2\/2 models/);
+    expect(logsCombined).toContain('2/2 models');
+    expect(logsCombined).toContain('(i/o/r/Σ)');
 
     writeSpy.mockRestore();
     logSpy.mockRestore();

@@ -17,7 +17,8 @@ import { DEFAULT_SYSTEM_PROMPT, MODEL_CONFIGS, TOKENIZER_OPTIONS } from './confi
 import { readFiles } from './files.js';
 import { buildPrompt, buildRequestBody } from './request.js';
 import { estimateRequestTokens } from './tokenEstimate.js';
-import { formatElapsed, formatUSD } from './format.js';
+import { formatElapsed } from './format.js';
+import { formatFinishLine } from './finishLine.js';
 import { getFileTokenStats, printFileTokenStats } from './tokenStats.js';
 import {
   OracleResponseError,
@@ -616,50 +617,44 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
       })?.totalUsd
     : undefined;
 
-  const elapsedDisplay = formatElapsed(elapsedMs);
-  const statsParts: string[] = [];
   const effortLabel = modelConfig.reasoning?.effort;
   const modelLabel = effortLabel ? `${modelConfig.model}[${effortLabel}]` : modelConfig.model;
   const sessionIdContainsModel =
     typeof options.sessionId === 'string' && options.sessionId.toLowerCase().includes(modelConfig.model.toLowerCase());
-  // Avoid duplicating the model name in the prefix (session id) and the stats bundle; keep a single source of truth.
-  if (!sessionIdContainsModel) {
-    statsParts.push(modelLabel);
-  }
-  if (cost != null) {
-    statsParts.push(formatUSD(cost));
-  } else {
-    statsParts.push('cost=N/A');
-  }
   const tokensDisplay = [inputTokens, outputTokens, reasoningTokens, totalTokens]
     .map((value, index) => formatTokenValue(value, usage, index))
     .join('/');
-  const tokensLabel = options.verbose ? 'tokens (input/output/reasoning/total)' : 'tok(i/o/r/t)';
-  statsParts.push(`${tokensLabel}=${tokensDisplay}`);
-  if (options.verbose) {
-    // Only surface request-vs-response deltas when verbose is explicitly requested to keep default stats compact.
-    const actualInput = usage.input_tokens;
-    if (actualInput !== undefined) {
-      const delta = actualInput - estimatedInputTokens;
-      const deltaText =
-        delta === 0 ? '' : delta > 0 ? ` (+${delta.toLocaleString()})` : ` (${delta.toLocaleString()})`;
-      statsParts.push(
-        `est→actual=${estimatedInputTokens.toLocaleString()}→${actualInput.toLocaleString()}${deltaText}`,
-      );
-    }
-  }
-  if (!searchEnabled) {
-    statsParts.push('search=off');
-  }
-  if (files.length > 0) {
-    statsParts.push(`files=${files.length}`);
-  }
 
-  const sessionPrefix = options.sessionId ? `${options.sessionId} ` : '';
+  const modelPart = sessionIdContainsModel ? null : modelLabel;
+  const actualInput = usage.input_tokens;
+  const estActualPart = (() => {
+    if (!options.verbose) return null;
+    if (actualInput === undefined) return null;
+    const delta = actualInput - estimatedInputTokens;
+    const deltaText = delta === 0 ? '' : delta > 0 ? ` (+${delta.toLocaleString()})` : ` (${delta.toLocaleString()})`;
+    return `est→actual=${estimatedInputTokens.toLocaleString()}→${actualInput.toLocaleString()}${deltaText}`;
+  })();
+
+  const { line1, line2 } = formatFinishLine({
+    elapsedMs,
+    model: modelPart,
+    costUsd: cost ?? null,
+    tokensPart: `${tokensDisplay} (i/o/r/Σ)`,
+    summaryExtraParts: options.sessionId ? [`sid=${options.sessionId}`] : null,
+    detailParts: [
+      estActualPart,
+      !searchEnabled ? 'search=off' : null,
+      files.length > 0 ? `files=${files.length}` : null,
+    ],
+  });
+
   if (!options.silent) {
     log('');
   }
-  log(chalk.blue(`Finished ${sessionPrefix}in ${elapsedDisplay} (${statsParts.join(' | ')})`));
+  log(chalk.blue(line1));
+  if (line2) {
+    log(dim(line2));
+  }
 
   return {
     mode: 'live',

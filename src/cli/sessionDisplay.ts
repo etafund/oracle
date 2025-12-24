@@ -7,7 +7,7 @@ import type {
 } from '../sessionStore.js';
 import type { OracleResponseMetadata } from '../oracle.js';
 import { renderMarkdownAnsi } from './markdownRenderer.js';
-import { formatElapsed, formatUSD } from '../oracle/format.js';
+import { formatFinishLine } from '../oracle/finishLine.js';
 import { sessionStore, wait } from '../sessionStore.js';
 import { formatTokenCount, formatTokenValue } from '../oracle/runUtils.js';
 import type { BrowserLogger } from '../browser/types.js';
@@ -601,7 +601,6 @@ export function formatCompletionSummary(
   const modeLabel = metadata.mode === 'browser' ? `${metadata.model ?? 'n/a'}[browser]` : metadata.model ?? 'n/a';
   const usage = metadata.usage;
   const cost = resolveSessionCost(metadata);
-  const costPart = cost != null ? ` | ${formatUSD(cost)}` : '';
   const tokensDisplay = [
     usage.inputTokens ?? 0,
     usage.outputTokens ?? 0,
@@ -618,9 +617,16 @@ export function formatCompletionSummary(
     )
     .join('/');
   const filesCount = metadata.options?.file?.length ?? 0;
-  const filesPart = filesCount > 0 ? ` | files=${filesCount}` : '';
-  const slugPart = options.includeSlug ? ` | slug=${metadata.id}` : '';
-  return `Finished in ${formatElapsed(metadata.elapsedMs)} (${modeLabel}${costPart} | tok(i/o/r/t)=${tokensDisplay}${filesPart}${slugPart})`;
+  const filesPart = filesCount > 0 ? `files=${filesCount}` : null;
+  const slugPart = options.includeSlug ? `slug=${metadata.id}` : null;
+  const { line1, line2 } = formatFinishLine({
+    elapsedMs: metadata.elapsedMs,
+    model: modeLabel,
+    costUsd: cost ?? null,
+    tokensPart: `${tokensDisplay} (i/o/r/Σ)`,
+    detailParts: [filesPart, slugPart],
+  });
+  return line2 ? `${line1} | ${line2}` : line1;
 }
 
 async function readStoredPrompt(sessionId: string): Promise<string | null> {

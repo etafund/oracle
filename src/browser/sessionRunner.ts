@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 import type { RunOracleOptions } from '../oracle.js';
-import { formatElapsed } from '../oracle.js';
 import { formatTokenCount } from '../oracle/runUtils.js';
+import { formatFinishLine } from '../oracle/finishLine.js';
 import type { BrowserSessionConfig, BrowserRuntimeMetadata } from '../sessionStore.js';
 import { runBrowserMode } from '../browserMode.js';
 import type { BrowserRunResult } from '../browserMode.js';
@@ -127,12 +127,16 @@ export async function runBrowserSessionExecution(
   ]
     .map((value) => formatTokenCount(value))
     .join('/');
-  const tokensLabel = runOptions.verbose ? 'tokens (input/output/reasoning/total)' : 'tok(i/o/r/t)';
-  const statsParts = [`${runOptions.model}[browser]`, `${tokensLabel}=${tokensDisplay}`];
-  if (runOptions.file && runOptions.file.length > 0) {
-    statsParts.push(`files=${runOptions.file.length}`);
+  const { line1, line2 } = formatFinishLine({
+    elapsedMs: browserResult.tookMs,
+    model: `${runOptions.model}[browser]`,
+    tokensPart: `${tokensDisplay} (i/o/r/Σ)`,
+    detailParts: [runOptions.file && runOptions.file.length > 0 ? `files=${runOptions.file.length}` : null],
+  });
+  log(chalk.blue(line1));
+  if (line2) {
+    log(chalk.dim(line2));
   }
-  log(chalk.blue(`Finished in ${formatElapsed(browserResult.tookMs)} (${statsParts.join(' | ')})`));
   return {
     usage,
     elapsedMs: browserResult.tookMs,

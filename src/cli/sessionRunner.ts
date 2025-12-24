@@ -33,10 +33,9 @@ import { resolveModelConfig } from '../oracle/modelResolver.js';
 import { buildPrompt, buildRequestBody } from '../oracle/request.js';
 import { estimateRequestTokens } from '../oracle/tokenEstimate.js';
 import { formatTokenEstimate, formatTokenValue } from '../oracle/runUtils.js';
-import { formatElapsed } from '../oracle/format.js';
+import { formatFinishLine } from '../oracle/finishLine.js';
 import { sanitizeOscProgress } from './oscUtils.js';
 import { readFiles } from '../oracle/files.js';
-import { formatUSD } from '../oracle/format.js';
 import { cwd as getCwd } from 'node:process';
 
 const isTty = process.stdout.isTTY;
@@ -281,14 +280,15 @@ export async function performSessionRun({
           ),
         )
         .join('/');
-      const costLabel = aggregateUsage.cost != null ? formatUSD(aggregateUsage.cost) : 'cost=N/A';
       const statusColor = summary.rejected.length === 0 ? kleur.green : summary.fulfilled.length > 0 ? kleur.yellow : kleur.red;
       const overallText = `${summary.fulfilled.length}/${multiModels.length} models`;
-      log(
-        statusColor(
-          `Finished in ${formatElapsed(summary.elapsedMs)} (${overallText} | ${costLabel} | tok(i/o/r/t)=${tokensDisplay})`,
-        ),
-      );
+      const { line1 } = formatFinishLine({
+        elapsedMs: summary.elapsedMs,
+        model: overallText,
+        costUsd: aggregateUsage.cost ?? null,
+        tokensPart: `${tokensDisplay} (i/o/r/Σ)`,
+      });
+      log(statusColor(line1));
 
       const hasFailure = summary.rejected.length > 0;
       await sessionStore.updateSession(sessionMeta.id, {

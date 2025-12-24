@@ -237,9 +237,11 @@ describe('runBrowserSessionExecution', () => {
       },
     );
 
-    const finishedLine = log.mock.calls.map((c) => String(c[0])).find((line) => line.startsWith('Finished in '));
+    const finishedLine = log.mock.calls.map((c) => String(c[0])).find((line) => line.includes('(i/o/r/Σ)'));
     expect(finishedLine).toBeDefined();
-    expect(finishedLine).toContain('tokens (input/output/reasoning/total)=');
+    expect(finishedLine).toContain('[browser]');
+    expect(finishedLine).not.toContain('tok(');
+    expect(finishedLine).not.toContain('tokens (');
   });
 
   test('non-verbose output keeps short token label', async () => {
@@ -273,10 +275,11 @@ describe('runBrowserSessionExecution', () => {
       },
     );
 
-    const finishedLine = log.mock.calls.map((c) => String(c[0])).find((line) => line.startsWith('Finished in '));
+    const finishedLine = log.mock.calls.map((c) => String(c[0])).find((line) => line.includes('(i/o/r/Σ)'));
     expect(finishedLine).toBeDefined();
-    expect(finishedLine).toContain('tok(i/o/r/t)=');
-    expect(finishedLine).not.toContain('tokens (input/output/reasoning/total)=');
+    expect(finishedLine).toContain('[browser]');
+    expect(finishedLine).not.toContain('tok(');
+    expect(finishedLine).not.toContain('tokens (');
   });
 
   test('passes heartbeat interval through to browser runner', async () => {

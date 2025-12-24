@@ -107,7 +107,7 @@ describe('sessionDisplay helpers', () => {
       options: { file: ['a'] },
     };
     const summary = formatCompletionSummary(summaryMeta, { includeSlug: true });
-    expect(summary).toContain('tok(i/o/r/t)=10/20/0/30');
+    expect(summary).toContain('10/20/0/30 (i/o/r/Σ)');
     expect(summary).toContain('slug=s2');
   });
 });

@@ -245,10 +245,10 @@ describe('api key logging', () => {
         write: () => true,
       },
     );
-    const finished = logs.find((line) => line.startsWith('Finished abc123 in '));
+    const finished = logs.find((line) => line.includes('sid=abc123'));
     expect(finished).toBeDefined();
     expect(finished).toContain('abc123');
-    expect(logs.filter((line) => line.includes('Finished abc123 in')).length).toBe(1);
+    expect(logs.filter((line) => line.includes('sid=abc123')).length).toBe(1);
   });
 
   test('verbose logs insert separation before answer stream', async () => {
@@ -418,10 +418,11 @@ describe('api key logging', () => {
       },
     );
 
-    const finished = logs.find((line) => line.startsWith('Finished in '));
+    const finished = logs.find((line) => line.includes('(i/o/r/Σ)'));
     expect(finished).toBeDefined();
-    expect(finished).toContain('tokens (input/output/reasoning/total)=');
-    expect(finished).not.toContain('tok(i/o/r/t)=');
+    expect(finished).not.toContain('tok(');
+    expect(finished).not.toContain('tokens (');
+    expect(logs.some((line) => line.includes('est→actual='))).toBe(true);
   });
 
   test('non-verbose run keeps short token label', async () => {
@@ -443,10 +444,11 @@ describe('api key logging', () => {
       },
     );
 
-    const finished = logs.find((line) => line.startsWith('Finished in '));
+    const finished = logs.find((line) => line.includes('(i/o/r/Σ)'));
     expect(finished).toBeDefined();
-    expect(finished).toContain('tok(i/o/r/t)=');
-    expect(finished).not.toContain('tokens (input/output/reasoning/total)=');
+    expect(finished).not.toContain('tok(');
+    expect(finished).not.toContain('tokens (');
+    expect(logs.some((line) => line.includes('est→actual='))).toBe(false);
   });
 
   test('verbose footer separation still clean for non-streamed output', async () => {
