@@ -4,6 +4,7 @@
 
 ### Changed
 - CLI: compact finish line summary across API, browser, and session views.
+- CLI: token counts now render as `↑in ↓out ↻reasoning Δtotal`.
 
 ## 0.7.5 — 2025-12-23
 
