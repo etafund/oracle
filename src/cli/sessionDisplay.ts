@@ -149,6 +149,7 @@ export async function attachSession(sessionId: string, options?: AttachSessionOp
           }) as unknown as BrowserLogger,
           { verbose: true },
         ),
+        { promptPreview: metadata.promptPreview },
       );
       const outputTokens = estimateTokenCount(result.answerMarkdown);
       const logWriter = sessionStore.createLogWriter(sessionId);

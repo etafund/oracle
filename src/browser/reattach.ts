@@ -24,6 +24,7 @@ export interface ReattachDeps {
   waitForAssistantResponse?: typeof waitForAssistantResponse;
   captureAssistantMarkdown?: typeof captureAssistantMarkdown;
   recoverSession?: (runtime: BrowserRuntimeMetadata, config: BrowserSessionConfig | undefined) => Promise<ReattachResult>;
+  promptPreview?: string;
 }
 
 export interface ReattachResult {
@@ -98,11 +99,47 @@ export async function resumeBrowserSession(
       await DOM.enable();
     }
 
+    const ensureConversationOpen = async () => {
+      const { result } = await Runtime.evaluate({ expression: 'location.href', returnByValue: true });
+      const href = typeof result?.value === 'string' ? result.value : '';
+      if (href.includes('/c/')) {
+        return;
+      }
+      const opened = await openConversationFromSidebarWithRetry(
+        Runtime,
+        {
+          conversationId: runtime.conversationId ?? extractConversationIdFromUrl(runtime.tabUrl ?? ''),
+          preferProjects: true,
+          promptPreview: deps.promptPreview,
+        },
+        15_000,
+      );
+      if (!opened) {
+        throw new Error('Unable to locate prior ChatGPT conversation in sidebar.');
+      }
+      await waitForLocationChange(Runtime, 15_000);
+    };
+
     const waitForResponse = deps.waitForAssistantResponse ?? waitForAssistantResponse;
     const captureMarkdown = deps.captureAssistantMarkdown ?? captureAssistantMarkdown;
     const timeoutMs = config?.timeoutMs ?? 120_000;
-    const answer = await waitForResponse(Runtime, timeoutMs, logger);
-    const markdown = (await captureMarkdown(Runtime, answer.meta, logger)) ?? answer.text;
+    const pingTimeoutMs = Math.min(5_000, Math.max(1_500, Math.floor(timeoutMs * 0.05)));
+    await withTimeout(
+      Runtime.evaluate({ expression: '1+1', returnByValue: true }),
+      pingTimeoutMs,
+      'Reattach target did not respond',
+    );
+    await ensureConversationOpen();
+    const answer = await withTimeout(
+      waitForResponse(Runtime, timeoutMs, logger),
+      timeoutMs + 5_000,
+      'Reattach response timed out',
+    );
+    const markdown = (await withTimeout(
+      captureMarkdown(Runtime, answer.meta, logger),
+      15_000,
+      'Reattach markdown capture timed out',
+    )) ?? answer.text;
 
     if (client && typeof client.close === 'function') {
       try {
@@ -175,10 +212,15 @@ async function resumeBrowserSessionViaNewChrome(
     await ensureNotBlocked(Runtime, resolved.headless, logger);
     await ensurePromptReady(Runtime, resolved.inputTimeoutMs, logger);
   } else {
-    const opened = await openConversationFromSidebar(Runtime, {
-      conversationId: runtime.conversationId ?? extractConversationIdFromUrl(runtime.tabUrl ?? ''),
-      preferProjects: resolved.url !== CHATGPT_URL,
-    });
+    const opened = await openConversationFromSidebarWithRetry(
+      Runtime,
+      {
+        conversationId: runtime.conversationId ?? extractConversationIdFromUrl(runtime.tabUrl ?? ''),
+        preferProjects: resolved.url !== CHATGPT_URL,
+        promptPreview: deps.promptPreview,
+      },
+      15_000,
+    );
     if (!opened) {
       throw new Error('Unable to locate prior ChatGPT conversation in sidebar.');
     }
@@ -218,7 +260,10 @@ function extractConversationIdFromUrl(url: string): string | undefined {
 
 function buildConversationUrl(runtime: BrowserRuntimeMetadata, baseUrl: string): string | null {
   if (runtime.tabUrl) {
-    return runtime.tabUrl;
+    if (runtime.tabUrl.includes('/c/')) {
+      return runtime.tabUrl;
+    }
+    return null;
   }
   const conversationId = runtime.conversationId;
   if (!conversationId) {
@@ -232,14 +277,28 @@ function buildConversationUrl(runtime: BrowserRuntimeMetadata, baseUrl: string):
   }
 }
 
+async function withTimeout<T>(task: Promise<T>, ms: number, label: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(label)), ms);
+  });
+  return Promise.race([task, timeout]).finally(() => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  });
+}
+
 async function openConversationFromSidebar(
   Runtime: ChromeClient['Runtime'],
-  options: { conversationId?: string; preferProjects?: boolean },
+  options: { conversationId?: string; preferProjects?: boolean; promptPreview?: string },
 ): Promise<boolean> {
   const response = await Runtime.evaluate({
     expression: `(() => {
       const conversationId = ${JSON.stringify(options.conversationId ?? null)};
       const preferProjects = ${JSON.stringify(Boolean(options.preferProjects))};
+      const promptPreview = ${JSON.stringify(options.promptPreview ?? null)};
+      const promptNeedle = promptPreview ? promptPreview.trim().toLowerCase().slice(0, 100) : '';
       const nav = document.querySelector('nav') || document.querySelector('aside') || document.body;
       if (preferProjects) {
         const projectLink = Array.from(nav.querySelectorAll('a,button'))
@@ -248,27 +307,99 @@ async function openConversationFromSidebar(
           projectLink.click();
         }
       }
-      const links = Array.from(nav.querySelectorAll('a[href]'))
-        .filter((el) => el instanceof HTMLAnchorElement)
-        .map((el) => el);
-      const convoLinks = links.filter((el) => el.href.includes('/c/'));
+      const allElements = Array.from(
+        document.querySelectorAll(
+          'a,button,[role="link"],[role="button"],[data-href],[data-url],[data-conversation-id],[data-testid*="conversation"],[data-testid*="history"]',
+        ),
+      );
+      const getHref = (el) =>
+        el.getAttribute('href') ||
+        el.getAttribute('data-href') ||
+        el.getAttribute('data-url') ||
+        el.dataset?.href ||
+        el.dataset?.url ||
+        '';
+      const toCandidate = (el) => {
+        const clickable = el.closest('a,button,[role="link"],[role="button"]') || el;
+        const rawText = (el.textContent || clickable.textContent || '').trim();
+        return {
+          el,
+          clickable,
+          href: getHref(clickable) || getHref(el),
+          conversationId:
+            clickable.getAttribute('data-conversation-id') ||
+            el.getAttribute('data-conversation-id') ||
+            clickable.dataset?.conversationId ||
+            el.dataset?.conversationId ||
+            '',
+          testId: clickable.getAttribute('data-testid') || el.getAttribute('data-testid') || '',
+          text: rawText.replace(/\\s+/g, ' ').slice(0, 400),
+          inNav: Boolean(clickable.closest('nav,aside')),
+        };
+      };
+      const candidates = allElements.map(toCandidate);
+      const mainCandidates = candidates.filter((item) => !item.inNav);
+      const navCandidates = candidates.filter((item) => item.inNav);
+      const visible = (item) => {
+        const rect = item.clickable.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+      const pick = (items) => (items.find(visible) || items[0] || null);
       let target = null;
       if (conversationId) {
-        target = convoLinks.find((el) => el.href.includes('/c/' + conversationId));
+        const byId = (item) =>
+          (item.href && item.href.includes('/c/' + conversationId)) ||
+          (item.conversationId && item.conversationId === conversationId);
+        target = pick(mainCandidates.filter(byId)) || pick(navCandidates.filter(byId));
       }
-      if (!target && convoLinks.length > 0) {
-        target = convoLinks[0];
+      if (!target && promptNeedle) {
+        const byPrompt = (item) => item.text && item.text.toLowerCase().includes(promptNeedle);
+        target = pick(mainCandidates.filter(byPrompt)) || pick(navCandidates.filter(byPrompt));
+      }
+      if (!target) {
+        const byHref = (item) => item.href && item.href.includes('/c/');
+        target = pick(mainCandidates.filter(byHref)) || pick(navCandidates.filter(byHref));
+      }
+      if (!target) {
+        const byTestId = (item) => /conversation|history/i.test(item.testId || '');
+        target = pick(mainCandidates.filter(byTestId)) || pick(navCandidates.filter(byTestId));
       }
       if (target) {
-        target.scrollIntoView({ block: 'center' });
-        target.click();
-        return { ok: true, href: target.href, count: convoLinks.length };
+        target.clickable.scrollIntoView({ block: 'center' });
+        target.clickable.dispatchEvent(
+          new MouseEvent('click', { bubbles: true, cancelable: true, view: window }),
+        );
+        return {
+          ok: true,
+          href: target.href || '',
+          count: candidates.length,
+          scope: target.inNav ? 'nav' : 'main',
+        };
       }
-      return { ok: false, count: convoLinks.length };
+      return { ok: false, count: candidates.length };
     })()`,
     returnByValue: true,
   });
   return Boolean(response.result?.value?.ok);
+}
+
+async function openConversationFromSidebarWithRetry(
+  Runtime: ChromeClient['Runtime'],
+  options: { conversationId?: string; preferProjects?: boolean; promptPreview?: string },
+  timeoutMs: number,
+): Promise<boolean> {
+  const start = Date.now();
+  let attempt = 0;
+  while (Date.now() - start < timeoutMs) {
+    // Retry because project list can hydrate after initial navigation.
+    const opened = await openConversationFromSidebar(Runtime, options);
+    if (opened) {
+      return true;
+    }
+    attempt += 1;
+    await delay(attempt < 5 ? 250 : 500);
+  }
+  return false;
 }
 
 async function waitForLocationChange(Runtime: ChromeClient['Runtime'], timeoutMs: number): Promise<void> {

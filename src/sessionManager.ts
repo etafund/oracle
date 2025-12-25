@@ -668,6 +668,22 @@ async function markZombie(meta: SessionMetadata, { persist }: { persist: boolean
   if (!isZombie(meta)) {
     return meta;
   }
+  if (meta.mode === 'browser') {
+    const runtime = meta.browser?.runtime;
+    if (runtime) {
+      const signals: boolean[] = [];
+      if (runtime.chromePid) {
+        signals.push(isProcessAlive(runtime.chromePid));
+      }
+      if (runtime.chromePort) {
+        const host = runtime.chromeHost ?? '127.0.0.1';
+        signals.push(await isPortOpen(host, runtime.chromePort));
+      }
+      if (signals.some(Boolean)) {
+        return meta;
+      }
+    }
+  }
   const updated: SessionMetadata = {
     ...meta,
     status: 'error',
