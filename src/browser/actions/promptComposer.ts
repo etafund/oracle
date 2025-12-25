@@ -154,7 +154,7 @@ export async function submitPrompt(
     logger('Clicked send button');
   }
 
-  await verifyPromptCommitted(runtime, prompt, 30_000, logger);
+  await verifyPromptCommitted(runtime, prompt, 60_000, logger);
 }
 
 export async function clearPromptComposer(Runtime: ChromeClient['Runtime'], logger: BrowserLogger) {
