@@ -2,7 +2,6 @@ import { describe, expect, test } from 'vitest';
 import fs from 'node:fs/promises';
 import { runBrowserMode } from '../../src/browser/index.js';
 import { resumeBrowserSession } from '../../src/browser/reattach.js';
-import { closeRemoteChromeTarget } from '../../src/browser/chromeLifecycle.js';
 import type { BrowserLogger } from '../../src/browser/types.js';
 import type { ChromeCookiesSecureModule } from '../../src/browser/types.js';
 
@@ -96,9 +95,6 @@ function createLogger(): BrowserLogger {
         throw error;
       }
 
-      const host = runtime.chromeHost ?? '127.0.0.1';
-      const port = runtime.chromePort ?? 0;
-
       if (runtime.chromePid) {
         try {
           process.kill(runtime.chromePid);
@@ -122,9 +118,6 @@ function createLogger(): BrowserLogger {
 
       expect(reattached.answerText.toLowerCase()).toContain('live reattach');
 
-      if (runtime.chromePort && runtime.chromeTargetId) {
-        await closeRemoteChromeTarget(host, port, runtime.chromeTargetId, log);
-      }
       if (runtime.userDataDir) {
         await fs.rm(runtime.userDataDir, { recursive: true, force: true });
       }
