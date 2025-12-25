@@ -7,7 +7,7 @@ import type { CookieParam } from '../browser/types.js';
 import { getOracleHomeDir } from '../oracleHome.js';
 
 const DEFAULT_BROWSER_TIMEOUT_MS = 1_200_000;
-const DEFAULT_BROWSER_INPUT_TIMEOUT_MS = 30_000;
+const DEFAULT_BROWSER_INPUT_TIMEOUT_MS = 60_000;
 const DEFAULT_CHROME_PROFILE = 'Default';
 
 // Ordered array: most specific models first to ensure correct selection.

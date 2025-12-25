@@ -17,10 +17,11 @@ export async function waitForAssistantResponse(
   Runtime: ChromeClient['Runtime'],
   timeoutMs: number,
   logger: BrowserLogger,
+  minTurnIndex?: number,
 ): Promise<{ text: string; html?: string; meta: { turnId?: string | null; messageId?: string | null } }> {
   const start = Date.now();
   logger('Waiting for ChatGPT response');
-  const expression = buildResponseObserverExpression(timeoutMs);
+  const expression = buildResponseObserverExpression(timeoutMs, minTurnIndex);
   const evaluationPromise = Runtime.evaluate({ expression, awaitPromise: true, returnByValue: true });
   const raceReadyEvaluation = evaluationPromise.then(
     (value) => ({ kind: 'evaluation' as const, value }),
@@ -28,7 +29,7 @@ export async function waitForAssistantResponse(
       throw { source: 'evaluation' as const, error };
     },
   );
-  const pollerPromise = pollAssistantCompletion(Runtime, timeoutMs).then(
+  const pollerPromise = pollAssistantCompletion(Runtime, timeoutMs, minTurnIndex).then(
     (value) => {
       if (!value) {
         throw { source: 'poll' as const, error: new Error(ASSISTANT_POLL_TIMEOUT_ERROR) };
@@ -58,7 +59,7 @@ export async function waitForAssistantResponse(
       } else if (source === 'poll') {
         throw error;
       } else if (source === 'evaluation') {
-        const recovered = await recoverAssistantResponse(Runtime, timeoutMs, logger);
+        const recovered = await recoverAssistantResponse(Runtime, timeoutMs, logger, minTurnIndex);
         if (recovered) {
           return recovered;
         }
@@ -75,13 +76,13 @@ export async function waitForAssistantResponse(
     throw new Error('Failed to capture assistant response');
   }
 
-  const parsed = await parseAssistantEvaluationResult(Runtime, evaluation, timeoutMs, logger);
+  const parsed = await parseAssistantEvaluationResult(Runtime, evaluation, timeoutMs, logger, minTurnIndex);
   if (!parsed) {
     await logDomFailure(Runtime, logger, 'assistant-response');
     throw new Error('Unable to capture assistant response');
   }
 
-  const refreshed = await refreshAssistantSnapshot(Runtime, parsed, logger);
+  const refreshed = await refreshAssistantSnapshot(Runtime, parsed, logger, minTurnIndex);
   const candidate = refreshed ?? parsed;
   // The evaluation path can race ahead of completion. If ChatGPT is still streaming, wait for the watchdog poller.
   const elapsedMs = Date.now() - start;
@@ -93,7 +94,7 @@ export async function waitForAssistantResponse(
     ]);
     if (stopVisible && !completionVisible) {
       logger('Assistant still generating; waiting for completion');
-      const completed = await pollAssistantCompletion(Runtime, remainingMs);
+      const completed = await pollAssistantCompletion(Runtime, remainingMs, minTurnIndex);
       if (completed) {
         return completed;
       }
@@ -103,11 +104,24 @@ export async function waitForAssistantResponse(
   return candidate;
 }
 
-export async function readAssistantSnapshot(Runtime: ChromeClient['Runtime']): Promise<AssistantSnapshot | null> {
+export async function readAssistantSnapshot(
+  Runtime: ChromeClient['Runtime'],
+  minTurnIndex?: number,
+): Promise<AssistantSnapshot | null> {
   const { result } = await Runtime.evaluate({ expression: buildAssistantSnapshotExpression(), returnByValue: true });
   const value = result?.value;
   if (value && typeof value === 'object') {
-    return value as AssistantSnapshot;
+    const snapshot = value as AssistantSnapshot;
+    if (typeof minTurnIndex === 'number' && Number.isFinite(minTurnIndex)) {
+      const turnIndex = typeof snapshot.turnIndex === 'number' ? snapshot.turnIndex : null;
+      if (turnIndex === null) {
+        return snapshot;
+      }
+      if (turnIndex < minTurnIndex) {
+        return null;
+      }
+    }
+    return snapshot;
   }
   return null;
 }
@@ -148,8 +162,9 @@ async function recoverAssistantResponse(
   Runtime: ChromeClient['Runtime'],
   timeoutMs: number,
   logger: BrowserLogger,
+  minTurnIndex?: number,
 ): Promise<{ text: string; html?: string; meta: { turnId?: string | null; messageId?: string | null } } | null> {
-  const snapshot = await waitForAssistantSnapshot(Runtime, Math.min(timeoutMs, 10_000));
+  const snapshot = await waitForAssistantSnapshot(Runtime, Math.min(timeoutMs, 10_000), minTurnIndex);
   const recovered = normalizeAssistantSnapshot(snapshot);
   if (recovered) {
     logger('Recovered assistant response via polling fallback');
@@ -164,6 +179,7 @@ async function parseAssistantEvaluationResult(
   evaluation: Awaited<ReturnType<ChromeClient['Runtime']['evaluate']>>,
   timeoutMs: number,
   logger: BrowserLogger,
+  minTurnIndex?: number,
 ): Promise<{ text: string; html?: string; meta: { turnId?: string | null; messageId?: string | null } } | null> {
   const { result } = evaluation;
   if (result.type === 'object' && result.value && typeof result.value === 'object' && 'text' in result.value) {
@@ -185,14 +201,14 @@ async function parseAssistantEvaluationResult(
       normalized.includes('answer now') &&
       (normalized.includes('pro thinking') || normalized.includes('chatgpt said'))
     ) {
-      const recovered = await recoverAssistantResponse(Runtime, Math.min(timeoutMs, 10_000), logger);
+      const recovered = await recoverAssistantResponse(Runtime, Math.min(timeoutMs, 10_000), logger, minTurnIndex);
       return recovered ?? null;
     }
     return { text, html, meta: { turnId, messageId } };
   }
   const fallbackText = typeof result.value === 'string' ? cleanAssistantText(result.value as string) : '';
   if (!fallbackText) {
-    const recovered = await recoverAssistantResponse(Runtime, Math.min(timeoutMs, 10_000), logger);
+    const recovered = await recoverAssistantResponse(Runtime, Math.min(timeoutMs, 10_000), logger, minTurnIndex);
     if (recovered) {
       return recovered;
     }
@@ -205,8 +221,13 @@ async function refreshAssistantSnapshot(
   Runtime: ChromeClient['Runtime'],
   current: { text: string; html?: string; meta: { turnId?: string | null; messageId?: string | null } },
   logger: BrowserLogger,
+  minTurnIndex?: number,
 ): Promise<{ text: string; html?: string; meta: { turnId?: string | null; messageId?: string | null } } | null> {
-  const latestSnapshot = await waitForCondition(() => readAssistantSnapshot(Runtime), 5_000, 300);
+  const latestSnapshot = await waitForCondition(
+    () => readAssistantSnapshot(Runtime, minTurnIndex),
+    5_000,
+    300,
+  );
   const latest = normalizeAssistantSnapshot(latestSnapshot);
   if (!latest) {
     return null;
@@ -237,13 +258,14 @@ async function terminateRuntimeExecution(Runtime: ChromeClient['Runtime']): Prom
 async function pollAssistantCompletion(
   Runtime: ChromeClient['Runtime'],
   timeoutMs: number,
+  minTurnIndex?: number,
 ): Promise<{ text: string; html?: string; meta: { turnId?: string | null; messageId?: string | null } } | null> {
   const watchdogDeadline = Date.now() + timeoutMs;
   let previousLength = 0;
   let stableCycles = 0;
   const requiredStableCycles = 6;
   while (Date.now() < watchdogDeadline) {
-    const snapshot = await readAssistantSnapshot(Runtime);
+    const snapshot = await readAssistantSnapshot(Runtime, minTurnIndex);
     const normalized = normalizeAssistantSnapshot(snapshot);
     if (normalized) {
       const currentLength = normalized.text.length;
@@ -341,6 +363,10 @@ function normalizeAssistantSnapshot(
   if (normalized.includes('answer now') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'))) {
     return null;
   }
+  // Ignore user echo turns that can show up in project view fallbacks.
+  if (normalized.startsWith('you said')) {
+    return null;
+  }
   return {
     text,
     html: snapshot?.html ?? undefined,
@@ -348,8 +374,12 @@ function normalizeAssistantSnapshot(
   };
 }
 
-async function waitForAssistantSnapshot(Runtime: ChromeClient['Runtime'], timeoutMs: number): Promise<AssistantSnapshot | null> {
-  return waitForCondition(() => readAssistantSnapshot(Runtime), timeoutMs);
+async function waitForAssistantSnapshot(
+  Runtime: ChromeClient['Runtime'],
+  timeoutMs: number,
+  minTurnIndex?: number,
+): Promise<AssistantSnapshot | null> {
+  return waitForCondition(() => readAssistantSnapshot(Runtime, minTurnIndex), timeoutMs);
 }
 
 async function waitForCondition<T>(getter: () => Promise<T | null>, timeoutMs: number, pollIntervalMs = 400): Promise<T | null> {
@@ -367,14 +397,28 @@ async function waitForCondition<T>(getter: () => Promise<T | null>, timeoutMs: n
 function buildAssistantSnapshotExpression(): string {
   return `(() => {
     ${buildAssistantExtractor('extractAssistantTurn')}
-    return extractAssistantTurn();
+    const extracted = extractAssistantTurn();
+    const isPlaceholder = (snapshot) => {
+      const normalized = String(snapshot?.text ?? '').toLowerCase();
+      return normalized.includes('answer now') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'));
+    };
+    if (extracted && extracted.text && !isPlaceholder(extracted)) {
+      return extracted;
+    }
+    // Fallback for ChatGPT project view: answers can live outside conversation turns.
+    const fallback = ${buildMarkdownFallbackExtractor()};
+    return fallback ?? extracted;
   })()`;
 }
 
-function buildResponseObserverExpression(timeoutMs: number): string {
+function buildResponseObserverExpression(timeoutMs: number, minTurnIndex?: number): string {
   const selectorsLiteral = JSON.stringify(ANSWER_SELECTORS);
   const conversationLiteral = JSON.stringify(CONVERSATION_TURN_SELECTOR);
   const assistantLiteral = JSON.stringify(ASSISTANT_ROLE_SELECTOR);
+  const minTurnLiteral =
+    typeof minTurnIndex === 'number' && Number.isFinite(minTurnIndex) && minTurnIndex >= 0
+      ? Math.floor(minTurnIndex)
+      : -1;
   return `(() => {
     ${buildClickDispatcher()}
     const SELECTORS = ${selectorsLiteral};
@@ -400,7 +444,21 @@ function buildResponseObserverExpression(timeoutMs: number): string {
       return Boolean(node.querySelector(ASSISTANT_SELECTOR) || node.querySelector('[data-testid*="assistant"]'));
     };
 
+    const MIN_TURN_INDEX = ${minTurnLiteral};
     ${buildAssistantExtractor('extractFromTurns')}
+    // Some layouts (project view) render markdown without assistant turn wrappers.
+    const extractFromMarkdownFallback = ${buildMarkdownFallbackExtractor('MIN_TURN_INDEX')};
+
+    const acceptSnapshot = (snapshot) => {
+      if (!snapshot) return null;
+      const index = typeof snapshot.turnIndex === 'number' ? snapshot.turnIndex : -1;
+      if (MIN_TURN_INDEX >= 0) {
+        if (index < 0 || index < MIN_TURN_INDEX) {
+          return null;
+        }
+      }
+      return snapshot;
+    };
 
     const captureViaObserver = () =>
       new Promise((resolve, reject) => {
@@ -408,7 +466,15 @@ function buildResponseObserverExpression(timeoutMs: number): string {
         let stopInterval = null;
         const observer = new MutationObserver(() => {
           const extractedRaw = extractFromTurns();
-          const extracted = extractedRaw && !isAnswerNowPlaceholder(extractedRaw) ? extractedRaw : null;
+          const extractedCandidate =
+            extractedRaw && !isAnswerNowPlaceholder(extractedRaw) ? extractedRaw : null;
+          let extracted = acceptSnapshot(extractedCandidate);
+          if (!extracted) {
+            const fallbackRaw = extractFromMarkdownFallback();
+            const fallbackCandidate =
+              fallbackRaw && !isAnswerNowPlaceholder(fallbackRaw) ? fallbackRaw : null;
+            extracted = acceptSnapshot(fallbackCandidate);
+          }
           if (extracted) {
             observer.disconnect();
             if (stopInterval) {
@@ -471,8 +537,17 @@ function buildResponseObserverExpression(timeoutMs: number): string {
         let lastLength = snapshot?.text?.length ?? 0;
         while (Date.now() < deadline) {
           await new Promise((resolve) => setTimeout(resolve, settleIntervalMs));
-          const refreshed = extractFromTurns();
-          if (refreshed && !isAnswerNowPlaceholder(refreshed) && (refreshed.text?.length ?? 0) >= lastLength) {
+          const refreshedRaw = extractFromTurns();
+          const refreshedCandidate =
+            refreshedRaw && !isAnswerNowPlaceholder(refreshedRaw) ? refreshedRaw : null;
+          let refreshed = acceptSnapshot(refreshedCandidate);
+          if (!refreshed) {
+            const fallbackRaw = extractFromMarkdownFallback();
+            const fallbackCandidate =
+              fallbackRaw && !isAnswerNowPlaceholder(fallbackRaw) ? fallbackRaw : null;
+            refreshed = acceptSnapshot(fallbackCandidate);
+          }
+          if (refreshed && (refreshed.text?.length ?? 0) >= lastLength) {
             latest = refreshed;
             lastLength = refreshed.text?.length ?? lastLength;
           }
@@ -487,7 +562,13 @@ function buildResponseObserverExpression(timeoutMs: number): string {
       };
 
     const extractedRaw = extractFromTurns();
-    const extracted = extractedRaw && !isAnswerNowPlaceholder(extractedRaw) ? extractedRaw : null;
+    const extractedCandidate = extractedRaw && !isAnswerNowPlaceholder(extractedRaw) ? extractedRaw : null;
+    let extracted = acceptSnapshot(extractedCandidate);
+    if (!extracted) {
+      const fallbackRaw = extractFromMarkdownFallback();
+      const fallbackCandidate = fallbackRaw && !isAnswerNowPlaceholder(fallbackRaw) ? fallbackRaw : null;
+      extracted = acceptSnapshot(fallbackCandidate);
+    }
     if (extracted) {
       return waitForSettle(extracted);
     }
@@ -555,11 +636,39 @@ function buildAssistantExtractor(functionName: string): string {
       const messageId = messageRoot.getAttribute('data-message-id');
       const turnId = messageRoot.getAttribute('data-testid');
       if (text.trim()) {
-        return { text, html, messageId, turnId };
+        return { text, html, messageId, turnId, turnIndex: index };
       }
     }
     return null;
   };`;
+}
+
+function buildMarkdownFallbackExtractor(minTurnLiteral?: string): string {
+  const turnIndexValue = minTurnLiteral ? `(${minTurnLiteral} >= 0 ? ${minTurnLiteral} : null)` : 'null';
+  return `(() => {
+    // Project view renders answer markdown under screen-threadFlyOut, not conversation turns.
+    const root =
+      document.querySelector('section[data-testid="screen-threadFlyOut"]') ||
+      document.querySelector('[data-testid="chat-thread"]') ||
+      document;
+    if (!root) return null;
+    const markdowns = Array.from(root.querySelectorAll('.markdown'));
+    if (markdowns.length === 0) return null;
+    const assistantMarkdowns = markdowns.filter((node) => {
+      const container = node.closest('[data-message-author-role], [data-turn]');
+      if (!container) return false;
+      const role =
+        (container.getAttribute('data-message-author-role') || container.getAttribute('data-turn') || '').toLowerCase();
+      return role === 'assistant';
+    });
+    const candidates = assistantMarkdowns.length > 0 ? assistantMarkdowns : null;
+    if (!candidates) return null;
+    const lastMarkdown = candidates[candidates.length - 1];
+    const text = (lastMarkdown?.innerText || lastMarkdown?.textContent || '').trim();
+    if (!text) return null;
+    const html = lastMarkdown?.innerHTML ?? '';
+    return { text, html, messageId: null, turnId: null, turnIndex: ${turnIndexValue} };
+  })`;
 }
 
 function buildCopyExpression(meta: { messageId?: string | null; turnId?: string | null }): string {
@@ -695,6 +804,7 @@ interface AssistantSnapshot {
   html?: string;
   messageId?: string | null;
   turnId?: string | null;
+  turnIndex?: number | null;
 }
 
 const LANGUAGE_TAGS = new Set(

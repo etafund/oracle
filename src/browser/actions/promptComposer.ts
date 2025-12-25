@@ -20,13 +20,19 @@ const ENTER_KEY_EVENT = {
 const ENTER_KEY_TEXT = '\r';
 
 export async function submitPrompt(
-  deps: { runtime: ChromeClient['Runtime']; input: ChromeClient['Input']; attachmentNames?: string[] },
+  deps: {
+    runtime: ChromeClient['Runtime'];
+    input: ChromeClient['Input'];
+    attachmentNames?: string[];
+    baselineTurns?: number | null;
+    inputTimeoutMs?: number | null;
+  },
   prompt: string,
   logger: BrowserLogger,
 ) {
   const { runtime, input } = deps;
 
-  await waitForDomReady(runtime, logger);
+  await waitForDomReady(runtime, logger, deps.inputTimeoutMs ?? undefined);
   const encodedPrompt = JSON.stringify(prompt);
   const focusResult = await runtime.evaluate({
     expression: `(() => {
@@ -154,7 +160,8 @@ export async function submitPrompt(
     logger('Clicked send button');
   }
 
-  await verifyPromptCommitted(runtime, prompt, 60_000, logger);
+  const commitTimeoutMs = Math.max(60_000, deps.inputTimeoutMs ?? 0);
+  await verifyPromptCommitted(runtime, prompt, commitTimeoutMs, logger, deps.baselineTurns ?? undefined);
 }
 
 export async function clearPromptComposer(Runtime: ChromeClient['Runtime'], logger: BrowserLogger) {
@@ -187,8 +194,8 @@ export async function clearPromptComposer(Runtime: ChromeClient['Runtime'], logg
   await delay(250);
 }
 
-async function waitForDomReady(Runtime: ChromeClient['Runtime'], logger?: BrowserLogger) {
-  const deadline = Date.now() + 10_000;
+async function waitForDomReady(Runtime: ChromeClient['Runtime'], logger?: BrowserLogger, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const { result } = await Runtime.evaluate({
       expression: `(() => {
@@ -205,7 +212,7 @@ async function waitForDomReady(Runtime: ChromeClient['Runtime'], logger?: Browse
     }
     await delay(150);
   }
-  logger?.('Page did not reach ready/composer state within 10s; continuing cautiously.');
+  logger?.(`Page did not reach ready/composer state within ${timeoutMs}ms; continuing cautiously.`);
 }
 
 function buildAttachmentReadyExpression(attachmentNames: string[]): string {
@@ -306,11 +313,16 @@ async function verifyPromptCommitted(
   prompt: string,
   timeoutMs: number,
   logger?: BrowserLogger,
+  baselineTurns?: number,
 ) {
   const deadline = Date.now() + timeoutMs;
   const encodedPrompt = JSON.stringify(prompt.trim());
   const primarySelectorLiteral = JSON.stringify(PROMPT_PRIMARY_SELECTOR);
   const fallbackSelectorLiteral = JSON.stringify(PROMPT_FALLBACK_SELECTOR);
+  const baselineLiteral =
+    typeof baselineTurns === 'number' && Number.isFinite(baselineTurns) && baselineTurns >= 0
+      ? Math.floor(baselineTurns)
+      : -1;
 	const script = `(() => {
 	    const editor = document.querySelector(${primarySelectorLiteral});
 	    const fallback = document.querySelector(${fallbackSelectorLiteral});
@@ -333,9 +345,17 @@ async function verifyPromptCommitted(
 	      normalizedPromptPrefix.length > 30 &&
 	      normalizedTurns.some((text) => text.includes(normalizedPromptPrefix));
 	    const lastTurn = normalizedTurns[normalizedTurns.length - 1] ?? '';
+	    const lastMatched =
+	      normalizedPrompt.length > 0 &&
+	      (lastTurn.includes(normalizedPrompt) ||
+	        (normalizedPromptPrefix.length > 30 && lastTurn.includes(normalizedPromptPrefix)));
+	    const baseline = ${baselineLiteral};
+	    const hasNewTurn = baseline < 0 ? true : normalizedTurns.length > baseline;
 	    return {
       userMatched,
       prefixMatched,
+      lastMatched,
+      hasNewTurn,
       fallbackValue: fallback?.value ?? '',
       editorValue: editor?.innerText ?? '',
       lastTurn,
@@ -345,8 +365,8 @@ async function verifyPromptCommitted(
 
   while (Date.now() < deadline) {
     const { result } = await Runtime.evaluate({ expression: script, returnByValue: true });
-    const info = result.value as { userMatched: boolean; prefixMatched?: boolean };
-    if (info?.userMatched || info?.prefixMatched) {
+    const info = result.value as { userMatched?: boolean; prefixMatched?: boolean; lastMatched?: boolean; hasNewTurn?: boolean };
+    if (info?.hasNewTurn && (info?.lastMatched || info?.userMatched || info?.prefixMatched)) {
       return;
     }
     await delay(100);

@@ -32,7 +32,7 @@ import { uploadAttachmentViaDataTransfer } from './actions/remoteFileTransfer.js
 import { ensureThinkingTime } from './actions/thinkingTime.js';
 import { estimateTokenCount, withRetries, delay } from './utils.js';
 import { formatElapsed } from '../oracle/format.js';
-import { CHATGPT_URL } from './constants.js';
+import { CHATGPT_URL, CONVERSATION_TURN_SELECTOR } from './constants.js';
 import type { LaunchedChrome } from 'chrome-launcher';
 import { BrowserAutomationError } from '../oracle/errors.js';
 import {
@@ -306,6 +306,41 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         await emitRuntimeHint();
       }
     };
+    let conversationHintInFlight: Promise<boolean> | null = null;
+    const updateConversationHint = async (label: string, timeoutMs = 10_000): Promise<boolean> => {
+      if (!chrome?.port) {
+        return false;
+      }
+      const start = Date.now();
+      while (Date.now() - start < timeoutMs) {
+        try {
+          const { result } = await Runtime.evaluate({ expression: 'location.href', returnByValue: true });
+          if (typeof result?.value === 'string' && result.value.includes('/c/')) {
+            lastUrl = result.value;
+            if (options.verbose) {
+              logger(`[reattach] conversation url (${label}) = ${lastUrl}`);
+            }
+            await emitRuntimeHint();
+            return true;
+          }
+        } catch {
+          // ignore; keep polling until timeout
+        }
+        await delay(250);
+      }
+      return false;
+    };
+    const scheduleConversationHint = (label: string, timeoutMs?: number): void => {
+      if (conversationHintInFlight) {
+        return;
+      }
+      // Run in the background so prompt submission/streaming isn't blocked by slow URL updates.
+      conversationHintInFlight = updateConversationHint(label, timeoutMs)
+        .catch(() => false)
+        .finally(() => {
+          conversationHintInFlight = null;
+        });
+    };
     await captureRuntimeSnapshot();
     if (config.desiredModel) {
       await raceWithDisconnect(
@@ -367,15 +402,30 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         await waitForAttachmentCompletion(Runtime, waitBudget, attachmentNames, logger);
         logger('All attachments uploaded');
       }
-      await submitPrompt({ runtime: Runtime, input: Input, attachmentNames }, prompt, logger);
+      const baselineTurns = await readConversationTurnCount(Runtime, logger);
+      await submitPrompt(
+        {
+          runtime: Runtime,
+          input: Input,
+          attachmentNames,
+          baselineTurns: baselineTurns ?? undefined,
+          inputTimeoutMs: config.inputTimeoutMs ?? undefined,
+        },
+        prompt,
+        logger,
+      );
       if (attachmentNames.length > 0) {
         await waitForUserTurnAttachments(Runtime, attachmentNames, 20_000, logger);
         logger('Verified attachments present on sent user message');
       }
+      // Reattach needs a /c/ URL; ChatGPT can update it late, so poll in the background.
+      scheduleConversationHint('post-submit', config.timeoutMs ?? 120_000);
+      return baselineTurns;
     };
 
+    let baselineTurns: number | null = null;
     try {
-      await raceWithDisconnect(submitOnce(promptText, attachments));
+      baselineTurns = await raceWithDisconnect(submitOnce(promptText, attachments));
     } catch (error) {
       const isPromptTooLarge =
         error instanceof BrowserAutomationError &&
@@ -384,15 +434,25 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         logger('[browser] Inline prompt too large; retrying with file uploads.');
         await raceWithDisconnect(clearPromptComposer(Runtime, logger));
         await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
-        await raceWithDisconnect(submitOnce(fallbackSubmission.prompt, fallbackSubmission.attachments));
+        baselineTurns = await raceWithDisconnect(
+          submitOnce(fallbackSubmission.prompt, fallbackSubmission.attachments),
+        );
       } else {
         throw error;
       }
     }
     stopThinkingMonitor = startThinkingStatusMonitor(Runtime, logger, options.verbose ?? false);
     const answer = await raceWithDisconnect(
-      waitForAssistantResponseWithReload(Runtime, Page, config.timeoutMs, logger),
+      waitForAssistantResponseWithReload(
+        Runtime,
+        Page,
+        config.timeoutMs,
+        logger,
+        baselineTurns ?? undefined,
+      ),
     );
+    // Ensure we store the final conversation URL even if the UI updated late.
+    await updateConversationHint('post-response', 15_000);
     answerText = answer.text;
     answerHtml = answer.html ?? '';
     const copiedMarkdown = await raceWithDisconnect(
@@ -477,6 +537,10 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         answerText = bestText;
         answerMarkdown = bestText;
       }
+    }
+    if (connectionClosedUnexpectedly) {
+      // Bail out on mid-run disconnects so the session stays reattachable.
+      throw new Error('Chrome disconnected before completion');
     }
     stopThinkingMonitor?.();
     runStatus = 'complete';
@@ -823,11 +887,24 @@ async function runRemoteBrowserMode(
         await waitForAttachmentCompletion(Runtime, waitBudget, attachmentNames, logger);
         logger('All attachments uploaded');
       }
-      await submitPrompt({ runtime: Runtime, input: Input, attachmentNames }, prompt, logger);
+      const baselineTurns = await readConversationTurnCount(Runtime, logger);
+      await submitPrompt(
+        {
+          runtime: Runtime,
+          input: Input,
+          attachmentNames,
+          baselineTurns: baselineTurns ?? undefined,
+          inputTimeoutMs: config.inputTimeoutMs ?? undefined,
+        },
+        prompt,
+        logger,
+      );
+      return baselineTurns;
     };
 
+    let baselineTurns: number | null = null;
     try {
-      await submitOnce(promptText, attachments);
+      baselineTurns = await submitOnce(promptText, attachments);
     } catch (error) {
       const isPromptTooLarge =
         error instanceof BrowserAutomationError &&
@@ -836,13 +913,19 @@ async function runRemoteBrowserMode(
         logger('[browser] Inline prompt too large; retrying with file uploads.');
         await clearPromptComposer(Runtime, logger);
         await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
-        await submitOnce(options.fallbackSubmission.prompt, options.fallbackSubmission.attachments);
+        baselineTurns = await submitOnce(options.fallbackSubmission.prompt, options.fallbackSubmission.attachments);
       } else {
         throw error;
       }
     }
     stopThinkingMonitor = startThinkingStatusMonitor(Runtime, logger, options.verbose ?? false);
-    const answer = await waitForAssistantResponseWithReload(Runtime, Page, config.timeoutMs, logger);
+    const answer = await waitForAssistantResponseWithReload(
+      Runtime,
+      Page,
+      config.timeoutMs,
+      logger,
+      baselineTurns ?? undefined,
+    );
     answerText = answer.text;
     answerHtml = answer.html ?? '';
 
@@ -1028,9 +1111,10 @@ async function waitForAssistantResponseWithReload(
   Page: ChromeClient['Page'],
   timeoutMs: number,
   logger: BrowserLogger,
+  minTurnIndex?: number,
 ) {
   try {
-    return await waitForAssistantResponse(Runtime, timeoutMs, logger);
+    return await waitForAssistantResponse(Runtime, timeoutMs, logger, minTurnIndex);
   } catch (error) {
     if (!shouldReloadAfterAssistantError(error)) {
       throw error;
@@ -1042,7 +1126,7 @@ async function waitForAssistantResponseWithReload(
     logger('Assistant response stalled; reloading conversation and retrying once');
     await Page.navigate({ url: conversationUrl });
     await delay(1000);
-    return await waitForAssistantResponse(Runtime, timeoutMs, logger);
+    return await waitForAssistantResponse(Runtime, timeoutMs, logger, minTurnIndex);
   }
 }
 
@@ -1059,6 +1143,37 @@ async function readConversationUrl(Runtime: ChromeClient['Runtime']): Promise<st
   } catch {
     return null;
   }
+}
+
+async function readConversationTurnCount(
+  Runtime: ChromeClient['Runtime'],
+  logger?: BrowserLogger,
+): Promise<number | null> {
+  const selectorLiteral = JSON.stringify(CONVERSATION_TURN_SELECTOR);
+  const attempts = 4;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const { result } = await Runtime.evaluate({
+        expression: `document.querySelectorAll(${selectorLiteral}).length`,
+        returnByValue: true,
+      });
+      const raw = typeof result?.value === 'number' ? result.value : Number(result?.value);
+      if (!Number.isFinite(raw)) {
+        throw new Error('Turn count not numeric');
+      }
+      return Math.max(0, Math.floor(raw));
+    } catch (error) {
+      if (attempt < attempts - 1) {
+        await delay(150);
+        continue;
+      }
+      if (logger?.verbose) {
+        logger(`Failed to read conversation turn count: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      return null;
+    }
+  }
+  return null;
 }
 
 function isConversationUrl(url: string): boolean {

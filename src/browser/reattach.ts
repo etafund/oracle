@@ -369,6 +369,15 @@ async function openConversationFromSidebar(
         target.clickable.dispatchEvent(
           new MouseEvent('click', { bubbles: true, cancelable: true, view: window }),
         );
+        // Fallback: some project-sidebar items don't navigate on click, force the URL.
+        if (target.href && target.href.includes('/c/')) {
+          const targetUrl = target.href.startsWith('http')
+            ? target.href
+            : new URL(target.href, location.origin).toString();
+          if (targetUrl && targetUrl !== location.href) {
+            location.href = targetUrl;
+          }
+        }
         return {
           ok: true,
           href: target.href || '',
