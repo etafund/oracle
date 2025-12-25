@@ -58,7 +58,6 @@ const CASES = [
       if (!(await hasChatGptCookies())) return;
 
       for (const entry of CASES) {
-        let lastMessage = '';
         for (let attempt = 1; attempt <= 3; attempt += 1) {
           const { log, lines } = createLogCapture();
           try {
@@ -85,7 +84,6 @@ const CASES = [
             break;
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            lastMessage = message;
             if (message.includes('Unable to find model option')) {
               console.warn(`Skipping ${entry.name} model selection (not available for this account): ${message}`);
               break;
@@ -101,9 +99,6 @@ const CASES = [
             }
             throw error;
           }
-        }
-        if (lastMessage && lastMessage.includes('Unable to find model option')) {
-          continue;
         }
       }
     },
