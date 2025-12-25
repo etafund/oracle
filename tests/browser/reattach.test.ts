@@ -5,10 +5,13 @@ import type { BrowserLogger, ChromeClient } from '../../src/browser/types.js';
 type FakeTarget = { targetId?: string; type?: string; url?: string };
 type FakeClient = {
   // biome-ignore lint/style/useNamingConvention: mirrors DevTools protocol domain names
-  Runtime: { enable: () => void };
+  Runtime: {
+    enable: () => void;
+    evaluate: (params: { expression: string; returnByValue?: boolean }) => Promise<{ result: { value: unknown } }>;
+  };
   // biome-ignore lint/style/useNamingConvention: mirrors DevTools protocol domain names
   DOM: { enable: () => void };
-  close: () => void;
+  close: () => Promise<void> | void;
 };
 
 describe('resumeBrowserSession', () => {
