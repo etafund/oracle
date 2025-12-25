@@ -54,17 +54,44 @@ function createLogger(): BrowserLogger {
         conversationId?: string;
       } | null = null;
       try {
-        const result = await runBrowserMode({
-          prompt,
-          config: {
-            chromeProfile: 'Default',
-            url: PROJECT_URL,
-            keepBrowser: true,
-            desiredModel: 'GPT-5.2 Pro',
-            timeoutMs: 180_000,
-          },
-          log,
-        });
+        let result: Awaited<ReturnType<typeof runBrowserMode>> | null = null;
+        let lastErrorMessage = '';
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+          try {
+            result = await runBrowserMode({
+              prompt,
+              config: {
+                chromeProfile: 'Default',
+                url: PROJECT_URL,
+                keepBrowser: true,
+                desiredModel: 'GPT-5.2 Pro',
+                timeoutMs: 180_000,
+              },
+              log,
+            });
+            break;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            lastErrorMessage = message;
+            if (/Unable to find model option/i.test(message)) {
+              console.warn(`Skipping live reattach (pro model unavailable): ${message}`);
+              return;
+            }
+            const transient =
+              message.includes('Prompt did not appear in conversation before timeout') ||
+              message.includes('Chrome window closed before oracle finished') ||
+              message.includes('Reattach target did not respond');
+            if (transient && attempt < 3) {
+              console.warn(`Retrying live reattach run (attempt ${attempt + 1}/3): ${message}`);
+              await new Promise((resolve) => setTimeout(resolve, 750 * attempt));
+              continue;
+            }
+            throw error;
+          }
+        }
+        if (!result) {
+          throw new Error(`Live reattach run did not return a result: ${lastErrorMessage || 'unknown error'}`);
+        }
 
         expect(result.answerText.toLowerCase()).toContain('live reattach');
         const tabUrl = result.tabUrl ?? PROJECT_URL;
@@ -88,10 +115,6 @@ function createLogger(): BrowserLogger {
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        if (/Unable to find model option/i.test(message)) {
-          console.warn(`Skipping live reattach (pro model unavailable): ${message}`);
-          return;
-        }
         throw error;
       }
 
