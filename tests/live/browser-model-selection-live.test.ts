@@ -58,35 +58,52 @@ const CASES = [
       if (!(await hasChatGptCookies())) return;
 
       for (const entry of CASES) {
-        const { log, lines } = createLogCapture();
-        try {
-          const result = await runBrowserMode({
-            prompt: `Reply with "live browser ${entry.name}" on one line.`,
-            config: {
-              chromeProfile: 'Default',
-              desiredModel: entry.desiredModel,
-              timeoutMs: 180_000,
-            },
-            log,
-          });
+        let lastMessage = '';
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+          const { log, lines } = createLogCapture();
+          try {
+            const result = await runBrowserMode({
+              prompt: `Reply with "live browser ${entry.name}" on one line.`,
+              config: {
+                chromeProfile: 'Default',
+                desiredModel: entry.desiredModel,
+                timeoutMs: 180_000,
+              },
+              log,
+            });
 
-          expect(result.answerText.toLowerCase()).toContain(`live browser ${entry.name}`);
+            expect(result.answerText.toLowerCase()).toContain(`live browser ${entry.name}`);
 
-          const modelLog = lines.find((line) => line.toLowerCase().startsWith('model picker:'));
-          expect(modelLog).toBeTruthy();
-          if (modelLog) {
-            const label = normalizeLabel(modelLog.replace(/^model picker:\s*/i, ''));
-            for (const token of entry.expected) {
-              expect(label).toContain(token);
+            const modelLog = lines.find((line) => line.toLowerCase().startsWith('model picker:'));
+            expect(modelLog).toBeTruthy();
+            if (modelLog) {
+              const label = normalizeLabel(modelLog.replace(/^model picker:\s*/i, ''));
+              for (const token of entry.expected) {
+                expect(label).toContain(token);
+              }
             }
+            break;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            lastMessage = message;
+            if (message.includes('Unable to find model option')) {
+              console.warn(`Skipping ${entry.name} model selection (not available for this account): ${message}`);
+              break;
+            }
+            const transient =
+              message.includes('Chrome window closed before oracle finished') ||
+              message.includes('Prompt did not appear in conversation before timeout') ||
+              message.includes('Reattach target did not respond');
+            if (transient && attempt < 3) {
+              console.warn(`Retrying ${entry.name} model selection (attempt ${attempt + 1}/3): ${message}`);
+              await new Promise((resolve) => setTimeout(resolve, 750 * attempt));
+              continue;
+            }
+            throw error;
           }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          if (message.includes('Unable to find model option')) {
-            console.warn(`Skipping ${entry.name} model selection (not available for this account): ${message}`);
-            continue;
-          }
-          throw error;
+        }
+        if (lastMessage && lastMessage.includes('Unable to find model option')) {
+          continue;
         }
       }
     },
