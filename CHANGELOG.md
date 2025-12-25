@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+- Browser: harden session reattach (better conversation targeting, longer prompt-commit wait, avoid closing shared DevTools targets).
+- Live tests: add coverage + retries for browser reattach/model selection; tolerate transient OpenRouter free-tier failures.
+
 ## 0.7.6 — 2025-12-25
 
 ### Changed
