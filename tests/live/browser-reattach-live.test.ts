@@ -68,16 +68,24 @@ function createLogger(): BrowserLogger {
         });
 
         expect(result.answerText.toLowerCase()).toContain('live reattach');
+        const tabUrl = result.tabUrl ?? PROJECT_URL;
+        const conversationId = (() => {
+          const marker = '/c/';
+          const idx = tabUrl.indexOf(marker);
+          if (idx === -1) return undefined;
+          const rest = tabUrl.slice(idx + marker.length);
+          return rest.split(/[/?#]/)[0] || undefined;
+        })();
 
         runtime = {
           chromePid: result.chromePid,
           chromePort: result.chromePort,
           chromeHost: result.chromeHost ?? '127.0.0.1',
           chromeTargetId: result.chromeTargetId,
-          tabUrl: PROJECT_URL,
+          tabUrl,
           userDataDir: result.userDataDir,
           controllerPid: result.controllerPid,
-          conversationId: undefined,
+          conversationId,
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
