@@ -38,6 +38,7 @@ import {
   parseHeartbeatOption,
   parseTimeoutOption,
   mergePathLikeOptions,
+  dedupePathInputs,
 } from '../src/cli/options.js';
 import { copyToClipboard } from '../src/cli/clipboard.js';
 import { buildMarkdownBundle } from '../src/cli/markdownBundle.js';
@@ -677,7 +678,13 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     options.paths,
   );
   if (mergedFileInputs.length > 0) {
-    options.file = mergedFileInputs;
+    const { deduped, duplicates } = dedupePathInputs(mergedFileInputs, { cwd: process.cwd() });
+    if (duplicates.length > 0) {
+      const preview = duplicates.slice(0, 8).join(', ');
+      const suffix = duplicates.length > 8 ? ` (+${duplicates.length - 8} more)` : '';
+      console.log(chalk.dim(`Ignoring duplicate --file inputs: ${preview}${suffix}`));
+    }
+    options.file = deduped;
   }
   const copyMarkdown = options.copyMarkdown || options.copy;
   const renderMarkdown = resolveRenderFlag(options.render, options.renderMarkdown);

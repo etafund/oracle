@@ -11,6 +11,7 @@ import {
   normalizeModelOption,
   parseHeartbeatOption,
   mergePathLikeOptions,
+  dedupePathInputs,
 } from '../../src/cli/options.ts';
 
 describe('collectPaths', () => {
@@ -61,6 +62,24 @@ describe('mergePathLikeOptions', () => {
   test('ignores empty strings inside alias arrays', () => {
     const result = mergePathLikeOptions(['', 'src'], [''], [''], ['lib,'], [' ,tests']);
     expect(result).toEqual(['src', 'lib', 'tests']);
+  });
+});
+
+describe('dedupePathInputs', () => {
+  test('dedupes literal paths after resolving against cwd', () => {
+    const { deduped, duplicates } = dedupePathInputs(['src/a.ts', './src/a.ts', 'src/b.ts', 'src/a.ts'], {
+      cwd: '/repo',
+    });
+    expect(deduped).toEqual(['src/a.ts', 'src/b.ts']);
+    expect(duplicates).toEqual(['./src/a.ts', 'src/a.ts']);
+  });
+
+  test('dedupes repeated globs/exclusions by literal string', () => {
+    const { deduped, duplicates } = dedupePathInputs(['src/**/*.ts', 'src/**/*.ts', '!dist/**', '!dist/**'], {
+      cwd: '/repo',
+    });
+    expect(deduped).toEqual(['src/**/*.ts', '!dist/**']);
+    expect(duplicates).toEqual(['src/**/*.ts', '!dist/**']);
   });
 });
 

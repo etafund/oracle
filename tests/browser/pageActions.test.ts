@@ -240,6 +240,40 @@ describe('uploadAttachmentFile', () => {
       /unable to locate.*attachment input/i,
     );
   });
+
+  test('skips upload when attachment already present (ellipsis-aware detection)', async () => {
+    logger.mockClear();
+    let capturedPresenceExpression = '';
+    const dom = {
+      getDocument: vi.fn(),
+      querySelector: vi.fn(),
+      setFileInputFiles: vi.fn(),
+    } as unknown as ChromeClient['DOM'];
+    const runtime = {
+      evaluate: vi.fn().mockImplementation(async (params: { expression?: string }) => {
+        const expr = String(params?.expression ?? '');
+        if (expr.includes('const normalizedExpected') && expr.includes("text.includes('…')")) {
+          capturedPresenceExpression = expr;
+          return { result: { value: true } };
+        }
+        return { result: { value: false } };
+      }),
+    } as unknown as ChromeClient['Runtime'];
+
+    await expect(
+      uploadAttachmentFile(
+        { runtime, dom },
+        { path: '/tmp/SettingsStore.swift', displayPath: 'SettingsStore.swift' },
+        logger,
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(capturedPresenceExpression).toContain("text.includes('…')");
+    expect(capturedPresenceExpression).toContain("text.includes('...')");
+    expect(dom.getDocument).not.toHaveBeenCalled();
+    expect(dom.setFileInputFiles).not.toHaveBeenCalled();
+    expect(logger).toHaveBeenCalledWith(expect.stringMatching(/Attachment already present/i));
+  });
 });
 
 describe('waitForAttachmentCompletion', () => {

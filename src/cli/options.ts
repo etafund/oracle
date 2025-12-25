@@ -1,4 +1,6 @@
 import { InvalidArgumentError, type Command } from 'commander';
+import path from 'node:path';
+import fg from 'fast-glob';
 import type { ModelName, PreviewMode } from '../oracle.js';
 import { DEFAULT_MODEL, MODEL_CONFIGS } from '../oracle.js';
 
@@ -25,6 +27,37 @@ export function mergePathLikeOptions(
   const withFilesAlias = collectPaths(filesAlias, withInclude);
   const withPathAlias = collectPaths(pathAlias, withFilesAlias);
   return collectPaths(pathsAlias, withPathAlias);
+}
+
+export function dedupePathInputs(
+  inputs: string[],
+  { cwd = process.cwd() }: { cwd?: string } = {},
+): { deduped: string[]; duplicates: string[] } {
+  const deduped: string[] = [];
+  const duplicates: string[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of inputs ?? []) {
+    const raw = entry?.trim();
+    if (!raw) continue;
+
+    let key = raw;
+    if (!raw.startsWith('!') && !fg.isDynamicPattern(raw)) {
+      const absolute = path.isAbsolute(raw) ? raw : path.resolve(cwd, raw);
+      key = `path:${path.normalize(absolute)}`;
+    } else {
+      key = `pattern:${raw}`;
+    }
+
+    if (seen.has(key)) {
+      duplicates.push(raw);
+      continue;
+    }
+    seen.add(key);
+    deduped.push(raw);
+  }
+
+  return { deduped, duplicates };
 }
 
 export function collectModelList(value: string, previous: string[] = []): string[] {

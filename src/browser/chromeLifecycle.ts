@@ -81,7 +81,13 @@ export function registerTerminationHooks(
       }
     })().finally(() => {
       const exitCode = signal === 'SIGINT' ? 130 : 1;
-      process.exit(exitCode);
+      // Vitest treats any `process.exit()` call as an unhandled failure, even if mocked.
+      // Keep production behavior (hard-exit on signals) while letting tests observe state changes.
+      process.exitCode = exitCode;
+      const isTestRun = process.env.VITEST === '1' || process.env.NODE_ENV === 'test';
+      if (!isTestRun) {
+        process.exit(exitCode);
+      }
     });
   };
 

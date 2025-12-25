@@ -17,27 +17,66 @@ export async function uploadAttachmentFile(
   const isAttachmentPresent = async (name: string) => {
     const check = await runtime.evaluate({
       expression: `(() => {
-        const expected = ${JSON.stringify(name.toLowerCase())};
-        const selectors = [
+        const expected = ${JSON.stringify(name)};
+        const normalizedExpected = String(expected || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+        const expectedNoExt = normalizedExpected.replace(/\\.[a-z0-9]{1,10}$/i, '');
+        const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+        const matchesExpected = (value) => {
+          const text = normalize(value);
+          if (!text) return false;
+          if (text.includes(normalizedExpected)) return true;
+          if (expectedNoExt.length >= 6 && text.includes(expectedNoExt)) return true;
+          if (text.includes('…') || text.includes('...')) {
+            const marker = text.includes('…') ? '…' : '...';
+            const [prefixRaw, suffixRaw] = text.split(marker);
+            const prefix = normalize(prefixRaw);
+            const suffix = normalize(suffixRaw);
+            const target = expectedNoExt.length >= 6 ? expectedNoExt : normalizedExpected;
+            const matchesPrefix = !prefix || target.includes(prefix);
+            const matchesSuffix = !suffix || target.includes(suffix);
+            return matchesPrefix && matchesSuffix;
+          }
+          return false;
+        };
+
+        const promptSelectors = ${JSON.stringify(INPUT_SELECTORS)};
+        const locateComposerRoot = () => {
+          for (const selector of promptSelectors) {
+            const node = document.querySelector(selector);
+            if (!node) continue;
+            return node.closest('form') ?? node.closest('[data-testid*="composer"]') ?? node.parentElement;
+          }
+          return document.querySelector('form') ?? document.body;
+        };
+        const root = locateComposerRoot();
+        const chipSelector = [
           '[data-testid*="attachment"]',
           '[data-testid*="chip"]',
-          '[data-testid*="upload"]'
-        ];
-        const chips = selectors.some((selector) =>
-          Array.from(document.querySelectorAll(selector)).some((node) =>
-            (node?.textContent || '').toLowerCase().includes(expected),
-          ),
-        );
-        if (chips) return true;
+          '[data-testid*="upload"]',
+          '[aria-label*="Remove"]',
+          'button[aria-label*="Remove"]',
+          '[aria-label*="remove"]',
+        ].join(',');
+        const candidates = root ? Array.from(root.querySelectorAll(chipSelector)) : [];
+        const nodes = candidates.length > 0 ? candidates : Array.from(document.querySelectorAll(chipSelector));
+        for (const node of nodes) {
+          const text = node?.textContent ?? '';
+          const aria = node?.getAttribute?.('aria-label') ?? '';
+          const title = node?.getAttribute?.('title') ?? '';
+          if ([text, aria, title].some(matchesExpected)) {
+            return true;
+          }
+        }
+
         const cardTexts = Array.from(document.querySelectorAll('[aria-label*="Remove"],[aria-label*="remove"]')).map((btn) =>
-          btn?.parentElement?.parentElement?.innerText?.toLowerCase?.() ?? '',
+          btn?.parentElement?.parentElement?.innerText ?? '',
         );
-        if (cardTexts.some((text) => text.includes(expected))) return true;
+        if (cardTexts.some(matchesExpected)) return true;
 
         const inputs = Array.from(document.querySelectorAll('input[type="file"]')).some((el) =>
-          Array.from(el.files || []).some((f) => f?.name?.toLowerCase?.().includes(expected)),
+          Array.from(el.files || []).some((f) => matchesExpected(f?.name ?? '')),
         );
-        return inputs;
+        return Boolean(inputs);
       })()`,
       returnByValue: true,
     });
@@ -365,14 +404,14 @@ export async function waitForAttachmentCompletion(
           if (raw.includes(normalizedExpected)) return true;
           if (expectedNoExt.length >= 6 && raw.includes(expectedNoExt)) return true;
           if (raw.includes('…') || raw.includes('...')) {
-            const escaped = raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            const pattern = escaped.replace(/\\…|\\\.\\\.\\\./g, '.*');
-            try {
-              const re = new RegExp(pattern);
-              return re.test(normalizedExpected) || (expectedNoExt.length >= 6 && re.test(expectedNoExt));
-            } catch {
-              return false;
-            }
+            const marker = raw.includes('…') ? '…' : '...';
+            const [prefixRaw, suffixRaw] = raw.split(marker);
+            const prefix = prefixRaw.trim();
+            const suffix = suffixRaw.trim();
+            const target = expectedNoExt.length >= 6 ? expectedNoExt : normalizedExpected;
+            const matchesPrefix = !prefix || target.includes(prefix);
+            const matchesSuffix = !suffix || target.includes(suffix);
+            return matchesPrefix && matchesSuffix;
           }
           return false;
         });
@@ -559,14 +598,14 @@ async function waitForAttachmentAnchored(
       if (text.includes(normalized)) return true;
       if (normalizedNoExt.length >= 6 && text.includes(normalizedNoExt)) return true;
       if (text.includes('…') || text.includes('...')) {
-        const escaped = text.replace(/[.*+?^$\\{\\}()|[\\]\\\\]/g, '\\\\$&');
-        const pattern = escaped.replaceAll('…', '.*').replaceAll('...', '.*');
-        try {
-          const re = new RegExp(pattern);
-          return re.test(normalized) || (normalizedNoExt.length >= 6 && re.test(normalizedNoExt));
-        } catch {
-          return false;
-        }
+        const marker = text.includes('…') ? '…' : '...';
+        const [prefixRaw, suffixRaw] = text.split(marker);
+        const prefix = (prefixRaw ?? '').toLowerCase();
+        const suffix = (suffixRaw ?? '').toLowerCase();
+        const target = normalizedNoExt.length >= 6 ? normalizedNoExt : normalized;
+        const matchesPrefix = !prefix || target.includes(prefix);
+        const matchesSuffix = !suffix || target.includes(suffix);
+        return matchesPrefix && matchesSuffix;
       }
       return false;
     };
