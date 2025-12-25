@@ -4,7 +4,6 @@ import { runBrowserMode } from '../../src/browser/index.js';
 import { resumeBrowserSession } from '../../src/browser/reattach.js';
 import { closeRemoteChromeTarget } from '../../src/browser/chromeLifecycle.js';
 import type { BrowserLogger } from '../../src/browser/types.js';
-import type { BrowserRuntimeMetadata } from '../../src/sessionManager.js';
 import type { ChromeCookiesSecureModule } from '../../src/browser/types.js';
 
 const LIVE = process.env.ORACLE_LIVE_TEST === '1';
@@ -45,9 +44,16 @@ function createLogger(): BrowserLogger {
 
       const prompt = `live reattach pro ${Date.now()}`;
       const log = createLogger();
-      let runtimeHint: BrowserRuntimeMetadata | null = null;
-
-      let runtime: BrowserRuntimeMetadata | null = null;
+      let runtime: {
+        chromePid?: number;
+        chromePort?: number;
+        chromeHost?: string;
+        userDataDir?: string;
+        chromeTargetId?: string;
+        tabUrl?: string;
+        controllerPid?: number;
+        conversationId?: string;
+      } | null = null;
       try {
         const result = await runBrowserMode({
           prompt,
@@ -59,21 +65,18 @@ function createLogger(): BrowserLogger {
             timeoutMs: 180_000,
           },
           log,
-          runtimeHintCb: (hint) => {
-            runtimeHint = hint;
-          },
         });
 
         expect(result.answerText.toLowerCase()).toContain('live reattach');
 
         runtime = {
-          chromePid: runtimeHint?.chromePid ?? result.chromePid,
-          chromePort: runtimeHint?.chromePort ?? result.chromePort,
-          chromeHost: runtimeHint?.chromeHost ?? result.chromeHost ?? '127.0.0.1',
-          chromeTargetId: runtimeHint?.chromeTargetId ?? result.chromeTargetId,
+          chromePid: result.chromePid,
+          chromePort: result.chromePort,
+          chromeHost: result.chromeHost ?? '127.0.0.1',
+          chromeTargetId: result.chromeTargetId,
           tabUrl: PROJECT_URL,
-          userDataDir: runtimeHint?.userDataDir ?? result.userDataDir,
-          controllerPid: runtimeHint?.controllerPid ?? result.controllerPid,
+          userDataDir: result.userDataDir,
+          controllerPid: result.controllerPid,
           conversationId: undefined,
         };
       } catch (error) {
