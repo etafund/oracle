@@ -25,13 +25,22 @@ describe('resumeBrowserSession', () => {
         { targetId: 'target-2', type: 'page', url: 'about:blank' },
       ] satisfies FakeTarget[],
     ) as unknown as () => Promise<FakeTarget[]>;
+    const evaluate = vi.fn(async ({ expression }: { expression: string }) => {
+      if (expression === 'location.href') {
+        return { result: { value: runtime.tabUrl } };
+      }
+      if (expression === '1+1') {
+        return { result: { value: 2 } };
+      }
+      return { result: { value: null } };
+    });
     const connect = vi.fn(async () =>
       ({
         // biome-ignore lint/style/useNamingConvention: mirrors DevTools protocol domain names
-        Runtime: { enable: vi.fn() },
+        Runtime: { enable: vi.fn(), evaluate },
         // biome-ignore lint/style/useNamingConvention: mirrors DevTools protocol domain names
         DOM: { enable: vi.fn() },
-        close: vi.fn(),
+        close: vi.fn(async () => {}),
       } satisfies FakeClient),
     ) as unknown as (options?: unknown) => Promise<ChromeClient>;
     const waitForAssistantResponse = vi.fn(async () => ({
