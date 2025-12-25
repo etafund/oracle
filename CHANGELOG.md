@@ -2,9 +2,14 @@
 
 ## Unreleased
 
+## 0.7.6 — 2025-12-25
+
 ### Changed
 - CLI: compact finish line summary across API, browser, and session views.
 - CLI: token counts now render as `↑in ↓out ↻reasoning Δtotal`.
+
+### Fixed
+- CLI/Browser: ignore duplicate `--file` inputs (log once) and improve attachment presence detection so re-runs don’t spam “already attached” upload errors.
 
 ## 0.7.5 — 2025-12-23
 
