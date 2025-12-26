@@ -15,7 +15,7 @@ import type { BrowserLogger, ChromeClient } from './types.js';
 import { launchChrome, connectToChrome, hideChromeWindow } from './chromeLifecycle.js';
 import { resolveBrowserConfig } from './config.js';
 import { syncCookies } from './cookies.js';
-import { CHATGPT_URL } from './constants.js';
+import { CHATGPT_URL, CONVERSATION_TURN_SELECTOR } from './constants.js';
 import { delay } from './utils.js';
 
 export interface ReattachDeps {
@@ -292,13 +292,17 @@ async function withTimeout<T>(task: Promise<T>, ms: number, label: string): Prom
 async function openConversationFromSidebar(
   Runtime: ChromeClient['Runtime'],
   options: { conversationId?: string; preferProjects?: boolean; promptPreview?: string },
+  attempt = 0,
 ): Promise<boolean> {
   const response = await Runtime.evaluate({
     expression: `(() => {
       const conversationId = ${JSON.stringify(options.conversationId ?? null)};
       const preferProjects = ${JSON.stringify(Boolean(options.preferProjects))};
       const promptPreview = ${JSON.stringify(options.promptPreview ?? null)};
-      const promptNeedle = promptPreview ? promptPreview.trim().toLowerCase().slice(0, 100) : '';
+      const attemptIndex = ${Math.max(0, attempt)};
+      const promptNeedleFull = promptPreview ? promptPreview.trim().toLowerCase().slice(0, 100) : '';
+      const promptNeedleShort = promptNeedleFull.replace(/\\s*\\d{4,}\\s*$/, '').trim();
+      const promptNeedles = Array.from(new Set([promptNeedleFull, promptNeedleShort].filter(Boolean)));
       const nav = document.querySelector('nav') || document.querySelector('aside') || document.body;
       if (preferProjects) {
         const projectLink = Array.from(nav.querySelectorAll('a,button'))
@@ -345,6 +349,13 @@ async function openConversationFromSidebar(
         return rect.width > 0 && rect.height > 0;
       };
       const pick = (items) => (items.find(visible) || items[0] || null);
+      const pickWithAttempt = (items) => {
+        if (!items.length) return null;
+        const visibleItems = items.filter(visible);
+        const pool = visibleItems.length > 0 ? visibleItems : items;
+        const index = Math.min(attemptIndex, pool.length - 1);
+        return pool[index] ?? null;
+      };
       let target = null;
       if (conversationId) {
         const byId = (item) =>
@@ -352,17 +363,21 @@ async function openConversationFromSidebar(
           (item.conversationId && item.conversationId === conversationId);
         target = pick(mainCandidates.filter(byId)) || pick(navCandidates.filter(byId));
       }
-      if (!target && promptNeedle) {
-        const byPrompt = (item) => item.text && item.text.toLowerCase().includes(promptNeedle);
-        target = pick(mainCandidates.filter(byPrompt)) || pick(navCandidates.filter(byPrompt));
+      if (!target && promptNeedles.length > 0) {
+        const byPrompt = (item) => promptNeedles.some((needle) => item.text && item.text.toLowerCase().includes(needle));
+        const sortBySpecificity = (items) =>
+          items
+            .filter(byPrompt)
+            .sort((a, b) => (a.text?.length ?? 0) - (b.text?.length ?? 0));
+        target = pickWithAttempt(sortBySpecificity(mainCandidates)) || pickWithAttempt(sortBySpecificity(navCandidates));
       }
       if (!target) {
         const byHref = (item) => item.href && item.href.includes('/c/');
-        target = pick(mainCandidates.filter(byHref)) || pick(navCandidates.filter(byHref));
+        target = pickWithAttempt(mainCandidates.filter(byHref)) || pickWithAttempt(navCandidates.filter(byHref));
       }
       if (!target) {
         const byTestId = (item) => /conversation|history/i.test(item.testId || '');
-        target = pick(mainCandidates.filter(byTestId)) || pick(navCandidates.filter(byTestId));
+        target = pickWithAttempt(mainCandidates.filter(byTestId)) || pickWithAttempt(navCandidates.filter(byTestId));
       }
       if (target) {
         target.clickable.scrollIntoView({ block: 'center' });
@@ -401,12 +416,70 @@ async function openConversationFromSidebarWithRetry(
   let attempt = 0;
   while (Date.now() - start < timeoutMs) {
     // Retry because project list can hydrate after initial navigation.
-    const opened = await openConversationFromSidebar(Runtime, options);
+    const opened = await openConversationFromSidebar(Runtime, options, attempt);
     if (opened) {
-      return true;
+      if (options.promptPreview) {
+        const matched = await waitForPromptPreview(Runtime, options.promptPreview, 10_000);
+        if (matched) {
+          return true;
+        }
+      } else {
+        return true;
+      }
     }
     attempt += 1;
     await delay(attempt < 5 ? 250 : 500);
+  }
+  return false;
+}
+
+async function waitForPromptPreview(
+  Runtime: ChromeClient['Runtime'],
+  promptPreview: string,
+  timeoutMs: number,
+): Promise<boolean> {
+  const needleFull = promptPreview.trim().toLowerCase().slice(0, 120);
+  const needleShort = needleFull.replace(/\\s*\\d{4,}\\s*$/, '').trim();
+  const needles = Array.from(new Set([needleFull, needleShort].filter(Boolean)));
+  if (needles.length === 0) return false;
+  const selectorLiteral = JSON.stringify(CONVERSATION_TURN_SELECTOR);
+  const expression = `(() => {
+    const needles = ${JSON.stringify(needles)};
+    const root =
+      document.querySelector('section[data-testid="screen-threadFlyOut"]') ||
+      document.querySelector('[data-testid="chat-thread"]') ||
+      document.querySelector('main') ||
+      document.querySelector('[role="main"]');
+    if (!root) return false;
+    const userTurns = Array.from(root.querySelectorAll('[data-message-author-role="user"], [data-turn="user"]'));
+    const collectText = (nodes) =>
+      nodes
+        .map((node) => (node.innerText || node.textContent || ''))
+        .join(' ')
+        .toLowerCase();
+    let text = collectText(userTurns);
+    let hasTurns = userTurns.length > 0;
+    if (!text) {
+      const turns = Array.from(root.querySelectorAll(${selectorLiteral}));
+      hasTurns = hasTurns || turns.length > 0;
+      text = collectText(turns);
+    }
+    if (!text) {
+      text = (root.innerText || root.textContent || '').toLowerCase();
+    }
+    return needles.some((needle) => text.includes(needle));
+  })()`;
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const { result } = await Runtime.evaluate({ expression, returnByValue: true });
+      if (result?.value === true) {
+        return true;
+      }
+    } catch {
+      // ignore
+    }
+    await delay(300);
   }
   return false;
 }

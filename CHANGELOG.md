@@ -6,7 +6,11 @@
 - Browser: persist the `/c/` conversation URL after submit so reattach can reopen the exact session.
 - Browser: avoid capturing user “You said” echo turns and require assistant-role markdown for project-view fallback snapshots.
 - Browser: treat mid-run Chrome disconnects as reattachable instead of returning prompt-echo output.
-- Browser: make attachment upload idempotent when the composer already shows the file.
+- Browser: make attachment upload idempotent when the composer or file input already shows the file.
+- Browser: wait for attachment UI signals before trying alternate file inputs to avoid duplicate upload toasts.
+- Browser: ignore “ChatGPT said” placeholders so Pro-thinking gates don’t get captured as final answers.
+- Browser: widen conversation turn selectors to cover non-article wrappers in newer ChatGPT layouts.
+- Browser: prefer prompt-preview matches when reattaching from the project list and verify the preview before proceeding.
 - Tests: assert assistant-role filtering in the response observer expression.
 
 ## 0.7.6 — 2025-12-25

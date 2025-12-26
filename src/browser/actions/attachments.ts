@@ -14,7 +14,7 @@ export async function uploadAttachmentFile(
     throw new Error('DOM domain unavailable while uploading attachments.');
   }
 
-  const isAttachmentPresent = async (name: string) => {
+  const readAttachmentSignals = async (name: string) => {
     const check = await runtime.evaluate({
       expression: `(() => {
         const expected = ${JSON.stringify(name)};
@@ -57,31 +57,51 @@ export async function uploadAttachmentFile(
           'button[aria-label*="Remove"]',
           '[aria-label*="remove"]',
         ].join(',');
-        const candidates = root ? Array.from(root.querySelectorAll(chipSelector)) : [];
-        const nodes = candidates.length > 0 ? candidates : Array.from(document.querySelectorAll(chipSelector));
+        const localCandidates = root ? Array.from(root.querySelectorAll(chipSelector)) : [];
+        const globalCandidates = Array.from(document.querySelectorAll(chipSelector));
+        const nodes = [];
+        const seen = new Set();
+        for (const node of [...localCandidates, ...globalCandidates]) {
+          if (!node || seen.has(node)) continue;
+          seen.add(node);
+          nodes.push(node);
+        }
+        let uiMatch = false;
         for (const node of nodes) {
+          if (node?.tagName === 'INPUT' && node?.type === 'file') continue;
           const text = node?.textContent ?? '';
           const aria = node?.getAttribute?.('aria-label') ?? '';
           const title = node?.getAttribute?.('title') ?? '';
           if ([text, aria, title].some(matchesExpected)) {
-            return true;
+            uiMatch = true;
+            break;
           }
         }
 
-        const cardTexts = Array.from(document.querySelectorAll('[aria-label*="Remove"],[aria-label*="remove"]')).map((btn) =>
-          btn?.parentElement?.parentElement?.innerText ?? '',
-        );
-        if (cardTexts.some(matchesExpected)) return true;
+        if (!uiMatch) {
+          const cardTexts = Array.from(document.querySelectorAll('[aria-label*="Remove"],[aria-label*="remove"]')).map((btn) =>
+            btn?.parentElement?.parentElement?.innerText ?? '',
+          );
+          if (cardTexts.some(matchesExpected)) {
+            uiMatch = true;
+          }
+        }
 
-        const inputs = Array.from(document.querySelectorAll('input[type="file"]')).some((el) =>
+        const inputScope = root ? Array.from(root.querySelectorAll('input[type="file"]')) : [];
+        const inputs = inputScope.length > 0 ? inputScope : Array.from(document.querySelectorAll('input[type="file"]'));
+        const inputMatch = inputs.some((el) =>
           Array.from(el.files || []).some((f) => matchesExpected(f?.name ?? '')),
         );
-        return Boolean(inputs);
+
+        return { ui: uiMatch, input: inputMatch };
       })()`,
       returnByValue: true,
     });
-    return Boolean(check?.result?.value);
+    const value = check?.result?.value as { ui?: boolean; input?: boolean } | undefined;
+    return { ui: Boolean(value?.ui), input: Boolean(value?.input) };
   };
+
+  const isAttachmentPresent = async (name: string) => (await readAttachmentSignals(name)).ui;
 
   // New ChatGPT UI hides the real file input behind a composer "+" menu; click it pre-emptively.
   await Promise.resolve(
@@ -129,10 +149,19 @@ export async function uploadAttachmentFile(
   ).catch(() => undefined);
 
   const expectedName = path.basename(attachment.path);
+  const isImageAttachment = /\.(png|jpe?g|gif|webp|bmp|svg|heic|heif)$/i.test(expectedName);
+  const attachmentUiTimeoutMs = 25_000;
 
-  if (await isAttachmentPresent(expectedName)) {
+  const initialSignals = await readAttachmentSignals(expectedName);
+  let sawQueuedInput = false;
+
+  if (initialSignals.ui) {
     logger(`Attachment already present: ${path.basename(attachment.path)}`);
     return;
+  }
+  if (initialSignals.input) {
+    sawQueuedInput = true;
+    logger(`Attachment already queued in file input: ${path.basename(attachment.path)}`);
   }
 
   const documentNode = await dom.getDocument();
@@ -150,6 +179,7 @@ export async function uploadAttachmentFile(
       const root = locateComposerRoot();
       const localInputs = root ? Array.from(root.querySelectorAll('input[type="file"]')) : [];
       const inputs = localInputs.length > 0 ? localInputs : Array.from(document.querySelectorAll('input[type="file"]'));
+      const isImageAttachment = ${JSON.stringify(isImageAttachment)};
       const acceptIsImageOnly = (accept) => {
         if (!accept) return false;
         const parts = String(accept)
@@ -161,28 +191,80 @@ export async function uploadAttachmentFile(
       const chipContainer = root ?? document;
       const chipSelector = '[data-testid*="attachment"],[data-testid*="chip"],[data-testid*="upload"],[aria-label*="Remove"],[aria-label*="remove"]';
       const baselineChipCount = chipContainer.querySelectorAll(chipSelector).length;
+      const baselineChips = Array.from(chipContainer.querySelectorAll(chipSelector))
+        .slice(0, 20)
+        .map((node) => ({
+          text: (node.textContent || '').trim(),
+          aria: node.getAttribute?.('aria-label') ?? '',
+          title: node.getAttribute?.('title') ?? '',
+          testid: node.getAttribute?.('data-testid') ?? '',
+        }));
+      const uploadingSelectors = ${JSON.stringify(UPLOAD_STATUS_SELECTORS)};
+      const baselineUploading = uploadingSelectors.some((selector) => {
+        return Array.from(document.querySelectorAll(selector)).some((node) => {
+          const ariaBusy = node.getAttribute?.('aria-busy');
+          const dataState = node.getAttribute?.('data-state');
+          if (ariaBusy === 'true' || dataState === 'loading' || dataState === 'uploading' || dataState === 'pending') {
+            return true;
+          }
+          const text = node.textContent?.toLowerCase?.() ?? '';
+          return /\\buploading\\b/.test(text) || /\\bprocessing\\b/.test(text);
+        });
+      });
 
       // Mark candidates with stable indices so we can select them via DOM.querySelector.
       let idx = 0;
-      const candidates = inputs.map((el) => {
+      let candidates = inputs.map((el) => {
         const accept = el.getAttribute('accept') || '';
-        const score = (el.hasAttribute('multiple') ? 100 : 0) + (!acceptIsImageOnly(accept) ? 10 : 0);
+        const imageOnly = acceptIsImageOnly(accept);
+        const score =
+          (el.hasAttribute('multiple') ? 100 : 0) +
+          (!imageOnly ? 20 : isImageAttachment ? 15 : -500);
         el.setAttribute('data-oracle-upload-candidate', 'true');
         el.setAttribute('data-oracle-upload-idx', String(idx));
-        return { idx: idx++, score };
+        return { idx: idx++, score, imageOnly };
       });
+      if (!isImageAttachment) {
+        const nonImage = candidates.filter((candidate) => !candidate.imageOnly);
+        if (nonImage.length > 0) {
+          candidates = nonImage;
+        }
+      }
 
       // Prefer higher scores first.
       candidates.sort((a, b) => b.score - a.score);
-      return { ok: candidates.length > 0, baselineChipCount, order: candidates.map((c) => c.idx) };
+      return {
+        ok: candidates.length > 0,
+        baselineChipCount,
+        baselineChips,
+        baselineUploading,
+        order: candidates.map((c) => c.idx),
+      };
     })()`,
     returnByValue: true,
   });
   const candidateValue = candidateSetup?.result?.value as
-    | { ok?: boolean; baselineChipCount?: number; order?: number[] }
+    | {
+        ok?: boolean;
+        baselineChipCount?: number;
+        baselineChips?: Array<Record<string, string>>;
+        baselineUploading?: boolean;
+        order?: number[];
+      }
     | undefined;
   const candidateOrder = Array.isArray(candidateValue?.order) ? candidateValue.order : [];
   const baselineChipCount = typeof candidateValue?.baselineChipCount === 'number' ? candidateValue.baselineChipCount : 0;
+  const baselineChips = Array.isArray(candidateValue?.baselineChips) ? candidateValue.baselineChips : [];
+  const baselineUploading = Boolean(candidateValue?.baselineUploading);
+  const serializeChips = (chips: Array<Record<string, string>>): string =>
+    chips
+      .map((chip) =>
+        [chip.text, chip.aria, chip.title, chip.testid]
+          .map((value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim())
+          .join('|'),
+      )
+      .join('||');
+  const baselineChipSignature = serializeChips(baselineChips);
   if (!candidateValue?.ok || candidateOrder.length === 0) {
     await logDomFailure(runtime, logger, 'file-input-missing');
     throw new Error('Unable to locate ChatGPT file attachment input.');
@@ -218,95 +300,173 @@ export async function uploadAttachmentFile(
         title: node.getAttribute?.('title') ?? '',
         testid: node.getAttribute?.('data-testid') ?? '',
       }));
+    const uploadingSelectors = ${JSON.stringify(UPLOAD_STATUS_SELECTORS)};
+    const uploading = uploadingSelectors.some((selector) => {
+      return Array.from(document.querySelectorAll(selector)).some((node) => {
+        const ariaBusy = node.getAttribute?.('aria-busy');
+        const dataState = node.getAttribute?.('data-state');
+        if (ariaBusy === 'true' || dataState === 'loading' || dataState === 'uploading' || dataState === 'pending') {
+          return true;
+        }
+        const text = node.textContent?.toLowerCase?.() ?? '';
+        return /\\buploading\\b/.test(text) || /\\bprocessing\\b/.test(text);
+      });
+    });
     const input = document.querySelector('input[type="file"][data-oracle-upload-idx="${idx}"]');
     const inputNames =
       input instanceof HTMLInputElement
         ? Array.from(input.files || []).map((f) => f?.name ?? '').filter(Boolean)
         : [];
     const composerText = (chipContainer.innerText || '').toLowerCase();
-    return { chipCount: chipContainer.querySelectorAll(chipSelector).length, chips, inputNames, composerText };
+    return {
+      chipCount: chipContainer.querySelectorAll(chipSelector).length,
+      chips,
+      inputNames,
+      composerText,
+      uploading,
+    };
   })()`;
 
+  let confirmedAttachment = false;
   let finalSnapshot:
-    | { chipCount: number; chips: Array<Record<string, string>>; inputNames: string[]; composerText: string }
-    | null = null;
-  for (const idx of candidateOrder) {
-    if (await isAttachmentPresent(expectedName)) {
-      break;
-    }
-    const resultNode = await dom.querySelector({
-      nodeId: documentNode.root.nodeId,
-      selector: `input[type="file"][data-oracle-upload-idx="${idx}"]`,
-    });
-    if (!resultNode?.nodeId) {
-      continue;
-    }
-    await dom.setFileInputFiles({ nodeId: resultNode.nodeId, files: [attachment.path] });
-    await runtime.evaluate({ expression: dispatchEventsFor(idx), returnByValue: true }).catch(() => undefined);
-    await delay(350);
-
-    const probeDeadline = Date.now() + 6500;
-    const pokeIntervalMs = 1200;
-    let lastPoke = 0;
-    let seenInputHasFile = false;
-    while (Date.now() < probeDeadline) {
-      // ChatGPT's composer can take a moment to hydrate the file-input onChange handler after navigation/model switches.
-      // If the UI hasn't reacted yet, poke the input a few times to ensure the handler fires once it's mounted.
-      if (!seenInputHasFile && Date.now() - lastPoke > pokeIntervalMs) {
-        lastPoke = Date.now();
-        await runtime.evaluate({ expression: dispatchEventsFor(idx), returnByValue: true }).catch(() => undefined);
+    | {
+        chipCount: number;
+        chips: Array<Record<string, string>>;
+        inputNames: string[];
+        composerText: string;
+        uploading: boolean;
       }
-      const snapshot = await runtime
-        .evaluate({ expression: composerSnapshotFor(idx), returnByValue: true })
-        .then(
-          (res) =>
-            res?.result?.value as {
-              chipCount?: number;
-              chips?: Array<Record<string, string>>;
-              inputNames?: string[];
-              composerText?: string;
-            },
-        )
-        .catch(() => undefined);
-      if (snapshot) {
-        finalSnapshot = {
-          chipCount: Number(snapshot.chipCount ?? 0),
-          chips: Array.isArray(snapshot.chips) ? snapshot.chips : [],
-          inputNames: Array.isArray(snapshot.inputNames) ? snapshot.inputNames : [],
-          composerText: typeof snapshot.composerText === 'string' ? snapshot.composerText : '',
-        };
-        const inputHasFile = finalSnapshot.inputNames.some((name) =>
-          name.toLowerCase().includes(expectedName.toLowerCase()),
-        );
-        seenInputHasFile = seenInputHasFile || inputHasFile;
-        const expectedLower = expectedName.toLowerCase();
-        const expectedNoExt = expectedLower.replace(/\.[a-z0-9]{1,10}$/i, '');
-        const uiAcknowledged =
-          finalSnapshot.chipCount > baselineChipCount ||
-          (expectedNoExt.length >= 6
-            ? finalSnapshot.composerText.includes(expectedNoExt)
-            : finalSnapshot.composerText.includes(expectedLower));
-        if (inputHasFile && uiAcknowledged) {
-          logger?.(
-            `Attachment snapshot after setFileInputFiles: chips=${JSON.stringify(finalSnapshot.chips)} input=${JSON.stringify(finalSnapshot.inputNames)}`,
+    | null = null;
+  if (!sawQueuedInput) {
+    for (const idx of candidateOrder) {
+      const queuedSignals = await readAttachmentSignals(expectedName);
+      if (queuedSignals.ui) {
+        confirmedAttachment = true;
+        break;
+      }
+      if (queuedSignals.input) {
+        sawQueuedInput = true;
+        break;
+      }
+      const resultNode = await dom.querySelector({
+        nodeId: documentNode.root.nodeId,
+        selector: `input[type="file"][data-oracle-upload-idx="${idx}"]`,
+      });
+      if (!resultNode?.nodeId) {
+        continue;
+      }
+      await dom.setFileInputFiles({ nodeId: resultNode.nodeId, files: [attachment.path] });
+      await runtime.evaluate({ expression: dispatchEventsFor(idx), returnByValue: true }).catch(() => undefined);
+      await delay(350);
+
+      const probeWindowMs = Math.min(attachmentUiTimeoutMs, 12_000);
+      const probeDeadline = Date.now() + probeWindowMs;
+      const pokeIntervalMs = 1200;
+      let lastPoke = 0;
+      let seenInputHasFile = false;
+      let sawUploadProgress = false;
+      let sawChipChange = false;
+      let sawUiAcknowledged = false;
+      while (Date.now() < probeDeadline) {
+        // ChatGPT's composer can take a moment to hydrate the file-input onChange handler after navigation/model switches.
+        // If the UI hasn't reacted yet, poke the input a few times to ensure the handler fires once it's mounted.
+        if (
+          !seenInputHasFile &&
+          !sawUploadProgress &&
+          !sawUiAcknowledged &&
+          !sawChipChange &&
+          Date.now() - lastPoke > pokeIntervalMs
+        ) {
+          lastPoke = Date.now();
+          await runtime.evaluate({ expression: dispatchEventsFor(idx), returnByValue: true }).catch(() => undefined);
+        }
+        const snapshot = await runtime
+          .evaluate({ expression: composerSnapshotFor(idx), returnByValue: true })
+          .then(
+            (res) =>
+              res?.result?.value as {
+                chipCount?: number;
+                chips?: Array<Record<string, string>>;
+                inputNames?: string[];
+                composerText?: string;
+                uploading?: boolean;
+              },
+          )
+          .catch(() => undefined);
+        if (snapshot) {
+          finalSnapshot = {
+            chipCount: Number(snapshot.chipCount ?? 0),
+            chips: Array.isArray(snapshot.chips) ? snapshot.chips : [],
+            inputNames: Array.isArray(snapshot.inputNames) ? snapshot.inputNames : [],
+            composerText: typeof snapshot.composerText === 'string' ? snapshot.composerText : '',
+            uploading: Boolean(snapshot.uploading),
+          };
+          const inputHasFile = finalSnapshot.inputNames.some((name) =>
+            name.toLowerCase().includes(expectedName.toLowerCase()),
           );
+          seenInputHasFile = seenInputHasFile || inputHasFile;
+          sawUploadProgress = sawUploadProgress || (finalSnapshot.uploading && !baselineUploading);
+          const chipSignature = serializeChips(finalSnapshot.chips);
+          if (baselineChipSignature && chipSignature && chipSignature !== baselineChipSignature) {
+            sawChipChange = true;
+          }
+          const expectedLower = expectedName.toLowerCase();
+          const expectedNoExt = expectedLower.replace(/\.[a-z0-9]{1,10}$/i, '');
+          const uiAcknowledged =
+            finalSnapshot.chipCount > baselineChipCount ||
+            (expectedNoExt.length >= 6
+              ? finalSnapshot.composerText.includes(expectedNoExt)
+              : finalSnapshot.composerText.includes(expectedLower));
+          if (uiAcknowledged) {
+            sawUiAcknowledged = true;
+          }
+          if (inputHasFile && uiAcknowledged) {
+            logger?.(
+              `Attachment snapshot after setFileInputFiles: chips=${JSON.stringify(finalSnapshot.chips)} input=${JSON.stringify(finalSnapshot.inputNames)}`,
+            );
+            break;
+          }
+        }
+        await delay(250);
+      }
+      const inputHasFile =
+        finalSnapshot?.inputNames?.some((name) => name.toLowerCase().includes(expectedName.toLowerCase())) ?? false;
+      const uiAcknowledged = (finalSnapshot?.chipCount ?? 0) > baselineChipCount;
+      const sawSignal = inputHasFile || seenInputHasFile || sawUploadProgress || sawUiAcknowledged || sawChipChange;
+      const hardSignal = sawUploadProgress || sawUiAcknowledged || sawChipChange;
+      const inputOnlySignal = inputHasFile || seenInputHasFile;
+      if (sawSignal || uiAcknowledged) {
+        if (await waitForAttachmentAnchored(runtime, expectedName, attachmentUiTimeoutMs)) {
+          confirmedAttachment = true;
           break;
         }
+        if (await isAttachmentPresent(expectedName)) {
+          confirmedAttachment = true;
+          break;
+        }
+        if (hardSignal) {
+          break;
+        }
+        if (inputOnlySignal) {
+          sawQueuedInput = true;
+          break;
+        }
+        // Attachment input accepted the file, but UI never acknowledged it; try another candidate input.
       }
-      await delay(250);
     }
+  }
+  if (confirmedAttachment) {
     const inputHasFile =
       finalSnapshot?.inputNames?.some((name) => name.toLowerCase().includes(expectedName.toLowerCase())) ?? false;
-    const uiAcknowledged = (finalSnapshot?.chipCount ?? 0) > baselineChipCount;
-    if (inputHasFile || uiAcknowledged) {
-      break;
-    }
+    await waitForAttachmentVisible(runtime, expectedName, attachmentUiTimeoutMs, logger);
+    logger(inputHasFile ? 'Attachment queued (UI anchored, file input confirmed)' : 'Attachment queued (UI anchored)');
+    return;
   }
 
   const inputHasFile =
-    finalSnapshot?.inputNames?.some((name) => name.toLowerCase().includes(expectedName.toLowerCase())) ?? false;
+    sawQueuedInput ||
+    (finalSnapshot?.inputNames?.some((name) => name.toLowerCase().includes(expectedName.toLowerCase())) ?? false);
 
-  const attachmentUiTimeoutMs = 25_000;
   if (await waitForAttachmentAnchored(runtime, expectedName, attachmentUiTimeoutMs)) {
     await waitForAttachmentVisible(runtime, expectedName, attachmentUiTimeoutMs, logger);
     logger(inputHasFile ? 'Attachment queued (UI anchored, file input confirmed)' : 'Attachment queued (UI anchored)');
@@ -547,6 +707,7 @@ export async function waitForAttachmentVisible(
     const normalizedNoExt = normalized.replace(/\\.[a-z0-9]{1,10}$/i, '');
     const matchNode = (node) => {
       if (!node) return false;
+      if (node.tagName === 'INPUT' && node.type === 'file') return false;
       const text = (node.textContent || '').toLowerCase();
       const aria = node.getAttribute?.('aria-label')?.toLowerCase?.() ?? '';
       const title = node.getAttribute?.('title')?.toLowerCase?.() ?? '';
@@ -622,6 +783,7 @@ async function waitForAttachmentAnchored(
     ];
     for (const selector of selectors) {
       for (const node of Array.from(document.querySelectorAll(selector))) {
+        if (node?.tagName === 'INPUT' && node?.type === 'file') continue;
         const text = node?.textContent || '';
         const aria = node?.getAttribute?.('aria-label') || '';
         const title = node?.getAttribute?.('title') || '';

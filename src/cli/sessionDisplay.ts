@@ -107,6 +107,13 @@ export async function attachSession(sessionId: string, options?: AttachSessionOp
     process.exitCode = 1;
     return;
   }
+  if (metadata.mode === 'browser' && metadata.status === 'running' && !metadata.browser?.runtime) {
+    await wait(250);
+    const refreshed = await sessionStore.readSession(sessionId);
+    if (refreshed) {
+      metadata = refreshed;
+    }
+  }
   const normalizedModelFilter = options?.model?.trim().toLowerCase();
   if (normalizedModelFilter) {
     const availableModels =

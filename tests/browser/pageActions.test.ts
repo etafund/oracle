@@ -256,9 +256,9 @@ describe('uploadAttachmentFile', () => {
         const expr = String(params?.expression ?? '');
         if (expr.includes('const normalizedExpected') && expr.includes("text.includes('…')")) {
           capturedPresenceExpression = expr;
-          return { result: { value: true } };
+          return { result: { value: { ui: true, input: false } } };
         }
-        return { result: { value: false } };
+        return { result: { value: { ui: false, input: false } } };
       }),
     } as unknown as ChromeClient['Runtime'];
 
@@ -275,6 +275,99 @@ describe('uploadAttachmentFile', () => {
     expect(dom.getDocument).not.toHaveBeenCalled();
     expect(dom.setFileInputFiles).not.toHaveBeenCalled();
     expect(logger).toHaveBeenCalledWith(expect.stringMatching(/Attachment already present/i));
+  });
+
+  test('skips reupload when file already queued in input', async () => {
+    logger.mockClear();
+    const dom = {
+      getDocument: vi.fn().mockResolvedValue({ root: { nodeId: 1 } }),
+      querySelector: vi.fn(),
+      setFileInputFiles: vi.fn(),
+    } as unknown as ChromeClient['DOM'];
+    const runtime = {
+      evaluate: vi.fn().mockImplementation(async (params: { expression?: string }) => {
+        const expr = String(params?.expression ?? '');
+        if (expr.includes('const normalizedExpected') && expr.includes('matchesExpected')) {
+          return { result: { value: { ui: false, input: true } } };
+        }
+        if (expr.includes('baselineChipCount') && expr.includes('baselineChips')) {
+          return {
+            result: {
+              value: { ok: true, baselineChipCount: 0, baselineChips: [], baselineUploading: false, order: [0] },
+            },
+          };
+        }
+        if (expr.includes('normalizedNoExt') && expr.includes('selectors')) {
+          return { result: { value: { found: true } } };
+        }
+        if (expr.includes('attachmentSelectors') && expr.includes('attachment-cards')) {
+          return { result: { value: { found: true } } };
+        }
+        return { result: { value: null } };
+      }),
+    } as unknown as ChromeClient['Runtime'];
+
+    await expect(
+      uploadAttachmentFile(
+        { runtime, dom },
+        { path: '/tmp/oracle-browser-smoke.txt', displayPath: 'oracle-browser-smoke.txt' },
+        logger,
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(dom.setFileInputFiles).not.toHaveBeenCalled();
+    expect(logger).toHaveBeenCalledWith(expect.stringMatching(/already queued/i));
+  });
+
+  test('avoids retrying other inputs once upload shows progress', async () => {
+    logger.mockClear();
+    const dom = {
+      getDocument: vi.fn().mockResolvedValue({ root: { nodeId: 1 } }),
+      querySelector: vi.fn().mockResolvedValue({ nodeId: 2 }),
+      setFileInputFiles: vi.fn().mockResolvedValue(undefined),
+    } as unknown as ChromeClient['DOM'];
+    const runtime = {
+      evaluate: vi.fn().mockImplementation(async (params: { expression?: string }) => {
+        const expr = String(params?.expression ?? '');
+        if (expr.includes('const normalizedExpected') && expr.includes('matchesExpected')) {
+          return { result: { value: { ui: false, input: false } } };
+        }
+        if (expr.includes('baselineChipCount') && expr.includes('baselineChips')) {
+          return { result: { value: { ok: true, baselineChipCount: 0, baselineChips: [], order: [0, 1] } } };
+        }
+        if (expr.includes('chipCount') && expr.includes('composerText') && expr.includes('uploading')) {
+          return {
+            result: {
+              value: {
+                chipCount: 1,
+                chips: [],
+                inputNames: ['oracle-browser-smoke.txt'],
+                composerText: '',
+                uploading: true,
+              },
+            },
+          };
+        }
+        if (expr.includes('attachmentSelectors') && expr.includes('found')) {
+          return { result: { value: { found: true } } };
+        }
+        if (expr.includes('normalizedNoExt') && expr.includes('selectors')) {
+          return { result: { value: { found: true } } };
+        }
+        return { result: { value: null } };
+      }),
+    } as unknown as ChromeClient['Runtime'];
+
+    await expect(
+      uploadAttachmentFile(
+        { runtime, dom },
+        { path: '/tmp/oracle-browser-smoke.txt', displayPath: 'oracle-browser-smoke.txt' },
+        logger,
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(dom.querySelector).toHaveBeenCalledTimes(1);
+    expect(dom.setFileInputFiles).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -13,6 +13,13 @@ import { buildClickDispatcher } from './domEvents.js';
 
 const ASSISTANT_POLL_TIMEOUT_ERROR = 'assistant-response-watchdog-timeout';
 
+function isAnswerNowPlaceholderText(normalized: string): boolean {
+  const text = normalized.trim();
+  if (!text) return false;
+  if (text === 'chatgpt said:' || text === 'chatgpt said') return true;
+  return text.includes('answer now') && (text.includes('pro thinking') || text.includes('chatgpt said'));
+}
+
 export async function waitForAssistantResponse(
   Runtime: ChromeClient['Runtime'],
   timeoutMs: number,
@@ -197,10 +204,7 @@ async function parseAssistantEvaluationResult(
         : undefined;
     const text = cleanAssistantText(String((result.value as { text: unknown }).text ?? ''));
     const normalized = text.toLowerCase();
-    if (
-      normalized.includes('answer now') &&
-      (normalized.includes('pro thinking') || normalized.includes('chatgpt said'))
-    ) {
+    if (isAnswerNowPlaceholderText(normalized)) {
       const recovered = await recoverAssistantResponse(Runtime, Math.min(timeoutMs, 10_000), logger, minTurnIndex);
       return recovered ?? null;
     }
@@ -360,7 +364,7 @@ function normalizeAssistantSnapshot(
   const normalized = text.toLowerCase();
   // "Pro thinking" often renders a placeholder turn containing an "Answer now" gate.
   // Treat it as incomplete so browser mode keeps waiting for the real assistant text.
-  if (normalized.includes('answer now') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'))) {
+  if (isAnswerNowPlaceholderText(normalized)) {
     return null;
   }
   // Ignore user echo turns that can show up in project view fallbacks.
@@ -399,7 +403,8 @@ function buildAssistantSnapshotExpression(): string {
     ${buildAssistantExtractor('extractAssistantTurn')}
     const extracted = extractAssistantTurn();
     const isPlaceholder = (snapshot) => {
-      const normalized = String(snapshot?.text ?? '').toLowerCase();
+      const normalized = String(snapshot?.text ?? '').toLowerCase().trim();
+      if (normalized === 'chatgpt said:' || normalized === 'chatgpt said') return true;
       return normalized.includes('answer now') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'));
     };
     if (extracted && extracted.text && !isPlaceholder(extracted)) {
@@ -428,7 +433,8 @@ function buildResponseObserverExpression(timeoutMs: number, minTurnIndex?: numbe
     const ASSISTANT_SELECTOR = ${assistantLiteral};
     const settleDelayMs = 800;
     const isAnswerNowPlaceholder = (snapshot) => {
-      const normalized = String(snapshot?.text ?? '').toLowerCase();
+      const normalized = String(snapshot?.text ?? '').toLowerCase().trim();
+      if (normalized === 'chatgpt said:' || normalized === 'chatgpt said') return true;
       return normalized.includes('answer now') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'));
     };
 
@@ -625,14 +631,22 @@ function buildAssistantExtractor(functionName: string): string {
       }
       const messageRoot = turn.querySelector(ASSISTANT_SELECTOR) ?? turn;
       expandCollapsibles(messageRoot);
-      const preferred = messageRoot.querySelector('.markdown') || messageRoot.querySelector('[data-message-content]');
-      if (!preferred) {
+      const preferred =
+        (messageRoot.matches?.('.markdown') || messageRoot.matches?.('[data-message-content]') ? messageRoot : null) ||
+        messageRoot.querySelector('.markdown') ||
+        messageRoot.querySelector('[data-message-content]') ||
+        messageRoot.querySelector('[data-testid*="message"]') ||
+        messageRoot.querySelector('[data-testid*="assistant"]') ||
+        messageRoot.querySelector('.prose') ||
+        messageRoot.querySelector('[class*="markdown"]');
+      const contentRoot = preferred ?? messageRoot;
+      if (!contentRoot) {
         continue;
       }
-      const innerText = preferred?.innerText ?? '';
-      const textContent = preferred?.textContent ?? '';
+      const innerText = contentRoot?.innerText ?? '';
+      const textContent = contentRoot?.textContent ?? '';
       const text = innerText.trim().length > 0 ? innerText : textContent;
-      const html = preferred?.innerHTML ?? '';
+      const html = contentRoot?.innerHTML ?? '';
       const messageId = messageRoot.getAttribute('data-message-id');
       const turnId = messageRoot.getAttribute('data-testid');
       if (text.trim()) {
@@ -650,19 +664,24 @@ function buildMarkdownFallbackExtractor(minTurnLiteral?: string): string {
     const root =
       document.querySelector('section[data-testid="screen-threadFlyOut"]') ||
       document.querySelector('[data-testid="chat-thread"]') ||
-      document;
+      document.querySelector('main') ||
+      document.querySelector('[role="main"]');
     if (!root) return null;
-    const markdowns = Array.from(root.querySelectorAll('.markdown'));
+    const markdowns = Array.from(
+      root.querySelectorAll('.markdown,[data-message-content],[data-testid*="message"],.prose,[class*="markdown"]'),
+    ).filter((node) => !node.closest('nav, aside, [data-testid*="sidebar"], [data-testid*="chat-history"]'));
     if (markdowns.length === 0) return null;
     const assistantMarkdowns = markdowns.filter((node) => {
       const container = node.closest('[data-message-author-role], [data-turn]');
       if (!container) return false;
       const role =
         (container.getAttribute('data-message-author-role') || container.getAttribute('data-turn') || '').toLowerCase();
-      return role === 'assistant';
+      if (role === 'assistant') return true;
+      const testId = (container.getAttribute('data-testid') || '').toLowerCase();
+      return testId.includes('assistant');
     });
-    const candidates = assistantMarkdowns.length > 0 ? assistantMarkdowns : null;
-    if (!candidates) return null;
+    const candidates = assistantMarkdowns.length > 0 ? assistantMarkdowns : markdowns;
+    if (candidates.length === 0) return null;
     const lastMarkdown = candidates[candidates.length - 1];
     const text = (lastMarkdown?.innerText || lastMarkdown?.textContent || '').trim();
     if (!text) return null;
