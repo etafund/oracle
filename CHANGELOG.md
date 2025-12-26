@@ -1,11 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 — Unreleased
 
 ### Fixed
 - Browser: persist the `/c/` conversation URL after submit so reattach can reopen the exact session.
 - Browser: avoid capturing user “You said” echo turns and require assistant-role markdown for project-view fallback snapshots.
 - Browser: treat mid-run Chrome disconnects as reattachable instead of returning prompt-echo output.
+- Browser: make attachment upload idempotent when the composer already shows the file.
 - Tests: assert assistant-role filtering in the response observer expression.
 
 ## 0.7.6 — 2025-12-25

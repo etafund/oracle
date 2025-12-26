@@ -231,6 +231,9 @@ export async function uploadAttachmentFile(
     | { chipCount: number; chips: Array<Record<string, string>>; inputNames: string[]; composerText: string }
     | null = null;
   for (const idx of candidateOrder) {
+    if (await isAttachmentPresent(expectedName)) {
+      break;
+    }
     const resultNode = await dom.querySelector({
       nodeId: documentNode.root.nodeId,
       selector: `input[type="file"][data-oracle-upload-idx="${idx}"]`,
@@ -295,7 +298,7 @@ export async function uploadAttachmentFile(
     const inputHasFile =
       finalSnapshot?.inputNames?.some((name) => name.toLowerCase().includes(expectedName.toLowerCase())) ?? false;
     const uiAcknowledged = (finalSnapshot?.chipCount ?? 0) > baselineChipCount;
-    if (inputHasFile && uiAcknowledged) {
+    if (inputHasFile || uiAcknowledged) {
       break;
     }
   }
