@@ -15,8 +15,21 @@ import type { BrowserLogger, ChromeClient } from './types.js';
 import { launchChrome, connectToChrome, hideChromeWindow } from './chromeLifecycle.js';
 import { resolveBrowserConfig } from './config.js';
 import { syncCookies } from './cookies.js';
-import { CHATGPT_URL, CONVERSATION_TURN_SELECTOR } from './constants.js';
-import { delay } from './utils.js';
+import { CHATGPT_URL } from './constants.js';
+import {
+  pickTarget,
+  extractConversationIdFromUrl,
+  buildConversationUrl,
+  withTimeout,
+  openConversationFromSidebar,
+  openConversationFromSidebarWithRetry,
+  waitForLocationChange,
+  readConversationTurnIndex,
+  buildPromptEchoMatcher,
+  recoverPromptEcho,
+  alignPromptEchoMarkdown,
+  type TargetInfoLite,
+} from './reattachHelpers.js';
 
 export interface ReattachDeps {
   listTargets?: () => Promise<TargetInfoLite[]>;
@@ -30,33 +43,6 @@ export interface ReattachDeps {
 export interface ReattachResult {
   answerText: string;
   answerMarkdown: string;
-}
-
-type TargetInfoLite = {
-  targetId?: string;
-  type?: string;
-  url?: string;
-  [key: string]: unknown;
-};
-
-function pickTarget(
-  targets: TargetInfoLite[],
-  runtime: BrowserRuntimeMetadata,
-): TargetInfoLite | undefined {
-  if (!Array.isArray(targets) || targets.length === 0) {
-    return undefined;
-  }
-  if (runtime.chromeTargetId) {
-    const byId = targets.find((t) => t.targetId === runtime.chromeTargetId);
-    if (byId) return byId;
-  }
-  if (runtime.tabUrl) {
-    const byUrl =
-      targets.find((t) => t.url?.startsWith(runtime.tabUrl as string)) ||
-      targets.find((t) => (runtime.tabUrl as string).startsWith(t.url || ''));
-    if (byUrl) return byUrl;
-  }
-  return targets.find((t) => t.type === 'page') ?? targets[0];
 }
 
 export async function resumeBrowserSession(
@@ -103,7 +89,10 @@ export async function resumeBrowserSession(
       const { result } = await Runtime.evaluate({ expression: 'location.href', returnByValue: true });
       const href = typeof result?.value === 'string' ? result.value : '';
       if (href.includes('/c/')) {
-        return;
+        const currentId = extractConversationIdFromUrl(href);
+        if (!runtime.conversationId || (currentId && currentId === runtime.conversationId)) {
+          return;
+        }
       }
       const opened = await openConversationFromSidebarWithRetry(
         Runtime,
@@ -130,16 +119,20 @@ export async function resumeBrowserSession(
       'Reattach target did not respond',
     );
     await ensureConversationOpen();
+    const minTurnIndex = await readConversationTurnIndex(Runtime, logger);
+    const promptEcho = buildPromptEchoMatcher(deps.promptPreview);
     const answer = await withTimeout(
-      waitForResponse(Runtime, timeoutMs, logger),
+      waitForResponse(Runtime, timeoutMs, logger, minTurnIndex ?? undefined),
       timeoutMs + 5_000,
       'Reattach response timed out',
     );
+    const recovered = await recoverPromptEcho(Runtime, answer, promptEcho, logger, minTurnIndex, timeoutMs);
     const markdown = (await withTimeout(
-      captureMarkdown(Runtime, answer.meta, logger),
+      captureMarkdown(Runtime, recovered.meta, logger),
       15_000,
       'Reattach markdown capture timed out',
-    )) ?? answer.text;
+    )) ?? recovered.text;
+    const aligned = alignPromptEchoMarkdown(recovered.text, markdown, promptEcho, logger);
 
     if (client && typeof client.close === 'function') {
       try {
@@ -149,7 +142,7 @@ export async function resumeBrowserSession(
       }
     }
 
-    return { answerText: answer.text, answerMarkdown: markdown };
+    return { answerText: aligned.answerText, answerMarkdown: aligned.answerMarkdown };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger(`Existing Chrome reattach failed (${message}); reopening browser to locate the session.`);
@@ -216,7 +209,9 @@ async function resumeBrowserSessionViaNewChrome(
       Runtime,
       {
         conversationId: runtime.conversationId ?? extractConversationIdFromUrl(runtime.tabUrl ?? ''),
-        preferProjects: resolved.url !== CHATGPT_URL,
+        preferProjects:
+          resolved.url !== CHATGPT_URL ||
+          Boolean(runtime.tabUrl && (/\/g\//.test(runtime.tabUrl) || runtime.tabUrl.includes('/project'))),
         promptPreview: deps.promptPreview,
       },
       15_000,
@@ -230,8 +225,12 @@ async function resumeBrowserSessionViaNewChrome(
   const waitForResponse = deps.waitForAssistantResponse ?? waitForAssistantResponse;
   const captureMarkdown = deps.captureAssistantMarkdown ?? captureAssistantMarkdown;
   const timeoutMs = resolved.timeoutMs ?? 120_000;
-  const answer = await waitForResponse(Runtime, timeoutMs, logger);
-  const markdown = (await captureMarkdown(Runtime, answer.meta, logger)) ?? answer.text;
+  const minTurnIndex = await readConversationTurnIndex(Runtime, logger);
+  const promptEcho = buildPromptEchoMatcher(deps.promptPreview);
+  const answer = await waitForResponse(Runtime, timeoutMs, logger, minTurnIndex ?? undefined);
+  const recovered = await recoverPromptEcho(Runtime, answer, promptEcho, logger, minTurnIndex, timeoutMs);
+  const markdown = (await captureMarkdown(Runtime, recovered.meta, logger)) ?? recovered.text;
+  const aligned = alignPromptEchoMarkdown(recovered.text, markdown, promptEcho, logger);
 
   if (client && typeof client.close === 'function') {
     try {
@@ -249,253 +248,7 @@ async function resumeBrowserSessionViaNewChrome(
     await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
   }
 
-  return { answerText: answer.text, answerMarkdown: markdown };
-}
-
-function extractConversationIdFromUrl(url: string): string | undefined {
-  if (!url) return undefined;
-  const match = url.match(/\/c\/([a-zA-Z0-9-]+)/);
-  return match?.[1];
-}
-
-function buildConversationUrl(runtime: BrowserRuntimeMetadata, baseUrl: string): string | null {
-  if (runtime.tabUrl) {
-    if (runtime.tabUrl.includes('/c/')) {
-      return runtime.tabUrl;
-    }
-    return null;
-  }
-  const conversationId = runtime.conversationId;
-  if (!conversationId) {
-    return null;
-  }
-  try {
-    const base = new URL(baseUrl);
-    return `${base.origin}/c/${conversationId}`;
-  } catch {
-    return null;
-  }
-}
-
-async function withTimeout<T>(task: Promise<T>, ms: number, label: string): Promise<T> {
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => reject(new Error(label)), ms);
-  });
-  return Promise.race([task, timeout]).finally(() => {
-    if (timeoutId) {
-      clearTimeout(timeoutId);
-    }
-  });
-}
-
-async function openConversationFromSidebar(
-  Runtime: ChromeClient['Runtime'],
-  options: { conversationId?: string; preferProjects?: boolean; promptPreview?: string },
-  attempt = 0,
-): Promise<boolean> {
-  const response = await Runtime.evaluate({
-    expression: `(() => {
-      const conversationId = ${JSON.stringify(options.conversationId ?? null)};
-      const preferProjects = ${JSON.stringify(Boolean(options.preferProjects))};
-      const promptPreview = ${JSON.stringify(options.promptPreview ?? null)};
-      const attemptIndex = ${Math.max(0, attempt)};
-      const promptNeedleFull = promptPreview ? promptPreview.trim().toLowerCase().slice(0, 100) : '';
-      const promptNeedleShort = promptNeedleFull.replace(/\\s*\\d{4,}\\s*$/, '').trim();
-      const promptNeedles = Array.from(new Set([promptNeedleFull, promptNeedleShort].filter(Boolean)));
-      const nav = document.querySelector('nav') || document.querySelector('aside') || document.body;
-      if (preferProjects) {
-        const projectLink = Array.from(nav.querySelectorAll('a,button'))
-          .find((el) => (el.textContent || '').trim().toLowerCase() === 'projects');
-        if (projectLink) {
-          projectLink.click();
-        }
-      }
-      const allElements = Array.from(
-        document.querySelectorAll(
-          'a,button,[role="link"],[role="button"],[data-href],[data-url],[data-conversation-id],[data-testid*="conversation"],[data-testid*="history"]',
-        ),
-      );
-      const getHref = (el) =>
-        el.getAttribute('href') ||
-        el.getAttribute('data-href') ||
-        el.getAttribute('data-url') ||
-        el.dataset?.href ||
-        el.dataset?.url ||
-        '';
-      const toCandidate = (el) => {
-        const clickable = el.closest('a,button,[role="link"],[role="button"]') || el;
-        const rawText = (el.textContent || clickable.textContent || '').trim();
-        return {
-          el,
-          clickable,
-          href: getHref(clickable) || getHref(el),
-          conversationId:
-            clickable.getAttribute('data-conversation-id') ||
-            el.getAttribute('data-conversation-id') ||
-            clickable.dataset?.conversationId ||
-            el.dataset?.conversationId ||
-            '',
-          testId: clickable.getAttribute('data-testid') || el.getAttribute('data-testid') || '',
-          text: rawText.replace(/\\s+/g, ' ').slice(0, 400),
-          inNav: Boolean(clickable.closest('nav,aside')),
-        };
-      };
-      const candidates = allElements.map(toCandidate);
-      const mainCandidates = candidates.filter((item) => !item.inNav);
-      const navCandidates = candidates.filter((item) => item.inNav);
-      const visible = (item) => {
-        const rect = item.clickable.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0;
-      };
-      const pick = (items) => (items.find(visible) || items[0] || null);
-      const pickWithAttempt = (items) => {
-        if (!items.length) return null;
-        const visibleItems = items.filter(visible);
-        const pool = visibleItems.length > 0 ? visibleItems : items;
-        const index = Math.min(attemptIndex, pool.length - 1);
-        return pool[index] ?? null;
-      };
-      let target = null;
-      if (conversationId) {
-        const byId = (item) =>
-          (item.href && item.href.includes('/c/' + conversationId)) ||
-          (item.conversationId && item.conversationId === conversationId);
-        target = pick(mainCandidates.filter(byId)) || pick(navCandidates.filter(byId));
-      }
-      if (!target && promptNeedles.length > 0) {
-        const byPrompt = (item) => promptNeedles.some((needle) => item.text && item.text.toLowerCase().includes(needle));
-        const sortBySpecificity = (items) =>
-          items
-            .filter(byPrompt)
-            .sort((a, b) => (a.text?.length ?? 0) - (b.text?.length ?? 0));
-        target = pickWithAttempt(sortBySpecificity(mainCandidates)) || pickWithAttempt(sortBySpecificity(navCandidates));
-      }
-      if (!target) {
-        const byHref = (item) => item.href && item.href.includes('/c/');
-        target = pickWithAttempt(mainCandidates.filter(byHref)) || pickWithAttempt(navCandidates.filter(byHref));
-      }
-      if (!target) {
-        const byTestId = (item) => /conversation|history/i.test(item.testId || '');
-        target = pickWithAttempt(mainCandidates.filter(byTestId)) || pickWithAttempt(navCandidates.filter(byTestId));
-      }
-      if (target) {
-        target.clickable.scrollIntoView({ block: 'center' });
-        target.clickable.dispatchEvent(
-          new MouseEvent('click', { bubbles: true, cancelable: true, view: window }),
-        );
-        // Fallback: some project-sidebar items don't navigate on click, force the URL.
-        if (target.href && target.href.includes('/c/')) {
-          const targetUrl = target.href.startsWith('http')
-            ? target.href
-            : new URL(target.href, location.origin).toString();
-          if (targetUrl && targetUrl !== location.href) {
-            location.href = targetUrl;
-          }
-        }
-        return {
-          ok: true,
-          href: target.href || '',
-          count: candidates.length,
-          scope: target.inNav ? 'nav' : 'main',
-        };
-      }
-      return { ok: false, count: candidates.length };
-    })()`,
-    returnByValue: true,
-  });
-  return Boolean(response.result?.value?.ok);
-}
-
-async function openConversationFromSidebarWithRetry(
-  Runtime: ChromeClient['Runtime'],
-  options: { conversationId?: string; preferProjects?: boolean; promptPreview?: string },
-  timeoutMs: number,
-): Promise<boolean> {
-  const start = Date.now();
-  let attempt = 0;
-  while (Date.now() - start < timeoutMs) {
-    // Retry because project list can hydrate after initial navigation.
-    const opened = await openConversationFromSidebar(Runtime, options, attempt);
-    if (opened) {
-      if (options.promptPreview) {
-        const matched = await waitForPromptPreview(Runtime, options.promptPreview, 10_000);
-        if (matched) {
-          return true;
-        }
-      } else {
-        return true;
-      }
-    }
-    attempt += 1;
-    await delay(attempt < 5 ? 250 : 500);
-  }
-  return false;
-}
-
-async function waitForPromptPreview(
-  Runtime: ChromeClient['Runtime'],
-  promptPreview: string,
-  timeoutMs: number,
-): Promise<boolean> {
-  const needleFull = promptPreview.trim().toLowerCase().slice(0, 120);
-  const needleShort = needleFull.replace(/\\s*\\d{4,}\\s*$/, '').trim();
-  const needles = Array.from(new Set([needleFull, needleShort].filter(Boolean)));
-  if (needles.length === 0) return false;
-  const selectorLiteral = JSON.stringify(CONVERSATION_TURN_SELECTOR);
-  const expression = `(() => {
-    const needles = ${JSON.stringify(needles)};
-    const root =
-      document.querySelector('section[data-testid="screen-threadFlyOut"]') ||
-      document.querySelector('[data-testid="chat-thread"]') ||
-      document.querySelector('main') ||
-      document.querySelector('[role="main"]');
-    if (!root) return false;
-    const userTurns = Array.from(root.querySelectorAll('[data-message-author-role="user"], [data-turn="user"]'));
-    const collectText = (nodes) =>
-      nodes
-        .map((node) => (node.innerText || node.textContent || ''))
-        .join(' ')
-        .toLowerCase();
-    let text = collectText(userTurns);
-    let hasTurns = userTurns.length > 0;
-    if (!text) {
-      const turns = Array.from(root.querySelectorAll(${selectorLiteral}));
-      hasTurns = hasTurns || turns.length > 0;
-      text = collectText(turns);
-    }
-    if (!text) {
-      text = (root.innerText || root.textContent || '').toLowerCase();
-    }
-    return needles.some((needle) => text.includes(needle));
-  })()`;
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const { result } = await Runtime.evaluate({ expression, returnByValue: true });
-      if (result?.value === true) {
-        return true;
-      }
-    } catch {
-      // ignore
-    }
-    await delay(300);
-  }
-  return false;
-}
-
-async function waitForLocationChange(Runtime: ChromeClient['Runtime'], timeoutMs: number): Promise<void> {
-  const start = Date.now();
-  let lastHref = '';
-  while (Date.now() - start < timeoutMs) {
-    const { result } = await Runtime.evaluate({ expression: 'location.href', returnByValue: true });
-    const href = typeof result?.value === 'string' ? result.value : '';
-    if (lastHref && href !== lastHref) {
-      return;
-    }
-    lastHref = href;
-    await delay(200);
-  }
+  return { answerText: aligned.answerText, answerMarkdown: aligned.answerMarkdown };
 }
 
 // biome-ignore lint/style/useNamingConvention: test-only export used in vitest suite

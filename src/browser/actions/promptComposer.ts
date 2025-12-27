@@ -29,7 +29,7 @@ export async function submitPrompt(
   },
   prompt: string,
   logger: BrowserLogger,
-) {
+) : Promise<number | null> {
   const { runtime, input } = deps;
 
   await waitForDomReady(runtime, logger, deps.inputTimeoutMs ?? undefined);
@@ -161,7 +161,7 @@ export async function submitPrompt(
   }
 
   const commitTimeoutMs = Math.max(60_000, deps.inputTimeoutMs ?? 0);
-  await verifyPromptCommitted(runtime, prompt, commitTimeoutMs, logger, deps.baselineTurns ?? undefined);
+  return await verifyPromptCommitted(runtime, prompt, commitTimeoutMs, logger, deps.baselineTurns ?? undefined);
 }
 
 export async function clearPromptComposer(Runtime: ChromeClient['Runtime'], logger: BrowserLogger) {
@@ -314,7 +314,7 @@ async function verifyPromptCommitted(
   timeoutMs: number,
   logger?: BrowserLogger,
   baselineTurns?: number,
-) {
+): Promise<number | null> {
   const deadline = Date.now() + timeoutMs;
   const encodedPrompt = JSON.stringify(prompt.trim());
   const primarySelectorLiteral = JSON.stringify(PROMPT_PRIMARY_SELECTOR);
@@ -367,7 +367,8 @@ async function verifyPromptCommitted(
     const { result } = await Runtime.evaluate({ expression: script, returnByValue: true });
     const info = result.value as { userMatched?: boolean; prefixMatched?: boolean; lastMatched?: boolean; hasNewTurn?: boolean };
     if (info?.hasNewTurn && (info?.lastMatched || info?.userMatched || info?.prefixMatched)) {
-      return;
+      const turnsCount = (result.value as { turnsCount?: number } | undefined)?.turnsCount;
+      return typeof turnsCount === 'number' && Number.isFinite(turnsCount) ? turnsCount : null;
     }
     await delay(100);
   }

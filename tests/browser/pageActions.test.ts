@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   ensureModelSelection,
   waitForAssistantResponse,
@@ -10,6 +10,7 @@ import {
   ensureLoggedIn,
 } from '../../src/browser/pageActions.js';
 import * as attachments from '../../src/browser/actions/attachments.js';
+import * as attachmentDataTransfer from '../../src/browser/actions/attachmentDataTransfer.js';
 import type { ChromeClient } from '../../src/browser/types.js';
 
 const logger = vi.fn();
@@ -201,6 +202,18 @@ describe('waitForAssistantResponse', () => {
 });
 
 describe('uploadAttachmentFile', () => {
+  let transferSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    transferSpy = vi
+      .spyOn(attachmentDataTransfer, 'transferAttachmentViaDataTransfer')
+      .mockResolvedValue({ fileName: 'oracle-browser-smoke.txt', size: 1 });
+  });
+
+  afterEach(() => {
+    transferSpy.mockRestore();
+  });
+
   test.skip('selects DOM input and uploads file', async () => {
     logger.mockClear();
     vi.spyOn(attachments, 'waitForAttachmentVisible').mockResolvedValue(undefined);
@@ -218,7 +231,7 @@ describe('uploadAttachmentFile', () => {
         { path: '/tmp/foo.md', displayPath: 'foo.md' },
         logger,
       ),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(true);
     expect(dom.querySelector).toHaveBeenCalled();
     expect(dom.setFileInputFiles).toHaveBeenCalledWith({ nodeId: 2, files: ['/tmp/foo.md'] });
     expect(logger).toHaveBeenCalledWith(expect.stringContaining('Attachment queued'));
@@ -268,7 +281,7 @@ describe('uploadAttachmentFile', () => {
         { path: '/tmp/SettingsStore.swift', displayPath: 'SettingsStore.swift' },
         logger,
       ),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(true);
 
     expect(capturedPresenceExpression).toContain("text.includes('…')");
     expect(capturedPresenceExpression).toContain("text.includes('...')");
@@ -313,14 +326,101 @@ describe('uploadAttachmentFile', () => {
         { path: '/tmp/oracle-browser-smoke.txt', displayPath: 'oracle-browser-smoke.txt' },
         logger,
       ),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(true);
 
     expect(dom.setFileInputFiles).not.toHaveBeenCalled();
     expect(logger).toHaveBeenCalledWith(expect.stringMatching(/already queued/i));
   });
 
+  test('skips upload when file count already satisfies expected count', async () => {
+    logger.mockClear();
+    const dom = {
+      getDocument: vi.fn(),
+      querySelector: vi.fn(),
+      setFileInputFiles: vi.fn(),
+    } as unknown as ChromeClient['DOM'];
+    const runtime = {
+      evaluate: vi.fn().mockImplementation(async (params: { expression?: string }) => {
+        const expr = String(params?.expression ?? '');
+        if (expr.includes('const normalizedExpected') && expr.includes('matchesExpected')) {
+          return {
+            result: {
+              value: {
+                ui: false,
+                input: false,
+                chipCount: 0,
+                inputCount: 0,
+                uploading: false,
+                chipSignature: '',
+                fileCount: 1,
+              },
+            },
+          };
+        }
+        return { result: { value: null } };
+      }),
+    } as unknown as ChromeClient['Runtime'];
+
+    await expect(
+      uploadAttachmentFile(
+        { runtime, dom },
+        { path: '/tmp/oracle-browser-smoke.txt', displayPath: 'oracle-browser-smoke.txt' },
+        logger,
+        { expectedCount: 1 },
+      ),
+    ).resolves.toBe(true);
+
+    expect(dom.getDocument).not.toHaveBeenCalled();
+    expect(dom.setFileInputFiles).not.toHaveBeenCalled();
+    expect(logger).toHaveBeenCalledWith(expect.stringMatching(/composer shows 1 file/i));
+  });
+
+  test('skips upload when input count already satisfies expected count', async () => {
+    logger.mockClear();
+    const dom = {
+      getDocument: vi.fn(),
+      querySelector: vi.fn(),
+      setFileInputFiles: vi.fn(),
+    } as unknown as ChromeClient['DOM'];
+    const runtime = {
+      evaluate: vi.fn().mockImplementation(async (params: { expression?: string }) => {
+        const expr = String(params?.expression ?? '');
+        if (expr.includes('const normalizedExpected') && expr.includes('matchesExpected')) {
+          return {
+            result: {
+              value: {
+                ui: false,
+                input: false,
+                chipCount: 0,
+                inputCount: 1,
+                uploading: false,
+                chipSignature: '',
+                fileCount: 0,
+              },
+            },
+          };
+        }
+        return { result: { value: null } };
+      }),
+    } as unknown as ChromeClient['Runtime'];
+
+    await expect(
+      uploadAttachmentFile(
+        { runtime, dom },
+        { path: '/tmp/oracle-browser-smoke.txt', displayPath: 'oracle-browser-smoke.txt' },
+        logger,
+        { expectedCount: 1 },
+      ),
+    ).resolves.toBe(true);
+
+    expect(dom.getDocument).not.toHaveBeenCalled();
+    expect(dom.setFileInputFiles).not.toHaveBeenCalled();
+    expect(logger).toHaveBeenCalledWith(expect.stringMatching(/composer shows 1 file/i));
+  });
+
   test('avoids retrying other inputs once upload shows progress', async () => {
     logger.mockClear();
+    let readSignalCalls = 0;
     const dom = {
       getDocument: vi.fn().mockResolvedValue({ root: { nodeId: 1 } }),
       querySelector: vi.fn().mockResolvedValue({ nodeId: 2 }),
@@ -330,10 +430,33 @@ describe('uploadAttachmentFile', () => {
       evaluate: vi.fn().mockImplementation(async (params: { expression?: string }) => {
         const expr = String(params?.expression ?? '');
         if (expr.includes('const normalizedExpected') && expr.includes('matchesExpected')) {
-          return { result: { value: { ui: false, input: false } } };
+          readSignalCalls += 1;
+          return {
+            result: {
+              value: {
+                ui: false,
+                input: false,
+                chipCount: 0,
+                inputCount: 0,
+                uploading: readSignalCalls >= 3,
+                chipSignature: '',
+              },
+            },
+          };
         }
         if (expr.includes('baselineChipCount') && expr.includes('baselineChips')) {
-          return { result: { value: { ok: true, baselineChipCount: 0, baselineChips: [], order: [0, 1] } } };
+          return {
+            result: {
+              value: {
+                ok: true,
+                baselineChipCount: 0,
+                baselineChips: [],
+                baselineUploading: false,
+                baselineInputCount: 0,
+                order: [0, 1],
+              },
+            },
+          };
         }
         if (expr.includes('chipCount') && expr.includes('composerText') && expr.includes('uploading')) {
           return {
@@ -364,7 +487,337 @@ describe('uploadAttachmentFile', () => {
         { path: '/tmp/oracle-browser-smoke.txt', displayPath: 'oracle-browser-smoke.txt' },
         logger,
       ),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(true);
+
+    expect(dom.querySelector).toHaveBeenCalledTimes(1);
+    expect(dom.setFileInputFiles).toHaveBeenCalledTimes(1);
+  });
+
+  test('checks for late attachment signals before trying alternate inputs', async () => {
+    logger.mockClear();
+    let readSignalCalls = 0;
+    const dom = {
+      getDocument: vi.fn().mockResolvedValue({ root: { nodeId: 1 } }),
+      querySelector: vi.fn().mockResolvedValue({ nodeId: 2 }),
+      setFileInputFiles: vi.fn().mockResolvedValue(undefined),
+    } as unknown as ChromeClient['DOM'];
+    const runtime = {
+      evaluate: vi.fn().mockImplementation(async (params: { expression?: string }) => {
+        const expr = String(params?.expression ?? '');
+        if (expr.includes('const normalizedExpected') && expr.includes('matchesExpected')) {
+          readSignalCalls += 1;
+          if (readSignalCalls < 3) {
+            return {
+              result: {
+                value: {
+                  ui: false,
+                  input: false,
+                  chipCount: 0,
+                  inputCount: 0,
+                  uploading: false,
+                  chipSignature: '',
+                },
+              },
+            };
+          }
+          return {
+            result: {
+              value: {
+                ui: false,
+                input: false,
+                chipCount: 1,
+                inputCount: 0,
+                uploading: false,
+                chipSignature: 'late-chip',
+              },
+            },
+          };
+        }
+        if (expr.includes('baselineChipCount') && expr.includes('baselineChips')) {
+          return {
+            result: {
+              value: {
+                ok: true,
+                baselineChipCount: 0,
+                baselineChips: [],
+                baselineUploading: false,
+                baselineInputCount: 0,
+                order: [0, 1],
+              },
+            },
+          };
+        }
+        if (expr.includes('chipCount') && expr.includes('composerText') && expr.includes('uploading')) {
+          return {
+            result: {
+              value: { chipCount: 0, chips: [], inputNames: [], composerText: '', uploading: false },
+            },
+          };
+        }
+        if (expr.includes('normalizedNoExt') && expr.includes('selectors')) {
+          return { result: { value: { found: false } } };
+        }
+        if (expr.includes('attachmentSelectors') && expr.includes('attachment-cards')) {
+          return { result: { value: { found: true } } };
+        }
+        return { result: { value: null } };
+      }),
+    } as unknown as ChromeClient['Runtime'];
+
+    vi.useFakeTimers();
+    const uploadPromise = uploadAttachmentFile(
+      { runtime, dom },
+      { path: '/tmp/oracle-browser-smoke.txt', displayPath: 'oracle-browser-smoke.txt' },
+      logger,
+    );
+    await Promise.resolve();
+    await vi.runAllTimersAsync();
+    await expect(uploadPromise).resolves.toBe(true);
+    vi.useRealTimers();
+
+    expect(dom.querySelector).toHaveBeenCalledTimes(1);
+    expect(dom.setFileInputFiles).toHaveBeenCalledTimes(1);
+  });
+
+  test('defers data transfer fallback when attachment signals appear after setFileInputFiles', async () => {
+    logger.mockClear();
+    vi.spyOn(attachments, 'waitForAttachmentVisible').mockResolvedValue(undefined);
+    let readSignalCalls = 0;
+    const dom = {
+      getDocument: vi.fn().mockResolvedValue({ root: { nodeId: 1 } }),
+      querySelector: vi.fn().mockResolvedValue({ nodeId: 2 }),
+      setFileInputFiles: vi.fn().mockResolvedValue(undefined),
+    } as unknown as ChromeClient['DOM'];
+    const runtime = {
+      evaluate: vi.fn().mockImplementation(async (params: { expression?: string }) => {
+        const expr = String(params?.expression ?? '');
+        if (expr.includes('const normalizedExpected') && expr.includes('matchesExpected')) {
+          readSignalCalls += 1;
+          if (readSignalCalls === 1) {
+            return {
+              result: {
+                value: {
+                  ui: false,
+                  input: false,
+                  chipCount: 0,
+                  inputCount: 0,
+                  uploading: false,
+                  chipSignature: '',
+                  fileCount: 0,
+                },
+              },
+            };
+          }
+          return {
+            result: {
+              value: {
+                ui: true,
+                input: false,
+                chipCount: 1,
+                inputCount: 1,
+                uploading: false,
+                chipSignature: 'chip',
+                fileCount: 1,
+              },
+            },
+          };
+        }
+        if (expr.includes('baselineChipCount') && expr.includes('baselineChips')) {
+          return {
+            result: {
+              value: {
+                ok: true,
+                baselineChipCount: 0,
+                baselineChips: [],
+                baselineUploading: false,
+                baselineInputCount: 0,
+                baselineFileCount: 0,
+                order: [0],
+              },
+            },
+          };
+        }
+        if (expr.includes('chipCount') && expr.includes('composerText') && expr.includes('uploading')) {
+          return {
+            result: {
+              value: {
+                chipCount: 1,
+                chips: [],
+                inputNames: ['oracle-browser-smoke.txt'],
+                composerText: '',
+                uploading: false,
+              },
+            },
+          };
+        }
+        if (expr.includes('attachmentSelectors') && expr.includes('attachment-cards')) {
+          return { result: { value: { found: true } } };
+        }
+        if (expr.includes('normalizedNoExt') && expr.includes('selectors')) {
+          return { result: { value: { found: true } } };
+        }
+        return { result: { value: null } };
+      }),
+    } as unknown as ChromeClient['Runtime'];
+
+    await expect(
+      uploadAttachmentFile(
+        { runtime, dom },
+        { path: '/tmp/oracle-browser-smoke.txt', displayPath: 'oracle-browser-smoke.txt' },
+        logger,
+      ),
+    ).resolves.toBe(true);
+
+    expect(transferSpy).not.toHaveBeenCalled();
+  });
+
+  test('clears stale file inputs before trying alternate candidates', async () => {
+    logger.mockClear();
+    const dom = {
+      getDocument: vi.fn().mockResolvedValue({ root: { nodeId: 1 } }),
+      querySelector: vi.fn().mockResolvedValue({ nodeId: 2 }),
+      setFileInputFiles: vi.fn().mockResolvedValue(undefined),
+    } as unknown as ChromeClient['DOM'];
+    const runtime = {
+      evaluate: vi.fn().mockImplementation(async (params: { expression?: string }) => {
+        const expr = String(params?.expression ?? '');
+        if (expr.includes('const normalizedExpected') && expr.includes('matchesExpected')) {
+          return {
+            result: {
+              value: {
+                ui: false,
+                input: false,
+                chipCount: 0,
+                inputCount: 0,
+                uploading: false,
+                chipSignature: '',
+                fileCount: 0,
+              },
+            },
+          };
+        }
+        if (expr.includes('baselineChipCount') && expr.includes('baselineChips')) {
+          return {
+            result: {
+              value: {
+                ok: true,
+                baselineChipCount: 0,
+                baselineChips: [],
+                baselineUploading: false,
+                baselineInputCount: 0,
+                baselineFileCount: 0,
+                order: [0, 1],
+              },
+            },
+          };
+        }
+        if (expr.includes('input[type="file"][data-oracle-upload-idx') && expr.includes('names')) {
+          return { result: { value: { names: [], value: '', count: 0 } } };
+        }
+        if (expr.includes('chipCount') && expr.includes('composerText') && expr.includes('uploading')) {
+          return {
+            result: {
+              value: { chipCount: 0, chips: [], inputNames: [], composerText: '', uploading: false },
+            },
+          };
+        }
+        if (expr.includes('attachmentSelectors') && expr.includes('attachment-cards')) {
+          return { result: { value: { found: false } } };
+        }
+        if (expr.includes('normalizedNoExt') && expr.includes('selectors')) {
+          return { result: { value: { found: false } } };
+        }
+        return { result: { value: null } };
+      }),
+    } as unknown as ChromeClient['Runtime'];
+
+    vi.useFakeTimers();
+    const uploadPromise = uploadAttachmentFile(
+      { runtime, dom },
+      { path: '/tmp/oracle-browser-smoke.txt', displayPath: 'oracle-browser-smoke.txt' },
+      logger,
+    );
+    const handledPromise = uploadPromise.catch((error) => error as Error);
+    await Promise.resolve();
+    await vi.runAllTimersAsync();
+    const error = await handledPromise;
+    vi.useRealTimers();
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/Attachment did not register/i);
+    expect(dom.setFileInputFiles).toHaveBeenCalledWith({ nodeId: 2, files: [] });
+  });
+
+  test('uses file-count signal to avoid retrying alternate inputs', async () => {
+    logger.mockClear();
+    vi.spyOn(attachments, 'waitForAttachmentVisible').mockResolvedValue(undefined);
+    let readSignalCalls = 0;
+    const dom = {
+      getDocument: vi.fn().mockResolvedValue({ root: { nodeId: 1 } }),
+      querySelector: vi.fn().mockResolvedValue({ nodeId: 2 }),
+      setFileInputFiles: vi.fn().mockResolvedValue(undefined),
+    } as unknown as ChromeClient['DOM'];
+    const runtime = {
+      evaluate: vi.fn().mockImplementation(async (params: { expression?: string }) => {
+        const expr = String(params?.expression ?? '');
+        if (expr.includes('const normalizedExpected') && expr.includes('matchesExpected')) {
+          readSignalCalls += 1;
+          return {
+            result: {
+              value: {
+                ui: false,
+                input: false,
+                chipCount: 0,
+                inputCount: 0,
+                uploading: false,
+                chipSignature: '',
+                fileCount: readSignalCalls >= 3 ? 1 : 0,
+              },
+            },
+          };
+        }
+        if (expr.includes('baselineChipCount') && expr.includes('baselineChips')) {
+          return {
+            result: {
+              value: {
+                ok: true,
+                baselineChipCount: 0,
+                baselineChips: [],
+                baselineUploading: false,
+                baselineInputCount: 0,
+                baselineFileCount: 0,
+                order: [0, 1],
+              },
+            },
+          };
+        }
+        if (expr.includes('chipCount') && expr.includes('composerText') && expr.includes('uploading')) {
+          return {
+            result: {
+              value: { chipCount: 0, chips: [], inputNames: [], composerText: '', uploading: false },
+            },
+          };
+        }
+        if (expr.includes('attachmentSelectors') && expr.includes('attachment-cards')) {
+          return { result: { value: { found: true } } };
+        }
+        if (expr.includes('normalizedNoExt') && expr.includes('selectors')) {
+          return { result: { value: { found: true } } };
+        }
+        return { result: { value: null } };
+      }),
+    } as unknown as ChromeClient['Runtime'];
+
+    vi.useFakeTimers();
+    const uploadPromise = uploadAttachmentFile(
+      { runtime, dom },
+      { path: '/tmp/oracle-browser-smoke.txt', displayPath: 'oracle-browser-smoke.txt' },
+      logger,
+    );
+    await Promise.resolve();
+    await vi.runAllTimersAsync();
+    await expect(uploadPromise).resolves.toBe(true);
+    vi.useRealTimers();
 
     expect(dom.querySelector).toHaveBeenCalledTimes(1);
     expect(dom.setFileInputFiles).toHaveBeenCalledTimes(1);

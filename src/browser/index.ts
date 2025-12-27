@@ -23,6 +23,7 @@ import {
   clearPromptComposer,
   waitForAssistantResponse,
   captureAssistantMarkdown,
+  clearComposerAttachments,
   uploadAttachmentFile,
   waitForAttachmentCompletion,
   waitForUserTurnAttachments,
@@ -35,6 +36,7 @@ import { formatElapsed } from '../oracle/format.js';
 import { CHATGPT_URL, CONVERSATION_TURN_SELECTOR } from './constants.js';
 import type { LaunchedChrome } from 'chrome-launcher';
 import { BrowserAutomationError } from '../oracle/errors.js';
+import { alignPromptEchoPair, buildPromptEchoMatcher } from './reattachHelpers.js';
 import {
   cleanupStaleProfileState,
   readChromePid,
@@ -296,6 +298,9 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       } catch {
         // ignore
       }
+      if (lastUrl) {
+        logger(`[browser] url = ${lastUrl}`);
+      }
       if (chrome?.port) {
         const suffix = lastTargetId ? ` target=${lastTargetId}` : '';
         if (lastUrl) {
@@ -317,9 +322,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           const { result } = await Runtime.evaluate({ expression: 'location.href', returnByValue: true });
           if (typeof result?.value === 'string' && result.value.includes('/c/')) {
             lastUrl = result.value;
-            if (options.verbose) {
-              logger(`[reattach] conversation url (${label}) = ${lastUrl}`);
-            }
+            logger(`[browser] conversation url (${label}) = ${lastUrl}`);
             await emitRuntimeHint();
             return true;
           }
@@ -385,14 +388,28 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       );
     }
     const submitOnce = async (prompt: string, submissionAttachments: BrowserAttachment[]) => {
+      const baselineSnapshot = await readAssistantSnapshot(Runtime).catch(() => null);
+      const baselineAssistantText =
+        typeof baselineSnapshot?.text === 'string' ? baselineSnapshot.text.trim() : '';
       const attachmentNames = submissionAttachments.map((a) => path.basename(a.path));
+      let inputOnlyAttachments = false;
       if (submissionAttachments.length > 0) {
         if (!DOM) {
           throw new Error('Chrome DOM domain unavailable while uploading attachments.');
         }
-        for (const attachment of submissionAttachments) {
+        await clearComposerAttachments(Runtime, 5_000, logger);
+        for (let attachmentIndex = 0; attachmentIndex < submissionAttachments.length; attachmentIndex += 1) {
+          const attachment = submissionAttachments[attachmentIndex];
           logger(`Uploading attachment: ${attachment.displayPath}`);
-          await uploadAttachmentFile({ runtime: Runtime, dom: DOM }, attachment, logger);
+          const uiConfirmed = await uploadAttachmentFile(
+            { runtime: Runtime, dom: DOM },
+            attachment,
+            logger,
+            { expectedCount: attachmentIndex + 1 },
+          );
+          if (!uiConfirmed) {
+            inputOnlyAttachments = true;
+          }
           await delay(500);
         }
         // Scale timeout based on number of files: base 30s + 15s per additional file
@@ -402,8 +419,8 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         await waitForAttachmentCompletion(Runtime, waitBudget, attachmentNames, logger);
         logger('All attachments uploaded');
       }
-      const baselineTurns = await readConversationTurnCount(Runtime, logger);
-      await submitPrompt(
+      let baselineTurns = await readConversationTurnCount(Runtime, logger);
+      const committedTurns = await submitPrompt(
         {
           runtime: Runtime,
           input: Input,
@@ -414,18 +431,32 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         prompt,
         logger,
       );
+      if (typeof committedTurns === 'number' && Number.isFinite(committedTurns)) {
+        if (baselineTurns === null || committedTurns > baselineTurns) {
+          baselineTurns = Math.max(0, committedTurns - 1);
+        }
+      }
       if (attachmentNames.length > 0) {
-        await waitForUserTurnAttachments(Runtime, attachmentNames, 20_000, logger);
-        logger('Verified attachments present on sent user message');
+        if (inputOnlyAttachments) {
+          logger('Attachment UI did not render before send; skipping user-turn attachment verification.');
+        } else {
+          const verified = await waitForUserTurnAttachments(Runtime, attachmentNames, 20_000, logger);
+          if (verified) {
+            logger('Verified attachments present on sent user message');
+          }
+        }
       }
       // Reattach needs a /c/ URL; ChatGPT can update it late, so poll in the background.
       scheduleConversationHint('post-submit', config.timeoutMs ?? 120_000);
-      return baselineTurns;
+      return { baselineTurns, baselineAssistantText };
     };
 
     let baselineTurns: number | null = null;
+    let baselineAssistantText: string | null = null;
     try {
-      baselineTurns = await raceWithDisconnect(submitOnce(promptText, attachments));
+      const submission = await raceWithDisconnect(submitOnce(promptText, attachments));
+      baselineTurns = submission.baselineTurns;
+      baselineAssistantText = submission.baselineAssistantText;
     } catch (error) {
       const isPromptTooLarge =
         error instanceof BrowserAutomationError &&
@@ -434,15 +465,45 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         logger('[browser] Inline prompt too large; retrying with file uploads.');
         await raceWithDisconnect(clearPromptComposer(Runtime, logger));
         await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
-        baselineTurns = await raceWithDisconnect(
+        const submission = await raceWithDisconnect(
           submitOnce(fallbackSubmission.prompt, fallbackSubmission.attachments),
         );
+        baselineTurns = submission.baselineTurns;
+        baselineAssistantText = submission.baselineAssistantText;
       } else {
         throw error;
       }
     }
     stopThinkingMonitor = startThinkingStatusMonitor(Runtime, logger, options.verbose ?? false);
-    const answer = await raceWithDisconnect(
+    // Helper to normalize text for echo detection (collapse whitespace, lowercase)
+    const normalizeForComparison = (text: string): string =>
+      text.toLowerCase().replace(/\s+/g, ' ').trim();
+    const waitForFreshAssistantResponse = async (baselineNormalized: string, timeoutMs: number) => {
+      const baselinePrefix =
+        baselineNormalized.length >= 80
+          ? baselineNormalized.slice(0, Math.min(200, baselineNormalized.length))
+          : '';
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const snapshot = await readAssistantSnapshot(Runtime, baselineTurns ?? undefined).catch(() => null);
+        const text = typeof snapshot?.text === 'string' ? snapshot.text.trim() : '';
+        if (text) {
+          const normalized = normalizeForComparison(text);
+          const isBaseline =
+            normalized === baselineNormalized || (baselinePrefix.length > 0 && normalized.startsWith(baselinePrefix));
+          if (!isBaseline) {
+            return {
+              text,
+              html: snapshot?.html ?? undefined,
+              meta: { turnId: snapshot?.turnId ?? undefined, messageId: snapshot?.messageId ?? undefined },
+            };
+          }
+        }
+        await delay(350);
+      }
+      return null;
+    };
+    let answer = await raceWithDisconnect(
       waitForAssistantResponseWithReload(
         Runtime,
         Page,
@@ -453,6 +514,24 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     );
     // Ensure we store the final conversation URL even if the UI updated late.
     await updateConversationHint('post-response', 15_000);
+    const baselineNormalized = baselineAssistantText ? normalizeForComparison(baselineAssistantText) : '';
+    if (baselineNormalized) {
+      const normalizedAnswer = normalizeForComparison(answer.text ?? '');
+      const baselinePrefix =
+        baselineNormalized.length >= 80
+          ? baselineNormalized.slice(0, Math.min(200, baselineNormalized.length))
+          : '';
+      const isBaseline =
+        normalizedAnswer === baselineNormalized ||
+        (baselinePrefix.length > 0 && normalizedAnswer.startsWith(baselinePrefix));
+      if (isBaseline) {
+        logger('Detected stale assistant response; waiting for new response...');
+        const refreshed = await waitForFreshAssistantResponse(baselineNormalized, 15_000);
+        if (refreshed) {
+          answer = refreshed;
+        }
+      }
+    }
     answerText = answer.text;
     answerHtml = answer.html ?? '';
     const copiedMarkdown = await raceWithDisconnect(
@@ -479,12 +558,8 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     ).catch(() => null);
     answerMarkdown = copiedMarkdown ?? answerText;
 
-    // Helper to normalize text for echo detection (collapse whitespace, lowercase)
-    const normalizeForComparison = (text: string): string =>
-      text.toLowerCase().replace(/\s+/g, ' ').trim();
-
     // Final sanity check: ensure we didn't accidentally capture the user prompt instead of the assistant turn.
-    const finalSnapshot = await readAssistantSnapshot(Runtime).catch(() => null);
+    const finalSnapshot = await readAssistantSnapshot(Runtime, baselineTurns ?? undefined).catch(() => null);
     const finalText = typeof finalSnapshot?.text === 'string' ? finalSnapshot.text.trim() : '';
     if (
       !copiedMarkdown &&
@@ -497,32 +572,35 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       answerText = finalText;
       answerMarkdown = finalText;
     }
-	    // Detect prompt echo using normalized comparison (whitespace-insensitive)
-	    const normalizedAnswer = normalizeForComparison(answerMarkdown);
-	    const normalizedPrompt = normalizeForComparison(promptText);
-	    const promptPrefix =
-	      normalizedPrompt.length >= 80
-	        ? normalizedPrompt.slice(0, Math.min(200, normalizedPrompt.length))
-	        : '';
-	    const isPromptEcho =
-	      normalizedAnswer === normalizedPrompt || (promptPrefix.length > 0 && normalizedAnswer.startsWith(promptPrefix));
-	    if (isPromptEcho) {
-	      logger('Detected prompt echo in response; waiting for actual assistant response...');
-	      const deadline = Date.now() + 8_000;
-	      let bestText: string | null = null;
-	      let stableCount = 0;
+
+    // Detect prompt echo using normalized comparison (whitespace-insensitive).
+    const promptEchoMatcher = buildPromptEchoMatcher(promptText);
+    const alignedEcho = alignPromptEchoPair(
+      answerText,
+      answerMarkdown,
+      promptEchoMatcher,
+      copiedMarkdown ? logger : undefined,
+      {
+        text: 'Aligned assistant response text to copied markdown after prompt echo',
+        markdown: 'Aligned assistant markdown to response text after prompt echo',
+      },
+    );
+    answerText = alignedEcho.answerText;
+    answerMarkdown = alignedEcho.answerMarkdown;
+    const isPromptEcho = alignedEcho.isEcho;
+    if (isPromptEcho) {
+      logger('Detected prompt echo in response; waiting for actual assistant response...');
+      const deadline = Date.now() + 15_000;
+      let bestText: string | null = null;
+      let stableCount = 0;
       while (Date.now() < deadline) {
-        const snapshot = await readAssistantSnapshot(Runtime).catch(() => null);
+        const snapshot = await readAssistantSnapshot(Runtime, baselineTurns ?? undefined).catch(() => null);
         const text = typeof snapshot?.text === 'string' ? snapshot.text.trim() : '';
-	        const normalizedText = normalizeForComparison(text);
-	        const isStillEcho =
-	          !text ||
-	          normalizedText === normalizedPrompt ||
-	          (promptPrefix.length > 0 && normalizedText.startsWith(promptPrefix));
-	        if (!isStillEcho) {
-	          if (!bestText || text.length > bestText.length) {
-	            bestText = text;
-	            stableCount = 0;
+        const isStillEcho = !text || Boolean(promptEchoMatcher?.isEcho(text));
+        if (!isStillEcho) {
+          if (!bestText || text.length > bestText.length) {
+            bestText = text;
+            stableCount = 0;
           } else if (text === bestText) {
             stableCount += 1;
           }
@@ -869,11 +947,15 @@ async function runRemoteBrowserMode(
     }
 
     const submitOnce = async (prompt: string, submissionAttachments: BrowserAttachment[]) => {
+      const baselineSnapshot = await readAssistantSnapshot(Runtime).catch(() => null);
+      const baselineAssistantText =
+        typeof baselineSnapshot?.text === 'string' ? baselineSnapshot.text.trim() : '';
       const attachmentNames = submissionAttachments.map((a) => path.basename(a.path));
       if (submissionAttachments.length > 0) {
         if (!DOM) {
           throw new Error('Chrome DOM domain unavailable while uploading attachments.');
         }
+        await clearComposerAttachments(Runtime, 5_000, logger);
         // Use remote file transfer for remote Chrome (reads local files and injects via CDP)
         for (const attachment of submissionAttachments) {
           logger(`Uploading attachment: ${attachment.displayPath}`);
@@ -887,8 +969,8 @@ async function runRemoteBrowserMode(
         await waitForAttachmentCompletion(Runtime, waitBudget, attachmentNames, logger);
         logger('All attachments uploaded');
       }
-      const baselineTurns = await readConversationTurnCount(Runtime, logger);
-      await submitPrompt(
+      let baselineTurns = await readConversationTurnCount(Runtime, logger);
+      const committedTurns = await submitPrompt(
         {
           runtime: Runtime,
           input: Input,
@@ -899,12 +981,20 @@ async function runRemoteBrowserMode(
         prompt,
         logger,
       );
-      return baselineTurns;
+      if (typeof committedTurns === 'number' && Number.isFinite(committedTurns)) {
+        if (baselineTurns === null || committedTurns > baselineTurns) {
+          baselineTurns = Math.max(0, committedTurns - 1);
+        }
+      }
+      return { baselineTurns, baselineAssistantText };
     };
 
     let baselineTurns: number | null = null;
+    let baselineAssistantText: string | null = null;
     try {
-      baselineTurns = await submitOnce(promptText, attachments);
+      const submission = await submitOnce(promptText, attachments);
+      baselineTurns = submission.baselineTurns;
+      baselineAssistantText = submission.baselineAssistantText;
     } catch (error) {
       const isPromptTooLarge =
         error instanceof BrowserAutomationError &&
@@ -913,19 +1003,67 @@ async function runRemoteBrowserMode(
         logger('[browser] Inline prompt too large; retrying with file uploads.');
         await clearPromptComposer(Runtime, logger);
         await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
-        baselineTurns = await submitOnce(options.fallbackSubmission.prompt, options.fallbackSubmission.attachments);
+        const submission = await submitOnce(options.fallbackSubmission.prompt, options.fallbackSubmission.attachments);
+        baselineTurns = submission.baselineTurns;
+        baselineAssistantText = submission.baselineAssistantText;
       } else {
         throw error;
       }
     }
     stopThinkingMonitor = startThinkingStatusMonitor(Runtime, logger, options.verbose ?? false);
-    const answer = await waitForAssistantResponseWithReload(
+    // Helper to normalize text for echo detection (collapse whitespace, lowercase)
+    const normalizeForComparison = (text: string): string =>
+      text.toLowerCase().replace(/\s+/g, ' ').trim();
+    const waitForFreshAssistantResponse = async (baselineNormalized: string, timeoutMs: number) => {
+      const baselinePrefix =
+        baselineNormalized.length >= 80
+          ? baselineNormalized.slice(0, Math.min(200, baselineNormalized.length))
+          : '';
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const snapshot = await readAssistantSnapshot(Runtime, baselineTurns ?? undefined).catch(() => null);
+        const text = typeof snapshot?.text === 'string' ? snapshot.text.trim() : '';
+        if (text) {
+          const normalized = normalizeForComparison(text);
+          const isBaseline =
+            normalized === baselineNormalized || (baselinePrefix.length > 0 && normalized.startsWith(baselinePrefix));
+          if (!isBaseline) {
+            return {
+              text,
+              html: snapshot?.html ?? undefined,
+              meta: { turnId: snapshot?.turnId ?? undefined, messageId: snapshot?.messageId ?? undefined },
+            };
+          }
+        }
+        await delay(350);
+      }
+      return null;
+    };
+    let answer = await waitForAssistantResponseWithReload(
       Runtime,
       Page,
       config.timeoutMs,
       logger,
       baselineTurns ?? undefined,
     );
+    const baselineNormalized = baselineAssistantText ? normalizeForComparison(baselineAssistantText) : '';
+    if (baselineNormalized) {
+      const normalizedAnswer = normalizeForComparison(answer.text ?? '');
+      const baselinePrefix =
+        baselineNormalized.length >= 80
+          ? baselineNormalized.slice(0, Math.min(200, baselineNormalized.length))
+          : '';
+      const isBaseline =
+        normalizedAnswer === baselineNormalized ||
+        (baselinePrefix.length > 0 && normalizedAnswer.startsWith(baselinePrefix));
+      if (isBaseline) {
+        logger('Detected stale assistant response; waiting for new response...');
+        const refreshed = await waitForFreshAssistantResponse(baselineNormalized, 15_000);
+        if (refreshed) {
+          answer = refreshed;
+        }
+      }
+    }
     answerText = answer.text;
     answerHtml = answer.html ?? '';
 
@@ -952,12 +1090,8 @@ async function runRemoteBrowserMode(
 
     answerMarkdown = copiedMarkdown ?? answerText;
 
-    // Helper to normalize text for echo detection (collapse whitespace, lowercase)
-    const normalizeForComparison = (text: string): string =>
-      text.toLowerCase().replace(/\s+/g, ' ').trim();
-
     // Final sanity check: ensure we didn't accidentally capture the user prompt instead of the assistant turn.
-    const finalSnapshot = await readAssistantSnapshot(Runtime).catch(() => null);
+    const finalSnapshot = await readAssistantSnapshot(Runtime, baselineTurns ?? undefined).catch(() => null);
     const finalText = typeof finalSnapshot?.text === 'string' ? finalSnapshot.text.trim() : '';
     if (
       finalText &&
@@ -969,32 +1103,35 @@ async function runRemoteBrowserMode(
       answerText = finalText;
       answerMarkdown = finalText;
     }
-	    // Detect prompt echo using normalized comparison (whitespace-insensitive)
-	    const normalizedAnswer = normalizeForComparison(answerMarkdown);
-	    const normalizedPrompt = normalizeForComparison(promptText);
-	    const promptPrefix =
-	      normalizedPrompt.length >= 80
-	        ? normalizedPrompt.slice(0, Math.min(200, normalizedPrompt.length))
-	        : '';
-	    const isPromptEcho =
-	      normalizedAnswer === normalizedPrompt || (promptPrefix.length > 0 && normalizedAnswer.startsWith(promptPrefix));
-	    if (isPromptEcho) {
-	      logger('Detected prompt echo in response; waiting for actual assistant response...');
-	      const deadline = Date.now() + 8_000;
-	      let bestText: string | null = null;
-	      let stableCount = 0;
+
+    // Detect prompt echo using normalized comparison (whitespace-insensitive).
+    const promptEchoMatcher = buildPromptEchoMatcher(promptText);
+    const alignedEcho = alignPromptEchoPair(
+      answerText,
+      answerMarkdown,
+      promptEchoMatcher,
+      copiedMarkdown ? logger : undefined,
+      {
+        text: 'Aligned assistant response text to copied markdown after prompt echo',
+        markdown: 'Aligned assistant markdown to response text after prompt echo',
+      },
+    );
+    answerText = alignedEcho.answerText;
+    answerMarkdown = alignedEcho.answerMarkdown;
+    const isPromptEcho = alignedEcho.isEcho;
+    if (isPromptEcho) {
+      logger('Detected prompt echo in response; waiting for actual assistant response...');
+      const deadline = Date.now() + 15_000;
+      let bestText: string | null = null;
+      let stableCount = 0;
       while (Date.now() < deadline) {
-        const snapshot = await readAssistantSnapshot(Runtime).catch(() => null);
+        const snapshot = await readAssistantSnapshot(Runtime, baselineTurns ?? undefined).catch(() => null);
         const text = typeof snapshot?.text === 'string' ? snapshot.text.trim() : '';
-	        const normalizedText = normalizeForComparison(text);
-	        const isStillEcho =
-	          !text ||
-	          normalizedText === normalizedPrompt ||
-	          (promptPrefix.length > 0 && normalizedText.startsWith(promptPrefix));
-	        if (!isStillEcho) {
-	          if (!bestText || text.length > bestText.length) {
-	            bestText = text;
-	            stableCount = 0;
+        const isStillEcho = !text || Boolean(promptEchoMatcher?.isEcho(text));
+        if (!isStillEcho) {
+          if (!bestText || text.length > bestText.length) {
+            bestText = text;
+            stableCount = 0;
           } else if (text === bestText) {
             stableCount += 1;
           }
@@ -1133,7 +1270,12 @@ async function waitForAssistantResponseWithReload(
 function shouldReloadAfterAssistantError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   const message = error.message.toLowerCase();
-  return message.includes('assistant-response') || message.includes('watchdog') || message.includes('timeout');
+  return (
+    message.includes('assistant-response') ||
+    message.includes('watchdog') ||
+    message.includes('timeout') ||
+    message.includes('capture assistant response')
+  );
 }
 
 async function readConversationUrl(Runtime: ChromeClient['Runtime']): Promise<string | null> {

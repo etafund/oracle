@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import {
   buildAssistantExtractorForTest,
   buildConversationDebugExpressionForTest,
+  buildMarkdownFallbackExtractorForTest,
 } from '../../src/browser/pageActions.ts';
 import { CONVERSATION_TURN_SELECTOR, ASSISTANT_ROLE_SELECTOR } from '../../src/browser/constants.ts';
 
@@ -15,5 +16,13 @@ describe('browser automation expressions', () => {
   test('conversation debug expression references conversation selector', () => {
     const expression = buildConversationDebugExpressionForTest();
     expect(expression).toContain(JSON.stringify(CONVERSATION_TURN_SELECTOR));
+  });
+
+  test('markdown fallback filters user turns and respects assistant indicators', () => {
+    const expression = buildMarkdownFallbackExtractorForTest('2');
+    expect(expression).toContain('MIN_TURN_INDEX');
+    expect(expression).toContain("role !== 'user'");
+    expect(expression).toContain('copy-turn-action-button');
+    expect(expression).toContain(CONVERSATION_TURN_SELECTOR);
   });
 });
