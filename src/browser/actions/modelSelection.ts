@@ -510,5 +510,5 @@ function buildModelMatchersLiteral(targetModel: string): { labelTokens: string[]
 }
 
 export function buildModelSelectionExpressionForTest(targetModel: string): string {
-  return buildModelSelectionExpression(targetModel);
+  return buildModelSelectionExpression(targetModel, 'select');
 }
