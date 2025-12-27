@@ -7,6 +7,5 @@ Read this file whenever you're working from Windows and add new findings so the 
 - agent-scripts bash helpers: `runner`/`scripts/committer` can fail under PowerShell/CMD because of CRLF and bash expectations. If they explode, run commands directly (`pnpm ...`, `git add/commit`) instead.
 - browser-tools binary: not built in `agent-scripts/bin` on Windows; `pnpm tsx scripts/browser-tools.ts` also fails there (no package manifest). Use a macOS-built binary or run from macOS if you need it.
 - Prefer PowerShell + pnpm directly; watch for CRLF warnings when touching tracked files.
-- DPAPI dependency: `win-dpapi` is overridden to prebuilt `@primno/dpapi`, so VS build tools shouldn’t be required for cookie decrypt anymore.
 
 Future Windows gotchas belong here. Update this doc when you learn something new.

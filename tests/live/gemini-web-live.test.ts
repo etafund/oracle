@@ -3,19 +3,20 @@ import os from 'node:os';
 import path from 'node:path';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { createGeminiWebExecutor } from '../../src/gemini-web/executor.js';
-import type { ChromeCookiesSecureModule } from '../../src/browser/types.js';
+import { getCookies } from '@steipete/sweet-cookie';
 
 const live = process.env.ORACLE_LIVE_TEST === '1';
 
 async function assertHasGeminiChromeCookies(): Promise<boolean> {
-  const mod = (await import('chrome-cookies-secure')) as unknown;
-  const chromeCookies = (mod as { default?: unknown }).default ?? mod;
-
-  const cookies = (await (chromeCookies as ChromeCookiesSecureModule).getCookiesPromised(
-    'https://gemini.google.com',
-    'puppeteer',
-  )) as Array<{ name: string; value: string }>;
-
+  const { cookies } = await getCookies({
+    url: 'https://gemini.google.com',
+    origins: ['https://gemini.google.com', 'https://accounts.google.com', 'https://www.google.com'],
+    names: ['__Secure-1PSID', '__Secure-1PSIDTS'],
+    browsers: ['chrome'],
+    mode: 'merge',
+    chromeProfile: 'Default',
+    timeoutMs: 5_000,
+  });
   const map = new Map(cookies.map((c) => [c.name, c.value]));
   if (!map.get('__Secure-1PSID') || !map.get('__Secure-1PSIDTS')) {
     console.warn(

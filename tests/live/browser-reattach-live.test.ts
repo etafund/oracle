@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import { runBrowserMode } from '../../src/browser/index.js';
 import { resumeBrowserSession } from '../../src/browser/reattach.js';
 import type { BrowserLogger } from '../../src/browser/types.js';
-import type { ChromeCookiesSecureModule } from '../../src/browser/types.js';
+import { getCookies } from '@steipete/sweet-cookie';
 
 const LIVE = process.env.ORACLE_LIVE_TEST === '1';
 const PROJECT_URL =
@@ -11,12 +11,14 @@ const PROJECT_URL =
   'https://chatgpt.com/g/g-p-691edc9fec088191b553a35093da1ea8-oracle/project';
 
 async function hasChatGptCookies(): Promise<boolean> {
-  const mod = (await import('chrome-cookies-secure')) as unknown;
-  const chromeCookies = (mod as { default?: unknown }).default ?? mod;
-  const cookies = (await (chromeCookies as ChromeCookiesSecureModule).getCookiesPromised(
-    'https://chatgpt.com',
-    'puppeteer',
-  )) as Array<{ name: string; value: string }>;
+  const { cookies } = await getCookies({
+    url: 'https://chatgpt.com',
+    origins: ['https://chatgpt.com', 'https://chat.openai.com', 'https://atlas.openai.com'],
+    browsers: ['chrome'],
+    mode: 'merge',
+    chromeProfile: 'Default',
+    timeoutMs: 5_000,
+  });
   const hasSession = cookies.some((cookie) => cookie.name.startsWith('__Secure-next-auth.session-token'));
   if (!hasSession) {
     console.warn(

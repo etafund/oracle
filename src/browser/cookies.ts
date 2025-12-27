@@ -1,6 +1,6 @@
 import { COOKIE_URLS } from './constants.js';
 import type { BrowserLogger, ChromeClient, CookieParam } from './types.js';
-import { loadChromeCookies } from './chromeCookies.js';
+import { getCookies, type Cookie } from '@steipete/sweet-cookie';
 
 export class ChromeCookieSyncError extends Error {}
 
@@ -54,24 +54,33 @@ async function readChromeCookies(
   filterNames?: string[],
   cookiePath?: string | null,
 ): Promise<CookieParam[]> {
-  const urlsToCheck = Array.from(new Set([stripQuery(url), ...COOKIE_URLS]));
-  const merged = new Map<string, CookieParam>();
-  const allowlist = normalizeCookieNames(filterNames);
-  for (const candidateUrl of urlsToCheck) {
-    const cookies = await loadChromeCookies({
-      targetUrl: candidateUrl,
-      profile: profile ?? undefined,
-      explicitCookiePath: cookiePath ?? undefined,
-      filterNames: allowlist ?? undefined,
-    });
-    const fallbackHostname = new URL(candidateUrl).hostname;
-    for (const cookie of cookies) {
-      const key = `${cookie.domain ?? fallbackHostname}:${cookie.name}`;
-      if (!merged.has(key)) {
-        merged.set(key, cookie);
-      }
-    }
+  const origins = Array.from(new Set([stripQuery(url), ...COOKIE_URLS]));
+  const chromeProfile = cookiePath ?? profile ?? undefined;
+  const timeoutMs = readDuration('ORACLE_COOKIE_LOAD_TIMEOUT_MS', 5_000);
+
+  const { cookies, warnings } = await getCookies({
+    url,
+    origins,
+    names: filterNames?.length ? filterNames : undefined,
+    browsers: ['chrome'],
+    mode: 'merge',
+    chromeProfile,
+    timeoutMs,
+  });
+
+  if (process.env.ORACLE_DEBUG_COOKIES === '1' && warnings.length) {
+    // eslint-disable-next-line no-console
+    console.log(`[cookies] sweet-cookie warnings:\n- ${warnings.join('\n- ')}`);
   }
+
+  const merged = new Map<string, CookieParam>();
+  for (const cookie of cookies) {
+    const normalized = toCdpCookie(cookie);
+    if (!normalized) continue;
+    const key = `${normalized.domain ?? ''}:${normalized.name}`;
+    if (!merged.has(key)) merged.set(key, normalized);
+  }
+
   return Array.from(merged.values());
 }
 
@@ -97,11 +106,21 @@ function normalizeInlineCookies(rawCookies: CookieParam[], fallbackHost: string)
   return Array.from(merged.values());
 }
 
-function normalizeCookieNames(names?: string[] | null): Set<string> | null {
-  if (!names || names.length === 0) {
-    return null;
+function toCdpCookie(cookie: Cookie): CookieParam | null {
+  if (!cookie?.name) return null;
+  const out: CookieParam = {
+    name: cookie.name,
+    value: cookie.value,
+    domain: cookie.domain,
+    path: cookie.path ?? '/',
+    secure: cookie.secure ?? true,
+    httpOnly: cookie.httpOnly ?? false,
+  };
+  if (typeof cookie.expires === 'number') out.expires = cookie.expires;
+  if (cookie.sameSite === 'Lax' || cookie.sameSite === 'Strict' || cookie.sameSite === 'None') {
+    out.sameSite = cookie.sameSite;
   }
-  return new Set(names.map((name) => name.trim()).filter(Boolean));
+  return out;
 }
 
 function attachUrl(cookie: CookieParam, fallbackUrl: string): CookieParam {
@@ -146,4 +165,11 @@ function normalizeExpiration(expires?: number): number | undefined {
     return Math.round(value / 1000);
   }
   return Math.round(value);
+}
+
+function readDuration(envKey: string, defaultValueMs: number): number {
+  const raw = process.env[envKey];
+  if (!raw) return defaultValueMs;
+  const value = Number.parseInt(raw, 10);
+  return Number.isFinite(value) && value > 0 ? value : defaultValueMs;
 }

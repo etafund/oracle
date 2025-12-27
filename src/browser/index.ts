@@ -250,13 +250,13 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     if (cookieSyncEnabled && !manualLogin && (appliedCookies ?? 0) === 0 && !config.inlineCookies) {
       throw new BrowserAutomationError(
         'No ChatGPT cookies were applied from your Chrome profile; cannot proceed in browser mode. ' +
-          'Make sure ChatGPT is signed in in the selected profile or rebuild the keytar native module if it failed to load.',
+          'Make sure ChatGPT is signed in in the selected profile, or use --browser-manual-login / inline cookies.',
         {
           stage: 'execute-browser',
           details: {
             profile: config.chromeProfile ?? 'Default',
             cookiePath: config.chromeCookiePath ?? null,
-            hint: 'Rebuild keytar: PYTHON=/usr/bin/python3 /Users/steipete/Projects/oracle/runner npx node-gyp rebuild (run inside the keytar path from the error), then retry.',
+            hint: 'If macOS Keychain prompts or denies access, run oracle from a GUI session or use --copy/--render for the manual flow.',
           },
         },
       );

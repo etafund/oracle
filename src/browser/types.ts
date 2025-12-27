@@ -7,26 +7,6 @@ export type ChromeClient = Awaited<ReturnType<typeof CDP>>;
 export type CookieParam = Protocol.Network.CookieParam;
 export type BrowserModelStrategy = 'select' | 'current' | 'ignore';
 
-export interface ChromeCookiesSecureModule {
-  getCookiesPromised: (
-    url: string,
-    format: 'puppeteer' | 'object',
-    profile?: string
-  ) => Promise<PuppeteerCookie[] | Record<string, unknown>>;
-}
-
-export interface PuppeteerCookie {
-  name: string;
-  value: string;
-  domain?: string;
-  path?: string;
-  expires?: number;
-  // biome-ignore lint/style/useNamingConvention: matches Puppeteer cookie shape
-  Secure?: boolean;
-  // biome-ignore lint/style/useNamingConvention: matches Puppeteer cookie shape
-  HttpOnly?: boolean;
-}
-
 export type BrowserLogger = ((message: string) => void) & {
   verbose?: boolean;
   sessionLog?: (message: string) => void;

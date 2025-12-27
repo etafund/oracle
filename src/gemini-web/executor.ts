@@ -1,6 +1,6 @@
 import path from 'node:path';
 import type { BrowserRunOptions, BrowserRunResult, BrowserLogger } from '../browser/types.js';
-import type { ChromeCookiesSecureModule, PuppeteerCookie } from '../browser/types.js';
+import { getCookies } from '@steipete/sweet-cookie';
 import { runGeminiWebWithFallback, saveFirstGeminiImageFromOutput } from './client.js';
 import type { GeminiWebModelId } from './client.js';
 import type { GeminiWebOptions, GeminiWebResponse } from './types.js';
@@ -46,11 +46,6 @@ async function loadGeminiCookiesFromChrome(
   log?: BrowserLogger,
 ): Promise<Record<string, string>> {
   try {
-    const mod = (await import('chrome-cookies-secure')) as unknown;
-    const chromeCookies =
-      (mod as { default?: ChromeCookiesSecureModule }).default ??
-      (mod as ChromeCookiesSecureModule);
-
     const profile =
       typeof browserConfig?.chromeProfile === 'string' &&
       browserConfig.chromeProfile.trim().length > 0
@@ -83,24 +78,29 @@ async function loadGeminiCookiesFromChrome(
       'SIDCC',
     ] as const;
 
+    const { cookies, warnings } = await getCookies({
+      url: sources[0],
+      origins: sources,
+      names: [...wantNames],
+      browsers: ['chrome'],
+      mode: 'merge',
+      chromeProfile: profile,
+      timeoutMs: 5_000,
+    });
+    if (warnings.length && log?.verbose) {
+      log(`[gemini-web] Cookie warnings:\n- ${warnings.join('\n- ')}`);
+    }
+
     const cookieMap: Record<string, string> = {};
-    for (const url of sources) {
-      const cookies = (await chromeCookies.getCookiesPromised(
-        url,
-        'puppeteer',
-        profile,
-      )) as PuppeteerCookie[];
-      for (const name of wantNames) {
-        if (cookieMap[name]) continue;
-        const matches = cookies.filter((cookie) => cookie.name === name);
-        if (matches.length === 0) continue;
-        const preferredDomain = matches.find(
-          (cookie) => cookie.domain === '.google.com' && (cookie.path ?? '/') === '/',
-        );
-        const googleDomain = matches.find((cookie) => (cookie.domain ?? '').endsWith('google.com'));
-        const value = (preferredDomain ?? googleDomain ?? matches[0])?.value;
-        if (value) cookieMap[name] = value;
-      }
+    for (const name of wantNames) {
+      const matches = cookies.filter((cookie) => cookie.name === name && typeof cookie.value === 'string');
+      if (matches.length === 0) continue;
+      const preferredDomain = matches.find(
+        (cookie) => cookie.domain === 'google.com' && (cookie.path ?? '/') === '/',
+      );
+      const googleDomain = matches.find((cookie) => (cookie.domain ?? '').endsWith('google.com'));
+      const value = (preferredDomain ?? googleDomain ?? matches[0])?.value;
+      if (value) cookieMap[name] = value;
     }
 
     if (!cookieMap['__Secure-1PSID'] || !cookieMap['__Secure-1PSIDTS']) {

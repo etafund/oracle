@@ -22,19 +22,20 @@ vi.mock('../../src/gemini-web/client.js', () => ({
   saveFirstGeminiImageFromOutput,
 }));
 
-vi.mock('chrome-cookies-secure', () => ({
-  default: {
-    getCookiesPromised: async () => [
-      { name: '__Secure-1PSID', value: 'psid', domain: '.google.com', path: '/' },
-      { name: '__Secure-1PSIDTS', value: 'psidts', domain: '.google.com', path: '/' },
-    ],
-  },
+const getCookies = vi.fn(async () => ({
+  cookies: [
+    { name: '__Secure-1PSID', value: 'psid', domain: 'google.com', path: '/', secure: true, httpOnly: true },
+    { name: '__Secure-1PSIDTS', value: 'psidts', domain: 'google.com', path: '/', secure: true, httpOnly: true },
+  ],
+  warnings: [],
 }));
+vi.mock('@steipete/sweet-cookie', () => ({ getCookies }));
 
 describe('gemini-web executor', () => {
   beforeEach(() => {
     runGeminiWebWithFallback.mockClear();
     saveFirstGeminiImageFromOutput.mockClear();
+    getCookies.mockClear();
   });
 
   afterEach(() => {

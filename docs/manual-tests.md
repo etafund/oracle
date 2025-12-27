@@ -8,8 +8,7 @@ and run the live API suite before shipping major transport changes.
 ## Prerequisites
 
 - macOS with Chrome installed (default profile signed in to ChatGPT Pro).
-- `pnpm install` already completed, and native deps rebuilt as needed via  
-  `PYTHON=/usr/bin/python3 npm_config_build_from_source=1 pnpm rebuild sqlite3 keytar win-dpapi --workspace-root`.
+- Node 22+ and `pnpm install` already completed.
 - Headful display access (no `--browser-headless`).
 - When debugging, add `--browser-keep-browser` so Chrome stays open after Oracle exits, then connect with `pnpm exec tsx scripts/browser-tools.ts ...` (screenshot, eval, DOM picker, etc.).
 - Ensure no Chrome instances are force-terminated mid-run; let Oracle clean up once you’re done capturing state.
@@ -19,7 +18,7 @@ and run the live API suite before shipping major transport changes.
 
 ### Quick browser port smoke
 
-- `./runner pnpm test:browser` — launches headful Chrome and checks the DevTools endpoint is reachable. Set `ORACLE_BROWSER_PORT` (or `ORACLE_BROWSER_DEBUG_PORT`) to reuse a fixed port when you’ve already opened a firewall rule.
+- `pnpm test:browser` — launches headful Chrome and checks the DevTools endpoint is reachable. Set `ORACLE_BROWSER_PORT` (or `ORACLE_BROWSER_DEBUG_PORT`) to reuse a fixed port when you’ve already opened a firewall rule.
 
 ### Gemini browser mode (Gemini web / cookies)
 
@@ -84,17 +83,8 @@ pnpm tsx scripts/browser-tools.ts kill --all --force   # tear down straggler Dev
 
 This mirrors Mario Zechner’s “What if you don’t need MCP?” technique and is handy when you just need a few quick interactions without spinning up additional tooling.
 
-1. **Cookie Sync Blocks Missing Bindings**
-   - Temporarily move `node_modules/.pnpm/sqlite3@*/node_modules/sqlite3` out of the way.
-   - Run  
-     ```bash
-     pnpm run oracle -- --engine browser --model "GPT-5.2" --prompt "Smoke test cookie sync."
-     ```
-   - Expect an early failure: `Unable to derive Chrome cookie key` (or a sqlite binding hint) because the cookie reader can’t load sqlite.  
-   - Restore `sqlite3` and rebuild; rerun to confirm cookies copy successfully (`Copied N cookies from Chrome profile Default`).
-
-2. **Prompt Submission & Model Switching**
-   - With sqlite bindings healthy, run  
+1. **Prompt Submission & Model Switching**
+   - With Chrome signed in and cookie sync enabled, run  
      ```bash
      pnpm run oracle -- --engine browser --model "GPT-5.2" \
        --prompt "Line 1\nLine 2\nLine 3"
@@ -105,7 +95,7 @@ This mirrors Mario Zechner’s “What if you don’t need MCP?” technique and
      - `Clicked send button` (or Enter fallback).
    - In the attached Chrome window, verify the multi-line prompt appears exactly as sent.
 
-3. **Markdown Capture**
+2. **Markdown Capture**
    - Prompt:
      ```bash
      pnpm run oracle -- --engine browser --model "GPT-5.2" \
@@ -115,11 +105,11 @@ This mirrors Mario Zechner’s “What if you don’t need MCP?” technique and
      - `Answer:` section containing bullet list with Markdown preserved (e.g., `- item`, fenced code).
      - Session log (`oracle session <id>`) should show the assistant markdown (confirm via `grep -n '```' ~/.oracle/sessions/<id>/output.log`).
 
-4. **Stop Button Handling**
+3. **Stop Button Handling**
   - Start a long prompt (`"Write a detailed essay about browsers"`) and once ChatGPT responds, manually click “Stop generating” inside Chrome.
   - Oracle should detect the assistant message (partial) and still store the markdown.
 
-5. **Override Flag**
+4. **Override Flag**
   - Run with `--browser-allow-cookie-errors` while intentionally breaking bindings.
   - Confirm log shows `Cookie sync failed (continuing with override)` and the run proceeds headless/logged-out.
 - Remember: the browser composer now pastes only the user prompt (plus any inline file blocks). If you see the default “You are Oracle…” text or other system-prefixed content in the ChatGPT composer, something regressed in `assembleBrowserPrompt` and you should stop and file a bug.
