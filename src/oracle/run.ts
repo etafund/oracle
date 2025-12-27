@@ -35,7 +35,7 @@ import { createFsAdapter } from './fsAdapter.js';
 import { resolveGeminiModelId } from './gemini.js';
 import { resolveClaudeModelId } from './claude.js';
 import { renderMarkdownAnsi } from '../cli/markdownRenderer.js';
-import { createLiveRenderer } from 'markdansi';
+import * as markdansi from 'markdansi';
 import { executeBackgroundResponse } from './background.js';
 import { formatTokenEstimate, formatTokenValue, resolvePreviewMode } from './runUtils.js';
 import { estimateUsdCost } from 'tokentally';
@@ -47,6 +47,17 @@ import {
   resolveModelConfig,
   normalizeOpenRouterBaseUrl,
 } from './modelResolver.js';
+
+type LiveRenderer = { render: (markdown: string) => void; finish: () => void };
+type LiveRendererOptions = {
+  write: (text: string) => boolean;
+  width: number;
+  renderFrame: (markdown: string) => string;
+};
+
+const createLiveRenderer = (markdansi as {
+  createLiveRenderer?: (options: LiveRendererOptions) => LiveRenderer;
+}).createLiveRenderer;
 
 const isStdoutTty = process.stdout.isTTY && chalk.level > 0;
 const dim = (text: string): string => (isStdoutTty ? kleur.dim(text) : text);
@@ -456,10 +467,10 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
             },
           });
         }
-      let liveRenderer: ReturnType<typeof createLiveRenderer> | null = null;
+      let liveRenderer: LiveRenderer | null = null;
       try {
         liveRenderer =
-          isTty && !renderPlain
+          isTty && !renderPlain && createLiveRenderer
             ? createLiveRenderer({
                 write: stdoutWrite,
                 width: process.stdout.columns ?? 80,
