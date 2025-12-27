@@ -25,7 +25,7 @@ importers:
         version: 1.25.1(hono@4.11.1)(zod@4.2.1)
       '@steipete/sweet-cookie':
         specifier: github:steipete/sweet-cookie#path:packages/core
-        version: https://codeload.github.com/steipete/sweet-cookie/tar.gz/75f9e7ac46224bfc27172c0bef1d04a953a4f0b1#path:packages/core
+        version: https://codeload.github.com/steipete/sweet-cookie/tar.gz/b332790eed8697d19a267fbf57b947019483709a#path:packages/core
       chalk:
         specifier: ^5.6.2
         version: 5.6.2
@@ -698,8 +698,8 @@ packages:
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
 
-  '@steipete/sweet-cookie@https://codeload.github.com/steipete/sweet-cookie/tar.gz/75f9e7ac46224bfc27172c0bef1d04a953a4f0b1#path:packages/core':
-    resolution: {path: packages/core, tarball: https://codeload.github.com/steipete/sweet-cookie/tar.gz/75f9e7ac46224bfc27172c0bef1d04a953a4f0b1}
+  '@steipete/sweet-cookie@https://codeload.github.com/steipete/sweet-cookie/tar.gz/b332790eed8697d19a267fbf57b947019483709a#path:packages/core':
+    resolution: {path: packages/core, tarball: https://codeload.github.com/steipete/sweet-cookie/tar.gz/b332790eed8697d19a267fbf57b947019483709a}
     version: 0.0.0
     engines: {node: '>=22'}
 
@@ -2879,7 +2879,7 @@ snapshots:
 
   '@standard-schema/spec@1.1.0': {}
 
-  '@steipete/sweet-cookie@https://codeload.github.com/steipete/sweet-cookie/tar.gz/75f9e7ac46224bfc27172c0bef1d04a953a4f0b1#path:packages/core': {}
+  '@steipete/sweet-cookie@https://codeload.github.com/steipete/sweet-cookie/tar.gz/b332790eed8697d19a267fbf57b947019483709a#path:packages/core': {}
 
   '@tootallnate/quickjs-emscripten@0.23.0': {}
 
