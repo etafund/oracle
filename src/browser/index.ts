@@ -561,23 +561,28 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     ).catch(() => null);
     answerMarkdown = copiedMarkdown ?? answerText;
 
+    const promptEchoMatcher = buildPromptEchoMatcher(promptText);
+
     // Final sanity check: ensure we didn't accidentally capture the user prompt instead of the assistant turn.
     const finalSnapshot = await readAssistantSnapshot(Runtime, baselineTurns ?? undefined).catch(() => null);
     const finalText = typeof finalSnapshot?.text === 'string' ? finalSnapshot.text.trim() : '';
-    if (
-      !copiedMarkdown &&
-      finalText &&
-      finalText !== answerMarkdown.trim() &&
-      finalText !== promptText.trim() &&
-      finalText.length >= answerMarkdown.trim().length
-    ) {
-      logger('Refreshed assistant response via final DOM snapshot');
-      answerText = finalText;
-      answerMarkdown = finalText;
+    if (finalText && finalText !== promptText.trim()) {
+      const trimmedMarkdown = answerMarkdown.trim();
+      const finalIsEcho = promptEchoMatcher ? promptEchoMatcher.isEcho(finalText) : false;
+      const lengthDelta = finalText.length - trimmedMarkdown.length;
+      const missingCopy = !copiedMarkdown && lengthDelta >= 0;
+      const likelyTruncatedCopy =
+        copiedMarkdown &&
+        trimmedMarkdown.length > 0 &&
+        lengthDelta >= Math.max(12, Math.floor(trimmedMarkdown.length * 0.75));
+      if ((missingCopy || likelyTruncatedCopy) && !finalIsEcho && finalText !== trimmedMarkdown) {
+        logger('Refreshed assistant response via final DOM snapshot');
+        answerText = finalText;
+        answerMarkdown = finalText;
+      }
     }
 
     // Detect prompt echo using normalized comparison (whitespace-insensitive).
-    const promptEchoMatcher = buildPromptEchoMatcher(promptText);
     const alignedEcho = alignPromptEchoPair(
       answerText,
       answerMarkdown,

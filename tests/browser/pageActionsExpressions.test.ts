@@ -3,6 +3,7 @@ import {
   buildAssistantExtractorForTest,
   buildConversationDebugExpressionForTest,
   buildMarkdownFallbackExtractorForTest,
+  buildCopyExpressionForTest,
 } from '../../src/browser/pageActions.ts';
 import { CONVERSATION_TURN_SELECTOR, ASSISTANT_ROLE_SELECTOR } from '../../src/browser/constants.ts';
 
@@ -24,5 +25,13 @@ describe('browser automation expressions', () => {
     expect(expression).toContain("role !== 'user'");
     expect(expression).toContain('copy-turn-action-button');
     expect(expression).toContain(CONVERSATION_TURN_SELECTOR);
+  });
+
+  test('copy expression scopes to assistant turn buttons', () => {
+    const expression = buildCopyExpressionForTest({});
+    expect(expression).toContain(JSON.stringify(CONVERSATION_TURN_SELECTOR));
+    expect(expression).toContain(ASSISTANT_ROLE_SELECTOR);
+    expect(expression).toContain('isAssistantTurn');
+    expect(expression).toContain('copy-turn-action-button');
   });
 });

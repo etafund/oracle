@@ -119,12 +119,14 @@ export async function waitForAssistantResponse(
       isStopButtonVisible(Runtime),
       isCompletionVisible(Runtime),
     ]);
-    if (stopVisible && !completionVisible) {
+    if (stopVisible) {
       logger('Assistant still generating; waiting for completion');
       const completed = await pollAssistantCompletion(Runtime, remainingMs, minTurnIndex);
       if (completed) {
         return completed;
       }
+    } else if (completionVisible) {
+      // No-op: completion UI surfaced and stop button is gone.
     }
   }
 
@@ -190,6 +192,12 @@ export function buildConversationDebugExpressionForTest(): string {
 
 export function buildMarkdownFallbackExtractorForTest(minTurnLiteral = '0'): string {
   return buildMarkdownFallbackExtractor(minTurnLiteral);
+}
+
+export function buildCopyExpressionForTest(
+  meta: { messageId?: string | null; turnId?: string | null } = {},
+): string {
+  return buildCopyExpression(meta);
 }
 
 async function recoverAssistantResponse(
@@ -334,10 +342,13 @@ async function pollAssistantCompletion(
         isStopButtonVisible(Runtime),
         isCompletionVisible(Runtime),
       ]);
-      // Require at least 2 stable cycles even when completion buttons are visible
-      // to ensure DOM text has fully rendered (buttons can appear before text settles)
-      if ((completionVisible && stableCycles >= 2) || (!stopVisible && stableCycles >= requiredStableCycles)) {
-        return normalized;
+      const shortAnswer = currentLength > 0 && currentLength < 40;
+      const completionStableTarget = shortAnswer ? 8 : 4;
+      // Require stop button to disappear before treating completion as final.
+      if (!stopVisible) {
+        if ((completionVisible && stableCycles >= completionStableTarget) || stableCycles >= requiredStableCycles) {
+          return normalized;
+        }
       }
     } else {
       previousLength = 0;
@@ -869,13 +880,41 @@ function buildCopyExpression(meta: { messageId?: string | null; turnId?: string 
           return button;
         }
       }
+      const CONVERSATION_SELECTOR = ${JSON.stringify(CONVERSATION_TURN_SELECTOR)};
+      const ASSISTANT_SELECTOR = '${ASSISTANT_ROLE_SELECTOR}';
+      const isAssistantTurn = (node) => {
+        if (!(node instanceof HTMLElement)) return false;
+        const turnAttr = (node.getAttribute('data-turn') || node.dataset?.turn || '').toLowerCase();
+        if (turnAttr === 'assistant') return true;
+        const role = (node.getAttribute('data-message-author-role') || node.dataset?.messageAuthorRole || '').toLowerCase();
+        if (role === 'assistant') return true;
+        const testId = (node.getAttribute('data-testid') || '').toLowerCase();
+        if (testId.includes('assistant')) return true;
+        return Boolean(node.querySelector(ASSISTANT_SELECTOR) || node.querySelector('[data-testid*="assistant"]'));
+      };
+      const turns = Array.from(document.querySelectorAll(CONVERSATION_SELECTOR));
+      for (let i = turns.length - 1; i >= 0; i -= 1) {
+        const turn = turns[i];
+        if (!isAssistantTurn(turn)) continue;
+        const button = turn.querySelector(BUTTON_SELECTOR);
+        if (button) {
+          return button;
+        }
+      }
       const all = Array.from(document.querySelectorAll(BUTTON_SELECTOR));
-      return all.at(-1) ?? null;
+      for (let i = all.length - 1; i >= 0; i -= 1) {
+        const button = all[i];
+        const turn = button?.closest?.(CONVERSATION_SELECTOR);
+        if (turn && isAssistantTurn(turn)) {
+          return button;
+        }
+      }
+      return null;
     };
 
     const interceptClipboard = () => {
       const clipboard = navigator.clipboard;
-      const state = { text: '' };
+      const state = { text: '', updatedAt: 0 };
       if (!clipboard) {
         return { state, restore: () => {} };
       }
@@ -883,6 +922,7 @@ function buildCopyExpression(meta: { messageId?: string | null; turnId?: string 
       const originalWrite = clipboard.write;
       clipboard.writeText = (value) => {
         state.text = typeof value === 'string' ? value : '';
+        state.updatedAt = Date.now();
         return Promise.resolve();
       };
       clipboard.write = async (items) => {
@@ -895,11 +935,13 @@ function buildCopyExpression(meta: { messageId?: string | null; turnId?: string 
               const blob = await item.getType('text/plain');
               const text = await blob.text();
               state.text = text ?? '';
+              state.updatedAt = Date.now();
               break;
             }
           }
         } catch {
           state.text = '';
+          state.updatedAt = Date.now();
         }
         return Promise.resolve();
       };
@@ -939,22 +981,37 @@ function buildCopyExpression(meta: { messageId?: string | null; turnId?: string 
 
           const readIntercepted = () => {
             const markdown = interception.state.text ?? '';
-            return { success: Boolean(markdown.trim()), markdown };
+            const updatedAt = interception.state.updatedAt ?? 0;
+            return { success: Boolean(markdown.trim()), markdown, updatedAt };
+          };
+
+          let lastText = '';
+          let stableTicks = 0;
+          const requiredStableTicks = 3;
+          const requiredStableMs = 250;
+          const maybeFinish = () => {
+            const payload = readIntercepted();
+            if (!payload.success) return;
+            if (payload.markdown !== lastText) {
+              lastText = payload.markdown;
+              stableTicks = 0;
+              return;
+            }
+            stableTicks += 1;
+            const ageMs = Date.now() - (payload.updatedAt || 0);
+            if (stableTicks >= requiredStableTicks && ageMs >= requiredStableMs) {
+              finish(payload);
+            }
           };
 
           const handleCopy = () => {
-            finish(readIntercepted());
+            maybeFinish();
           };
 
           button.addEventListener('copy', handleCopy, true);
           button.scrollIntoView({ block: 'center', behavior: 'instant' });
           dispatchClickSequence(button);
-          pollId = setInterval(() => {
-            const payload = readIntercepted();
-            if (payload.success) {
-              finish(payload);
-            }
-          }, 100);
+          pollId = setInterval(maybeFinish, 120);
           timeoutId = setTimeout(() => {
             button.removeEventListener('copy', handleCopy, true);
             finish({ success: false, status: 'timeout' });

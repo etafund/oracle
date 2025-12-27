@@ -23,6 +23,8 @@
 - Browser: align prompt-echo markdown/text mismatches when copy-turn captures a different turn (now handles truncated/ellipsis echoes).
 - Browser: skip sent-turn attachment verification when project views hide attachment UI.
 - Browser: always log the active ChatGPT URL for browser runs (including the `/c/` conversation URL when it appears).
+- Browser: scope copy-turn capture to the assistant turn so clipboard reads don’t grab the user prompt.
+- Browser: require stop-button disappearance + clipboard stability before finalizing browser answers to avoid truncation.
 - Tests: assert assistant-role filtering in the response observer expression.
 
 ## 0.7.6 — 2025-12-25
