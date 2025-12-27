@@ -89,14 +89,15 @@ function normalizeInlineCookies(rawCookies: CookieParam[], fallbackHost: string)
   for (const cookie of rawCookies) {
     if (!cookie?.name) continue;
     const normalized: CookieParam = {
-      ...cookie,
       name: cookie.name,
       value: cookie.value ?? '',
+      url: cookie.url,
       domain: cookie.domain ?? fallbackHost,
       path: cookie.path ?? '/',
       expires: normalizeExpiration(cookie.expires),
       secure: cookie.secure ?? true,
       httpOnly: cookie.httpOnly ?? false,
+      sameSite: cookie.sameSite,
     };
     const key = `${normalized.domain ?? fallbackHost}:${normalized.name}`;
     if (!merged.has(key)) {

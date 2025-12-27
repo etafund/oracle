@@ -326,7 +326,7 @@ async function pollAssistantCompletion(
   const watchdogDeadline = Date.now() + timeoutMs;
   let previousLength = 0;
   let stableCycles = 0;
-  const requiredStableCycles = 6;
+  let lastChangeAt = Date.now();
   while (Date.now() < watchdogDeadline) {
     const snapshot = await readAssistantSnapshot(Runtime, minTurnIndex);
     const normalized = normalizeAssistantSnapshot(snapshot);
@@ -335,6 +335,7 @@ async function pollAssistantCompletion(
       if (currentLength > previousLength) {
         previousLength = currentLength;
         stableCycles = 0;
+        lastChangeAt = Date.now();
       } else {
         stableCycles += 1;
       }
@@ -342,11 +343,17 @@ async function pollAssistantCompletion(
         isStopButtonVisible(Runtime),
         isCompletionVisible(Runtime),
       ]);
-      const shortAnswer = currentLength > 0 && currentLength < 40;
-      const completionStableTarget = shortAnswer ? 8 : 4;
+      const shortAnswer = currentLength > 0 && currentLength < 16;
+      const completionStableTarget = shortAnswer ? 12 : currentLength < 40 ? 8 : 4;
+      const requiredStableCycles = shortAnswer ? 12 : 6;
+      const stableMs = Date.now() - lastChangeAt;
+      const minStableMs = shortAnswer ? 8000 : 1200;
       // Require stop button to disappear before treating completion as final.
       if (!stopVisible) {
-        if ((completionVisible && stableCycles >= completionStableTarget) || stableCycles >= requiredStableCycles) {
+        const stableEnough = stableCycles >= requiredStableCycles && stableMs >= minStableMs;
+        const completionEnough =
+          completionVisible && stableCycles >= completionStableTarget && stableMs >= minStableMs;
+        if (completionEnough || stableEnough) {
           return normalized;
         }
       }
@@ -601,36 +608,46 @@ function buildResponseObserverExpression(timeoutMs: number, minTurnIndex?: numbe
     };
 
     const waitForSettle = async (snapshot) => {
-      const settleWindowMs = 5000;
+      const initialLength = snapshot?.text?.length ?? 0;
+      const shortAnswer = initialLength > 0 && initialLength < 16;
+      const settleWindowMs = shortAnswer ? 12_000 : 5_000;
       const settleIntervalMs = 400;
-        const deadline = Date.now() + settleWindowMs;
-        let latest = snapshot;
-        let lastLength = snapshot?.text?.length ?? 0;
-        while (Date.now() < deadline) {
-          await new Promise((resolve) => setTimeout(resolve, settleIntervalMs));
-          const refreshedRaw = extractFromTurns();
-          const refreshedCandidate =
-            refreshedRaw && !isAnswerNowPlaceholder(refreshedRaw) ? refreshedRaw : null;
-          let refreshed = acceptSnapshot(refreshedCandidate);
-          if (!refreshed) {
-            const fallbackRaw = extractFromMarkdownFallback();
-            const fallbackCandidate =
-              fallbackRaw && !isAnswerNowPlaceholder(fallbackRaw) ? fallbackRaw : null;
-            refreshed = acceptSnapshot(fallbackCandidate);
-          }
-          if (refreshed && (refreshed.text?.length ?? 0) >= lastLength) {
-            latest = refreshed;
-            lastLength = refreshed.text?.length ?? lastLength;
-          }
-          const stopVisible = Boolean(document.querySelector(STOP_SELECTOR));
-          const finishedVisible = isLastAssistantTurnFinished();
-
-          if (!stopVisible || finishedVisible) {
-            break;
-          }
+      const deadline = Date.now() + settleWindowMs;
+      let latest = snapshot;
+      let lastLength = snapshot?.text?.length ?? 0;
+      let stableCycles = 0;
+      const stableTarget = shortAnswer ? 6 : 3;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, settleIntervalMs));
+        const refreshedRaw = extractFromTurns();
+        const refreshedCandidate =
+          refreshedRaw && !isAnswerNowPlaceholder(refreshedRaw) ? refreshedRaw : null;
+        let refreshed = acceptSnapshot(refreshedCandidate);
+        if (!refreshed) {
+          const fallbackRaw = extractFromMarkdownFallback();
+          const fallbackCandidate =
+            fallbackRaw && !isAnswerNowPlaceholder(fallbackRaw) ? fallbackRaw : null;
+          refreshed = acceptSnapshot(fallbackCandidate);
         }
-        return latest ?? snapshot;
-      };
+        const nextLength = refreshed?.text?.length ?? lastLength;
+        if (refreshed && nextLength >= lastLength) {
+          latest = refreshed;
+        }
+        if (nextLength > lastLength) {
+          lastLength = nextLength;
+          stableCycles = 0;
+        } else {
+          stableCycles += 1;
+        }
+        const stopVisible = Boolean(document.querySelector(STOP_SELECTOR));
+        const finishedVisible = isLastAssistantTurnFinished();
+
+        if (finishedVisible || (!stopVisible && stableCycles >= stableTarget)) {
+          break;
+        }
+      }
+      return latest ?? snapshot;
+    };
 
     const extractedRaw = extractFromTurns();
     const extractedCandidate = extractedRaw && !isAnswerNowPlaceholder(extractedRaw) ? extractedRaw : null;

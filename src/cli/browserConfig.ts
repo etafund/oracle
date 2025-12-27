@@ -88,13 +88,16 @@ export async function buildBrowserConfig(options: BrowserFlagOptions): Promise<B
   const modelStrategy =
     normalizeBrowserModelStrategy(options.browserModelStrategy) ?? DEFAULT_MODEL_STRATEGY;
   const cookieNames = parseCookieNames(options.browserCookieNames ?? process.env.ORACLE_BROWSER_COOKIE_NAMES);
-  const inline = await resolveInlineCookies({
+  let inline = await resolveInlineCookies({
     inlineArg: options.browserInlineCookies,
     inlineFileArg: options.browserInlineCookiesFile,
     envPayload: process.env.ORACLE_BROWSER_COOKIES_JSON,
     envFile: process.env.ORACLE_BROWSER_COOKIES_FILE,
     cwd: process.cwd(),
   });
+  if (inline?.source?.startsWith('home:') && options.browserNoCookieSync !== true) {
+    inline = undefined;
+  }
 
   let remoteChrome: { host: string; port: number } | undefined;
   if (options.remoteChrome) {

@@ -9,9 +9,11 @@
 - CLI: stream Markdown via Markdansi's block-based renderer (append-only) instead of in-place live rendering.
 - Browser: persist the `/c/` conversation URL after submit so reattach can reopen the exact session.
 - Browser: reattach preserves project URL prefixes when rebuilding `/c/` links and validates conversation ids before accepting an existing tab.
+- Browser: auto-accept the ChatGPT “Welcome back” account picker and emit richer login probe diagnostics before failing a run.
 - Browser: avoid prompt-echo captures by requiring assistant indicators in fallback roots and skipping user-echo markdown in project-view snapshots.
 - Browser: reattach now targets the latest turn index and retries when the captured text matches the prompt preview.
 - Browser: treat mid-run Chrome disconnects as reattachable instead of returning prompt-echo output.
+- Browser: wait longer for short answers to settle and refresh from the latest DOM snapshot to prevent truncated captures.
 - Browser: make attachment upload idempotent when the composer or file input already shows the file.
 - Browser: wait ~5s for attachment UI confirmation before retrying uploads (including data-transfer fallback) and clear stale inputs to avoid duplicate upload toasts.
 - Browser: include composer parent scopes + file-input file counts when checking attachment presence, preventing re-uploads when chips render outside the form.
@@ -25,7 +27,9 @@
 - Browser: always log the active ChatGPT URL for browser runs (including the `/c/` conversation URL when it appears).
 - Browser: scope copy-turn capture to the assistant turn so clipboard reads don’t grab the user prompt.
 - Browser: require stop-button disappearance + clipboard stability before finalizing browser answers to avoid truncation.
+- Browser: ignore legacy `~/.oracle/cookies.json` inline cookies when cookie sync is enabled, favoring live Chrome cookies.
 - Tests: assert assistant-role filtering in the response observer expression.
+- Tests: serialize ChatGPT browser live tests and fall back to the alternate project URL when needed.
 
 ## 0.7.6 — 2025-12-25
 

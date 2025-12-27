@@ -5,6 +5,8 @@ import {
   PROMPT_FALLBACK_SELECTOR,
   SEND_BUTTON_SELECTORS,
   CONVERSATION_TURN_SELECTOR,
+  STOP_BUTTON_SELECTOR,
+  ASSISTANT_ROLE_SELECTOR,
 } from '../constants.js';
 import { delay } from '../utils.js';
 import { logDomFailure } from '../domDebug.js';
@@ -319,6 +321,8 @@ async function verifyPromptCommitted(
   const encodedPrompt = JSON.stringify(prompt.trim());
   const primarySelectorLiteral = JSON.stringify(PROMPT_PRIMARY_SELECTOR);
   const fallbackSelectorLiteral = JSON.stringify(PROMPT_FALLBACK_SELECTOR);
+  const stopSelectorLiteral = JSON.stringify(STOP_BUTTON_SELECTOR);
+  const assistantSelectorLiteral = JSON.stringify(ASSISTANT_ROLE_SELECTOR);
   const baselineLiteral =
     typeof baselineTurns === 'number' && Number.isFinite(baselineTurns) && baselineTurns >= 0
       ? Math.floor(baselineTurns)
@@ -351,13 +355,28 @@ async function verifyPromptCommitted(
 	        (normalizedPromptPrefix.length > 30 && lastTurn.includes(normalizedPromptPrefix)));
 	    const baseline = ${baselineLiteral};
 	    const hasNewTurn = baseline < 0 ? true : normalizedTurns.length > baseline;
+      const stopVisible = Boolean(document.querySelector(${stopSelectorLiteral}));
+      const assistantVisible = Boolean(
+        document.querySelector(${assistantSelectorLiteral}) ||
+        document.querySelector('[data-testid*="assistant"]'),
+      );
+      const editorValue = editor?.innerText ?? '';
+      const fallbackValue = fallback?.value ?? '';
+      const composerCleared = !(String(editorValue).trim() || String(fallbackValue).trim());
+      const href = typeof location === 'object' && location.href ? location.href : '';
+      const inConversation = /\\/c\\//.test(href);
 	    return {
       userMatched,
       prefixMatched,
       lastMatched,
       hasNewTurn,
-      fallbackValue: fallback?.value ?? '',
-      editorValue: editor?.innerText ?? '',
+      stopVisible,
+      assistantVisible,
+      composerCleared,
+      inConversation,
+      href,
+      fallbackValue,
+      editorValue,
       lastTurn,
       turnsCount: normalizedTurns.length,
     };
@@ -365,9 +384,26 @@ async function verifyPromptCommitted(
 
   while (Date.now() < deadline) {
     const { result } = await Runtime.evaluate({ expression: script, returnByValue: true });
-    const info = result.value as { userMatched?: boolean; prefixMatched?: boolean; lastMatched?: boolean; hasNewTurn?: boolean };
+    const info = result.value as {
+      userMatched?: boolean;
+      prefixMatched?: boolean;
+      lastMatched?: boolean;
+      hasNewTurn?: boolean;
+      stopVisible?: boolean;
+      assistantVisible?: boolean;
+      composerCleared?: boolean;
+      inConversation?: boolean;
+      turnsCount?: number;
+    };
+    const turnsCount = (result.value as { turnsCount?: number } | undefined)?.turnsCount;
     if (info?.hasNewTurn && (info?.lastMatched || info?.userMatched || info?.prefixMatched)) {
-      const turnsCount = (result.value as { turnsCount?: number } | undefined)?.turnsCount;
+      return typeof turnsCount === 'number' && Number.isFinite(turnsCount) ? turnsCount : null;
+    }
+    const fallbackCommit =
+      info?.composerCleared &&
+      ((info?.stopVisible ?? false) ||
+        (info?.hasNewTurn && (info?.assistantVisible || info?.inConversation)));
+    if (fallbackCommit) {
       return typeof turnsCount === 'number' && Number.isFinite(turnsCount) ? turnsCount : null;
     }
     await delay(100);

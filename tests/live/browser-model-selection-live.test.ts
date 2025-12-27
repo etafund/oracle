@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import { runBrowserMode } from '../../src/browser/index.js';
 import type { BrowserLogger } from '../../src/browser/types.js';
 import { getCookies } from '@steipete/sweet-cookie';
+import { acquireLiveTestLock, releaseLiveTestLock } from './liveLock.js';
 
 const LIVE = process.env.ORACLE_LIVE_TEST === '1';
 
@@ -59,13 +60,16 @@ const CASES = [
     'selects GPT-5.2 variants reliably',
     async () => {
       if (!(await hasChatGptCookies())) return;
+      await acquireLiveTestLock('chatgpt-browser');
+      try {
 
       for (const entry of CASES) {
         for (let attempt = 1; attempt <= 3; attempt += 1) {
           const { log, lines } = createLogCapture();
           try {
+            const promptToken = `live browser ${entry.name}`;
             const result = await runBrowserMode({
-              prompt: `Reply with "live browser ${entry.name}" on one line.`,
+              prompt: `${promptToken}\nRepeat the first line exactly. No other text.`,
               config: {
                 chromeProfile: 'Default',
                 desiredModel: entry.desiredModel,
@@ -74,7 +78,7 @@ const CASES = [
               log,
             });
 
-            expect(result.answerText.toLowerCase()).toContain(`live browser ${entry.name}`);
+            expect(result.answerText.toLowerCase()).toContain(promptToken.toLowerCase());
 
             const modelLog = lines.find((line) => line.toLowerCase().startsWith('model picker:'));
             expect(modelLog).toBeTruthy();
@@ -103,6 +107,9 @@ const CASES = [
             throw error;
           }
         }
+      }
+      } finally {
+        await releaseLiveTestLock('chatgpt-browser');
       }
     },
     15 * 60 * 1000,

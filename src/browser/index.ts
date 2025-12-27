@@ -624,6 +624,31 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         answerMarkdown = bestText;
       }
     }
+    const minAnswerChars = 16;
+    if (answerText.trim().length > 0 && answerText.trim().length < minAnswerChars) {
+      const deadline = Date.now() + 12_000;
+      let bestText = answerText.trim();
+      let stableCycles = 0;
+      while (Date.now() < deadline) {
+        const snapshot = await readAssistantSnapshot(Runtime, baselineTurns ?? undefined).catch(() => null);
+        const text = typeof snapshot?.text === 'string' ? snapshot.text.trim() : '';
+        if (text && text.length > bestText.length) {
+          bestText = text;
+          stableCycles = 0;
+        } else {
+          stableCycles += 1;
+        }
+        if (stableCycles >= 3 && bestText.length >= minAnswerChars) {
+          break;
+        }
+        await delay(400);
+      }
+      if (bestText.length > answerText.trim().length) {
+        logger('Refreshed short assistant response from latest DOM snapshot');
+        answerText = bestText;
+        answerMarkdown = bestText;
+      }
+    }
     if (connectionClosedUnexpectedly) {
       // Bail out on mid-run disconnects so the session stays reattachable.
       throw new Error('Chrome disconnected before completion');
