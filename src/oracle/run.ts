@@ -35,7 +35,7 @@ import { createFsAdapter } from './fsAdapter.js';
 import { resolveGeminiModelId } from './gemini.js';
 import { resolveClaudeModelId } from './claude.js';
 import { renderMarkdownAnsi } from '../cli/markdownRenderer.js';
-import * as markdansi from 'markdansi';
+import { createMarkdownStreamer } from 'markdansi';
 import { executeBackgroundResponse } from './background.js';
 import { formatTokenEstimate, formatTokenValue, resolvePreviewMode } from './runUtils.js';
 import { estimateUsdCost } from 'tokentally';
@@ -48,16 +48,7 @@ import {
   normalizeOpenRouterBaseUrl,
 } from './modelResolver.js';
 
-type LiveRenderer = { render: (markdown: string) => void; finish: () => void };
-type LiveRendererOptions = {
-  write: (text: string) => boolean;
-  width: number;
-  renderFrame: (markdown: string) => string;
-};
-
-const createLiveRenderer = (markdansi as {
-  createLiveRenderer?: (options: LiveRendererOptions) => LiveRenderer;
-}).createLiveRenderer;
+type MarkdownStreamer = ReturnType<typeof createMarkdownStreamer>;
 
 const isStdoutTty = process.stdout.isTTY && chalk.level > 0;
 const dim = (text: string): string => (isStdoutTty ? kleur.dim(text) : text);
@@ -396,8 +387,6 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
   let response: OracleResponse | null = null;
   let elapsedMs = 0;
   let sawTextDelta = false;
-  let streamedText = '';
-  let lastLiveFrameAtMs = 0;
   let answerHeaderPrinted = false;
   const allowAnswerHeader = options.suppressAnswerHeader !== true;
   const timeoutExceeded = (): boolean => now() - runStart >= timeoutMs;
@@ -467,14 +456,22 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
             },
           });
         }
-      let liveRenderer: LiveRenderer | null = null;
+      let markdownStreamer: MarkdownStreamer | null = null;
+      const flushMarkdownStreamer = () => {
+        if (!markdownStreamer) return;
+        const rendered = markdownStreamer.finish();
+        markdownStreamer = null;
+        if (rendered) {
+          stdoutWrite(rendered);
+        }
+      };
       try {
-        liveRenderer =
-          isTty && !renderPlain && createLiveRenderer
-            ? createLiveRenderer({
-                write: stdoutWrite,
-                width: process.stdout.columns ?? 80,
-                renderFrame: renderMarkdownAnsi,
+        markdownStreamer =
+          isTty && !renderPlain
+            ? createMarkdownStreamer({
+                render: renderMarkdownAnsi,
+                spacing: 'single',
+                mode: 'hybrid',
               })
             : null;
 
@@ -498,14 +495,10 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
             continue;
           }
 
-          if (liveRenderer) {
-            streamedText += event.delta;
-            const currentMs = now();
-            const due = currentMs - lastLiveFrameAtMs >= 120;
-            const hasNewline = event.delta.includes('\n');
-            if (hasNewline || due) {
-              liveRenderer.render(streamedText);
-              lastLiveFrameAtMs = currentMs;
+          if (markdownStreamer) {
+            const rendered = markdownStreamer.push(event.delta);
+            if (rendered) {
+              stdoutWrite(rendered);
             }
             continue;
           }
@@ -514,21 +507,15 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
           stdoutWrite(event.delta);
         }
 
-        if (liveRenderer) {
-          streamedText = streamedText.trim();
-          if (streamedText.length > 0) {
-            liveRenderer.render(streamedText);
-          }
-        }
+        flushMarkdownStreamer();
         throwIfTimedOut();
       } catch (streamError) {
         // stream.abort() is not available on the interface
+        flushMarkdownStreamer();
         stopHeartbeatNow();
         const transportError = toTransportError(streamError, requestBody.model);
         log(chalk.yellow(describeTransportError(transportError, timeoutMs)));
         throw transportError;
-      } finally {
-        liveRenderer?.finish();
       }
       response = await stream.finalResponse();
       throwIfTimedOut();
@@ -545,15 +532,11 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
 
   // We only add spacing when streamed text was printed.
   if (sawTextDelta && !options.silent) {
-    const shouldRenderAfterStream = isTty && !renderPlain && streamedText.length > 0;
     if (renderPlain) {
       // Plain streaming already wrote chunks; ensure clean separation.
       stdoutWrite('\n');
-    } else if (!shouldRenderAfterStream) {
-      // Non-TTY streams should still surface output; ensure separation.
-      log('');
     } else {
-      // Live-rendered mode already drew the final frame; only separate from logs.
+      // Separate streamed output from logs.
       log('');
     }
   }

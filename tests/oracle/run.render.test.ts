@@ -104,7 +104,7 @@ describe('runOracle streaming rendering', () => {
     restoreEnv();
   }, 15_000);
 
-  it('uses Markdansi live renderer framing sequences when streaming markdown in a rich TTY', async () => {
+  it('streams markdown fragments without in-place render sequences in a rich TTY', async () => {
     const { runOracle, restoreEnv } = await loadRunOracleWithTty(true);
     const stdoutSink: string[] = [];
     const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
@@ -119,11 +119,13 @@ describe('runOracle streaming rendering', () => {
     });
 
     const output = stdoutSink.join('');
-    expect(output).toContain('\u001b[?2026h'); // synchronized output begin
-    expect(output).toContain('\u001b[?2026l'); // synchronized output end
-    expect(output).toContain('\u001b[0J'); // clear-to-end for redraw
-    expect(output).toContain('\u001b[?25l'); // cursor hidden
-    expect(output).toContain('\u001b[?25h'); // cursor shown on finish
+    expect(output).toContain('Hello');
+    expect(output).toContain('bold');
+    expect(output).not.toContain('\u001b[?2026h'); // no synchronized output begin
+    expect(output).not.toContain('\u001b[?2026l'); // no synchronized output end
+    expect(output).not.toContain('\u001b[0J'); // no in-place clear
+    expect(output).not.toContain('\u001b[?25l'); // no cursor hide
+    expect(output).not.toContain('\u001b[?25h'); // no cursor show
 
     stdoutSpy.mockRestore();
     restoreEnv();

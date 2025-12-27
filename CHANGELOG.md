@@ -6,6 +6,7 @@
 - Browser: `--browser-model-strategy` controls ChatGPT model selection (`select`/`current`/`ignore`) in browser mode. Original PR #49 by @djangonavarro220 — thank you!
 
 ### Fixed
+- CLI: stream Markdown via Markdansi's block-based renderer (append-only) instead of in-place live rendering.
 - Browser: persist the `/c/` conversation URL after submit so reattach can reopen the exact session.
 - Browser: reattach preserves project URL prefixes when rebuilding `/c/` links and validates conversation ids before accepting an existing tab.
 - Browser: avoid prompt-echo captures by requiring assistant indicators in fallback roots and skipping user-echo markdown in project-view snapshots.
