@@ -3,21 +3,23 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CMD=(node "$ROOT/dist/bin/oracle-cli.js" --engine browser --wait --heartbeat 0 --timeout 900 --browser-input-timeout 120000)
+FAST_MODEL="gpt-5.2"
+PRO_MODEL="gpt-5.2-pro"
 
 tmpfile="$(mktemp -t oracle-browser-smoke)"
 echo "smoke-attachment" >"$tmpfile"
 
-echo "[browser-smoke] pro upload attachment (non-inline)"
-"${CMD[@]}" --model gpt-5.2-pro --browser-attachments always --prompt "Read the attached file and return exactly one markdown bullet '- upload: <content>' where <content> is the file text." --file "$tmpfile" --slug browser-smoke-upload --force
+echo "[browser-smoke] fast upload attachment (non-inline)"
+"${CMD[@]}" --model "$FAST_MODEL" --browser-attachments always --prompt "Read the attached file and return exactly one markdown bullet '- upload: <content>' where <content> is the file text." --file "$tmpfile" --slug browser-smoke-upload --force
 
-echo "[browser-smoke] pro simple"
-"${CMD[@]}" --model gpt-5.2-pro --prompt "Return exactly one markdown bullet: '- pro-ok'." --slug browser-smoke-pro --force
+echo "[browser-smoke] fast simple"
+"${CMD[@]}" --model "$FAST_MODEL" --prompt "Return exactly one markdown bullet: '- pro-ok'." --slug browser-smoke-pro --force
 
-echo "[browser-smoke] pro with attachment preview (inline)"
-"${CMD[@]}" --model gpt-5.2-pro --browser-inline-files --prompt "Read the attached file and return exactly one markdown bullet '- file: <content>' where <content> is the file text." --file "$tmpfile" --slug browser-smoke-file --preview --force
+echo "[browser-smoke] fast with attachment preview (inline)"
+"${CMD[@]}" --model "$FAST_MODEL" --browser-inline-files --prompt "Read the attached file and return exactly one markdown bullet '- file: <content>' where <content> is the file text." --file "$tmpfile" --slug browser-smoke-file --preview --force
 
-echo "[browser-smoke] standard markdown check"
-"${CMD[@]}" --model gpt-5.2-pro --prompt "Return two markdown bullets and a fenced code block labeled js that logs 'thinking-ok'." --slug browser-smoke-thinking --force
+echo "[browser-smoke] pro standard markdown check"
+"${CMD[@]}" --model "$PRO_MODEL" --prompt "Return two markdown bullets and a fenced code block labeled js that logs 'thinking-ok'." --slug browser-smoke-thinking --force
 
 echo "[browser-smoke] reattach flow after controller loss"
 slug="browser-reattach-smoke"
@@ -25,7 +27,7 @@ meta="$HOME/.oracle/sessions/$slug/meta.json"
 logfile="$(mktemp -t oracle-browser-reattach)"
 
 # Start a browser run in the background and wait for runtime hints to appear.
-"${CMD[@]}" --model gpt-5.2-pro --prompt "Return exactly 'reattach-ok'." --slug "$slug" --browser-keep-browser --heartbeat 0 --timeout 900 --force >"$logfile" 2>&1 &
+"${CMD[@]}" --model "$PRO_MODEL" --prompt "Return exactly 'reattach-ok'." --slug "$slug" --browser-keep-browser --heartbeat 0 --timeout 900 --force >"$logfile" 2>&1 &
 runner_pid=$!
 
 runtime_ready=0
