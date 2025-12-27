@@ -157,4 +157,27 @@ describe('runOracle streaming rendering', () => {
     stdoutSpy.mockRestore();
     restoreEnv();
   }, 15_000);
+
+  it('streams raw markdown when stdout is not a TTY', async () => {
+    const { runOracle, restoreEnv } = await loadRunOracleWithTty(false);
+    const stdoutSink: string[] = [];
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+      stdoutSink.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write);
+
+    await runOracle(baseOptions, {
+      clientFactory: makeStreamingClient('# Title\n- item'),
+      write: () => true,
+      wait: async () => {},
+    });
+
+    const output = stdoutSink.join('');
+    expect(output).toContain('# Title');
+    expect(output).toContain('- item');
+    expect(output).not.toContain('\u001b[');
+
+    stdoutSpy.mockRestore();
+    restoreEnv();
+  }, 15_000);
 });
