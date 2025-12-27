@@ -4,13 +4,21 @@
 
 ### Fixed
 - Browser: persist the `/c/` conversation URL after submit so reattach can reopen the exact session.
-- Browser: avoid capturing user “You said” echo turns and require assistant-role markdown for project-view fallback snapshots.
+- Browser: reattach preserves project URL prefixes when rebuilding `/c/` links and validates conversation ids before accepting an existing tab.
+- Browser: avoid prompt-echo captures by requiring assistant indicators in fallback roots and skipping user-echo markdown in project-view snapshots.
+- Browser: reattach now targets the latest turn index and retries when the captured text matches the prompt preview.
 - Browser: treat mid-run Chrome disconnects as reattachable instead of returning prompt-echo output.
 - Browser: make attachment upload idempotent when the composer or file input already shows the file.
-- Browser: wait for attachment UI signals before trying alternate file inputs to avoid duplicate upload toasts.
+- Browser: wait ~5s for attachment UI confirmation before retrying uploads (including data-transfer fallback) and clear stale inputs to avoid duplicate upload toasts.
+- Browser: include composer parent scopes + file-input file counts when checking attachment presence, preventing re-uploads when chips render outside the form.
+- Browser: skip reupload when the composer already reports the expected attachment count (file/chip/input), preventing duplicate “already attached” alerts.
 - Browser: ignore “ChatGPT said” placeholders so Pro-thinking gates don’t get captured as final answers.
+- Browser: treat “capture assistant response” failures as reloadable so reattach can recover.
 - Browser: widen conversation turn selectors to cover non-article wrappers in newer ChatGPT layouts.
 - Browser: prefer prompt-preview matches when reattaching from the project list and verify the preview before proceeding.
+- Browser: align prompt-echo markdown/text mismatches when copy-turn captures a different turn (now handles truncated/ellipsis echoes).
+- Browser: skip sent-turn attachment verification when project views hide attachment UI.
+- Browser: always log the active ChatGPT URL for browser runs (including the `/c/` conversation URL when it appears).
 - Tests: assert assistant-role filtering in the response observer expression.
 
 ## 0.7.6 — 2025-12-25
