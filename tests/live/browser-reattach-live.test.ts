@@ -24,6 +24,7 @@ async function hasChatGptCookies(): Promise<boolean> {
     chromeProfile: 'Default',
     timeoutMs: 5_000,
   });
+  // Learned: reuse the same session cookie check as other live browser tests.
   const hasSession = cookies.some((cookie) => cookie.name.startsWith('__Secure-next-auth.session-token'));
   if (!hasSession) {
     console.warn(
@@ -43,6 +44,7 @@ function createLogger(): BrowserLogger {
     'reattaches from project list after closing Chrome (pro request)',
     async () => {
       if (!(await hasChatGptCookies())) return;
+      // Learned: reattach needs exclusive access to the profile to avoid target mismatch.
       await acquireLiveTestLock('chatgpt-browser');
       try {
         if (!PROJECT_URLS.some((url) => url.includes('/g/'))) {
@@ -50,6 +52,7 @@ function createLogger(): BrowserLogger {
           return;
         }
 
+        // Learned: keep Pro here; it exercises long-running "thinking" + reattach timing.
         const promptToken = `live reattach pro ${Date.now()}`;
         const prompt = `${promptToken}\nRepeat the first line exactly. No other text.`;
         const log = createLogger();
@@ -70,6 +73,7 @@ function createLogger(): BrowserLogger {
         for (const projectUrl of PROJECT_URLS) {
           for (let attempt = 1; attempt <= 3; attempt += 1) {
             try {
+              // Learned: keepBrowser keeps the chrome instance alive so we can explicitly kill it and reattach.
               result = await runBrowserMode({
                 prompt,
                 config: {

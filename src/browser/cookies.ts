@@ -18,6 +18,7 @@ export async function syncCookies(
 ) {
   const { allowErrors = false, filterNames, inlineCookies, cookiePath } = options;
   try {
+    // Learned: inline cookies are the most deterministic (avoid Keychain + profile ambiguity).
     const cookies = inlineCookies?.length
       ? normalizeInlineCookies(inlineCookies, new URL(url).hostname)
       : await readChromeCookies(url, profile, filterNames ?? undefined, cookiePath ?? undefined);
@@ -28,6 +29,7 @@ export async function syncCookies(
     for (const cookie of cookies) {
       const cookieWithUrl = attachUrl(cookie, url);
       try {
+        // Learned: CDP will silently drop cookies without a url; always attach one.
         const result = await Network.setCookie(cookieWithUrl);
         if (result?.success) {
           applied += 1;
@@ -58,6 +60,7 @@ async function readChromeCookies(
   const chromeProfile = cookiePath ?? profile ?? undefined;
   const timeoutMs = readDuration('ORACLE_COOKIE_LOAD_TIMEOUT_MS', 5_000);
 
+  // Learned: read from multiple origins to capture auth cookies that land on chat.openai.com + atlas.
   const { cookies, warnings } = await getCookies({
     url,
     origins,
@@ -88,6 +91,7 @@ function normalizeInlineCookies(rawCookies: CookieParam[], fallbackHost: string)
   const merged = new Map<string, CookieParam>();
   for (const cookie of rawCookies) {
     if (!cookie?.name) continue;
+    // Learned: inline cookies may omit url/domain; default to current host with a safe path.
     const normalized: CookieParam = {
       name: cookie.name,
       value: cookie.value ?? '',
@@ -135,6 +139,7 @@ function attachUrl(cookie: CookieParam, fallbackUrl: string): CookieParam {
   }
   // When url is present, let Chrome derive the host from it; keeping domain can trigger CDP sanitization errors.
   if (cookieWithUrl.url) {
+    // Learned: CDP rejects cookies with both url + domain in some cases; drop domain to avoid failures.
     delete (cookieWithUrl as { domain?: string }).domain;
   }
   return cookieWithUrl;
@@ -160,9 +165,11 @@ function normalizeExpiration(expires?: number): number | undefined {
     return undefined;
   }
   if (value > 1_000_000_000_000) {
+    // Learned: Chrome may store WebKit microseconds since 1601; convert to Unix seconds.
     return Math.round(value / 1_000_000 - 11644473600);
   }
   if (value > 1_000_000_000) {
+    // Likely milliseconds; normalize to seconds for CDP.
     return Math.round(value / 1000);
   }
   return Math.round(value);

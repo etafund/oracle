@@ -46,6 +46,7 @@ async function loadGeminiCookiesFromChrome(
   log?: BrowserLogger,
 ): Promise<Record<string, string>> {
   try {
+    // Learned: Gemini web relies on Google auth cookies in the *browser* profile, not API keys.
     const profile =
       typeof browserConfig?.chromeProfile === 'string' &&
       browserConfig.chromeProfile.trim().length > 0
@@ -95,6 +96,7 @@ async function loadGeminiCookiesFromChrome(
     for (const name of wantNames) {
       const matches = cookies.filter((cookie) => cookie.name === name && typeof cookie.value === 'string');
       if (matches.length === 0) continue;
+      // Learned: prefer host-level google.com cookies; subdomain cookies can be scoped too narrowly.
       const preferredDomain = matches.find(
         (cookie) => cookie.domain === 'google.com' && (cookie.path ?? '/') === '/',
       );
@@ -104,6 +106,7 @@ async function loadGeminiCookiesFromChrome(
     }
 
     if (!cookieMap['__Secure-1PSID'] || !cookieMap['__Secure-1PSIDTS']) {
+      // Learned: Gemini app fails without these two; treat as hard failure so users re-login.
       return {};
     }
 

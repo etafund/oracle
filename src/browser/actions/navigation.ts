@@ -35,6 +35,8 @@ export async function ensureLoggedIn(
   logger: BrowserLogger,
   options: { appliedCookies?: number | null; remoteSession?: boolean } = {},
 ) {
+  // Learned: ChatGPT can render the UI (project view) while auth silently failed.
+  // A backend-api probe plus DOM login CTA check catches both cases.
   const outcome = await Runtime.evaluate({
     expression: buildLoginProbeExpression(LOGIN_CHECK_TIMEOUT_MS),
     awaitPromise: true,
@@ -48,6 +50,8 @@ export async function ensureLoggedIn(
 
   const accepted = await attemptWelcomeBackLogin(Runtime, logger);
   if (accepted) {
+    // Learned: "Welcome back" account picker needs a click even when cookies are valid,
+    // and the redirect can lag, so re-probe before failing hard.
     await delay(1500);
     const retryOutcome = await Runtime.evaluate({
       expression: buildLoginProbeExpression(LOGIN_CHECK_TIMEOUT_MS),
@@ -85,6 +89,7 @@ export async function ensureLoggedIn(
 async function attemptWelcomeBackLogin(Runtime: ChromeClient['Runtime'], logger: BrowserLogger): Promise<boolean> {
   const outcome = await Runtime.evaluate({
     expression: `(() => {
+      // Learned: "Welcome back" shows as a modal with account chips; click the email chip.
       const TIMEOUT_MS = 30000;
       const getLabel = (node) =>
         (node?.textContent || node?.getAttribute?.('aria-label') || '').trim();
@@ -168,6 +173,7 @@ export async function ensurePromptReady(Runtime: ChromeClient['Runtime'], timeou
   if (!ready) {
     const authUrl = await currentUrl(Runtime);
     if (authUrl && isAuthLoginUrl(authUrl)) {
+      // Learned: auth.openai.com/login can appear after cookies are copied; allow manual login window.
       logger('Auth login page detected; waiting for manual login to complete...');
       const extended = Math.min(Math.max(timeoutMs, 60_000), 20 * 60_000);
       const loggedIn = await waitForPrompt(Runtime, extended);
@@ -267,6 +273,8 @@ type LoginProbeResult = {
 
 function buildLoginProbeExpression(timeoutMs: number): string {
   return `(async () => {
+    // Learned: /backend-api/me is the most reliable "am I logged in" signal.
+    // Some UIs render without a session; use DOM + network for a robust answer.
     const timer = setTimeout(() => {}, ${timeoutMs});
     const pageUrl = typeof location === 'object' && location?.href ? location.href : null;
     const onAuthPage =
@@ -318,6 +326,7 @@ function buildLoginProbeExpression(timeoutMs: number): string {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), ${timeoutMs});
         try {
+          // Credentials included so we see a 200 only when cookies are valid.
           const response = await fetch('/backend-api/me', {
             cache: 'no-store',
             credentials: 'include',

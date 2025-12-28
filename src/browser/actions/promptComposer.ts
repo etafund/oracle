@@ -44,6 +44,7 @@ export async function submitPrompt(
         if (!node) {
           return false;
         }
+        // Learned: React/ProseMirror require a real click + focus + selection for inserts to stick.
         dispatchClickSequence(node);
         if (typeof node.focus === 'function') {
           node.focus();
@@ -102,6 +103,7 @@ export async function submitPrompt(
   const editorTextTrimmed = editorTextRaw?.trim?.() ?? '';
   const fallbackValueTrimmed = fallbackValueRaw?.trim?.() ?? '';
   if (!editorTextTrimmed && !fallbackValueTrimmed) {
+    // Learned: occasionally Input.insertText doesn't land in the editor; force textContent/value + input events.
     await runtime.evaluate({
       expression: `(() => {
         const fallback = document.querySelector(${fallbackSelectorLiteral});
@@ -136,6 +138,7 @@ export async function submitPrompt(
   const observedFallback = postVerification.result?.value?.fallbackValue ?? '';
   const observedLength = Math.max(observedEditor.length, observedFallback.length);
   if (promptLength >= 50_000 && observedLength > 0 && observedLength < promptLength - 2_000) {
+    // Learned: very large prompts can truncate silently; fail fast so we can fall back to file uploads.
     await logDomFailure(runtime, logger, 'prompt-too-large');
     throw new BrowserAutomationError('Prompt appears truncated in the composer (likely too large).', {
       stage: 'submit-prompt',
@@ -163,6 +166,7 @@ export async function submitPrompt(
   }
 
   const commitTimeoutMs = Math.max(60_000, deps.inputTimeoutMs ?? 0);
+  // Learned: the send button can succeed but the turn doesn't appear immediately; verify commit via turns/stop button.
   return await verifyPromptCommitted(runtime, prompt, commitTimeoutMs, logger, deps.baselineTurns ?? undefined);
 }
 
@@ -279,6 +283,7 @@ async function attemptSendButton(
       dataDisabled === 'true' ||
       style.pointerEvents === 'none' ||
       style.display === 'none';
+    // Learned: some send buttons render but are inert; only click when truly enabled.
     if (disabled) return 'disabled';
     // Use unified pointer/mouse sequence to satisfy React handlers.
     dispatchClickSequence(button);
@@ -327,7 +332,8 @@ async function verifyPromptCommitted(
     typeof baselineTurns === 'number' && Number.isFinite(baselineTurns) && baselineTurns >= 0
       ? Math.floor(baselineTurns)
       : -1;
-	const script = `(() => {
+  // Learned: ChatGPT can echo/format text; normalize markdown and use prefix matches to detect the sent prompt.
+  const script = `(() => {
 	    const editor = document.querySelector(${primarySelectorLiteral});
 	    const fallback = document.querySelector(${fallbackSelectorLiteral});
 	    const normalize = (value) => {
@@ -360,6 +366,7 @@ async function verifyPromptCommitted(
         document.querySelector(${assistantSelectorLiteral}) ||
         document.querySelector('[data-testid*="assistant"]'),
       );
+      // Learned: composer clearing + stop button or assistant presence is a reliable fallback signal.
       const editorValue = editor?.innerText ?? '';
       const fallbackValue = fallback?.value ?? '';
       const composerCleared = !(String(editorValue).trim() || String(fallbackValue).trim());

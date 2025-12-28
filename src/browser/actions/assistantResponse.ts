@@ -16,6 +16,8 @@ const ASSISTANT_POLL_TIMEOUT_ERROR = 'assistant-response-watchdog-timeout';
 function isAnswerNowPlaceholderText(normalized: string): boolean {
   const text = normalized.trim();
   if (!text) return false;
+  // Learned: "Pro thinking" shows a placeholder turn that contains "Answer now".
+  // That is not the final answer and must be ignored in browser automation.
   if (text === 'chatgpt said:' || text === 'chatgpt said') return true;
   if (text.includes('file upload request') && (text.includes('pro thinking') || text.includes('chatgpt said'))) {
     return true;
@@ -31,6 +33,9 @@ export async function waitForAssistantResponse(
 ): Promise<{ text: string; html?: string; meta: { turnId?: string | null; messageId?: string | null } }> {
   const start = Date.now();
   logger('Waiting for ChatGPT response');
+  // Learned: two paths are needed:
+  // 1) DOM observer (fast when mutations fire),
+  // 2) snapshot poller (fallback when observers miss or JS stalls).
   const expression = buildResponseObserverExpression(timeoutMs, minTurnIndex);
   const evaluationPromise = Runtime.evaluate({ expression, awaitPromise: true, returnByValue: true });
   const raceReadyEvaluation = evaluationPromise.then(
@@ -273,6 +278,7 @@ async function refreshAssistantSnapshot(
   let stableCycles = 0;
   const stableTarget = 3;
   while (Date.now() < deadline) {
+    // Learned: short/fast answers can race; poll a few extra cycles to pick up messageId + full text.
     const latestSnapshot = await readAssistantSnapshot(Runtime, minTurnIndex).catch(() => null);
     const latest = normalizeAssistantSnapshot(latestSnapshot);
     if (latest) {
@@ -344,6 +350,7 @@ async function pollAssistantCompletion(
         isCompletionVisible(Runtime),
       ]);
       const shortAnswer = currentLength > 0 && currentLength < 16;
+      // Learned: short answers need a longer stability window or they truncate.
       const completionStableTarget = shortAnswer ? 12 : currentLength < 40 ? 8 : 4;
       const requiredStableCycles = shortAnswer ? 12 : 6;
       const stableMs = Date.now() - lastChangeAt;
@@ -466,6 +473,7 @@ function buildAssistantSnapshotExpression(minTurnIndex?: number): string {
       : -1;
   return `(() => {
     const MIN_TURN_INDEX = ${minTurnLiteral};
+    // Learned: the default turn DOM misses project view; keep a fallback extractor.
     ${buildAssistantExtractor('extractAssistantTurn')}
     const extracted = extractAssistantTurn();
     const isPlaceholder = (snapshot) => {
@@ -500,6 +508,7 @@ function buildResponseObserverExpression(timeoutMs: number, minTurnIndex?: numbe
     const FINISHED_SELECTOR = '${FINISHED_ACTIONS_SELECTOR}';
     const CONVERSATION_SELECTOR = ${conversationLiteral};
     const ASSISTANT_SELECTOR = ${assistantLiteral};
+    // Learned: settling avoids capturing mid-stream HTML; keep short.
     const settleDelayMs = 800;
     const isAnswerNowPlaceholder = (snapshot) => {
       const normalized = String(snapshot?.text ?? '').toLowerCase().trim();
@@ -510,7 +519,7 @@ function buildResponseObserverExpression(timeoutMs: number, minTurnIndex?: numbe
       return normalized.includes('answer now') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'));
     };
 
-    // Helper to detect assistant turns - matches buildAssistantExtractor logic
+    // Helper to detect assistant turns - must match buildAssistantExtractor logic for consistency.
     const isAssistantTurn = (node) => {
       if (!(node instanceof HTMLElement)) return false;
       const turnAttr = (node.getAttribute('data-turn') || node.dataset?.turn || '').toLowerCase();
@@ -524,7 +533,7 @@ function buildResponseObserverExpression(timeoutMs: number, minTurnIndex?: numbe
 
     const MIN_TURN_INDEX = ${minTurnLiteral};
     ${buildAssistantExtractor('extractFromTurns')}
-    // Some layouts (project view) render markdown without assistant turn wrappers.
+    // Learned: some layouts (project view) render markdown without assistant turn wrappers.
     const extractFromMarkdownFallback = ${buildMarkdownFallbackExtractor('MIN_TURN_INDEX')};
 
     const acceptSnapshot = (snapshot) => {
@@ -589,7 +598,7 @@ function buildResponseObserverExpression(timeoutMs: number, minTurnIndex?: numbe
         }, ${timeoutMs});
       });
 
-    // Check if the last assistant turn has finished (scoped to avoid detecting old turns)
+    // Check if the last assistant turn has finished (scoped to avoid detecting old turns).
     const isLastAssistantTurnFinished = () => {
       const turns = Array.from(document.querySelectorAll(CONVERSATION_SELECTOR));
       let lastAssistantTurn = null;
@@ -608,6 +617,7 @@ function buildResponseObserverExpression(timeoutMs: number, minTurnIndex?: numbe
     };
 
     const waitForSettle = async (snapshot) => {
+      // Learned: short answers can be 1-2 tokens; enforce longer settle windows to avoid truncation.
       const initialLength = snapshot?.text?.length ?? 0;
       const shortAnswer = initialLength > 0 && initialLength < 16;
       const settleWindowMs = shortAnswer ? 12_000 : 5_000;

@@ -131,6 +131,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     ? manualProfileDir
     : await mkdtemp(path.join(await resolveUserDataBaseDir(), 'oracle-browser-'));
   if (manualLogin) {
+    // Learned: manual login reuses a persistent profile so cookies/SSO survive.
     await mkdir(userDataDir, { recursive: true });
     logger(`Manual login mode enabled; reusing persistent profile at ${userDataDir}`);
   } else {
@@ -212,19 +213,20 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     }
 
     const cookieSyncEnabled = config.cookieSync && !manualLogin;
-    if (cookieSyncEnabled) {
-      if (!config.inlineCookies) {
-        logger(
-          'Heads-up: macOS may prompt for your Keychain password to read Chrome cookies; use --copy or --render for manual flow.',
-        );
-      } else {
-        logger('Applying inline cookies (skipping Chrome profile read and Keychain prompt)');
-      }
-      const cookieCount = await syncCookies(Network, config.url, config.chromeProfile, logger, {
-        allowErrors: config.allowCookieErrors ?? false,
-        filterNames: config.cookieNames ?? undefined,
-        inlineCookies: config.inlineCookies ?? undefined,
-        cookiePath: config.chromeCookiePath ?? undefined,
+  if (cookieSyncEnabled) {
+    if (!config.inlineCookies) {
+      logger(
+        'Heads-up: macOS may prompt for your Keychain password to read Chrome cookies; use --copy or --render for manual flow.',
+      );
+    } else {
+      logger('Applying inline cookies (skipping Chrome profile read and Keychain prompt)');
+    }
+    // Learned: always sync cookies before the first navigation so /backend-api/me succeeds.
+    const cookieCount = await syncCookies(Network, config.url, config.chromeProfile, logger, {
+      allowErrors: config.allowCookieErrors ?? false,
+      filterNames: config.cookieNames ?? undefined,
+      inlineCookies: config.inlineCookies ?? undefined,
+      cookiePath: config.chromeCookiePath ?? undefined,
       });
       appliedCookies = cookieCount;
       if (config.inlineCookies && cookieCount === 0) {
@@ -248,6 +250,8 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     }
 
     if (cookieSyncEnabled && !manualLogin && (appliedCookies ?? 0) === 0 && !config.inlineCookies) {
+      // Learned: if the profile has no ChatGPT cookies, browser mode will just bounce to login.
+      // Fail early so the user knows to sign in.
       throw new BrowserAutomationError(
         'No ChatGPT cookies were applied from your Chrome profile; cannot proceed in browser mode. ' +
           'Make sure ChatGPT is signed in in the selected profile, or use --browser-manual-login / inline cookies.',
@@ -267,6 +271,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     // then hop to the requested URL if it differs.
     await raceWithDisconnect(navigateToChatGPT(Page, Runtime, baseUrl, logger));
     await raceWithDisconnect(ensureNotBlocked(Runtime, config.headless, logger));
+    // Learned: login checks must happen on the base domain before jumping into project URLs.
     await raceWithDisconnect(
       waitForLogin({ runtime: Runtime, logger, appliedCookies, manualLogin, timeoutMs: config.timeoutMs }),
     );
@@ -337,6 +342,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       if (conversationHintInFlight) {
         return;
       }
+      // Learned: the /c/ URL can update after the answer; emit hints in the background.
       // Run in the background so prompt submission/streaming isn't blocked by slow URL updates.
       conversationHintInFlight = updateConversationHint(label, timeoutMs)
         .catch(() => false)
@@ -423,6 +429,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         logger('All attachments uploaded');
       }
       let baselineTurns = await readConversationTurnCount(Runtime, logger);
+      // Learned: return baselineTurns so assistant polling can ignore earlier content.
       const committedTurns = await submitPrompt(
         {
           runtime: Runtime,
@@ -465,6 +472,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         error instanceof BrowserAutomationError &&
         (error.details as { code?: string } | undefined)?.code === 'prompt-too-large';
       if (fallbackSubmission && isPromptTooLarge) {
+        // Learned: when prompts truncate, retry with file uploads so the UI receives the full content.
         logger('[browser] Inline prompt too large; retrying with file uploads.');
         await raceWithDisconnect(clearPromptComposer(Runtime, logger));
         await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
