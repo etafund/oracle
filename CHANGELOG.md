@@ -2,35 +2,21 @@
 
 ## 0.8.0 — Unreleased
 
-### Added
-- Browser: `--browser-model-strategy` controls ChatGPT model selection (`select`/`current`/`ignore`) in browser mode. Original PR #49 by @djangonavarro220 — thank you!
+### Highlights
+- Browser reliability push: stronger reattach, response capture, and attachment uploads (fewer prompt-echoes, truncations, and duplicate uploads).
+- Cookie stack revamp via Sweet Cookie (no native addons) with better inline-cookie handling; Gemini web now works on Windows and honors `--browser-cookie-path`.
+- New `--browser-model-strategy` flag to control ChatGPT model selection (`select`/`current`/`ignore`) in browser mode. Original PR #49 by @djangonavarro220 — thank you!
 
-### Fixed
-- CLI: stream Markdown via Markdansi's block-based renderer (append-only) instead of in-place live rendering.
-- Browser: persist the `/c/` conversation URL after submit so reattach can reopen the exact session.
-- Browser: reattach preserves project URL prefixes when rebuilding `/c/` links and validates conversation ids before accepting an existing tab.
-- Gemini web: honor `--browser-cookie-path` and inline cookies (when sync is disabled) so Windows cookie extraction works for `gemini.google.com`.
-- Browser: auto-accept the ChatGPT “Welcome back” account picker and emit richer login probe diagnostics before failing a run.
-- Browser: avoid prompt-echo captures by requiring assistant indicators in fallback roots and skipping user-echo markdown in project-view snapshots.
-- Browser: reattach now targets the latest turn index and retries when the captured text matches the prompt preview.
-- Browser: treat mid-run Chrome disconnects as reattachable instead of returning prompt-echo output.
-- Browser: wait longer for short answers to settle and refresh from the latest DOM snapshot to prevent truncated captures.
-- Browser: make attachment upload idempotent when the composer or file input already shows the file.
-- Browser: wait ~5s for attachment UI confirmation before retrying uploads (including data-transfer fallback) and clear stale inputs to avoid duplicate upload toasts.
-- Browser: include composer parent scopes + file-input file counts when checking attachment presence, preventing re-uploads when chips render outside the form.
-- Browser: skip reupload when the composer already reports the expected attachment count (file/chip/input), preventing duplicate “already attached” alerts.
-- Browser: ignore “ChatGPT said” placeholders so Pro-thinking gates don’t get captured as final answers.
-- Browser: treat “capture assistant response” failures as reloadable so reattach can recover.
-- Browser: widen conversation turn selectors to cover non-article wrappers in newer ChatGPT layouts.
-- Browser: prefer prompt-preview matches when reattaching from the project list and verify the preview before proceeding.
-- Browser: align prompt-echo markdown/text mismatches when copy-turn captures a different turn (now handles truncated/ellipsis echoes).
-- Browser: skip sent-turn attachment verification when project views hide attachment UI.
-- Browser: always log the active ChatGPT URL for browser runs (including the `/c/` conversation URL when it appears).
-- Browser: scope copy-turn capture to the assistant turn so clipboard reads don’t grab the user prompt.
-- Browser: require stop-button disappearance + clipboard stability before finalizing browser answers to avoid truncation.
-- Browser: ignore legacy `~/.oracle/cookies.json` inline cookies when cookie sync is enabled, favoring live Chrome cookies.
-- Tests: assert assistant-role filtering in the response observer expression.
-- Tests: serialize ChatGPT browser live tests and fall back to the alternate project URL when needed.
+### Improvements
+- Browser reattach now preserves `/c/` conversation URLs and project URL prefixes, validates conversation ids, and recovers from mid-run disconnects or capture failures.
+- Response capture is more stable: wider selectors, assistant-only copy-turn capture, prompt-echo avoidance, and stop-button/clipboard stability checks.
+- Attachment uploads are idempotent and count-aware (composer + chips + file inputs), with explicit completion waits and stale-input cleanup.
+- Login flow adds richer diagnostics, auto-accepts the “Welcome back” picker, and always logs the active ChatGPT URL.
+- Cookie handling prefers live Chrome over legacy `~/.oracle/cookies.json`; Gemini web can use inline cookies when sync is disabled.
+
+### Fixes
+- CLI: stream Markdown via Markdansi’s block renderer and guard the live renderer for non‑TTY edge cases.
+- Tests: stabilize browser live tests (serialization + project URL fallback) and add response-observer assertions; browser smoke runs are faster.
 
 ## 0.7.6 — 2025-12-25
 
