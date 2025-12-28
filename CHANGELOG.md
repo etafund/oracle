@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 — Unreleased
+## 0.8.0 — 2025-12-28
 
 ### Highlights
 - Browser reliability push: stronger reattach, response capture, and attachment uploads (fewer prompt-echoes, truncations, and duplicate uploads).
