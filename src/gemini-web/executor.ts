@@ -1,9 +1,32 @@
 import path from 'node:path';
-import type { BrowserRunOptions, BrowserRunResult, BrowserLogger } from '../browser/types.js';
+import type { BrowserRunOptions, BrowserRunResult, BrowserLogger, CookieParam } from '../browser/types.js';
 import { getCookies } from '@steipete/sweet-cookie';
 import { runGeminiWebWithFallback, saveFirstGeminiImageFromOutput } from './client.js';
 import type { GeminiWebModelId } from './client.js';
 import type { GeminiWebOptions, GeminiWebResponse } from './types.js';
+
+const GEMINI_COOKIE_NAMES = [
+  '__Secure-1PSID',
+  '__Secure-1PSIDTS',
+  '__Secure-1PSIDCC',
+  '__Secure-1PAPISID',
+  'NID',
+  'AEC',
+  'SOCS',
+  '__Secure-BUCKET',
+  '__Secure-ENID',
+  'SID',
+  'HSID',
+  'SSID',
+  'APISID',
+  'SAPISID',
+  '__Secure-3PSID',
+  '__Secure-3PSIDTS',
+  '__Secure-3PAPISID',
+  'SIDCC',
+] as const;
+
+const GEMINI_REQUIRED_COOKIES = ['__Secure-1PSID', '__Secure-1PSIDTS'] as const;
 
 function estimateTokenCount(text: string): number {
   return Math.ceil(text.length / 4);
@@ -41,16 +64,84 @@ function resolveGeminiWebModel(
   }
 }
 
+function resolveCookieDomain(cookie: { domain?: string; url?: string }): string | null {
+  const rawDomain = cookie.domain?.trim();
+  if (rawDomain) {
+    return rawDomain.startsWith('.') ? rawDomain.slice(1) : rawDomain;
+  }
+  const rawUrl = cookie.url?.trim();
+  if (rawUrl) {
+    try {
+      return new URL(rawUrl).hostname;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function pickCookieValue<T extends { name?: string; value?: string; domain?: string; path?: string; url?: string }>(
+  cookies: T[],
+  name: string,
+): string | undefined {
+  const matches = cookies.filter((cookie) => cookie.name === name && typeof cookie.value === 'string');
+  if (matches.length === 0) return undefined;
+
+  const preferredDomain = matches.find((cookie) => {
+    const domain = resolveCookieDomain(cookie);
+    return domain === 'google.com' && (cookie.path ?? '/') === '/';
+  });
+  const googleDomain = matches.find((cookie) => (resolveCookieDomain(cookie) ?? '').endsWith('google.com'));
+  return (preferredDomain ?? googleDomain ?? matches[0])?.value;
+}
+
+function buildGeminiCookieMap<T extends { name?: string; value?: string; domain?: string; path?: string; url?: string }>(
+  cookies: T[],
+): Record<string, string> {
+  const cookieMap: Record<string, string> = {};
+  for (const name of GEMINI_COOKIE_NAMES) {
+    const value = pickCookieValue(cookies, name);
+    if (value) cookieMap[name] = value;
+  }
+  return cookieMap;
+}
+
+function hasRequiredGeminiCookies(cookieMap: Record<string, string>): boolean {
+  return GEMINI_REQUIRED_COOKIES.every((name) => Boolean(cookieMap[name]));
+}
+
+async function loadGeminiCookiesFromInline(
+  browserConfig: BrowserRunOptions['config'],
+  log?: BrowserLogger,
+): Promise<Record<string, string>> {
+  const inline = browserConfig?.inlineCookies;
+  if (!inline || inline.length === 0) return {};
+
+  const cookieMap = buildGeminiCookieMap(
+    inline.filter((cookie): cookie is CookieParam => Boolean(cookie?.name && typeof cookie.value === 'string')),
+  );
+
+  if (Object.keys(cookieMap).length > 0) {
+    const source = browserConfig?.inlineCookiesSource ?? 'inline';
+    log?.(`[gemini-web] Loaded Gemini cookies from inline payload (${source}): ${Object.keys(cookieMap).length} cookie(s).`);
+  } else {
+    log?.('[gemini-web] Inline cookie payload provided but no Gemini cookies matched.');
+  }
+
+  return cookieMap;
+}
+
 async function loadGeminiCookiesFromChrome(
   browserConfig: BrowserRunOptions['config'],
   log?: BrowserLogger,
 ): Promise<Record<string, string>> {
   try {
     // Learned: Gemini web relies on Google auth cookies in the *browser* profile, not API keys.
+    const profileCandidate =
+      browserConfig?.chromeCookiePath ?? browserConfig?.chromeProfile ?? undefined;
     const profile =
-      typeof browserConfig?.chromeProfile === 'string' &&
-      browserConfig.chromeProfile.trim().length > 0
-        ? browserConfig.chromeProfile.trim()
+      typeof profileCandidate === 'string' && profileCandidate.trim().length > 0
+        ? profileCandidate.trim()
         : undefined;
 
     const sources = [
@@ -58,31 +149,11 @@ async function loadGeminiCookiesFromChrome(
       'https://accounts.google.com',
       'https://www.google.com',
     ];
-    const wantNames = [
-      '__Secure-1PSID',
-      '__Secure-1PSIDTS',
-      '__Secure-1PSIDCC',
-      '__Secure-1PAPISID',
-      'NID',
-      'AEC',
-      'SOCS',
-      '__Secure-BUCKET',
-      '__Secure-ENID',
-      'SID',
-      'HSID',
-      'SSID',
-      'APISID',
-      'SAPISID',
-      '__Secure-3PSID',
-      '__Secure-3PSIDTS',
-      '__Secure-3PAPISID',
-      'SIDCC',
-    ] as const;
 
     const { cookies, warnings } = await getCookies({
       url: sources[0],
       origins: sources,
-      names: [...wantNames],
+      names: [...GEMINI_COOKIE_NAMES],
       browsers: ['chrome'],
       mode: 'merge',
       chromeProfile: profile,
@@ -92,23 +163,7 @@ async function loadGeminiCookiesFromChrome(
       log(`[gemini-web] Cookie warnings:\n- ${warnings.join('\n- ')}`);
     }
 
-    const cookieMap: Record<string, string> = {};
-    for (const name of wantNames) {
-      const matches = cookies.filter((cookie) => cookie.name === name && typeof cookie.value === 'string');
-      if (matches.length === 0) continue;
-      // Learned: prefer host-level google.com cookies; subdomain cookies can be scoped too narrowly.
-      const preferredDomain = matches.find(
-        (cookie) => cookie.domain === 'google.com' && (cookie.path ?? '/') === '/',
-      );
-      const googleDomain = matches.find((cookie) => (cookie.domain ?? '').endsWith('google.com'));
-      const value = (preferredDomain ?? googleDomain ?? matches[0])?.value;
-      if (value) cookieMap[name] = value;
-    }
-
-    if (!cookieMap['__Secure-1PSID'] || !cookieMap['__Secure-1PSIDTS']) {
-      // Learned: Gemini app fails without these two; treat as hard failure so users re-login.
-      return {};
-    }
+    const cookieMap = buildGeminiCookieMap(cookies);
 
     log?.(
       `[gemini-web] Loaded Gemini cookies from Chrome (node): ${Object.keys(cookieMap).length} cookie(s).`,
@@ -122,6 +177,26 @@ async function loadGeminiCookiesFromChrome(
   }
 }
 
+async function loadGeminiCookies(
+  browserConfig: BrowserRunOptions['config'],
+  log?: BrowserLogger,
+): Promise<Record<string, string>> {
+  const inlineMap = await loadGeminiCookiesFromInline(browserConfig, log);
+  const hasInlineRequired = hasRequiredGeminiCookies(inlineMap);
+  if (hasInlineRequired && browserConfig?.cookieSync === false) {
+    return inlineMap;
+  }
+
+  if (browserConfig?.cookieSync === false && !hasInlineRequired) {
+    log?.('[gemini-web] Cookie sync disabled and inline cookies missing Gemini auth tokens.');
+    return inlineMap;
+  }
+
+  const chromeMap = await loadGeminiCookiesFromChrome(browserConfig, log);
+  const merged = { ...chromeMap, ...inlineMap };
+  return merged;
+}
+
 export function createGeminiWebExecutor(
   geminiOptions: GeminiWebOptions,
 ): (runOptions: BrowserRunOptions) => Promise<BrowserRunResult> {
@@ -131,8 +206,8 @@ export function createGeminiWebExecutor(
 
     log?.('[gemini-web] Starting Gemini web executor (TypeScript)');
 
-    const cookieMap = await loadGeminiCookiesFromChrome(runOptions.config, log);
-    if (!cookieMap['__Secure-1PSID'] || !cookieMap['__Secure-1PSIDTS']) {
+    const cookieMap = await loadGeminiCookies(runOptions.config, log);
+    if (!hasRequiredGeminiCookies(cookieMap)) {
       throw new Error(
         'Gemini browser mode requires Chrome cookies for google.com (missing __Secure-1PSID/__Secure-1PSIDTS).',
       );

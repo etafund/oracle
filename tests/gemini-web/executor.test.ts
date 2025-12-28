@@ -119,4 +119,36 @@ describe('gemini-web executor', () => {
       expect.any(AbortSignal),
     );
   });
+
+  it('uses chromeCookiePath when provided', async () => {
+    const { createGeminiWebExecutor } = await import('../../src/gemini-web/executor.js');
+    const exec = createGeminiWebExecutor({});
+    await exec({
+      prompt: 'hello',
+      attachments: [],
+      config: { desiredModel: 'Gemini 3 Pro', chromeCookiePath: '/tmp/Cookies' },
+      log: () => {},
+    });
+    expect(getCookies).toHaveBeenCalledWith(expect.objectContaining({ chromeProfile: '/tmp/Cookies' }));
+  });
+
+  it('uses inline cookies when cookie sync is disabled', async () => {
+    const { createGeminiWebExecutor } = await import('../../src/gemini-web/executor.js');
+    const exec = createGeminiWebExecutor({});
+    await exec({
+      prompt: 'hello',
+      attachments: [],
+      config: {
+        desiredModel: 'Gemini 3 Pro',
+        cookieSync: false,
+        inlineCookies: [
+          { name: '__Secure-1PSID', value: 'psid', domain: 'google.com', path: '/' },
+          { name: '__Secure-1PSIDTS', value: 'psidts', domain: 'google.com', path: '/' },
+        ],
+        inlineCookiesSource: 'test',
+      },
+      log: () => {},
+    });
+    expect(getCookies).not.toHaveBeenCalled();
+  });
 });

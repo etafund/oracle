@@ -9,6 +9,7 @@
 - CLI: stream Markdown via Markdansi's block-based renderer (append-only) instead of in-place live rendering.
 - Browser: persist the `/c/` conversation URL after submit so reattach can reopen the exact session.
 - Browser: reattach preserves project URL prefixes when rebuilding `/c/` links and validates conversation ids before accepting an existing tab.
+- Gemini web: honor `--browser-cookie-path` and inline cookies (when sync is disabled) so Windows cookie extraction works for `gemini.google.com`.
 - Browser: auto-accept the ChatGPT “Welcome back” account picker and emit richer login probe diagnostics before failing a run.
 - Browser: avoid prompt-echo captures by requiring assistant indicators in fallback roots and skipping user-echo markdown in project-view snapshots.
 - Browser: reattach now targets the latest turn index and retries when the captured text matches the prompt preview.
