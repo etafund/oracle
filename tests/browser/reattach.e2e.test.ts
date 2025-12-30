@@ -222,7 +222,13 @@ describe('browser reattach end-to-end (simulated)', () => {
       );
 
       process.emit('SIGINT');
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      for (let i = 0; i < 20; i += 1) {
+        const refreshed = await sessionStore.readSession(sessionMeta.id);
+        if (refreshed?.browser?.runtime?.chromePort) {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
 
       removeHooks();
       exitSpy.mockRestore();
