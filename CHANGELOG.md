@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.2 — 2025-12-30
+
+### Changed
+- Release: disable npm progress output in Codex runs via `scripts/release.sh`.
+
+### Docs
+- Release checklist now requires GitHub release notes to match the full changelog section.
+
 ## 0.8.1 — 2025-12-30
 
 ### Added
