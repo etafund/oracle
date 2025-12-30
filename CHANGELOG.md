@@ -9,6 +9,9 @@
 - Browser: thinking-time chip selection now recognizes "Pro" labeled composer pills.
 - CLI: disable OSC progress output when running under Codex (`CODEX_MANAGED_BY_NPM=1`) to avoid spinner noise.
 
+### Tests
+- Stabilize OSC progress detection tests when `CODEX_MANAGED_BY_NPM=1` is set.
+
 ## 0.8.0 — 2025-12-28
 
 ### Highlights

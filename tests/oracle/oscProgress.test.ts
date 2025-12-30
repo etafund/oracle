@@ -2,7 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 import { startOscProgress, supportsOscProgress } from '../../src/oracle/oscProgress.ts';
 
 describe('supportsOscProgress', () => {
-  const baseEnv = { ...process.env };
+  const baseEnv = { ...process.env, CODEX_MANAGED_BY_NPM: undefined };
 
   test('returns false when not a TTY', () => {
     expect(supportsOscProgress(baseEnv, false)).toBe(false);
