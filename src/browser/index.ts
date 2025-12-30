@@ -416,6 +416,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       const baselineAssistantText =
         typeof baselineSnapshot?.text === 'string' ? baselineSnapshot.text.trim() : '';
       const attachmentNames = submissionAttachments.map((a) => path.basename(a.path));
+      let attachmentWaitTimedOut = false;
       let inputOnlyAttachments = false;
       if (submissionAttachments.length > 0) {
         if (!DOM) {
@@ -436,20 +437,33 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           }
           await delay(500);
         }
-        // Scale timeout based on number of files: base 30s + 15s per additional file
+        // Scale timeout based on number of files: base 45s + 20s per additional file.
         const baseTimeout = config.inputTimeoutMs ?? 30_000;
-        const perFileTimeout = 15_000;
-        const waitBudget = Math.max(baseTimeout, 30_000) + (submissionAttachments.length - 1) * perFileTimeout;
-        await waitForAttachmentCompletion(Runtime, waitBudget, attachmentNames, logger);
-        logger('All attachments uploaded');
+        const perFileTimeout = 20_000;
+        const waitBudget = Math.max(baseTimeout, 45_000) + (submissionAttachments.length - 1) * perFileTimeout;
+        try {
+          await waitForAttachmentCompletion(Runtime, waitBudget, attachmentNames, logger);
+          logger('All attachments uploaded');
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (/Attachments did not finish uploading before timeout/i.test(message)) {
+            attachmentWaitTimedOut = true;
+            logger(
+              `[browser] Attachment upload timed out after ${Math.round(waitBudget / 1000)}s; continuing without confirmation.`,
+            );
+          } else {
+            throw error;
+          }
+        }
       }
       let baselineTurns = await readConversationTurnCount(Runtime, logger);
       // Learned: return baselineTurns so assistant polling can ignore earlier content.
+      const sendAttachmentNames = attachmentWaitTimedOut ? [] : attachmentNames;
       const committedTurns = await submitPrompt(
         {
           runtime: Runtime,
           input: Input,
-          attachmentNames,
+          attachmentNames: sendAttachmentNames,
           baselineTurns: baselineTurns ?? undefined,
           inputTimeoutMs: config.inputTimeoutMs ?? undefined,
         },
@@ -462,7 +476,9 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         }
       }
       if (attachmentNames.length > 0) {
-        if (inputOnlyAttachments) {
+        if (attachmentWaitTimedOut) {
+          logger('Attachment confirmation timed out; skipping user-turn attachment verification.');
+        } else if (inputOnlyAttachments) {
           logger('Attachment UI did not render before send; skipping user-turn attachment verification.');
         } else {
           const verified = await waitForUserTurnAttachments(Runtime, attachmentNames, 20_000, logger);
