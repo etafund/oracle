@@ -205,6 +205,8 @@ function buildChromeFlags(headless: boolean, debugBindAddress?: string | null): 
     '--disable-features=TranslateUI,AutomationControlled',
     '--mute-audio',
     '--window-size=1280,720',
+    '--lang=en-US',
+    '--accept-lang=en-US,en',
   ];
 
   if (process.platform !== 'win32' && !isWsl()) {
