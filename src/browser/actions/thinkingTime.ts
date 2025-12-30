@@ -137,6 +137,8 @@ function buildThinkingTimeExpression(level: ThinkingTimeLevel): string {
       for (const selector of CHIP_SELECTORS) {
         const buttons = document.querySelectorAll(selector);
         for (const btn of buttons) {
+          // Skip toggle buttons (no haspopup) - only click dropdown triggers to avoid disabling Pro mode
+          if (btn.getAttribute?.('aria-haspopup') !== 'menu') continue;
           const aria = normalize(btn.getAttribute?.('aria-label') ?? '');
           const text = normalize(btn.textContent ?? '');
           if (aria.includes('thinking') || text.includes('thinking')) {
