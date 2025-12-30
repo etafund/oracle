@@ -6,7 +6,7 @@
 - Config: allow `browser.thinkingTime`, `browser.manualLogin`, and `browser.manualLoginProfileDir` defaults in `~/.oracle/config.json`.
 
 ### Fixed
-- Browser: thinking-time chip selection now recognizes "Pro" labeled composer pills.
+- Browser: thinking-time chip selection now recognizes "Pro" labeled composer pills. Original PR #54 by Alex Naidis (@TheCrazyLex) — thank you!
 - CLI: disable OSC progress output when running under Codex (`CODEX_MANAGED_BY_NPM=1`) to avoid spinner noise.
 
 ### Tests
