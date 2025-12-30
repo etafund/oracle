@@ -18,7 +18,7 @@ Oracle bundles your prompt and files so another AI can answer with real context.
 Install globally: `npm install -g @steipete/oracle`
 Homebrew: `brew install steipete/tap/oracle`
 
-Requires Node 22+. Prefer `npx -y @steipete/oracle …` (pnpx can be quirky with ESM caching).
+Requires Node 22+. Or use `npx -y @steipete/oracle …` (or pnpx).
 
 ```bash
 # Copy the bundle and paste into ChatGPT
