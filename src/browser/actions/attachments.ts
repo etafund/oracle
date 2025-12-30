@@ -1487,9 +1487,8 @@ export async function waitForAttachmentCompletion(
         if (stable && value.state === 'ready') {
           return;
         }
-        if (stable && value.state === 'disabled' && !value.uploading) {
-          return;
-        }
+        // Don't treat disabled button as complete - wait for it to become 'ready'.
+        // The spinner detection is unreliable, so a disabled button likely means upload is in progress.
         if (value.state === 'missing' && (value.filesAttached || fileCountSatisfied)) {
           return;
         }
@@ -1512,8 +1511,8 @@ export async function waitForAttachmentCompletion(
           (raw) => raw.includes(normalizedExpected) || (expectedNoExt.length >= 6 && raw.includes(expectedNoExt)),
         );
       });
-      const inputStateOk =
-        value.state === 'ready' || value.state === 'missing' || value.state === 'disabled';
+      // Don't include 'disabled' - a disabled button likely means upload is still in progress.
+      const inputStateOk = value.state === 'ready' || value.state === 'missing';
       const inputSeenNow = inputMissing.length === 0 || fileCountSatisfied;
       const stableThresholdMs = value.uploading ? 3000 : 1500;
       if (inputSeenNow && inputStateOk) {

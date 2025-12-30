@@ -81,7 +81,7 @@ describe('attachment completion fallbacks', () => {
     useRealTime();
   });
 
-  test('waitForAttachmentCompletion resolves when send button stays disabled but attachment is stable', async () => {
+  test('waitForAttachmentCompletion times out when send button stays disabled (upload likely in progress)', async () => {
     useFakeTime();
 
     const runtime = {
@@ -98,9 +98,10 @@ describe('attachment completion fallbacks', () => {
       }),
     } as unknown as ChromeClient['Runtime'];
 
-    const promise = waitForAttachmentCompletion(runtime, 10_000, ['oracle-attach-verify.txt']);
+    const promise = waitForAttachmentCompletion(runtime, 800, ['oracle-attach-verify.txt']);
+    const assertion = expect(promise).rejects.toThrow(/did not finish uploading/i);
     await vi.advanceTimersByTimeAsync(2_000);
-    await expect(promise).resolves.toBeUndefined();
+    await assertion;
     useRealTime();
   });
 
