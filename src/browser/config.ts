@@ -28,6 +28,7 @@ export const DEFAULT_BROWSER_CONFIG: ResolvedBrowserConfig = {
   remoteChrome: null,
   manualLogin: false,
   manualLoginProfileDir: null,
+  manualLoginCookieSync: false,
 };
 
 export function resolveBrowserConfig(config: BrowserAutomationConfig | undefined): ResolvedBrowserConfig {
@@ -82,6 +83,7 @@ export function resolveBrowserConfig(config: BrowserAutomationConfig | undefined
     thinkingTime: config?.thinkingTime,
     manualLogin,
     manualLoginProfileDir: manualLogin ? resolvedProfileDir : null,
+    manualLoginCookieSync: config?.manualLoginCookieSync ?? DEFAULT_BROWSER_CONFIG.manualLoginCookieSync,
   };
 }
 

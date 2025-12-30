@@ -2,7 +2,6 @@ import { describe, expect, test } from 'vitest';
 import os from 'node:os';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
-import { access } from 'node:fs/promises';
 import CDP from 'chrome-remote-interface';
 import { runBrowserMode } from '../../src/browser/index.js';
 import {
@@ -11,6 +10,7 @@ import {
 } from '../../src/browser/profileState.js';
 import type { BrowserRuntimeMetadata } from '../../src/sessionStore.js';
 import { acquireLiveTestLock, releaseLiveTestLock } from './liveLock.js';
+import { getCookies } from '@steipete/sweet-cookie';
 
 const LIVE = process.env.ORACLE_LIVE_TEST === '1';
 const MANUAL = process.env.ORACLE_LIVE_TEST_MANUAL_LOGIN === '1';
@@ -39,10 +39,19 @@ async function waitForRuntimeHint<T extends { chromePort?: number; chromeTargetI
     'preserves DevToolsActivePort when connection drops but Chrome stays running',
     async () => {
       const profileDir = process.env.ORACLE_BROWSER_PROFILE_DIR ?? DEFAULT_PROFILE_DIR;
-      try {
-        await access(profileDir);
-      } catch {
-        console.warn(`Skipping manual-login live test (missing profile dir: ${profileDir}).`);
+      const { cookies } = await getCookies({
+        url: 'https://chatgpt.com',
+        origins: ['https://chatgpt.com', 'https://chat.openai.com', 'https://atlas.openai.com'],
+        browsers: ['chrome'],
+        mode: 'merge',
+        chromeProfile: 'Default',
+        timeoutMs: 5_000,
+      });
+      const hasSession = cookies.some((cookie) => cookie.name.startsWith('__Secure-next-auth.session-token'));
+      if (!hasSession) {
+        console.warn(
+          'Skipping manual-login live test (missing __Secure-next-auth.session-token). Open chatgpt.com in Chrome and retry.',
+        );
         return;
       }
 
@@ -55,6 +64,8 @@ async function waitForRuntimeHint<T extends { chromePort?: number; chromeTargetI
           config: {
             manualLogin: true,
             manualLoginProfileDir: profileDir,
+            manualLoginCookieSync: true,
+            chromeProfile: 'Default',
             keepBrowser: false,
             timeoutMs: 180_000,
           },

@@ -41,6 +41,7 @@ export interface BrowserAutomationConfig {
   remoteChrome?: { host: string; port: number } | null;
   manualLogin?: boolean;
   manualLoginProfileDir?: string | null;
+  manualLoginCookieSync?: boolean;
   /** Thinking time intensity level for Thinking/Pro models: light, standard, extended, heavy */
   thinkingTime?: ThinkingTimeLevel;
 }
@@ -94,4 +95,5 @@ export type ResolvedBrowserConfig = Required<
   remoteChrome?: { host: string; port: number } | null;
   manualLogin?: boolean;
   manualLoginProfileDir?: string | null;
+  manualLoginCookieSync?: boolean;
 };

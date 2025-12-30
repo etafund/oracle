@@ -214,11 +214,15 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       await Network.clearBrowserCookies();
     }
 
-    const cookieSyncEnabled = config.cookieSync && !manualLogin;
-  if (cookieSyncEnabled) {
-    if (!config.inlineCookies) {
-      logger(
-        'Heads-up: macOS may prompt for your Keychain password to read Chrome cookies; use --copy or --render for manual flow.',
+    const manualLoginCookieSync = manualLogin && Boolean(config.manualLoginCookieSync);
+    const cookieSyncEnabled = config.cookieSync && (!manualLogin || manualLoginCookieSync);
+    if (cookieSyncEnabled) {
+      if (manualLoginCookieSync) {
+        logger('Manual login mode: seeding persistent profile with cookies from your Chrome profile.');
+      }
+      if (!config.inlineCookies) {
+        logger(
+          'Heads-up: macOS may prompt for your Keychain password to read Chrome cookies; use --copy or --render for manual flow.',
       );
     } else {
       logger('Applying inline cookies (skipping Chrome profile read and Keychain prompt)');

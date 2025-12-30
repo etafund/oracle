@@ -4,6 +4,7 @@
 
 ### Fixed
 - Browser: preserve manual-login DevToolsActivePort when Chrome is still reachable after a connection drop, plus new live coverage for the scenario. Original PR #53 by TheCrazyLex — thank you!
+- Browser: allow optional cookie seeding for manual-login profiles via `browser.manualLoginCookieSync` (supports fully automated live runs).
 
 ## 0.8.0 — 2025-12-28
 
