@@ -18,6 +18,59 @@ export async function navigateToChatGPT(
   await waitForDocumentReady(Runtime, 45_000);
 }
 
+export interface PromptReadyNavigationOptions {
+  url: string;
+  fallbackUrl?: string;
+  timeoutMs: number;
+  fallbackTimeoutMs?: number;
+  headless: boolean;
+  logger: BrowserLogger;
+}
+
+export interface PromptReadyNavigationDeps {
+  navigateToChatGPT?: typeof navigateToChatGPT;
+  ensureNotBlocked?: typeof ensureNotBlocked;
+  ensurePromptReady?: typeof ensurePromptReady;
+}
+
+export async function navigateToPromptReadyWithFallback(
+  Page: ChromeClient['Page'],
+  Runtime: ChromeClient['Runtime'],
+  options: PromptReadyNavigationOptions,
+  deps: PromptReadyNavigationDeps = {},
+): Promise<{ usedFallback: boolean }> {
+  const {
+    url,
+    fallbackUrl,
+    timeoutMs,
+    fallbackTimeoutMs,
+    headless,
+    logger,
+  } = options;
+  const navigate = deps.navigateToChatGPT ?? navigateToChatGPT;
+  const ensureBlocked = deps.ensureNotBlocked ?? ensureNotBlocked;
+  const ensureReady = deps.ensurePromptReady ?? ensurePromptReady;
+
+  await navigate(Page, Runtime, url, logger);
+  await ensureBlocked(Runtime, headless, logger);
+  try {
+    await ensureReady(Runtime, timeoutMs, logger);
+    return { usedFallback: false };
+  } catch (error) {
+    if (!fallbackUrl || fallbackUrl === url) {
+      throw error;
+    }
+    const fallbackTimeout = fallbackTimeoutMs ?? Math.max(timeoutMs * 2, 120_000);
+    logger(
+      `Prompt not ready after ${Math.round(timeoutMs / 1000)}s on ${url}; retrying ${fallbackUrl} with ${Math.round(fallbackTimeout / 1000)}s timeout.`,
+    );
+    await navigate(Page, Runtime, fallbackUrl, logger);
+    await ensureBlocked(Runtime, headless, logger);
+    await ensureReady(Runtime, fallbackTimeout, logger);
+    return { usedFallback: true };
+  }
+}
+
 export async function ensureNotBlocked(Runtime: ChromeClient['Runtime'], headless: boolean, logger: BrowserLogger) {
   if (await isCloudflareInterstitial(Runtime)) {
     const message = headless

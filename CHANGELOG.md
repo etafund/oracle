@@ -15,6 +15,7 @@
 
 ### Fixed
 - Browser: thinking-time chip selection now recognizes "Pro" labeled composer pills. Original PR #54 by Alex Naidis (@TheCrazyLex) — thank you!
+- Browser: when a custom ChatGPT project URL is missing, retry on the base URL with a longer prompt timeout.
 - CLI: disable OSC progress output when running under Codex (`CODEX_MANAGED_BY_NPM=1`) to avoid spinner noise.
 
 ### Tests

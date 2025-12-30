@@ -15,6 +15,7 @@ import {
 import { syncCookies } from './cookies.js';
 import {
   navigateToChatGPT,
+  navigateToPromptReadyWithFallback,
   ensureNotBlocked,
   ensureLoggedIn,
   ensurePromptReady,
@@ -283,10 +284,18 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     );
 
     if (config.url !== baseUrl) {
-      await raceWithDisconnect(navigateToChatGPT(Page, Runtime, config.url, logger));
-      await raceWithDisconnect(ensureNotBlocked(Runtime, config.headless, logger));
+      await raceWithDisconnect(
+        navigateToPromptReadyWithFallback(Page, Runtime, {
+          url: config.url,
+          fallbackUrl: baseUrl,
+          timeoutMs: config.inputTimeoutMs,
+          headless: config.headless,
+          logger,
+        }),
+      );
+    } else {
+      await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
     }
-    await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
     logger(`Prompt textarea ready (initial focus, ${promptText.length.toLocaleString()} chars queued)`);
     const captureRuntimeSnapshot = async () => {
       try {

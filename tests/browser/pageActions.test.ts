@@ -5,6 +5,7 @@ import {
   uploadAttachmentFile,
   waitForAttachmentCompletion,
   navigateToChatGPT,
+  navigateToPromptReadyWithFallback,
   ensurePromptReady,
   ensureNotBlocked,
   ensureLoggedIn,
@@ -78,6 +79,44 @@ describe('navigateToChatGPT', () => {
     );
     expect(navigate).toHaveBeenCalledWith({ url: 'https://chat.openai.com' });
     expect(runtime.evaluate).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('navigateToPromptReadyWithFallback', () => {
+  test('falls back to base URL when prompt is missing', async () => {
+    const navigate = vi.fn().mockResolvedValue(undefined);
+    const ensureNotBlockedMock = vi.fn().mockResolvedValue(undefined);
+    const ensurePromptReadyMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Prompt textarea did not appear before timeout'))
+      .mockResolvedValueOnce(undefined);
+    const runtime = {} as unknown as ChromeClient['Runtime'];
+    const page = {} as unknown as ChromeClient['Page'];
+
+    await expect(
+      navigateToPromptReadyWithFallback(
+        page,
+        runtime,
+        {
+          url: 'https://chatgpt.com/g/missing/project',
+          fallbackUrl: 'https://chatgpt.com/',
+          timeoutMs: 5_000,
+          headless: false,
+          logger,
+        },
+        {
+          navigateToChatGPT: navigate,
+          ensureNotBlocked: ensureNotBlockedMock,
+          ensurePromptReady: ensurePromptReadyMock,
+        },
+      ),
+    ).resolves.toEqual({ usedFallback: true });
+
+    expect(navigate).toHaveBeenNthCalledWith(1, page, runtime, 'https://chatgpt.com/g/missing/project', logger);
+    expect(navigate).toHaveBeenNthCalledWith(2, page, runtime, 'https://chatgpt.com/', logger);
+    expect(ensureNotBlockedMock).toHaveBeenCalledTimes(2);
+    expect(ensurePromptReadyMock).toHaveBeenNthCalledWith(1, runtime, 5_000, logger);
+    expect(ensurePromptReadyMock).toHaveBeenNthCalledWith(2, runtime, 120_000, logger);
   });
 });
 
