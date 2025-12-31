@@ -83,7 +83,7 @@
     "shiki": "^3.20.0",
     "toasted-notifier": "^10.1.0",
     "tokentally": "^0.1.1",
-    "zod": "^4.2.1"
+    "zod": "^4.3.3"
   },
   "devDependencies": {
     "@anthropic-ai/tokenizer": "^0.0.4",
