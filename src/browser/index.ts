@@ -19,6 +19,7 @@ import {
   ensureNotBlocked,
   ensureLoggedIn,
   ensurePromptReady,
+  installJavaScriptDialogAutoDismissal,
   ensureModelSelection,
   submitPrompt,
   clearPromptComposer,
@@ -179,6 +180,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
   let runStatus: 'attempted' | 'complete' = 'attempted';
   let connectionClosedUnexpectedly = false;
   let stopThinkingMonitor: (() => void) | null = null;
+  let removeDialogHandler: (() => void) | null = null;
   let appliedCookies = 0;
 
   try {
@@ -211,6 +213,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       domainEnablers.push(DOM.enable());
     }
     await Promise.all(domainEnablers);
+    removeDialogHandler = installJavaScriptDialogAutoDismissal(Page, logger);
     if (!manualLogin) {
       await Network.clearBrowserCookies();
     }
@@ -429,7 +432,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           const attachment = submissionAttachments[attachmentIndex];
           logger(`Uploading attachment: ${attachment.displayPath}`);
           const uiConfirmed = await uploadAttachmentFile(
-            { runtime: Runtime, dom: DOM },
+            { runtime: Runtime, dom: DOM, input: Input },
             attachment,
             logger,
             { expectedCount: attachmentIndex + 1 },
@@ -756,6 +759,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     } catch {
       // ignore
     }
+    removeDialogHandler?.();
     removeTerminationHooks?.();
     if (!effectiveKeepBrowser) {
       if (!connectionClosedUnexpectedly) {
@@ -967,6 +971,7 @@ async function runRemoteBrowserMode(
   let answerHtml = '';
   let connectionClosedUnexpectedly = false;
   let stopThinkingMonitor: (() => void) | null = null;
+  let removeDialogHandler: (() => void) | null = null;
 
   try {
     const connection = await connectToRemoteChrome(host, port, logger, config.url);
@@ -984,6 +989,7 @@ async function runRemoteBrowserMode(
       domainEnablers.push(DOM.enable());
     }
     await Promise.all(domainEnablers);
+    removeDialogHandler = installJavaScriptDialogAutoDismissal(Page, logger);
 
     // Skip cookie sync for remote Chrome - it already has cookies
     logger('Skipping cookie sync for remote Chrome (using existing session)');
@@ -1293,6 +1299,7 @@ async function runRemoteBrowserMode(
     } catch {
       // ignore
     }
+    removeDialogHandler?.();
     await closeRemoteChromeTarget(host, port, remoteTargetId ?? undefined, logger);
     // Don't kill remote Chrome - it's not ours to manage
     const totalSeconds = (Date.now() - startedAt) / 1000;

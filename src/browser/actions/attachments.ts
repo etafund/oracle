@@ -6,12 +6,12 @@ import { logDomFailure } from '../domDebug.js';
 import { transferAttachmentViaDataTransfer } from './attachmentDataTransfer.js';
 
 export async function uploadAttachmentFile(
-  deps: { runtime: ChromeClient['Runtime']; dom?: ChromeClient['DOM'] },
+  deps: { runtime: ChromeClient['Runtime']; dom?: ChromeClient['DOM']; input?: ChromeClient['Input'] },
   attachment: BrowserAttachment,
   logger: BrowserLogger,
   options?: { expectedCount?: number },
 ): Promise<boolean> {
-  const { runtime, dom } = deps;
+  const { runtime, dom, input } = deps;
   if (!dom) {
     throw new Error('DOM domain unavailable while uploading attachments.');
   }
@@ -294,49 +294,72 @@ export async function uploadAttachmentFile(
   };
 
   // New ChatGPT UI hides the real file input behind a composer "+" menu; click it pre-emptively.
-  await Promise.resolve(
-    runtime.evaluate({
-      expression: `(() => {
-        const selectors = [
-          '#composer-plus-btn',
-          'button[data-testid="composer-plus-btn"]',
-          '[data-testid*="plus"]',
-          'button[aria-label*="add"]',
-          'button[aria-label*="attachment"]',
-          'button[aria-label*="file"]',
-        ];
-        for (const selector of selectors) {
-          const el = document.querySelector(selector);
-          if (el instanceof HTMLElement) {
-            el.click();
-            return true;
+  // Learned: synthetic `.click()` is sometimes ignored (isTrusted checks). Prefer a CDP mouse click when possible.
+  const clickPlusTrusted = async (): Promise<boolean> => {
+    if (!input || typeof input.dispatchMouseEvent !== 'function') return false;
+    const locate = await runtime
+      .evaluate({
+        expression: `(() => {
+          const selectors = [
+            '#composer-plus-btn',
+            'button[data-testid="composer-plus-btn"]',
+            '[data-testid*="plus"]',
+            'button[aria-label*="add"]',
+            'button[aria-label*="attachment"]',
+            'button[aria-label*="file"]',
+          ];
+          for (const selector of selectors) {
+            const el = document.querySelector(selector);
+            if (!(el instanceof HTMLElement)) continue;
+            const rect = el.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) continue;
+            el.scrollIntoView({ block: 'center', inline: 'center' });
+            const nextRect = el.getBoundingClientRect();
+            return { ok: true, x: nextRect.left + nextRect.width / 2, y: nextRect.top + nextRect.height / 2 };
           }
-        }
-        return false;
-      })()`,
-      returnByValue: true,
-    }),
-  ).catch(() => undefined);
+          return { ok: false };
+        })()`,
+        returnByValue: true,
+      })
+      .then((res) => res?.result?.value as { ok?: boolean; x?: number; y?: number } | undefined)
+      .catch(() => undefined);
+    if (!locate?.ok || typeof locate.x !== 'number' || typeof locate.y !== 'number') return false;
+    const x = locate.x;
+    const y = locate.y;
+    await input.dispatchMouseEvent({ type: 'mouseMoved', x, y });
+    await input.dispatchMouseEvent({ type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+    await input.dispatchMouseEvent({ type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+    return true;
+  };
 
-  await delay(250);
-
-  // Helper to click the upload menu item (if present) to reveal the real attachment input.
-  await Promise.resolve(
-    runtime.evaluate({
-      expression: `(() => {
-        const menuItems = Array.from(document.querySelectorAll('[data-testid*="upload"],[data-testid*="attachment"], [role="menuitem"], [data-radix-collection-item]'));
-        for (const el of menuItems) {
-          const text = (el.textContent || '').toLowerCase();
-          const tid = el.getAttribute?.('data-testid')?.toLowerCase?.() || '';
-          if (tid.includes('upload') || tid.includes('attachment') || text.includes('upload') || text.includes('file')) {
-            if (el instanceof HTMLElement) { el.click(); return true; }
+  const clickedTrusted = await clickPlusTrusted().catch(() => false);
+  if (!clickedTrusted) {
+    await Promise.resolve(
+      runtime.evaluate({
+        expression: `(() => {
+          const selectors = [
+            '#composer-plus-btn',
+            'button[data-testid="composer-plus-btn"]',
+            '[data-testid*="plus"]',
+            'button[aria-label*="add"]',
+            'button[aria-label*="attachment"]',
+            'button[aria-label*="file"]',
+          ];
+          for (const selector of selectors) {
+            const el = document.querySelector(selector);
+            if (el instanceof HTMLElement) {
+              el.click();
+              return true;
+            }
           }
-        }
-        return false;
-      })()`,
-      returnByValue: true,
-    }),
-  ).catch(() => undefined);
+          return false;
+        })()`,
+        returnByValue: true,
+      }),
+    ).catch(() => undefined);
+  }
+
+  await delay(350);
 
   const normalizeForMatch = (value: string): string =>
     String(value || '')
@@ -572,23 +595,25 @@ export async function uploadAttachmentFile(
       }
 
       // Mark candidates with stable indices so we can select them via DOM.querySelector.
+      // Learned: ChatGPT sometimes renders a zero-sized file input that does *not* trigger uploads;
+      // keep it as a fallback, but strongly prefer visible (even sr-only 1x1) inputs.
+      const localSet = new Set(localInputs);
       let idx = 0;
-      let candidates = inputs.map((el) => {
+      const candidates = inputs.map((el) => {
         const accept = el.getAttribute('accept') || '';
         const imageOnly = acceptIsImageOnly(accept);
+        const rect = el instanceof HTMLElement ? el.getBoundingClientRect() : { width: 0, height: 0 };
+        const visible = rect.width > 0 && rect.height > 0;
+        const local = localSet.has(el);
         const score =
           (el.hasAttribute('multiple') ? 100 : 0) +
-          (!imageOnly ? 20 : isImageAttachment ? 15 : -500);
+          (local ? 40 : 0) +
+          (visible ? 30 : -200) +
+          (!imageOnly ? 30 : isImageAttachment ? 20 : 5);
         el.setAttribute('data-oracle-upload-candidate', 'true');
         el.setAttribute('data-oracle-upload-idx', String(idx));
-        return { idx: idx++, score, imageOnly };
+        return { idx: idx++, score, imageOnly, visible, local };
       });
-      if (!isImageAttachment) {
-        const nonImage = candidates.filter((candidate) => !candidate.imageOnly);
-        if (nonImage.length > 0) {
-          candidates = nonImage;
-        }
-      }
 
       // Prefer higher scores first.
       candidates.sort((a, b) => b.score - a.score);
@@ -1739,11 +1764,59 @@ export async function waitForAttachmentVisible(
       }
     }
 
-    const composerRoot =
-      document.querySelector('[data-testid*="composer"]') || document.querySelector('form') || document.body;
-    const attachmentSelectors = ['[data-testid*="attachment"]','[data-testid*="chip"]','[data-testid*="upload"]','[data-testid*="file"]'];
-    const attachmentMatch = attachmentSelectors.some((selector) =>
-      Array.from(document.querySelectorAll(selector)).some(matchNode),
+    const promptSelectors = ${JSON.stringify(INPUT_SELECTORS)};
+    const sendSelectors = ${JSON.stringify(SEND_BUTTON_SELECTORS)};
+    const findPromptNode = () => {
+      for (const selector of promptSelectors) {
+        const nodes = Array.from(document.querySelectorAll(selector));
+        for (const node of nodes) {
+          if (!(node instanceof HTMLElement)) continue;
+          const rect = node.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) return node;
+        }
+      }
+      for (const selector of promptSelectors) {
+        const node = document.querySelector(selector);
+        if (node) return node;
+      }
+      return null;
+    };
+    const attachmentSelectors = [
+      'input[type="file"]',
+      '[data-testid*="attachment"]',
+      '[data-testid*="chip"]',
+      '[data-testid*="upload"]',
+      '[data-testid*="file"]',
+      '[aria-label*="Remove"]',
+      '[aria-label*="remove"]',
+    ];
+    const locateComposerRoot = () => {
+      const promptNode = findPromptNode();
+      if (promptNode) {
+        const initial =
+          promptNode.closest('[data-testid*="composer"]') ??
+          promptNode.closest('form') ??
+          promptNode.parentElement ??
+          document.body;
+        let current = initial;
+        let fallback = initial;
+        while (current && current !== document.body) {
+          const hasSend = sendSelectors.some((selector) => current.querySelector(selector));
+          if (hasSend) {
+            fallback = current;
+            const hasAttachment = attachmentSelectors.some((selector) => current.querySelector(selector));
+            if (hasAttachment) return current;
+          }
+          current = current.parentElement;
+        }
+        return fallback ?? initial;
+      }
+      return document.querySelector('form') ?? document.body;
+    };
+    const composerRoot = locateComposerRoot() ?? document.body;
+
+    const attachmentMatch = ['[data-testid*="attachment"]','[data-testid*="chip"]','[data-testid*="upload"]','[data-testid*="file"]'].some((selector) =>
+      Array.from(composerRoot.querySelectorAll(selector)).some(matchNode),
     );
     if (attachmentMatch) {
       return { found: true, source: 'attachments' };
@@ -1763,7 +1836,7 @@ export async function waitForAttachmentVisible(
       return { found: true, source: 'remove-button' };
     }
 
-    const cardTexts = Array.from(document.querySelectorAll('[aria-label*="Remove"]')).map((btn) =>
+    const cardTexts = Array.from(composerRoot.querySelectorAll('[aria-label*="Remove"]')).map((btn) =>
       btn?.parentElement?.parentElement?.innerText?.toLowerCase?.() ?? '',
     );
     if (cardTexts.some((text) => text.includes(normalized) || (normalizedNoExt.length >= 6 && text.includes(normalizedNoExt)))) {
@@ -1771,22 +1844,7 @@ export async function waitForAttachmentVisible(
     }
 
     const countRegex = /(?:^|\\b)(\\d+)\\s+(?:files?|attachments?)\\b/;
-    const fileCountNodes = (() => {
-      const nodes = [];
-      const seen = new Set();
-      const add = (node) => {
-        if (!node || seen.has(node)) return;
-        seen.add(node);
-        nodes.push(node);
-      };
-      const root = composerRoot;
-      const localNodes = root ? Array.from(root.querySelectorAll('button,span,div,[aria-label],[title]')) : [];
-      for (const node of localNodes) add(node);
-      for (const node of Array.from(document.querySelectorAll('button,span,div,[aria-label],[title]'))) {
-        add(node);
-      }
-      return nodes;
-    })();
+    const fileCountNodes = Array.from(composerRoot.querySelectorAll('button,span,div,[aria-label],[title]'));
     let fileCount = 0;
     for (const node of fileCountNodes) {
       if (!(node instanceof HTMLElement)) continue;

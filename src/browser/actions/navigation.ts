@@ -7,6 +7,48 @@ import {
 import { delay } from '../utils.js';
 import { logDomFailure } from '../domDebug.js';
 
+export function installJavaScriptDialogAutoDismissal(
+  Page: ChromeClient['Page'],
+  logger: BrowserLogger,
+): () => void {
+  type DialogEvent = { type?: string; message?: string };
+  const pageAny = Page as unknown as {
+    on?: (event: string, listener: (params: DialogEvent) => void) => void;
+    off?: (event: string, listener: (params: DialogEvent) => void) => void;
+    removeListener?: (event: string, listener: (params: DialogEvent) => void) => void;
+    handleJavaScriptDialog?: (params: { accept: boolean; promptText?: string }) => Promise<void>;
+  };
+
+  if (typeof pageAny.on !== 'function' || typeof pageAny.handleJavaScriptDialog !== 'function') {
+    return () => {};
+  }
+
+  const handler = async (params: DialogEvent) => {
+    const type = typeof params?.type === 'string' ? params.type : 'unknown';
+    const message = typeof params?.message === 'string' ? params.message : '';
+    logger(`[nav] dismissing JS dialog (${type})${message ? `: ${message.slice(0, 140)}` : ''}`);
+    try {
+      await pageAny.handleJavaScriptDialog?.({ accept: true, promptText: '' });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      logger(`[nav] failed to dismiss JS dialog: ${msg}`);
+    }
+  };
+
+  pageAny.on('javascriptDialogOpening', handler);
+  return () => {
+    try {
+      pageAny.off?.('javascriptDialogOpening', handler);
+    } catch {
+      try {
+        pageAny.removeListener?.('javascriptDialogOpening', handler);
+      } catch {
+        // ignore
+      }
+    }
+  };
+}
+
 export async function navigateToChatGPT(
   Page: ChromeClient['Page'],
   Runtime: ChromeClient['Runtime'],
