@@ -2,6 +2,7 @@ import { beforeEach, afterEach, describe, expect, test } from 'vitest';
 import os from 'node:os';
 import path from 'node:path';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { finished } from 'node:stream/promises';
 import { setOracleHomeDirOverrideForTest } from '../src/oracleHome.js';
 import { sessionStore as store } from '../src/sessionStore.js';
 
@@ -43,12 +44,12 @@ describe('sessionStore', () => {
     const writerPro = store.createLogWriter(meta.id, 'gpt-5.2-pro');
     writerPro.logLine('pro-line');
     writerPro.stream.end();
-    await new Promise<void>((resolve) => writerPro.stream.once('close', () => resolve()));
+    await finished(writerPro.stream);
 
     const writerGem = store.createLogWriter(meta.id, 'gemini-3-pro');
     writerGem.logLine('gem-line');
     writerGem.stream.end();
-    await new Promise<void>((resolve) => writerGem.stream.once('close', () => resolve()));
+    await finished(writerGem.stream);
 
     const combined = await store.readLog(meta.id);
     expect(combined).toContain('gpt-5.2-pro');
@@ -65,7 +66,7 @@ describe('sessionStore', () => {
     const writer = store.createLogWriter(meta.id);
     writer.logLine('combined-only');
     writer.stream.end();
-    await new Promise<void>((resolve) => writer.stream.once('close', () => resolve()));
+    await finished(writer.stream);
 
     const combined = await store.readLog(meta.id);
     expect(combined).toContain('combined-only');
