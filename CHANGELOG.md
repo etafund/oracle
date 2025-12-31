@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.3 — Unreleased
+
+### Added
+- Config: allow `browser.forceEnglishLocale` to opt into `--lang/--accept-lang` for browser runs.
+
+### Fixed
+- Browser: avoid stray attachment removal clicks while still detecting stale chips, and allow completed uploads even if send stays disabled. Original PR #56 by Alex Naidis (@TheCrazyLex) — thank you!
+
 ## 0.8.2 — 2025-12-30
 
 ### Changed
