@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.3 — Unreleased
+## 0.8.3 — 2025-12-31
 
 ### Added
 - Config: allow `browser.forceEnglishLocale` to opt into `--lang/--accept-lang` for browser runs.
