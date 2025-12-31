@@ -1136,12 +1136,12 @@ export async function clearComposerAttachments(
       return parentHasSend ? parent : root;
     })();
     const removeSelectors = [
-      '[aria-label*="Remove"]',
-      '[aria-label*="remove"]',
-      'button[aria-label*="Remove"]',
-      'button[aria-label*="remove"]',
-      '[data-testid*="remove"]',
-      '[data-testid*="delete"]',
+      '[aria-label="Remove file"]',
+      'button[aria-label="Remove file"]',
+      '[aria-label*="Remove file"]',
+      '[aria-label*="remove file"]',
+      '[data-testid*="remove-attachment"]',
+      '[data-testid*="attachment-remove"]',
     ];
     const visible = (el) => {
       if (!(el instanceof HTMLElement)) return false;
@@ -1152,10 +1152,15 @@ export async function clearComposerAttachments(
       ? Array.from(scope.querySelectorAll(removeSelectors.join(','))).filter(visible)
       : [];
     for (const button of removeButtons.slice(0, 20)) {
-      try { button.click(); } catch {}
+      try {
+        if (button instanceof HTMLButtonElement) {
+          // Ensure remove buttons never submit the composer form.
+          button.type = 'button';
+        }
+        button.click();
+      } catch {}
     }
-    const chipSelector = '[data-testid*="attachment"],[data-testid*="chip"],[data-testid*="upload"],[aria-label*="Remove"],[aria-label*="remove"]';
-    const chipCount = scope ? scope.querySelectorAll(chipSelector).length : 0;
+    const chipCount = removeButtons.length;
     const inputs = scope ? Array.from(scope.querySelectorAll('input[type="file"]')) : [];
     let inputCount = 0;
     for (const input of inputs) {
