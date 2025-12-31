@@ -877,7 +877,7 @@ describe('waitForAttachmentVisible', () => {
       | undefined;
     const capturedExpression = String(call?.expression ?? '');
     expect(capturedExpression).toContain("source: 'file-input'");
-    expect(capturedExpression).toContain('input[type=\"file\"]');
+    expect(capturedExpression).toContain('input[type="file"]');
     expect(capturedExpression).toContain('attachments?');
   });
 });

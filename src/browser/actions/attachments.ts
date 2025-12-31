@@ -1750,7 +1750,7 @@ export async function waitForAttachmentVisible(
     }
 
     const removeButtons = Array.from(
-      (composerRoot ?? document).querySelectorAll('[aria-label*=\"Remove\"],[aria-label*=\"remove\"]'),
+      (composerRoot ?? document).querySelectorAll('[aria-label*="Remove"],[aria-label*="remove"]'),
     );
     const visibleRemove = removeButtons.some((btn) => {
       if (!(btn instanceof HTMLElement)) return false;
