@@ -51,4 +51,56 @@ describe('syncCookies', () => {
     expect(applied).toBe(0);
     expect(logger).toHaveBeenCalledWith(expect.stringContaining('Cookie sync failed (continuing with override)'));
   });
+
+  test('retries once after a cookie read failure when wait is set', async () => {
+    vi.useFakeTimers();
+    getCookies
+      .mockRejectedValueOnce(new Error('keychain locked'))
+      .mockResolvedValueOnce({
+        cookies: [{ name: 'sid', value: 'abc', domain: 'chatgpt.com', path: '/', secure: true, httpOnly: true }],
+        warnings: [],
+      });
+    const setCookie = vi.fn().mockResolvedValue({ success: true });
+
+    const promise = syncCookies(
+      { setCookie } as unknown as ChromeClient['Network'],
+      'https://chatgpt.com',
+      null,
+      logger,
+      { waitMs: 1000 },
+    );
+    await vi.advanceTimersByTimeAsync(1000);
+    const applied = await promise;
+
+    expect(applied).toBe(1);
+    expect(getCookies).toHaveBeenCalledTimes(2);
+    expect(logger).toHaveBeenCalledWith(expect.stringContaining('Cookie read failed'));
+    vi.useRealTimers();
+  });
+
+  test('retries once after an empty cookie read when wait is set', async () => {
+    vi.useFakeTimers();
+    getCookies
+      .mockResolvedValueOnce({ cookies: [], warnings: [] })
+      .mockResolvedValueOnce({
+        cookies: [{ name: 'sid', value: 'abc', domain: 'chatgpt.com', path: '/', secure: true, httpOnly: true }],
+        warnings: [],
+      });
+    const setCookie = vi.fn().mockResolvedValue({ success: true });
+
+    const promise = syncCookies(
+      { setCookie } as unknown as ChromeClient['Network'],
+      'https://chatgpt.com',
+      null,
+      logger,
+      { waitMs: 500 },
+    );
+    await vi.advanceTimersByTimeAsync(500);
+    const applied = await promise;
+
+    expect(applied).toBe(1);
+    expect(getCookies).toHaveBeenCalledTimes(2);
+    expect(logger).toHaveBeenCalledWith(expect.stringContaining('No cookies found'));
+    vi.useRealTimers();
+  });
 });

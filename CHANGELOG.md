@@ -4,6 +4,7 @@
 
 ### Added
 - Config: allow `browser.forceEnglishLocale` to opt into `--lang/--accept-lang` for browser runs.
+- Browser: add `--browser-cookie-wait` / `browser.cookieSyncWaitMs` to wait once and retry cookie sync. Original PR #55 by bheemreddy-samsara — thank you!
 
 ### Fixed
 - Browser: avoid stray attachment removal clicks while still detecting stale chips, and allow completed uploads even if send stays disabled. Original PR #56 by Alex Naidis (@TheCrazyLex) — thank you!
