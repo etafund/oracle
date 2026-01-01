@@ -599,7 +599,7 @@ export async function uploadAttachmentFile(
       // keep it as a fallback, but strongly prefer visible (even sr-only 1x1) inputs.
       const localSet = new Set(localInputs);
       let idx = 0;
-      const candidates = inputs.map((el) => {
+      let candidates = inputs.map((el) => {
         const accept = el.getAttribute('accept') || '';
         const imageOnly = acceptIsImageOnly(accept);
         const rect = el instanceof HTMLElement ? el.getBoundingClientRect() : { width: 0, height: 0 };
@@ -612,8 +612,17 @@ export async function uploadAttachmentFile(
           (!imageOnly ? 30 : isImageAttachment ? 20 : 5);
         el.setAttribute('data-oracle-upload-candidate', 'true');
         el.setAttribute('data-oracle-upload-idx', String(idx));
-        return { idx: idx++, score, imageOnly, visible, local };
+        return { idx: idx++, score, imageOnly };
       });
+
+      // When the attachment isn't an image, avoid inputs that only accept images.
+      // Some ChatGPT surfaces expose multiple file inputs (e.g. image-only vs generic upload).
+      if (!isImageAttachment) {
+        const nonImage = candidates.filter((candidate) => !candidate.imageOnly);
+        if (nonImage.length > 0) {
+          candidates = nonImage;
+        }
+      }
 
       // Prefer higher scores first.
       candidates.sort((a, b) => b.score - a.score);
