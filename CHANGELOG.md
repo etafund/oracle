@@ -1,10 +1,15 @@
 # Changelog
 
-## 0.8.4 — Unreleased
+## 0.8.5 — Unreleased
+
+## 0.8.4 — 2026-01-04
 
 ### Changed
 - Deps: update zod to `4.3.5`.
 - Deps: add `qs` as a direct dependency (avoids Dependabot pnpm transitive-update failures).
+
+### Fixed
+- Browser: fix attachment uploads in the current ChatGPT composer (avoid duplicate uploads; avoid image-only inputs for non-image files). Original PR #60 by Alex Naidis (@TheCrazyLex) — thank you!
 
 ## 0.8.3 — 2025-12-31
 
