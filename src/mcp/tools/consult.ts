@@ -150,13 +150,13 @@ export function registerConsultTool(server: McpServer): void {
         const desiredModelLabel = isChatGptModel
           ? mapModelToBrowserLabel(runOptions.model)
           : resolveBrowserModelLabel(preferredLabel, runOptions.model);
-        // Keep the browser path minimal; only forward a desired model label for the ChatGPT picker.
         browserConfig = {
-          url: CHATGPT_URL,
+          url: userConfig.browser?.chatgptUrl ?? CHATGPT_URL,
           cookieSync: true,
           headless: false,
           hideWindow: false,
           keepBrowser: false,
+          manualLogin: userConfig.browser?.manualLogin,
           desiredModel: desiredModelLabel || mapModelToBrowserLabel(runOptions.model),
         };
       }
