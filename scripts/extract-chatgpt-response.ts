@@ -39,7 +39,7 @@ async function main() {
     for (const selector of selectors) {
       const elements = document.querySelectorAll(selector);
       if (elements.length > 0) {
-        const lastEl = elements[elements.length - 1];
+        const lastEl = elements[elements.length - 1] as HTMLElement;
         return { 
           selector, 
           count: elements.length,
