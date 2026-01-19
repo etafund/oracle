@@ -11,4 +11,7 @@ tsconfig.tsbuildinfo
 vendor/oracle-notifier/OracleNotifier.app
 vendor/oracle-notifier/OracleIcon.icns
 vendor/oracle-notifier/OracleIcon.iconset
+oracle-*.tgz
+oracle-*.tgz.sha1
+oracle-*.tgz.sha256
 /.claude
