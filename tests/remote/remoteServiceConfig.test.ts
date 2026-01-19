@@ -14,7 +14,6 @@ describe('resolveRemoteServiceConfig', () => {
       cliToken: 'cli-token',
       userConfig: {
         browser: { remoteHost: 'config:2', remoteToken: 'config-token' },
-        remote: { host: 'legacy:3', token: 'legacy-token' },
       },
       env,
     });
@@ -29,8 +28,6 @@ describe('resolveRemoteServiceConfig', () => {
     const resolved = resolveRemoteServiceConfig({
       userConfig: {
         browser: { remoteHost: 'cfg:9473', remoteToken: 'cfg-token' },
-        remoteHost: 'legacy:9999',
-        remoteToken: 'legacy-token',
       },
       env: {} as NodeJS.ProcessEnv,
     });
@@ -41,19 +38,21 @@ describe('resolveRemoteServiceConfig', () => {
     expect(resolved.sources.token).toBe('config.browser');
   });
 
-  it('falls back to legacy token when browser.remoteToken is missing', () => {
+  it('falls back to env token when browser.remoteToken is missing', () => {
+    const env = {} as NodeJS.ProcessEnv;
+    // biome-ignore lint/complexity/useLiteralKeys: env var names are uppercase with underscores
+    env['ORACLE_REMOTE_TOKEN'] = 'env-token';
     const resolved = resolveRemoteServiceConfig({
       userConfig: {
         browser: { remoteHost: 'cfg:9473' },
-        remoteToken: 'legacy-token',
       },
-      env: {} as NodeJS.ProcessEnv,
+      env,
     });
 
     expect(resolved.host).toBe('cfg:9473');
-    expect(resolved.token).toBe('legacy-token');
+    expect(resolved.token).toBe('env-token');
     expect(resolved.sources.host).toBe('config.browser');
-    expect(resolved.sources.token).toBe('config.legacy');
+    expect(resolved.sources.token).toBe('env');
   });
 
   it('uses env when config is empty', () => {
