@@ -147,14 +147,15 @@ export async function connectToRemoteChrome(
   targetUrl?: string,
 ): Promise<RemoteChromeConnection> {
   if (targetUrl) {
-    try {
-      const target = await CDP.New({ host, port, url: targetUrl });
-      const client = await CDP({ host, port, target: target.id });
-      logger(`Opened dedicated remote Chrome tab targeting ${targetUrl}`);
-      return { client, targetId: target.id };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      logger(`Failed to open dedicated remote Chrome tab (${message}); falling back to first target.`);
+    const targetConnection = await connectToNewTarget(host, port, targetUrl, logger, {
+      opened: () => `Opened dedicated remote Chrome tab targeting ${targetUrl}`,
+      openFailed: (message) => `Failed to open dedicated remote Chrome tab (${message}); falling back to first target.`,
+      attachFailed: (targetId, message) =>
+        `Failed to attach to dedicated remote Chrome tab ${targetId} (${message}); falling back to first target.`,
+      closeFailed: (targetId, message) => `Failed to close unused remote Chrome tab ${targetId}: ${message}`,
+    });
+    if (targetConnection) {
+      return { client: targetConnection.client, targetId: targetConnection.targetId };
     }
   }
   const fallbackClient = await CDP({ host, port });
@@ -189,7 +190,46 @@ export interface RemoteChromeConnection {
 
 export interface IsolatedTabConnection {
   client: ChromeClient;
-  targetId: string;
+  targetId?: string;
+}
+
+interface TargetConnectMessages {
+  opened?: (targetId: string) => string;
+  openFailed: (message: string) => string;
+  attachFailed: (targetId: string, message: string) => string;
+  closeFailed: (targetId: string, message: string) => string;
+}
+
+async function connectToNewTarget(
+  host: string,
+  port: number,
+  url: string,
+  logger: BrowserLogger,
+  messages: TargetConnectMessages,
+): Promise<{ client: ChromeClient; targetId: string } | null> {
+  try {
+    const target = await CDP.New({ host, port, url });
+    try {
+      const client = await CDP({ host, port, target: target.id });
+      if (messages.opened) {
+        logger(messages.opened(target.id));
+      }
+      return { client, targetId: target.id };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger(messages.attachFailed(target.id, message));
+      try {
+        await CDP.Close({ host, port, id: target.id });
+      } catch (closeError) {
+        const closeMessage = closeError instanceof Error ? closeError.message : String(closeError);
+        logger(messages.closeFailed(target.id, closeMessage));
+      }
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger(messages.openFailed(message));
+  }
+  return null;
 }
 
 export async function connectWithNewTab(
@@ -200,10 +240,18 @@ export async function connectWithNewTab(
 ): Promise<IsolatedTabConnection> {
   const effectiveHost = host ?? '127.0.0.1';
   const url = initialUrl ?? 'about:blank';
-  const target = await CDP.New({ host: effectiveHost, port, url });
-  const client = await CDP({ host: effectiveHost, port, target: target.id });
-  logger(`Opened isolated browser tab (target=${target.id})`);
-  return { client, targetId: target.id };
+  const targetConnection = await connectToNewTarget(effectiveHost, port, url, logger, {
+    opened: (targetId) => `Opened isolated browser tab (target=${targetId})`,
+    openFailed: (message) => `Failed to open isolated browser tab (${message}); falling back to default target.`,
+    attachFailed: (targetId, message) =>
+      `Failed to attach to isolated browser tab ${targetId} (${message}); falling back to default target.`,
+    closeFailed: (targetId, message) => `Failed to close unused browser tab ${targetId}: ${message}`,
+  });
+  if (targetConnection) {
+    return targetConnection;
+  }
+  const client = await connectToChrome(port, logger, effectiveHost);
+  return { client };
 }
 
 export async function closeTab(

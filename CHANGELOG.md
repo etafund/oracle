@@ -9,6 +9,7 @@
 ### Fixed
 - CLI: restore legacy `--[no-]notify`, `--[no-]notify-sound`, and `--[no-]background` flags as hidden aliases (Commander no longer accepts `[no-]` in `new Option()`).
 - Sessions: zombie detection now respects explicit timeouts and can optionally use last log activity to avoid false “zombie” status on long runs.
+- Browser: fall back to the default DevTools target if an isolated tab fails, and keep the run tab open when `--keep-browser` is set.
 
 ### Changed
 - Config: remove legacy `remote.host`/`remote.token` and top-level `remoteHost`/`remoteToken`; use `browser.remoteHost`/`browser.remoteToken` or env vars.
