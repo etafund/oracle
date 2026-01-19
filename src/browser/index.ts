@@ -8,9 +8,10 @@ import {
   launchChrome,
   registerTerminationHooks,
   hideChromeWindow,
-  connectToChrome,
   connectToRemoteChrome,
   closeRemoteChromeTarget,
+  connectWithNewTab,
+  closeTab,
 } from './chromeLifecycle.js';
 import { syncCookies } from './cookies.js';
 import {
@@ -172,7 +173,8 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     // ignore failure; cleanup still happens below
   }
 
-  let client: Awaited<ReturnType<typeof connectToChrome>> | null = null;
+  let client: ChromeClient | null = null;
+  let isolatedTargetId: string | null = null;
   const startedAt = Date.now();
   let answerText = '';
   let answerMarkdown = '';
@@ -185,7 +187,9 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
 
   try {
     try {
-      client = await connectToChrome(chrome.port, logger, chromeHost);
+      const connection = await connectWithNewTab(chrome.port, logger, undefined, chromeHost);
+      client = connection.client;
+      isolatedTargetId = connection.targetId ?? null;
     } catch (error) {
       const hint = describeDevtoolsFirewallHint(chromeHost, chrome.port);
       if (hint) {
@@ -766,6 +770,9 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       }
     } catch {
       // ignore
+    }
+    if (!effectiveKeepBrowser && isolatedTargetId && chrome?.port) {
+      await closeTab(chrome.port, isolatedTargetId, logger, chromeHost).catch(() => undefined);
     }
     removeDialogHandler?.();
     removeTerminationHooks?.();

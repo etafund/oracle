@@ -21,7 +21,7 @@ describe('loadUserConfig', () => {
         engine: "browser",
         notify: { sound: true },
         heartbeatSeconds: 15,
-        remote: { host: "host:1234", token: "abc" },
+        browser: { remoteHost: "host:1234", remoteToken: "abc" },
       }`,
       'utf8',
     );
@@ -31,25 +31,24 @@ describe('loadUserConfig', () => {
     expect(result.config.engine).toBe('browser');
     expect(result.config.notify?.sound).toBe(true);
     expect(result.config.heartbeatSeconds).toBe(15);
-    expect(result.config.remote?.host).toBe('host:1234');
-    expect(result.config.remote?.token).toBe('abc');
+    expect(result.config.browser?.remoteHost).toBe('host:1234');
+    expect(result.config.browser?.remoteToken).toBe('abc');
   });
 
-  it('supports top-level remoteHost/remoteToken aliases', async () => {
+  it('supports browser remote defaults', async () => {
     const configPath = path.join(tempDir, 'config.json');
     await fs.writeFile(
       configPath,
       `{
-        remoteHost: "alias:9999",
-        remoteToken: "secret"
+        browser: { remoteHost: "alias:9999", remoteToken: "secret" }
       }`,
       'utf8',
     );
 
     const result = await loadUserConfig();
     expect(result.loaded).toBe(true);
-    expect(result.config.remoteHost).toBe('alias:9999');
-    expect(result.config.remoteToken).toBe('secret');
+    expect(result.config.browser?.remoteHost).toBe('alias:9999');
+    expect(result.config.browser?.remoteToken).toBe('secret');
   });
 
   it('returns empty config when file is missing', async () => {

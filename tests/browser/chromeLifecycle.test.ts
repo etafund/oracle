@@ -1,4 +1,15 @@
-import { describe, expect, test, vi } from 'vitest';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
+
+const cdpNewMock = vi.fn();
+const cdpCloseMock = vi.fn();
+const cdpMock = Object.assign(vi.fn(), {
+  // biome-ignore lint/style/useNamingConvention: CDP API uses capitalized members.
+  New: cdpNewMock,
+  // biome-ignore lint/style/useNamingConvention: CDP API uses capitalized members.
+  Close: cdpCloseMock,
+});
+
+vi.mock('chrome-remote-interface', () => ({ default: cdpMock }));
 
 vi.doMock('../../src/browser/profileState.js', async () => {
   const original = await vi.importActual<typeof import('../../src/browser/profileState.js')>(
@@ -42,5 +53,59 @@ describe('registerTerminationHooks', () => {
 
     expect(chrome.kill).toHaveBeenCalledTimes(1);
     expect(cleanupMock).toHaveBeenCalledWith(userDataDir, logger, { lockRemovalMode: 'never' });
+  });
+});
+
+describe('connectWithNewTab', () => {
+  beforeEach(() => {
+    cdpMock.mockReset();
+    cdpNewMock.mockReset();
+    cdpCloseMock.mockReset();
+  });
+
+  test('falls back to default target when new tab cannot be opened', async () => {
+    cdpNewMock.mockRejectedValue(new Error('boom'));
+    cdpMock.mockResolvedValue({});
+
+    const { connectWithNewTab } = await import('../../src/browser/chromeLifecycle.js');
+    const logger = vi.fn();
+
+    const result = await connectWithNewTab(9222, logger);
+
+    expect(result.targetId).toBeUndefined();
+    expect(cdpNewMock).toHaveBeenCalledTimes(1);
+    expect(cdpMock).toHaveBeenCalledWith({ port: 9222, host: '127.0.0.1' });
+    expect(logger).toHaveBeenCalledWith(expect.stringContaining('Failed to open isolated browser tab'));
+  });
+
+  test('closes unused tab when attach fails', async () => {
+    cdpNewMock.mockResolvedValue({ id: 'target-1' });
+    cdpMock.mockRejectedValueOnce(new Error('attach fail')).mockResolvedValueOnce({});
+    cdpCloseMock.mockResolvedValue(undefined);
+
+    const { connectWithNewTab } = await import('../../src/browser/chromeLifecycle.js');
+    const logger = vi.fn();
+
+    const result = await connectWithNewTab(9222, logger);
+
+    expect(result.targetId).toBeUndefined();
+    expect(cdpNewMock).toHaveBeenCalledTimes(1);
+    expect(cdpCloseMock).toHaveBeenCalledWith({ host: '127.0.0.1', port: 9222, id: 'target-1' });
+    expect(cdpMock).toHaveBeenCalledWith({ port: 9222, host: '127.0.0.1' });
+    expect(logger).toHaveBeenCalledWith(expect.stringContaining('Failed to attach to isolated browser tab'));
+  });
+
+  test('returns isolated target when attach succeeds', async () => {
+    cdpNewMock.mockResolvedValue({ id: 'target-2' });
+    cdpMock.mockResolvedValue({});
+
+    const { connectWithNewTab } = await import('../../src/browser/chromeLifecycle.js');
+    const logger = vi.fn();
+
+    const result = await connectWithNewTab(9222, logger);
+
+    expect(result.targetId).toBe('target-2');
+    expect(cdpNewMock).toHaveBeenCalledTimes(1);
+    expect(cdpMock).toHaveBeenCalledWith({ host: '127.0.0.1', port: 9222, target: 'target-2' });
   });
 });
