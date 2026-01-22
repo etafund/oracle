@@ -565,33 +565,63 @@ function buildResponseObserverExpression(timeoutMs: number, minTurnIndex?: numbe
       new Promise((resolve, reject) => {
         const deadline = Date.now() + ${timeoutMs};
         let stopInterval = null;
-        const observer = new MutationObserver(() => {
-          const extractedRaw = extractFromTurns();
-          const extractedCandidate =
-            extractedRaw && !isAnswerNowPlaceholder(extractedRaw) ? extractedRaw : null;
-          let extracted = acceptSnapshot(extractedCandidate);
-          if (!extracted) {
-            const fallbackRaw = extractFromMarkdownFallback();
-            const fallbackCandidate =
-              fallbackRaw && !isAnswerNowPlaceholder(fallbackRaw) ? fallbackRaw : null;
-            extracted = acceptSnapshot(fallbackCandidate);
+        let timeoutId = null;
+        let cleanedUp = false;
+        let observer = null;
+
+        // Centralized cleanup to prevent resource leaks
+        const cleanup = () => {
+          if (cleanedUp) return;
+          cleanedUp = true;
+          if (stopInterval) {
+            clearInterval(stopInterval);
+            stopInterval = null;
           }
-          if (extracted) {
-            observer.disconnect();
-            if (stopInterval) {
-              clearInterval(stopInterval);
-            }
-            resolve(extracted);
-          } else if (Date.now() > deadline) {
-            observer.disconnect();
-            if (stopInterval) {
-              clearInterval(stopInterval);
-            }
-            reject(new Error('Response timeout'));
+          if (timeoutId) {
+            clearTimeout(timeoutId);
+            timeoutId = null;
           }
-        });
+          if (observer) {
+            try {
+              observer.disconnect();
+            } catch {
+              // ignore disconnect errors
+            }
+            observer = null;
+          }
+        };
+
+        const observerCallback = () => {
+          if (cleanedUp) return;
+          try {
+            const extractedRaw = extractFromTurns();
+            const extractedCandidate =
+              extractedRaw && !isAnswerNowPlaceholder(extractedRaw) ? extractedRaw : null;
+            let extracted = acceptSnapshot(extractedCandidate);
+            if (!extracted) {
+              const fallbackRaw = extractFromMarkdownFallback();
+              const fallbackCandidate =
+                fallbackRaw && !isAnswerNowPlaceholder(fallbackRaw) ? fallbackRaw : null;
+              extracted = acceptSnapshot(fallbackCandidate);
+            }
+            if (extracted) {
+              cleanup();
+              resolve(extracted);
+            } else if (Date.now() > deadline) {
+              cleanup();
+              reject(new Error('Response timeout'));
+            }
+          } catch (error) {
+            cleanup();
+            reject(error);
+          }
+        };
+
+        observer = new MutationObserver(observerCallback);
         observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+
         stopInterval = setInterval(() => {
+          if (cleanedUp) return;
           const stop = document.querySelector(STOP_SELECTOR);
           if (!stop) {
             return;
@@ -603,11 +633,9 @@ function buildResponseObserverExpression(timeoutMs: number, minTurnIndex?: numbe
           }
           dispatchClickSequence(stop);
         }, 500);
-        setTimeout(() => {
-          if (stopInterval) {
-            clearInterval(stopInterval);
-          }
-          observer.disconnect();
+
+        timeoutId = setTimeout(() => {
+          cleanup();
           reject(new Error('Response timeout'));
         }, ${timeoutMs});
       });
