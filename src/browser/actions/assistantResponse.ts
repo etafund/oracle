@@ -44,7 +44,10 @@ export async function waitForAssistantResponse(
       throw { source: 'evaluation' as const, error };
     },
   );
-  const pollerPromise = pollAssistantCompletion(Runtime, timeoutMs, minTurnIndex).then(
+  // Use AbortController to stop the poller when the evaluation wins the race,
+  // preventing abandoned polling loops from consuming resources.
+  const pollerAbort = new AbortController();
+  const pollerPromise = pollAssistantCompletion(Runtime, timeoutMs, minTurnIndex, pollerAbort.signal).then(
     (value) => {
       if (!value) {
         throw { source: 'poll' as const, error: new Error(ASSISTANT_POLL_TIMEOUT_ERROR) };
@@ -65,6 +68,8 @@ export async function waitForAssistantResponse(
       await terminateRuntimeExecution(Runtime);
       return winner.value;
     }
+    // Evaluation won - abort the poller to prevent it from running until timeout
+    pollerAbort.abort();
     evaluation = winner.value;
   } catch (wrappedError) {
     if (wrappedError && typeof wrappedError === 'object' && 'source' in wrappedError && 'error' in wrappedError) {
@@ -328,12 +333,17 @@ async function pollAssistantCompletion(
   Runtime: ChromeClient['Runtime'],
   timeoutMs: number,
   minTurnIndex?: number,
+  abortSignal?: AbortSignal,
 ): Promise<{ text: string; html?: string; meta: { turnId?: string | null; messageId?: string | null } } | null> {
   const watchdogDeadline = Date.now() + timeoutMs;
   let previousLength = 0;
   let stableCycles = 0;
   let lastChangeAt = Date.now();
   while (Date.now() < watchdogDeadline) {
+    // Check abort signal to stop polling when another path won the race
+    if (abortSignal?.aborted) {
+      return null;
+    }
     const snapshot = await readAssistantSnapshot(Runtime, minTurnIndex);
     const normalized = normalizeAssistantSnapshot(snapshot);
     if (normalized) {
