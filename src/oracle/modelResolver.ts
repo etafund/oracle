@@ -67,7 +67,7 @@ function pruneCatalogCache(now: number): void {
       catalogCache.delete(key);
     }
   }
-  // If still over limit, remove oldest entries
+  // If still over limit, evict oldest fetched entries (not true LRU; no last-access tracking).
   if (catalogCache.size > MAX_CACHE_ENTRIES) {
     const entries = [...catalogCache.entries()].sort((a, b) => a[1].fetchedAt - b[1].fetchedAt);
     const toRemove = entries.slice(0, catalogCache.size - MAX_CACHE_ENTRIES);
@@ -93,9 +93,9 @@ async function fetchOpenRouterCatalog(apiKey: string, fetcher: FetchFn): Promise
   }
   const json = (await response.json()) as { data?: OpenRouterModelInfo[] };
   const models = json?.data ?? [];
-  // Prune cache before adding new entry to prevent unbounded growth
-  pruneCatalogCache(now);
   catalogCache.set(apiKey, { fetchedAt: now, models });
+  // Prune after insert so the max-size constraint is strictly enforced.
+  pruneCatalogCache(now);
   return models;
 }
 
@@ -203,4 +203,16 @@ export async function resolveModelConfig(
 
 export function isProModel(model: ModelName): boolean {
   return isKnownModel(model) && PRO_MODELS.has(model as KnownModelName & ProModelName);
+}
+
+export function resetOpenRouterCatalogCacheForTest(): void {
+  catalogCache.clear();
+}
+
+export function getOpenRouterCatalogCacheSizeForTest(): number {
+  return catalogCache.size;
+}
+
+export function getOpenRouterCatalogCacheMaxEntriesForTest(): number {
+  return MAX_CACHE_ENTRIES;
 }
