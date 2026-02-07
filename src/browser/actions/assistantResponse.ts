@@ -48,12 +48,7 @@ export async function waitForAssistantResponse(
   // preventing abandoned polling loops from consuming resources.
   const pollerAbort = new AbortController();
   const pollerPromise = pollAssistantCompletion(Runtime, timeoutMs, minTurnIndex, pollerAbort.signal).then(
-    (value) => {
-      if (!value) {
-        throw { source: 'poll' as const, error: new Error(ASSISTANT_POLL_TIMEOUT_ERROR) };
-      }
-      return { kind: 'poll' as const, value };
-    },
+    (value) => ({ kind: 'poll' as const, value }),
     (error) => {
       throw { source: 'poll' as const, error };
     },
@@ -63,6 +58,9 @@ export async function waitForAssistantResponse(
   try {
     const winner = await Promise.race([raceReadyEvaluation, pollerPromise]);
     if (winner.kind === 'poll') {
+      if (!winner.value) {
+        throw { source: 'poll' as const, error: new Error(ASSISTANT_POLL_TIMEOUT_ERROR) };
+      }
       logger('Captured assistant response via snapshot watchdog');
       evaluationPromise.catch(() => undefined);
       await terminateRuntimeExecution(Runtime);
@@ -110,7 +108,7 @@ export async function waitForAssistantResponse(
           pollerPromise.catch(() => null),
           delay(remainingMs).then(() => null),
         ]);
-        if (polled && polled.kind === 'poll') {
+        if (polled && polled.kind === 'poll' && polled.value) {
           return polled.value;
         }
       }
