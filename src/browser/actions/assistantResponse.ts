@@ -44,13 +44,11 @@ export async function waitForAssistantResponse(
       throw { source: 'evaluation' as const, error };
     },
   );
-  const pollerPromise = pollAssistantCompletion(Runtime, timeoutMs, minTurnIndex).then(
-    (value) => {
-      if (!value) {
-        throw { source: 'poll' as const, error: new Error(ASSISTANT_POLL_TIMEOUT_ERROR) };
-      }
-      return { kind: 'poll' as const, value };
-    },
+  // Use AbortController to stop the poller when the evaluation wins the race,
+  // preventing abandoned polling loops from consuming resources.
+  const pollerAbort = new AbortController();
+  const pollerPromise = pollAssistantCompletion(Runtime, timeoutMs, minTurnIndex, pollerAbort.signal).then(
+    (value) => ({ kind: 'poll' as const, value }),
     (error) => {
       throw { source: 'poll' as const, error };
     },
@@ -60,11 +58,16 @@ export async function waitForAssistantResponse(
   try {
     const winner = await Promise.race([raceReadyEvaluation, pollerPromise]);
     if (winner.kind === 'poll') {
+      if (!winner.value) {
+        throw { source: 'poll' as const, error: new Error(ASSISTANT_POLL_TIMEOUT_ERROR) };
+      }
       logger('Captured assistant response via snapshot watchdog');
       evaluationPromise.catch(() => undefined);
       await terminateRuntimeExecution(Runtime);
       return winner.value;
     }
+    // Evaluation won - abort the poller to prevent it from running until timeout
+    pollerAbort.abort();
     evaluation = winner.value;
   } catch (wrappedError) {
     if (wrappedError && typeof wrappedError === 'object' && 'source' in wrappedError && 'error' in wrappedError) {
@@ -105,7 +108,7 @@ export async function waitForAssistantResponse(
           pollerPromise.catch(() => null),
           delay(remainingMs).then(() => null),
         ]);
-        if (polled && polled.kind === 'poll') {
+        if (polled && polled.kind === 'poll' && polled.value) {
           return polled.value;
         }
       }
@@ -328,12 +331,17 @@ async function pollAssistantCompletion(
   Runtime: ChromeClient['Runtime'],
   timeoutMs: number,
   minTurnIndex?: number,
+  abortSignal?: AbortSignal,
 ): Promise<{ text: string; html?: string; meta: { turnId?: string | null; messageId?: string | null } } | null> {
   const watchdogDeadline = Date.now() + timeoutMs;
   let previousLength = 0;
   let stableCycles = 0;
   let lastChangeAt = Date.now();
   while (Date.now() < watchdogDeadline) {
+    // Check abort signal to stop polling when another path won the race
+    if (abortSignal?.aborted) {
+      return null;
+    }
     const snapshot = await readAssistantSnapshot(Runtime, minTurnIndex);
     const normalized = normalizeAssistantSnapshot(snapshot);
     if (normalized) {
@@ -555,33 +563,63 @@ function buildResponseObserverExpression(timeoutMs: number, minTurnIndex?: numbe
       new Promise((resolve, reject) => {
         const deadline = Date.now() + ${timeoutMs};
         let stopInterval = null;
-        const observer = new MutationObserver(() => {
-          const extractedRaw = extractFromTurns();
-          const extractedCandidate =
-            extractedRaw && !isAnswerNowPlaceholder(extractedRaw) ? extractedRaw : null;
-          let extracted = acceptSnapshot(extractedCandidate);
-          if (!extracted) {
-            const fallbackRaw = extractFromMarkdownFallback();
-            const fallbackCandidate =
-              fallbackRaw && !isAnswerNowPlaceholder(fallbackRaw) ? fallbackRaw : null;
-            extracted = acceptSnapshot(fallbackCandidate);
+        let timeoutId = null;
+        let cleanedUp = false;
+        let observer = null;
+
+        // Centralized cleanup to prevent resource leaks
+        const cleanup = () => {
+          if (cleanedUp) return;
+          cleanedUp = true;
+          if (stopInterval) {
+            clearInterval(stopInterval);
+            stopInterval = null;
           }
-          if (extracted) {
-            observer.disconnect();
-            if (stopInterval) {
-              clearInterval(stopInterval);
-            }
-            resolve(extracted);
-          } else if (Date.now() > deadline) {
-            observer.disconnect();
-            if (stopInterval) {
-              clearInterval(stopInterval);
-            }
-            reject(new Error('Response timeout'));
+          if (timeoutId) {
+            clearTimeout(timeoutId);
+            timeoutId = null;
           }
-        });
+          if (observer) {
+            try {
+              observer.disconnect();
+            } catch {
+              // ignore disconnect errors
+            }
+            observer = null;
+          }
+        };
+
+        const observerCallback = () => {
+          if (cleanedUp) return;
+          try {
+            const extractedRaw = extractFromTurns();
+            const extractedCandidate =
+              extractedRaw && !isAnswerNowPlaceholder(extractedRaw) ? extractedRaw : null;
+            let extracted = acceptSnapshot(extractedCandidate);
+            if (!extracted) {
+              const fallbackRaw = extractFromMarkdownFallback();
+              const fallbackCandidate =
+                fallbackRaw && !isAnswerNowPlaceholder(fallbackRaw) ? fallbackRaw : null;
+              extracted = acceptSnapshot(fallbackCandidate);
+            }
+            if (extracted) {
+              cleanup();
+              resolve(extracted);
+            } else if (Date.now() > deadline) {
+              cleanup();
+              reject(new Error('Response timeout'));
+            }
+          } catch (error) {
+            cleanup();
+            reject(error);
+          }
+        };
+
+        observer = new MutationObserver(observerCallback);
         observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+
         stopInterval = setInterval(() => {
+          if (cleanedUp) return;
           const stop = document.querySelector(STOP_SELECTOR);
           if (!stop) {
             return;
@@ -593,11 +631,9 @@ function buildResponseObserverExpression(timeoutMs: number, minTurnIndex?: numbe
           }
           dispatchClickSequence(stop);
         }, 500);
-        setTimeout(() => {
-          if (stopInterval) {
-            clearInterval(stopInterval);
-          }
-          observer.disconnect();
+
+        timeoutId = setTimeout(() => {
+          cleanup();
           reject(new Error('Response timeout'));
         }, ${timeoutMs});
       });

@@ -1,5 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
-import { resolveModelConfig, safeModelSlug, isOpenRouterBaseUrl } from '../src/oracle/modelResolver.js';
+import {
+  resolveModelConfig,
+  safeModelSlug,
+  isOpenRouterBaseUrl,
+  resetOpenRouterCatalogCacheForTest,
+  getOpenRouterCatalogCacheSizeForTest,
+  getOpenRouterCatalogCacheMaxEntriesForTest,
+} from '../src/oracle/modelResolver.js';
 
 describe('OpenRouter helpers', () => {
   it('slugifies model ids with slashes', () => {
@@ -63,5 +70,22 @@ describe('OpenRouter helpers', () => {
     const grokId = grok.apiModel ?? grok.model;
     expect(grokId.includes('/')).toBe(false);
     expect(grokId.startsWith('grok-4')).toBe(true);
+  });
+
+  it('caps OpenRouter catalog cache size', async () => {
+    resetOpenRouterCatalogCacheForTest();
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: [] }),
+    }) as unknown as typeof fetch;
+
+    const maxEntries = getOpenRouterCatalogCacheMaxEntriesForTest();
+    const keys = Array.from({ length: maxEntries + 5 }, (_, i) => `dummy-${i}`);
+    for (const key of keys) {
+      await resolveModelConfig('minimax/minimax-m2', { openRouterApiKey: key, fetcher });
+    }
+
+    expect(getOpenRouterCatalogCacheSizeForTest()).toBe(maxEntries);
   });
 });

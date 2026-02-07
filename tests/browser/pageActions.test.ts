@@ -198,6 +198,41 @@ describe('waitForAssistantResponse', () => {
     expect(result.meta).toEqual({ messageId: 'mid', turnId: 'tid' });
   });
 
+  test('aborts poller when evaluation wins (no background polling)', async () => {
+    vi.useFakeTimers();
+    try {
+      let snapshotCalls = 0;
+      const payload = { text: 'Answer', html: '<p>Answer</p>', messageId: 'mid', turnId: 'tid' };
+      const evaluate = vi.fn().mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
+        if (params?.awaitPromise) {
+          return { result: { type: 'object', value: payload } };
+        }
+        const expression = String(params?.expression ?? '');
+        if (expression.includes('extractAssistantTurn')) {
+          snapshotCalls += 1;
+          // First snapshot call is the watchdog poller; keep it slow so the evaluation wins the race.
+          if (snapshotCalls === 1) {
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+          return { result: { value: payload } };
+        }
+        return { result: { value: false } };
+      });
+
+      const runtime = { evaluate } as unknown as ChromeClient['Runtime'];
+      const promise = waitForAssistantResponse(runtime, 30_000, logger);
+      await vi.advanceTimersByTimeAsync(2_000);
+      const result = await promise;
+      expect(result.text).toBe('Answer');
+
+      const callsAtReturn = evaluate.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(evaluate.mock.calls.length).toBe(callsAtReturn);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('response observer watches character data mutations', async () => {
     let capturedExpression = '';
     const runtime = {

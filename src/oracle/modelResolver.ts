@@ -54,10 +54,32 @@ interface OpenRouterModelInfo {
 
 const catalogCache = new Map<string, { fetchedAt: number; models: OpenRouterModelInfo[] }>();
 const CACHE_TTL_MS = 5 * 60 * 1000;
+const MAX_CACHE_ENTRIES = 20;
+
+/**
+ * Prune stale entries from the catalog cache to prevent unbounded growth.
+ * Removes entries older than TTL and enforces a maximum cache size.
+ */
+function pruneCatalogCache(now: number): void {
+  // Remove stale entries first
+  for (const [key, entry] of catalogCache) {
+    if (now - entry.fetchedAt >= CACHE_TTL_MS) {
+      catalogCache.delete(key);
+    }
+  }
+  // If still over limit, evict oldest fetched entries (not true LRU; no last-access tracking).
+  if (catalogCache.size > MAX_CACHE_ENTRIES) {
+    const entries = [...catalogCache.entries()].sort((a, b) => a[1].fetchedAt - b[1].fetchedAt);
+    const toRemove = entries.slice(0, catalogCache.size - MAX_CACHE_ENTRIES);
+    for (const [key] of toRemove) {
+      catalogCache.delete(key);
+    }
+  }
+}
 
 async function fetchOpenRouterCatalog(apiKey: string, fetcher: FetchFn): Promise<OpenRouterModelInfo[]> {
-  const cached = catalogCache.get(apiKey);
   const now = Date.now();
+  const cached = catalogCache.get(apiKey);
   if (cached && now - cached.fetchedAt < CACHE_TTL_MS) {
     return cached.models;
   }
@@ -72,6 +94,8 @@ async function fetchOpenRouterCatalog(apiKey: string, fetcher: FetchFn): Promise
   const json = (await response.json()) as { data?: OpenRouterModelInfo[] };
   const models = json?.data ?? [];
   catalogCache.set(apiKey, { fetchedAt: now, models });
+  // Prune after insert so the max-size constraint is strictly enforced.
+  pruneCatalogCache(now);
   return models;
 }
 
@@ -179,4 +203,16 @@ export async function resolveModelConfig(
 
 export function isProModel(model: ModelName): boolean {
   return isKnownModel(model) && PRO_MODELS.has(model as KnownModelName & ProModelName);
+}
+
+export function resetOpenRouterCatalogCacheForTest(): void {
+  catalogCache.clear();
+}
+
+export function getOpenRouterCatalogCacheSizeForTest(): number {
+  return catalogCache.size;
+}
+
+export function getOpenRouterCatalogCacheMaxEntriesForTest(): number {
+  return MAX_CACHE_ENTRIES;
 }
