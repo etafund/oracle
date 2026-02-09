@@ -4,10 +4,15 @@
 
 ### Added
 - Sessions: add `oracle restart <id>` to re-run a stored session as a new session (clones options) (#84, thanks @enki).
+- Browser: optional periodic auto-reattach attempts after assistant timeouts (`--browser-auto-reattach-delay` / `--browser-auto-reattach-interval` / `--browser-auto-reattach-timeout`). Original PR #87 by Felix Huber (@felix-huber) — thank you!
 
 ### Fixed
+- Browser: fix memory leaks in browser mode and model resolver cache (#77, thanks @bindscha).
 - Browser: fix markdown fallback extractor TDZ crash in browser mode (#90, thanks @julianknutsen).
-- CLI: honor `--no-wait` for Commander `--no-` flags (fixes restart wait preference) (#84, thanks @enki).
+- CLI: honor `--no-wait` for Commander `--no-` flags (fixes restart wait preference) (#91).
+
+### Changed
+- Deps: update dependencies.
 
 ## 0.8.5 — 2026-01-19
 
@@ -15,7 +20,6 @@
 - Bridge: add the bridge workflow + MCP browser controls for remote ChatGPT sessions. Original PR #42 by Kyle McCleary (@kmccleary3301) — thank you!
 - CLI: add `--background`/`--no-background`, `--http-timeout`, `--zombie-timeout`, and `--zombie-last-activity` to support long-running API sessions.
 - Browser: optional delayed recheck after assistant timeouts (`--browser-recheck-delay` / `--browser-recheck-timeout`).
-- Browser: optional periodic auto-reattach attempts after timeouts (`--browser-auto-reattach-delay` / `--browser-auto-reattach-interval` / `--browser-auto-reattach-timeout`). Original PR #87 by Felix Huber (@felix-huber) — thank you!
 - Browser: add `--browser-profile-lock-timeout` to serialize manual-login runs that share a Chrome profile.
 
 ### Fixed
