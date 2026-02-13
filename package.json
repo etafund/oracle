@@ -104,7 +104,7 @@
   },
   "pnpm": {
     "overrides": {
-      "devtools-protocol": "0.0.1568893"
+      "devtools-protocol": "0.0.1583009"
     },
     "onlyBuiltDependencies": [
       "@cdktf/node-pty-prebuilt-multiarch",
