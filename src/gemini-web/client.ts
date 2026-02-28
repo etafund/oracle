@@ -166,12 +166,25 @@ async function downloadGeminiImage(
   await writeFile(outputPath, data);
 }
 
-async function uploadGeminiFile(filePath: string, signal?: AbortSignal): Promise<{ id: string; name: string }> {
+async function uploadGeminiFile(filePath: string, signal?: AbortSignal): Promise<{ id: string; name: string; mimeType: string }> {
   const absPath = path.resolve(process.cwd(), filePath);
   const data = await readFile(absPath);
   const fileName = path.basename(absPath);
+
+  const ext = path.extname(absPath).toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.bmp': 'image/bmp',
+    '.svg': 'image/svg+xml',
+  };
+  const mimeType = mimeTypes[ext] || 'application/octet-stream';
+
   const form = new FormData();
-  form.append('file', new Blob([data]), fileName);
+  form.append('file', new Blob([data], { type: mimeType }), fileName);
 
   const res = await fetch(GEMINI_UPLOAD_URL, {
     method: 'POST',
@@ -187,12 +200,12 @@ async function uploadGeminiFile(filePath: string, signal?: AbortSignal): Promise
   if (!res.ok) {
     throw new Error(`File upload failed: ${res.status} ${res.statusText} (${text.slice(0, 200)})`);
   }
-  return { id: text, name: fileName };
+  return { id: text, name: fileName, mimeType };
 }
 
 function buildGeminiFReqPayload(
   prompt: string,
-  uploaded: Array<{ id: string; name: string }>,
+  uploaded: Array<{ id: string; name: string; mimeType: string }>,
   chatMetadata: unknown,
 ): string {
   const promptPayload =
@@ -201,9 +214,8 @@ function buildGeminiFReqPayload(
           prompt,
           0,
           null,
-          // Matches gemini-webapi payload format: [[[fileId, 1]]] for a single attachment.
-          // Keep it extensible for multiple uploads by emitting one [[id, 1]] entry per file.
-          uploaded.map((file) => [[file.id, 1]]),
+          // Format: [[[fileId, 1, null, "mimeType"], "filename", ...]]
+          uploaded.map((file) => [[file.id, 1, null, file.mimeType], file.name]),
         ]
       : [prompt];
 
@@ -308,7 +320,7 @@ export async function runGeminiWebOnce(input: GeminiWebRunInput): Promise<Gemini
   const cookieHeader = buildCookieHeader(input.cookieMap);
   const at = await fetchGeminiAccessToken(input.cookieMap, input.signal);
 
-  const uploaded: Array<{ id: string; name: string }> = [];
+  const uploaded: Array<{ id: string; name: string; mimeType: string }> = [];
   for (const file of input.files ?? []) {
     if (input.signal?.aborted) {
       throw new Error('Gemini web run aborted before upload.');
