@@ -5,6 +5,7 @@
 ## 0.8.7 — Unreleased
 
 ### Fixed
+- API: route Gemini and Claude through chat/completions-compatible proxies when `--base-url` targets OpenRouter or another OpenAI-style endpoint, and keep explicit Claude base URLs from being overwritten by env defaults. (#95) — thanks @thesobercoder.
 - MCP: let `consult` inherit browser defaults from `~/.oracle/config.json` while still honoring explicit tool-call overrides. (#109) — thanks @doodaaatimmy-creator.
 
 ### Changed

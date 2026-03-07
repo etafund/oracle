@@ -32,7 +32,7 @@ const NATIVE_API_HOSTS = [
   'api.x.ai',
 ];
 
-function isCustomBaseUrl(baseUrl: string | undefined): boolean {
+export function isCustomBaseUrl(baseUrl: string | undefined): boolean {
   if (!baseUrl) return false;
   try {
     const url = new URL(baseUrl);

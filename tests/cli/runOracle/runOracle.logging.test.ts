@@ -208,7 +208,9 @@ describe('api key logging', () => {
 
   test('throws when GEMINI_API_KEY is missing for gemini API engine', async () => {
     const originalGemini = process.env.GEMINI_API_KEY;
+    const originalOpenRouter = process.env.OPENROUTER_API_KEY;
     delete process.env.GEMINI_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
     try {
       await expect(
         runOracle(
@@ -228,6 +230,11 @@ describe('api key logging', () => {
         process.env.GEMINI_API_KEY = originalGemini;
       } else {
         delete process.env.GEMINI_API_KEY;
+      }
+      if (originalOpenRouter !== undefined) {
+        process.env.OPENROUTER_API_KEY = originalOpenRouter;
+      } else {
+        delete process.env.OPENROUTER_API_KEY;
       }
     }
   });
