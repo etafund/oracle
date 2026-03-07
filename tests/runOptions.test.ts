@@ -73,7 +73,8 @@ describe('resolveRunOptionsFromConfig', () => {
   });
 
   it('lets ORACLE_MAX_FILE_SIZE_BYTES override config', () => {
-    const env = { ORACLE_MAX_FILE_SIZE_BYTES: '3145728' } as NodeJS.ProcessEnv;
+    const env = {} as NodeJS.ProcessEnv;
+    env.ORACLE_MAX_FILE_SIZE_BYTES = '3145728';
     const { runOptions } = resolveRunOptionsFromConfig({
       prompt: basePrompt,
       userConfig: { maxFileSizeBytes: 2_097_152 },
