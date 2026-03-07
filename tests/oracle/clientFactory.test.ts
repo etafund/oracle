@@ -60,6 +60,27 @@ describe('createDefaultClientFactory', () => {
     expect(client).toMatchObject({ client: 'gemini', model: 'gemini-3-pro' });
   });
 
+  test('routes gemini custom base URLs through the chat/completions adapter', async () => {
+    process.env.ORACLE_CLIENT_FACTORY = '';
+    const createGeminiClient = vi.fn();
+    vi.doMock('../../src/oracle/gemini.js', () => ({ createGeminiClient }));
+
+    const { createDefaultClientFactory } = await import('../../src/oracle/client.js');
+    const factory = createDefaultClientFactory();
+    const client = factory('abc', {
+      model: 'gemini-3-pro',
+      resolvedModelId: 'gem-3-pro',
+      baseUrl: 'https://litellm.test/v1',
+    });
+
+    expect(createGeminiClient).not.toHaveBeenCalled();
+    expect(client.responses).toMatchObject({
+      create: expect.any(Function),
+      stream: expect.any(Function),
+      retrieve: expect.any(Function),
+    });
+  });
+
   test('routes claude models through the Claude client', async () => {
     process.env.ORACLE_CLIENT_FACTORY = '';
     const createClaudeClient = vi.fn((key, model, resolvedModelId, baseUrl) => ({
@@ -76,11 +97,37 @@ describe('createDefaultClientFactory', () => {
     const client = factory('xyz', {
       model: 'claude-4.5-sonnet',
       resolvedModelId: 'claude-sonnet',
-      baseUrl: 'https://example',
+      baseUrl: 'https://api.anthropic.com/v1/messages',
     });
 
-    expect(createClaudeClient).toHaveBeenCalledWith('xyz', 'claude-4.5-sonnet', 'claude-sonnet', 'https://example');
+    expect(createClaudeClient).toHaveBeenCalledWith(
+      'xyz',
+      'claude-4.5-sonnet',
+      'claude-sonnet',
+      'https://api.anthropic.com/v1/messages',
+    );
     expect(client).toMatchObject({ client: 'claude', model: 'claude-4.5-sonnet' });
+  });
+
+  test('routes claude custom base URLs through the chat/completions adapter', async () => {
+    process.env.ORACLE_CLIENT_FACTORY = '';
+    const createClaudeClient = vi.fn();
+    vi.doMock('../../src/oracle/claude.js', () => ({ createClaudeClient }));
+
+    const { createDefaultClientFactory } = await import('../../src/oracle/client.js');
+    const factory = createDefaultClientFactory();
+    const client = factory('xyz', {
+      model: 'claude-4.5-sonnet',
+      resolvedModelId: 'claude-sonnet',
+      baseUrl: 'https://litellm.test/v1',
+    });
+
+    expect(createClaudeClient).not.toHaveBeenCalled();
+    expect(client.responses).toMatchObject({
+      create: expect.any(Function),
+      stream: expect.any(Function),
+      retrieve: expect.any(Function),
+    });
   });
 
   test('creates OpenAI clients for default and Azure paths', async () => {

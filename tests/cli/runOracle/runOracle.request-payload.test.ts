@@ -90,6 +90,69 @@ describe('runOracle request payload', () => {
     expect(captured).toEqual([{ apiKey: 'sk-test', baseUrl: 'https://litellm.test/v1' }]);
   });
 
+  test('passes gemini custom baseUrl through to clientFactory', async () => {
+    const stream = new MockStream([], buildResponse());
+    const client = new MockClient(stream);
+    const captured: Array<{ apiKey: string; baseUrl?: string; model?: string }> = [];
+    await runOracle(
+      {
+        prompt: 'Gemini custom endpoint',
+        model: 'gemini-3-pro',
+        baseUrl: 'https://litellm.test/v1',
+        background: false,
+      },
+      {
+        apiKey: 'gk-test',
+        clientFactory: (apiKey, options) => {
+          captured.push({ apiKey, baseUrl: options?.baseUrl, model: options?.model });
+          return client;
+        },
+        log: () => {},
+        write: () => true,
+      },
+    );
+    expect(captured).toEqual([
+      { apiKey: 'gk-test', baseUrl: 'https://litellm.test/v1', model: 'gemini-3-pro' },
+    ]);
+  });
+
+  test('keeps explicit claude baseUrl even when ANTHROPIC_BASE_URL is set', async () => {
+    const originalAnthropicBaseUrl = process.env.ANTHROPIC_BASE_URL;
+    process.env.ANTHROPIC_BASE_URL = 'https://env.anthropic.test/v1';
+
+    try {
+      const stream = new MockStream([], buildResponse());
+      const client = new MockClient(stream);
+      const captured: Array<{ apiKey: string; baseUrl?: string; model?: string }> = [];
+      await runOracle(
+        {
+          prompt: 'Claude custom endpoint',
+          model: 'claude-4.5-sonnet',
+          baseUrl: 'https://litellm.test/v1',
+          background: false,
+        },
+        {
+          apiKey: 'ak-test',
+          clientFactory: (apiKey, options) => {
+            captured.push({ apiKey, baseUrl: options?.baseUrl, model: options?.model });
+            return client;
+          },
+          log: () => {},
+          write: () => true,
+        },
+      );
+      expect(captured).toEqual([
+        { apiKey: 'ak-test', baseUrl: 'https://litellm.test/v1', model: 'claude-4.5-sonnet' },
+      ]);
+    } finally {
+      if (originalAnthropicBaseUrl === undefined) {
+        delete process.env.ANTHROPIC_BASE_URL;
+      } else {
+        process.env.ANTHROPIC_BASE_URL = originalAnthropicBaseUrl;
+      }
+    }
+  });
+
   test('passes azure config to clientFactory', async () => {
     const stream = new MockStream([], buildResponse());
     const client = new MockClient(stream);

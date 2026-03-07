@@ -27,7 +27,7 @@ import {
   describeTransportError,
   toTransportError,
 } from './errors.js';
-import { createDefaultClientFactory } from './client.js';
+import { createDefaultClientFactory, isCustomBaseUrl } from './client.js';
 import { formatBaseUrlForLog, maskApiKey } from './logging.js';
 import { startHeartbeat } from '../heartbeat.js';
 import { startOscProgress } from './oscProgress.js';
@@ -353,10 +353,12 @@ export async function runOracle(options: RunOracleOptions, deps: RunOracleDeps =
     };
   }
 
+  const proxyCompatibleBaseUrl =
+    baseUrl && (isOpenRouterBaseUrl(baseUrl) || isCustomBaseUrl(baseUrl)) ? baseUrl : undefined;
   const apiEndpoint = modelConfig.model.startsWith('gemini')
-    ? undefined
-    : isOpenRouterBaseUrl(baseUrl)
-      ? baseUrl
+    ? proxyCompatibleBaseUrl
+    : proxyCompatibleBaseUrl
+      ? proxyCompatibleBaseUrl
       : modelConfig.model.startsWith('claude')
         ? process.env.ANTHROPIC_BASE_URL ?? baseUrl
         : baseUrl;
