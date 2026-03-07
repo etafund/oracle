@@ -120,6 +120,28 @@ describe('resolveRunOptionsFromConfig', () => {
     expect(runOptions.model).toBe('gemini-3-pro');
   });
 
+  it('forces api engine for gemini-3.1-pro when browser would otherwise be auto-selected', () => {
+    const { runOptions, resolvedEngine, engineCoercedToApi } = resolveRunOptionsFromConfig({
+      prompt: basePrompt,
+      model: 'gemini-3.1-pro',
+      env: {},
+    });
+    expect(resolvedEngine).toBe('api');
+    expect(engineCoercedToApi).toBe(true);
+    expect(runOptions.model).toBe('gemini-3.1-pro');
+    expect(runOptions.effectiveModelId).toBe('gemini-3.1-pro-preview');
+  });
+
+  it('rejects browser engine explicitly set for gemini-3.1-pro', () => {
+    expect(() =>
+      resolveRunOptionsFromConfig({
+        prompt: basePrompt,
+        model: 'gemini-3.1-pro',
+        engine: 'browser',
+      }),
+    ).toThrow('gemini-3.1-pro is API-only today');
+  });
+
   it('accepts browser engine explicitly set for gemini', () => {
     const { resolvedEngine, runOptions } = resolveRunOptionsFromConfig({
       prompt: basePrompt,

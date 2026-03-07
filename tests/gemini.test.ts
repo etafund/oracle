@@ -56,6 +56,10 @@ describe('Gemini Client', () => {
     expect(resolveGeminiModelId('gemini-3-pro')).toBe('gemini-3-pro-preview');
   });
 
+  it('maps 3.1-pro through resolver', () => {
+    expect(resolveGeminiModelId('gemini-3.1-pro')).toBe('gemini-3.1-pro-preview');
+  });
+
   it('adapts create request correctly', async () => {
     const client = createGeminiClient('fake-key');
     const mockResponse = {

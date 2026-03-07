@@ -113,6 +113,19 @@ export const MODEL_CONFIGS: Record<KnownModelName, ModelConfig> = {
     },
     reasoning: { effort: 'xhigh' },
   },
+  'gemini-3.1-pro': {
+    model: 'gemini-3.1-pro',
+    provider: 'google',
+    tokenizer: countTokensGpt5Pro as TokenizerFn,
+    inputLimit: 200000,
+    pricing: {
+      inputPerToken: 2 / 1_000_000,
+      outputPerToken: 12 / 1_000_000,
+    },
+    reasoning: null,
+    supportsBackground: false,
+    supportsSearch: true,
+  },
   'gemini-3-pro': {
     model: 'gemini-3-pro',
     provider: 'google',

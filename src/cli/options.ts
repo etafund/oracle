@@ -236,6 +236,9 @@ export function resolveApiModel(modelValue: string): ModelName {
     throw new InvalidArgumentError('Gemini Deep Think is browser-only today. Use --engine browser --model gemini-3-deep-think.');
   }
   if (normalized.includes('gemini')) {
+    if (normalized.includes('3.1') || normalized.includes('3_1')) {
+      return 'gemini-3.1-pro';
+    }
     return 'gemini-3-pro';
   }
   if (normalized.includes('pro')) {
@@ -272,6 +275,9 @@ export function inferModelFromLabel(modelValue: string): ModelName {
     return 'gemini-3-pro-deep-think' as ModelName;
   }
   if (normalized.includes('gemini')) {
+    if (normalized.includes('3.1') || normalized.includes('3_1')) {
+      return 'gemini-3.1-pro';
+    }
     return 'gemini-3-pro';
   }
   if (normalized.includes('classic')) {

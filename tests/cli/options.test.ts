@@ -173,6 +173,7 @@ describe('resolveApiModel', () => {
     expect(resolveApiModel('opus')).toBe('claude-4.1-opus');
     expect(resolveApiModel('CLAUDE')).toBe('claude-4.5-sonnet');
     expect(resolveApiModel('Gemini')).toBe('gemini-3-pro');
+    expect(resolveApiModel('Gemini 3.1 Pro')).toBe('gemini-3.1-pro');
     expect(resolveApiModel('grok')).toBe('grok-4.1');
     expect(resolveApiModel('Grok 4.1')).toBe('grok-4.1');
   });
@@ -225,6 +226,10 @@ describe('inferModelFromLabel', () => {
     expect(inferModelFromLabel('ChatGPT 5.2 Instant')).toBe('gpt-5.2-instant');
     expect(inferModelFromLabel('5.2 thinking')).toBe('gpt-5.2-thinking');
     expect(inferModelFromLabel('5_2 FAST')).toBe('gpt-5.2-instant');
+  });
+
+  test('preserves Gemini 3.1 labels', () => {
+    expect(inferModelFromLabel('Gemini 3.1 Pro')).toBe('gemini-3.1-pro');
   });
 
   test('infers Codex labels', () => {

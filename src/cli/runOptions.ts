@@ -50,12 +50,20 @@ export function resolveRunOptionsFromConfig({
   const isCodex = resolvedModel.startsWith('gpt-5.1-codex');
   const isClaude = resolvedModel.startsWith('claude');
   const isGrok = resolvedModel.startsWith('grok');
+  const isGeminiApiOnly = resolvedModel === 'gemini-3.1-pro';
 
   const engineWasBrowser = resolvedEngine === 'browser';
   const allModels: ModelName[] =
     normalizedRequestedModels.length > 0
       ? Array.from(new Set(normalizedRequestedModels.map((entry) => resolveApiModel(entry))))
       : [resolvedModel];
+  const includesGeminiApiOnly = allModels.some((m) => m === 'gemini-3.1-pro');
+  if ((browserRequested || browserConfigured) && includesGeminiApiOnly) {
+    throw new PromptValidationError(
+      'gemini-3.1-pro is API-only today. Use --engine api or switch to gemini-3-pro for Gemini web.',
+      { engine: 'browser', models: allModels },
+    );
+  }
   const isBrowserCompatible = (m: string) => m.startsWith('gpt-') || m.startsWith('gemini');
   const hasNonBrowserCompatibleTarget = (browserRequested || browserConfigured) && allModels.some((m) => !isBrowserCompatible(m));
   if (hasNonBrowserCompatibleTarget) {
@@ -65,9 +73,9 @@ export function resolveRunOptionsFromConfig({
     );
   }
 
-  const engineCoercedToApi = engineWasBrowser && (isCodex || isClaude || isGrok);
+  const engineCoercedToApi = engineWasBrowser && (isCodex || isClaude || isGrok || isGeminiApiOnly);
   const fixedEngine: EngineMode =
-    isCodex || isClaude || isGrok || normalizedRequestedModels.length > 0 ? 'api' : resolvedEngine;
+    isCodex || isClaude || isGrok || isGeminiApiOnly || normalizedRequestedModels.length > 0 ? 'api' : resolvedEngine;
 
   const promptWithSuffix =
     userConfig?.promptSuffix && userConfig.promptSuffix.trim().length > 0

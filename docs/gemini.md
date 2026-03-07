@@ -20,6 +20,10 @@ Oracle supports Gemini in two distinct ways:
    ```bash
    oracle --engine api --model gemini-3-pro --prompt "..."
    ```
+   Or the 3.1 alias, which Oracle dispatches to Google's preview model id:
+   ```bash
+   oracle --engine api --model gemini-3.1-pro --prompt "..."
+   ```
 
 ## Usage (Gemini web / cookies)
 
@@ -61,7 +65,7 @@ Notes:
 ### Gemini API adapter
 
 - `src/oracle/gemini.ts` — adapter using `@google/genai` that returns a `ClientLike`.
-  - Model IDs: `gemini-3-pro` maps to the provider ID (currently `gemini-3-pro-preview`).
+  - Model IDs: `gemini-3-pro` maps to `gemini-3-pro-preview`; `gemini-3.1-pro` maps to `gemini-3.1-pro-preview`.
   - Request mapping: `OracleRequestBody` → Gemini request; `web_search_preview` maps to Gemini search tooling.
   - Response mapping: Gemini responses → `OracleResponse`.
   - Streaming: wraps Gemini’s async iterator as `ResponseStreamLike`.
