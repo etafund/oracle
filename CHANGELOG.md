@@ -5,6 +5,7 @@
 ## 0.8.7 — Unreleased
 
 ### Fixed
+- Dependencies: bump `@steipete/sweet-cookie` to `0.2.0`, picking up the Node 22 Chrome-cookie read fix that casts `expires_utc` safely instead of tripping the SQLite BigInt overflow path.
 - Gemini API: add explicit `gemini-3.1-pro` alias support, map it to Google's preview model id, and keep it API-only so browser runs do not silently target the wrong Gemini web model. (#100, #101) — thanks @ninjaa.
 - Gemini web: include Chrome/sweet-cookie warnings in missing-cookie failures so app-bound-cookie and SQLite/BigInt extraction problems surface actionable diagnostics instead of a generic auth-cookie error.
 - CLI: make the per-file `--file` size guard configurable via `ORACLE_MAX_FILE_SIZE_BYTES` or `maxFileSizeBytes` in `~/.oracle/config.json`, and persist that limit for restarts. (#76)

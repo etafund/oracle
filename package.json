@@ -65,7 +65,7 @@
     "@google/genai": "^1.44.0",
     "@google/generative-ai": "^0.24.1",
     "@modelcontextprotocol/sdk": "^1.27.1",
-    "@steipete/sweet-cookie": "^0.1.0",
+    "@steipete/sweet-cookie": "^0.2.0",
     "chalk": "^5.6.2",
     "chrome-launcher": "^1.2.1",
     "chrome-remote-interface": "^0.34.0",
