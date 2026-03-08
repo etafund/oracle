@@ -110,6 +110,26 @@ function buildModelSelectionExpression(targetModel: string, strategy: BrowserMod
       return { status: 'button-missing' };
     }
 
+    const closeMenu = () => {
+      try {
+        if (dispatchClickSequence(button)) {
+          lastPointerClick = performance.now();
+          return;
+        }
+      } catch {}
+      try {
+        document.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'Escape',
+            code: 'Escape',
+            keyCode: 27,
+            which: 27,
+            bubbles: true,
+          }),
+        );
+      } catch {}
+    };
+
     const getButtonLabel = () => (button.textContent ?? '').trim();
     if (MODEL_STRATEGY === 'current') {
       return { status: 'already-selected', label: getButtonLabel() };
@@ -347,6 +367,7 @@ function buildModelSelectionExpression(targetModel: string, strategy: BrowserMod
         const match = findBestOption();
         if (match) {
           if (optionIsSelected(match.node)) {
+            closeMenu();
             resolve({ status: 'already-selected', label: getButtonLabel() || match.label });
             return;
           }
@@ -361,6 +382,7 @@ function buildModelSelectionExpression(targetModel: string, strategy: BrowserMod
           // Wait for the top bar label to reflect the requested model; otherwise keep scanning.
           setTimeout(() => {
             if (buttonMatchesTarget()) {
+              closeMenu();
               resolve({ status: 'switched', label: getButtonLabel() || match.label });
               return;
             }

@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { buildModelMatchersLiteralForTest } from '../../src/browser/actions/modelSelection.js';
+import {
+  buildModelMatchersLiteralForTest,
+  buildModelSelectionExpressionForTest,
+} from '../../src/browser/actions/modelSelection.js';
 
 const expectContains = (arr: string[], value: string) => {
   expect(arr).toContain(value);
@@ -51,5 +54,12 @@ describe('browser model selection matchers', () => {
     expect(labelTokens.some((t) => t.includes('5.2') || t.includes('5-2'))).toBe(true);
     expect(testIdTokens).toContain('model-switcher-gpt-5-2-instant');
     expect(testIdTokens).toContain('gpt-5.2-instant');
+  });
+
+  it('closes the menu after a successful selection path', () => {
+    const expression = buildModelSelectionExpressionForTest('gpt-5.4');
+    expect(expression).toContain('const closeMenu = () =>');
+    expect(expression).toContain("key: 'Escape'");
+    expect(expression).toContain('closeMenu();');
   });
 });
