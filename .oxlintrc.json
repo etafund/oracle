@@ -1,0 +1,29 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["unicorn", "typescript", "oxc"],
+  "categories": {
+    "correctness": "error",
+    "perf": "error",
+    "suspicious": "error"
+  },
+  "rules": {
+    "eslint/no-await-in-loop": "off",
+    "eslint/no-control-regex": "off",
+    "eslint/no-new": "off",
+    "eslint/no-shadow": "off",
+    "eslint/no-unmodified-loop-condition": "off",
+    "eslint/preserve-caught-error": "off",
+    "oxc/no-accumulating-spread": "off",
+    "oxc/no-map-spread": "off",
+    "typescript/no-explicit-any": "off",
+    "typescript/no-extraneous-class": "off",
+    "typescript/no-unsafe-type-assertion": "off",
+    "unicorn/consistent-function-scoping": "off",
+    "unicorn/no-array-sort": "off",
+    "unicorn/no-new-array": "off",
+    "unicorn/no-useless-fallback-in-spread": "off",
+    "unicorn/prefer-add-event-listener": "off",
+    "unicorn/prefer-set-has": "off"
+  },
+  "ignorePatterns": ["coverage/", "dist/", "node_modules/", "pnpm-lock.yaml", "types/", "vendor/"]
+}
