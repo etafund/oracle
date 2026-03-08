@@ -1,7 +1,5 @@
 # Changelog
 
-## Unreleased
-
 ## 0.9.0 — Unreleased
 
 ### Changed
