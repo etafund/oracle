@@ -2,24 +2,24 @@
 
 ## Unreleased
 
-## 0.8.7 — Unreleased
-
-### Fixed
-- Dependencies: bump `@steipete/sweet-cookie` to `0.2.0`, picking up the Node 22 Chrome-cookie read fix that casts `expires_utc` safely instead of tripping the SQLite BigInt overflow path.
-- Gemini API: add explicit `gemini-3.1-pro` alias support, map it to Google's preview model id, and keep it API-only so browser runs do not silently target the wrong Gemini web model. (#100, #101) — thanks @ninjaa.
-- Gemini web: include Chrome/sweet-cookie warnings in missing-cookie failures so app-bound-cookie and SQLite/BigInt extraction problems surface actionable diagnostics instead of a generic auth-cookie error.
-- CLI: make the per-file `--file` size guard configurable via `ORACLE_MAX_FILE_SIZE_BYTES` or `maxFileSizeBytes` in `~/.oracle/config.json`, and persist that limit for restarts. (#76)
-- Azure: route Responses API runs through Azure's `/openai/v1` endpoint and honor `--azure-deployment` as the dispatched model name. (#92) — thanks @yellowgolfball.
-- Browser: leave headful Chrome/profile state running when a Cloudflare anti-bot challenge interrupts browser mode, and record reuse guidance in the saved session metadata. (#111) — thanks @WinnCook.
-- Browser: keep manual-login sessions reattachable when Chrome disconnects with the DevTools "Inspected target navigated or closed" error. (#110) — thanks @WinnCook.
-- Gemini web: add Deep Think DOM automation for browser/manual-login runs, keep Deep Think browser-only, and honor configured browser timeouts/profile reuse semantics. (#97) — thanks @kanlanc.
-- Gemini web: include upload MIME metadata so image attachments keep working for image analysis, with regression coverage for image and non-image payloads. (#104) — thanks @DK625.
-- API: route Gemini and Claude through chat/completions-compatible proxies when `--base-url` targets OpenRouter or another OpenAI-style endpoint, and keep explicit Claude base URLs from being overwritten by env defaults. (#95) — thanks @thesobercoder.
-- MCP: let `consult` inherit browser defaults from `~/.oracle/config.json` while still honoring explicit tool-call overrides. (#109) — thanks @doodaaatimmy-creator.
-- CLI: scope `--followup` to the OpenAI/Azure Responses path so Gemini, Claude, and custom `--base-url` adapters fail fast instead of silently starting a fresh run. (#105) — thanks @cheulyop.
+## 0.9.0 — Unreleased
 
 ### Changed
 - OpenAI: switch the default Pro target from `gpt-5.2-pro` to `gpt-5.4-pro`, add explicit `gpt-5.4` support, roll `gpt-5.1-pro` and `gpt-5.2-pro` forward to `gpt-5.4-pro`, keep provider-qualified custom ids intact, and map browser default Pro selection to ChatGPT `GPT-5.4 Pro` (#107, thanks @jameskraus).
+
+### Fixed
+- Gemini web: add Deep Think DOM automation for browser/manual-login runs, keep Deep Think browser-only, and honor configured browser timeouts/profile reuse semantics. (#97) — thanks @kanlanc.
+- Browser: leave headful Chrome/profile state running when a Cloudflare anti-bot challenge interrupts browser mode, and record reuse guidance in the saved session metadata. (#111) — thanks @WinnCook.
+- Browser: keep manual-login sessions reattachable when Chrome disconnects with the DevTools "Inspected target navigated or closed" error. (#110) — thanks @WinnCook.
+- Gemini API: add explicit `gemini-3.1-pro` alias support, map it to Google's preview model id, and keep it API-only so browser runs do not silently target the wrong Gemini web model. (#100, #101) — thanks @ninjaa.
+- API: route Gemini and Claude through chat/completions-compatible proxies when `--base-url` targets OpenRouter or another OpenAI-style endpoint, and keep explicit Claude base URLs from being overwritten by env defaults. (#95) — thanks @thesobercoder.
+- Azure: route Responses API runs through Azure's `/openai/v1` endpoint and honor `--azure-deployment` as the dispatched model name. (#92) — thanks @yellowgolfball.
+- CLI: make the per-file `--file` size guard configurable via `ORACLE_MAX_FILE_SIZE_BYTES` or `maxFileSizeBytes` in `~/.oracle/config.json`, and persist that limit for restarts. (#76)
+- CLI: scope `--followup` to the OpenAI/Azure Responses path so Gemini, Claude, and custom `--base-url` adapters fail fast instead of silently starting a fresh run. (#105) — thanks @cheulyop.
+- Gemini web: include upload MIME metadata so image attachments keep working for image analysis, with regression coverage for image and non-image payloads. (#104) — thanks @DK625.
+- Gemini web: include Chrome/sweet-cookie warnings in missing-cookie failures so app-bound-cookie and SQLite/BigInt extraction problems surface actionable diagnostics instead of a generic auth-cookie error.
+- MCP: let `consult` inherit browser defaults from `~/.oracle/config.json` while still honoring explicit tool-call overrides. (#109) — thanks @doodaaatimmy-creator.
+- Dependencies: bump `@steipete/sweet-cookie` to `0.2.0`, picking up the Node 22 Chrome-cookie read fix that casts `expires_utc` safely instead of tripping the SQLite BigInt overflow path.
 
 ## 0.8.6 — 2026-02-09
 
