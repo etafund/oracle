@@ -225,6 +225,25 @@ describe("ensureLoggedIn", () => {
     );
   });
 
+  test("rejects unknown backend status instead of assuming login", async () => {
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: {
+            ok: false,
+            status: 0,
+            url: "/backend-api/me",
+            domLoginCta: false,
+            onAuthPage: false,
+          },
+        },
+      }),
+    } as unknown as ChromeClient["Runtime"];
+    await expect(ensureLoggedIn(runtime, logger, { appliedCookies: 2 })).rejects.toThrow(
+      /ChatGPT session not detected/i,
+    );
+  });
+
   test("treats welcome-back navigation during account click as login progress", async () => {
     const runtime = {
       evaluate: vi
