@@ -21,6 +21,7 @@ describe("claude client", () => {
 
   test("resolveClaudeModelId normalizes known aliases", () => {
     expect(resolveClaudeModelId("claude-4.1-opus")).toBe("claude-opus-4-1");
+    expect(resolveClaudeModelId("claude-4.6-sonnet")).toBe("claude-sonnet-4-6");
     expect(resolveClaudeModelId("claude-4.5-sonnet")).toBe("claude-sonnet-4-5");
     expect(resolveClaudeModelId("claude-something-else")).toBe("claude-something-else");
   });

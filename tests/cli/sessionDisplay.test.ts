@@ -455,9 +455,9 @@ describe("attachSession rendering", () => {
     readSessionMetadataMock.mockResolvedValue(multiMeta);
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
-    await attachSession("sess", { model: "claude-4.5" });
+    await attachSession("sess", { model: "claude-4.0" });
 
-    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Model "claude-4.5" not found'));
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Model "claude-4.0" not found'));
     expect(process.exitCode).toBe(1);
     expect(sessionStoreMock.readModelLog).not.toHaveBeenCalled();
   });

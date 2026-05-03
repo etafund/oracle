@@ -127,7 +127,7 @@ describe("runOracle request payload", () => {
       await runOracle(
         {
           prompt: "Claude custom endpoint",
-          model: "claude-4.5-sonnet",
+          model: "claude-4.6-sonnet",
           baseUrl: "https://litellm.test/v1",
           background: false,
         },
@@ -142,7 +142,7 @@ describe("runOracle request payload", () => {
         },
       );
       expect(captured).toEqual([
-        { apiKey: "ak-test", baseUrl: "https://litellm.test/v1", model: "claude-4.5-sonnet" },
+        { apiKey: "ak-test", baseUrl: "https://litellm.test/v1", model: "claude-4.6-sonnet" },
       ]);
     } finally {
       if (originalAnthropicBaseUrl === undefined) {

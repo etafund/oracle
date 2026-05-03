@@ -19,7 +19,7 @@ const isAccessOrTransportError = (message: string): boolean =>
       const result = await runOracle(
         {
           prompt: "Give one short sentence about photosynthesis.",
-          model: "claude-4.5-sonnet",
+          model: "claude-4.6-sonnet",
           search: false,
         },
         { log: () => {}, write: () => true },

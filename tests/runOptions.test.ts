@@ -219,7 +219,7 @@ describe("resolveRunOptionsFromConfig", () => {
     });
 
     expect(runOptions.model).toBe("gpt-5.1");
-    expect(runOptions.models).toEqual(["gpt-5.1", "gemini-3-pro", "claude-4.5-sonnet"]);
+    expect(runOptions.models).toEqual(["gpt-5.1", "gemini-3-pro", "claude-4.6-sonnet"]);
   });
 
   it("rejects browser engine for grok when explicitly set", () => {

@@ -207,7 +207,7 @@ export function resolveApiModel(modelValue: string): ModelName {
     return "grok-4.1";
   }
   if (normalized.includes("claude") && normalized.includes("sonnet")) {
-    return "claude-4.5-sonnet";
+    return "claude-4.6-sonnet";
   }
   if (normalized.includes("claude") && normalized.includes("opus")) {
     return "claude-4.1-opus";
@@ -225,7 +225,7 @@ export function resolveApiModel(modelValue: string): ModelName {
     return "gpt-5.4";
   }
   if (normalized === "claude" || normalized === "sonnet" || /(^|\b)sonnet(\b|$)/.test(normalized)) {
-    return "claude-4.5-sonnet";
+    return "claude-4.6-sonnet";
   }
   if (normalized === "opus" || normalized === "claude-4.1") {
     return "claude-4.1-opus";
@@ -283,7 +283,7 @@ export function inferModelFromLabel(modelValue: string): ModelName {
     return "grok-4.1";
   }
   if (normalized.includes("claude") && normalized.includes("sonnet")) {
-    return "claude-4.5-sonnet";
+    return "claude-4.6-sonnet";
   }
   if (normalized.includes("claude") && normalized.includes("opus")) {
     return "claude-4.1-opus";
