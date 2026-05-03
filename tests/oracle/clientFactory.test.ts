@@ -95,18 +95,18 @@ describe("createDefaultClientFactory", () => {
     const { createDefaultClientFactory } = await import("../../src/oracle/client.js");
     const factory = createDefaultClientFactory();
     const client = factory("xyz", {
-      model: "claude-4.5-sonnet",
+      model: "claude-4.6-sonnet",
       resolvedModelId: "claude-sonnet",
       baseUrl: "https://api.anthropic.com/v1/messages",
     });
 
     expect(createClaudeClient).toHaveBeenCalledWith(
       "xyz",
-      "claude-4.5-sonnet",
+      "claude-4.6-sonnet",
       "claude-sonnet",
       "https://api.anthropic.com/v1/messages",
     );
-    expect(client).toMatchObject({ client: "claude", model: "claude-4.5-sonnet" });
+    expect(client).toMatchObject({ client: "claude", model: "claude-4.6-sonnet" });
   });
 
   test("routes claude custom base URLs through the chat/completions adapter", async () => {
@@ -117,7 +117,7 @@ describe("createDefaultClientFactory", () => {
     const { createDefaultClientFactory } = await import("../../src/oracle/client.js");
     const factory = createDefaultClientFactory();
     const client = factory("xyz", {
-      model: "claude-4.5-sonnet",
+      model: "claude-4.6-sonnet",
       resolvedModelId: "claude-sonnet",
       baseUrl: "https://litellm.test/v1",
     });

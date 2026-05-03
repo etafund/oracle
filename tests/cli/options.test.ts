@@ -169,11 +169,11 @@ describe("resolveApiModel", () => {
     expect(resolveApiModel("gpt-5-pro")).toBe("gpt-5-pro");
     expect(resolveApiModel("GPT-5.1")).toBe("gpt-5.1");
     expect(resolveApiModel("GPT-5.1-CODEX")).toBe("gpt-5.1-codex");
-    expect(resolveApiModel("claude-4.5-sonnet")).toBe("claude-4.5-sonnet");
+    expect(resolveApiModel("claude-4.6-sonnet")).toBe("claude-4.6-sonnet");
     expect(resolveApiModel("Claude Opus 4.1")).toBe("claude-4.1-opus");
-    expect(resolveApiModel("sonnet")).toBe("claude-4.5-sonnet");
+    expect(resolveApiModel("sonnet")).toBe("claude-4.6-sonnet");
     expect(resolveApiModel("opus")).toBe("claude-4.1-opus");
-    expect(resolveApiModel("CLAUDE")).toBe("claude-4.5-sonnet");
+    expect(resolveApiModel("CLAUDE")).toBe("claude-4.6-sonnet");
     expect(resolveApiModel("Gemini")).toBe("gemini-3-pro");
     expect(resolveApiModel("gemini-3.1-pro")).toBe("gemini-3.1-pro");
     expect(resolveApiModel("Gemini 3.1 Pro")).toBe("gemini-3.1-pro");
@@ -264,7 +264,7 @@ describe("inferModelFromLabel", () => {
   });
 
   test("infers Claude family labels", () => {
-    expect(inferModelFromLabel("Claude Sonnet 4.5")).toBe("claude-4.5-sonnet");
+    expect(inferModelFromLabel("Claude Sonnet 4.6")).toBe("claude-4.6-sonnet");
     expect(inferModelFromLabel("Claude Opus 4.1")).toBe("claude-4.1-opus");
   });
 

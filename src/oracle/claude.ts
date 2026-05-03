@@ -155,7 +155,14 @@ export function createClaudeClient(
 }
 
 export function resolveClaudeModelId(modelName: string): string {
-  if (modelName === "claude-4.5-sonnet" || modelName === "claude-sonnet-4-5-20241022") {
+  if (modelName === "claude-4.6-sonnet" || modelName === "claude-sonnet-4-6") {
+    return "claude-sonnet-4-6";
+  }
+  if (
+    modelName === "claude-4.5-sonnet" ||
+    modelName === "claude-sonnet-4-5" ||
+    modelName === "claude-sonnet-4-5-20250929"
+  ) {
     return "claude-sonnet-4-5";
   }
   if (modelName === "claude-4.1-opus" || modelName === "claude-opus-4-1-20240808") {

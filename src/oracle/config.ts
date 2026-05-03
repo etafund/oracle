@@ -11,7 +11,7 @@ export const PRO_MODELS = new Set<ProModelName>([
   "gpt-5.1-pro",
   "gpt-5-pro",
   "gpt-5.2-pro",
-  "claude-4.5-sonnet",
+  "claude-4.6-sonnet",
   "claude-4.1-opus",
 ]);
 
@@ -169,9 +169,9 @@ export const MODEL_CONFIGS: Record<KnownModelName, ModelConfig> = {
     supportsBackground: false,
     supportsSearch: true,
   },
-  "claude-4.5-sonnet": {
-    model: "claude-4.5-sonnet",
-    apiModel: "claude-sonnet-4-5",
+  "claude-4.6-sonnet": {
+    model: "claude-4.6-sonnet",
+    apiModel: "claude-sonnet-4-6",
     provider: "anthropic",
     tokenizer: countTokensAnthropic,
     inputLimit: 200000,
