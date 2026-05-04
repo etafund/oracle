@@ -2,10 +2,12 @@ import { describe, expect, test, vi } from "vitest";
 import {
   __test__,
   redactBrowserConfigForDebugLogForTest,
+  resolveRemoteTabLeaseProfileDirForTest,
   runSubmissionWithRecoveryForTest,
   shouldPreferSystemTmpDirForTest,
   shouldPreserveBrowserOnErrorForTest,
 } from "../../src/browser/index.js";
+import { resolveBrowserConfig } from "../../src/browser/config.js";
 import { BrowserAutomationError } from "../../src/oracle/errors.js";
 
 describe("shouldPreserveBrowserOnErrorForTest", () => {
@@ -48,6 +50,53 @@ describe("remote Chrome option warnings", () => {
         chromePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
       }),
     ).toContain("--browser-chrome-path");
+  });
+});
+
+describe("remote Chrome cleanup", () => {
+  test("closes the dedicated target after a completed run", async () => {
+    const closeConnection = vi.fn().mockResolvedValue(undefined);
+    const closeClient = vi.fn().mockResolvedValue(undefined);
+
+    await __test__.closeRemoteConnectionAfterRun({
+      connectionClosedUnexpectedly: false,
+      connection: { close: closeConnection },
+      client: { close: closeClient },
+      runStatus: "complete",
+    });
+
+    expect(closeConnection).toHaveBeenCalledTimes(1);
+    expect(closeClient).not.toHaveBeenCalled();
+  });
+
+  test("only detaches from the target after an incomplete run", async () => {
+    const closeConnection = vi.fn().mockResolvedValue(undefined);
+    const closeClient = vi.fn().mockResolvedValue(undefined);
+
+    await __test__.closeRemoteConnectionAfterRun({
+      connectionClosedUnexpectedly: false,
+      connection: { close: closeConnection },
+      client: { close: closeClient },
+      runStatus: "attempted",
+    });
+
+    expect(closeConnection).not.toHaveBeenCalled();
+    expect(closeClient).toHaveBeenCalledTimes(1);
+  });
+
+  test("does not close an already-lost connection", async () => {
+    const closeConnection = vi.fn().mockResolvedValue(undefined);
+    const closeClient = vi.fn().mockResolvedValue(undefined);
+
+    await __test__.closeRemoteConnectionAfterRun({
+      connectionClosedUnexpectedly: true,
+      connection: { close: closeConnection },
+      client: { close: closeClient },
+      runStatus: "attempted",
+    });
+
+    expect(closeConnection).not.toHaveBeenCalled();
+    expect(closeClient).not.toHaveBeenCalled();
   });
 });
 
@@ -172,5 +221,23 @@ describe("runSubmissionWithRecoveryForTest", () => {
         logger: vi.fn<(message: string) => void>(),
       }),
     ).rejects.toThrow(/prompt too large again/i);
+  });
+});
+
+describe("resolveRemoteTabLeaseProfileDirForTest", () => {
+  test("coordinates remote Chrome only when a manual-login profile is configured", () => {
+    const coordinated = resolveBrowserConfig({
+      remoteChrome: { host: "127.0.0.1", port: 9222 },
+      manualLogin: true,
+      manualLoginProfileDir: "/tmp/oracle-profile",
+    });
+    expect(resolveRemoteTabLeaseProfileDirForTest(coordinated)).toBe("/tmp/oracle-profile");
+
+    const uncoordinated = resolveBrowserConfig({
+      remoteChrome: { host: "127.0.0.1", port: 9222 },
+      manualLogin: false,
+      manualLoginProfileDir: "/tmp/oracle-profile",
+    });
+    expect(resolveRemoteTabLeaseProfileDirForTest(uncoordinated)).toBeNull();
   });
 });
