@@ -1,3 +1,4 @@
+import path from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import {
   __test__,
@@ -231,7 +232,9 @@ describe("resolveRemoteTabLeaseProfileDirForTest", () => {
       manualLogin: true,
       manualLoginProfileDir: "/tmp/oracle-profile",
     });
-    expect(resolveRemoteTabLeaseProfileDirForTest(coordinated)).toBe("/tmp/oracle-profile");
+    expect(resolveRemoteTabLeaseProfileDirForTest(coordinated)).toBe(
+      path.resolve("/tmp/oracle-profile"),
+    );
 
     const uncoordinated = resolveBrowserConfig({
       remoteChrome: { host: "127.0.0.1", port: 9222 },
