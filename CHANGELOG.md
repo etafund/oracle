@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0 — 2026-05-04
+
 ### Changed
 
 - OpenAI: switch the default model to `gpt-5.5-pro`, add explicit `gpt-5.5` support, and roll older Pro CLI aliases (`gpt-5.1-pro`, `gpt-5.2-pro`) forward to the current Pro API target.
@@ -11,6 +13,10 @@
 ### Fixed
 
 - Gemini web: prefer the latest non-empty streaming response chunk so `gemini-3-pro` and `gemini-3.1-pro` browser runs do not report `(no text output)` when the first chunk is an empty placeholder. (#153, #154) — thanks @manhtruong03.
+- Browser: keep ChatGPT cookie sync to the minimal auth/Cloudflare set by default, preventing oversized request headers from breaking browser runs after login.
+- Browser: recover missing project/workspace URLs by resetting the tab before falling back to the base ChatGPT URL.
+- Browser: recognize uploaded attachments from current ChatGPT file-chip labels, wait for a clickable send button, and continue when ChatGPT omits sent-message attachment UI after upload has already completed.
+- Browser: reattach completed Pro sessions by anchoring response capture to the matching prompt turn instead of filtering out already-visible answers.
 - CLI: avoid loading `clipboardy` during startup and add `/usr/sbin` before lazy clipboard loading on Intel macOS, preventing `spawnSync sysctl ENOENT` crashes from transitive architecture detection. (#129)
 - Browser: track ChatGPT's composer rewrite by matching the new `__composer-pill` model button and selecting thinking effort from the model menu's per-row effort control, with bilingual label matching and old-chip fallback. (#146) — thanks @SyntaxSmith.
 - Browser: open isolated local browser tabs directly on the configured ChatGPT URL instead of starting at `about:blank` and navigating later. (#139) — thanks @betamod.
