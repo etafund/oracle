@@ -5,6 +5,7 @@
 ### Added
 
 - Browser: add `--browser-attach-running` to reuse a local already-running signed-in Chrome through Chrome's local remote-debugging toggle. Oracle opens a dedicated tab, stores attach metadata for reattach, and leaves the browser itself untouched. (#119) — thanks @dedene.
+- Browser: coordinate concurrent ChatGPT browser runs that share one manual-login profile with a tab lease registry, `--browser-max-concurrent-tabs`, stale lease cleanup, and shared Chrome discovery. (#150) — thanks @pdurlej.
 - MCP: add the `chatgpt-pro-heavy` consult preset, MCP dry-runs, browser model strategy passthrough, and `oracle bridge claude-config --local-browser` for Claude Code + local ChatGPT Pro browser consults. (#149) — thanks @pdurlej.
 
 ### Docs

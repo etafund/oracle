@@ -82,7 +82,7 @@ export async function runBrowserSessionExecution(
     if (typeof message !== "string") return;
     const shouldAlwaysPrint =
       message.startsWith("[browser] ") &&
-      /fallback|retry|thinking|waiting for chatgpt/i.test(message);
+      /fallback|retry|thinking|waiting for chatgpt|browser slot/i.test(message);
     if (!runOptions.verbose && !shouldAlwaysPrint) return;
     log(message);
   }) as BrowserLogger;
@@ -110,6 +110,7 @@ export async function runBrowserSessionExecution(
       log: automationLogger,
       heartbeatIntervalMs: runOptions.heartbeatIntervalMs,
       verbose: runOptions.verbose,
+      sessionId: runOptions.sessionId,
       runtimeHintCb: async (runtime) => {
         await persistRuntimeHint({
           ...runtime,
