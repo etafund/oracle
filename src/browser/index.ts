@@ -668,9 +668,12 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
             },
           );
           if (!verified) {
-            throw new Error("Sent user message did not expose attachment UI after upload.");
+            logger(
+              "Sent user message did not expose attachment UI; continuing after upload check.",
+            );
+          } else {
+            logger("Verified attachments present on sent user message");
           }
-          logger("Verified attachments present on sent user message");
         }
       }
       // Reattach needs a /c/ URL; ChatGPT can update it late, so poll in the background.

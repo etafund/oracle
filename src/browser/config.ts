@@ -5,6 +5,18 @@ import { isTemporaryChatUrl, normalizeChatgptUrl } from "./utils.js";
 import os from "node:os";
 import path from "node:path";
 
+export const DEFAULT_CHATGPT_COOKIE_NAMES = [
+  "__Secure-next-auth.session-token",
+  "__Secure-next-auth.session-token.0",
+  "__Secure-next-auth.session-token.1",
+  "_account",
+  "cf_clearance",
+  "__cf_bm",
+  "_cfuvid",
+  "CF_Authorization",
+  "__cflb",
+];
+
 export const DEFAULT_BROWSER_CONFIG: ResolvedBrowserConfig = {
   chromeProfile: null,
   chromePath: null,
@@ -22,7 +34,7 @@ export const DEFAULT_BROWSER_CONFIG: ResolvedBrowserConfig = {
   autoReattachIntervalMs: 0,
   autoReattachTimeoutMs: 120_000,
   cookieSync: true,
-  cookieNames: null,
+  cookieNames: DEFAULT_CHATGPT_COOKIE_NAMES,
   cookieSyncWaitMs: 0,
   inlineCookies: null,
   inlineCookiesSource: null,

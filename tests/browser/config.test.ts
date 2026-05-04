@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 import os from "node:os";
 import path from "node:path";
-import { resolveBrowserConfig } from "../../src/browser/config.js";
+import { DEFAULT_CHATGPT_COOKIE_NAMES, resolveBrowserConfig } from "../../src/browser/config.js";
 import { CHATGPT_URL } from "../../src/browser/constants.js";
 
 describe("resolveBrowserConfig", () => {
@@ -20,6 +20,7 @@ describe("resolveBrowserConfig", () => {
     expect(resolved.url).toBe(CHATGPT_URL);
     const isWindows = process.platform === "win32";
     expect(resolved.cookieSync).toBe(!isWindows);
+    expect(resolved.cookieNames).toEqual(DEFAULT_CHATGPT_COOKIE_NAMES);
     expect(resolved.headless).toBe(false);
     expect(resolved.manualLogin).toBe(isWindows);
     expect(resolved.profileLockTimeoutMs).toBe(300_000);

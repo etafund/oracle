@@ -124,7 +124,8 @@ describe("navigateToPromptReadyWithFallback", () => {
       "https://chatgpt.com/g/missing/project",
       logger,
     );
-    expect(navigate).toHaveBeenNthCalledWith(2, page, runtime, "https://chatgpt.com/", logger);
+    expect(navigate).toHaveBeenNthCalledWith(2, page, runtime, "about:blank", logger);
+    expect(navigate).toHaveBeenNthCalledWith(3, page, runtime, "https://chatgpt.com/", logger);
     expect(ensureNotBlockedMock).toHaveBeenCalledTimes(2);
     expect(ensurePromptReadyMock).toHaveBeenNthCalledWith(1, runtime, 5_000, logger);
     expect(ensurePromptReadyMock).toHaveBeenNthCalledWith(2, runtime, 120_000, logger);
