@@ -117,6 +117,13 @@ Engine auto-picks API when `OPENAI_API_KEY` is set, otherwise browser; browser i
 
 - Run the stdio server via `oracle-mcp`.
 - Configure clients via [steipete/mcporter](https://github.com/steipete/mcporter) or `.mcp.json`; see [docs/mcp.md](docs/mcp.md) for connection examples.
+- Claude Code on the same Mac as a signed-in ChatGPT browser can generate a local config directly:
+
+```bash
+oracle bridge claude-config --local-browser > .mcp.json
+```
+
+- In MCP `consult`, use `preset: "chatgpt-pro-heavy"` for ChatGPT browser mode with `gpt-5.5-pro` and heavy thinking. Add `dryRun: true` to inspect the resolved run without creating a session or touching Chrome.
 
 ```bash
 npx -y @steipete/oracle oracle-mcp
@@ -138,6 +145,7 @@ npx -y @steipete/oracle oracle-mcp
 
 - Bundle once, reuse anywhere (API or experimental browser).
 - Multi-model API runs with aggregated cost/usage, including OpenRouter IDs alongside first-party models.
+- Claude Code / MCP browser consults can use the `chatgpt-pro-heavy` preset for a compact ChatGPT Pro second-opinion workflow.
 - Render/copy bundles for manual paste into ChatGPT when automation is blocked.
 - GPT‑5 Pro API runs detach by default; reattach via `oracle session <id>` / `oracle status` or block with `--wait`.
 - OpenAI/Azure follow-up API runs can continue from `--followup <sessionId|responseId>`; for multi-model parents, add `--followup-model <model>`.
