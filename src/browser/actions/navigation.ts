@@ -159,6 +159,8 @@ export async function navigateToPromptReadyWithFallback(
     logger(
       `Prompt not ready after ${Math.round(timeoutMs / 1000)}s on ${url}; retrying ${fallbackUrl} with ${Math.round(fallbackTimeout / 1000)}s timeout.`,
     );
+    await navigate(Page, Runtime, "about:blank", logger);
+    await delay(250);
     await navigate(Page, Runtime, fallbackUrl, logger);
     await ensureBlocked(Runtime, headless, logger);
     await dismissBlockingUi(Runtime, logger).catch(() => false);

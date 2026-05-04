@@ -66,8 +66,8 @@ describe("buildCookiePlan", () => {
   });
 
   test("copy from Chrome default allowlist", () => {
-    const plan = buildCookiePlan({});
+    const plan = buildCookiePlan({ cookieNames: ["__Secure-next-auth.session-token", "_account"] });
     expect(plan.type).toBe("copy");
-    expect(plan.description).toContain("all from Chrome profile");
+    expect(plan.description).toContain("__Secure-next-auth.session-token, _account");
   });
 });

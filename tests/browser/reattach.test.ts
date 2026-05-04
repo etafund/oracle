@@ -75,6 +75,58 @@ describe("resumeBrowserSession", () => {
     expect(captureAssistantMarkdown).toHaveBeenCalled();
   });
 
+  test("uses prompt preview turn index when reattaching to an already-open answer", async () => {
+    const runtime = {
+      chromePort: 51559,
+      chromeHost: "127.0.0.1",
+      chromeTargetId: "target-1",
+      tabUrl: "https://chatgpt.com/c/abc",
+    };
+    const listTargets = vi.fn(
+      async () =>
+        [{ targetId: "target-1", type: "page", url: runtime.tabUrl }] satisfies FakeTarget[],
+    ) as unknown as () => Promise<FakeTarget[]>;
+    const evaluate = vi.fn(async ({ expression }: { expression: string }) => {
+      if (expression === "location.href") {
+        return { result: { value: runtime.tabUrl } };
+      }
+      if (expression === "1+1") {
+        return { result: { value: 2 } };
+      }
+      if (expression.includes("const needle =")) {
+        return { result: { value: 3 } };
+      }
+      return { result: { value: null } };
+    });
+    const connect = vi.fn(
+      async () =>
+        ({
+          // biome-ignore lint/style/useNamingConvention: mirrors DevTools protocol domain names
+          Runtime: { enable: vi.fn(), evaluate },
+          // biome-ignore lint/style/useNamingConvention: mirrors DevTools protocol domain names
+          DOM: { enable: vi.fn() },
+          close: vi.fn(async () => {}),
+        }) satisfies FakeClient,
+    ) as unknown as (options?: unknown) => Promise<ChromeClient>;
+    const waitForAssistantResponse = vi.fn(async () => ({
+      text: "live reattach pro 123",
+      html: "",
+      meta: { messageId: "m1", turnId: "conversation-turn-4" },
+    }));
+    const captureAssistantMarkdown = vi.fn(async () => "live reattach pro 123");
+    const logger = vi.fn() as BrowserLogger;
+
+    await resumeBrowserSession(runtime, { timeoutMs: 2000 }, logger, {
+      listTargets,
+      connect,
+      waitForAssistantResponse,
+      captureAssistantMarkdown,
+      promptPreview: "live reattach pro 123",
+    });
+
+    expect(waitForAssistantResponse).toHaveBeenCalledWith(expect.anything(), 2000, logger, 3);
+  });
+
   test("falls back to recovery when chrome port is missing", async () => {
     const runtime = {
       tabUrl: "https://chatgpt.com/c/abc",

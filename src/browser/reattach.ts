@@ -15,7 +15,7 @@ import type { BrowserLogger, ChromeClient } from "./types.js";
 import { launchChrome, connectToChrome, hideChromeWindow } from "./chromeLifecycle.js";
 import { resolveBrowserConfig } from "./config.js";
 import { syncCookies } from "./cookies.js";
-import { CHATGPT_URL } from "./constants.js";
+import { CHATGPT_URL, CONVERSATION_TURN_SELECTOR } from "./constants.js";
 import { cleanupStaleProfileState } from "./profileState.js";
 import {
   pickTarget,
@@ -127,7 +127,9 @@ export async function resumeBrowserSession(
       "Reattach target did not respond",
     );
     await ensureConversationOpen();
-    const minTurnIndex = await readConversationTurnIndex(Runtime, logger);
+    const minTurnIndex =
+      (await readPromptPreviewTurnIndex(Runtime, deps.promptPreview)) ??
+      (deps.promptPreview ? null : await readConversationTurnIndex(Runtime, logger));
     const promptEcho = buildPromptEchoMatcher(deps.promptPreview);
     const answer = await withTimeout(
       waitForResponse(Runtime, timeoutMs, logger, minTurnIndex ?? undefined),
@@ -247,7 +249,9 @@ async function resumeBrowserSessionViaNewChrome(
   const waitForResponse = deps.waitForAssistantResponse ?? waitForAssistantResponse;
   const captureMarkdown = deps.captureAssistantMarkdown ?? captureAssistantMarkdown;
   const timeoutMs = resolved.timeoutMs ?? 120_000;
-  const minTurnIndex = await readConversationTurnIndex(Runtime, logger);
+  const minTurnIndex =
+    (await readPromptPreviewTurnIndex(Runtime, deps.promptPreview)) ??
+    (deps.promptPreview ? null : await readConversationTurnIndex(Runtime, logger));
   const promptEcho = buildPromptEchoMatcher(deps.promptPreview);
   const answer = await waitForResponse(Runtime, timeoutMs, logger, minTurnIndex ?? undefined);
   const recovered = await recoverPromptEcho(
@@ -286,10 +290,42 @@ async function resumeBrowserSessionViaNewChrome(
   return { answerText: aligned.answerText, answerMarkdown: aligned.answerMarkdown };
 }
 
+async function readPromptPreviewTurnIndex(
+  Runtime: ChromeClient["Runtime"],
+  promptPreview?: string | null,
+): Promise<number | null> {
+  const preview = promptPreview?.trim();
+  if (!preview) {
+    return null;
+  }
+  const { result } = await Runtime.evaluate({
+    expression: `(() => {
+      const needle = ${JSON.stringify(preview.toLowerCase().replace(/\s+/g, " ").slice(0, 120))};
+      if (!needle) return null;
+      const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+      const turns = Array.from(document.querySelectorAll(${JSON.stringify(CONVERSATION_TURN_SELECTOR)}));
+      let matched = null;
+      for (const [index, node] of turns.entries()) {
+        const attr = (node.getAttribute('data-message-author-role') || node.getAttribute('data-turn') || node.dataset?.turn || '').toLowerCase();
+        const isUser = attr === 'user' || Boolean(node.querySelector('[data-message-author-role="user"]'));
+        if (!isUser) continue;
+        const text = normalize(node.innerText || node.textContent || '');
+        if (text.length > 0 && (text.includes(needle) || needle.includes(text.slice(0, needle.length)))) {
+          matched = index;
+        }
+      }
+      return matched;
+    })()`,
+    returnByValue: true,
+  });
+  return typeof result?.value === "number" ? result.value : null;
+}
+
 // biome-ignore lint/style/useNamingConvention: test-only export used in vitest suite
 export const __test__ = {
   pickTarget,
   extractConversationIdFromUrl,
   buildConversationUrl,
   openConversationFromSidebar,
+  readPromptPreviewTurnIndex,
 };
