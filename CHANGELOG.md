@@ -5,6 +5,7 @@
 ### Added
 
 - Browser: add `--browser-attach-running` to reuse a local already-running signed-in Chrome through Chrome's local remote-debugging toggle. Oracle opens a dedicated tab, stores attach metadata for reattach, and leaves the browser itself untouched. (#119) — thanks @dedene.
+- MCP: add the `chatgpt-pro-heavy` consult preset, MCP dry-runs, browser model strategy passthrough, and `oracle bridge claude-config --local-browser` for Claude Code + local ChatGPT Pro browser consults. (#149) — thanks @pdurlej.
 
 ### Docs
 
@@ -13,6 +14,10 @@
 ### Changed
 
 - Browser: emit `--heartbeat` status while waiting for ChatGPT browser responses, including safe Thinking/Reasoning sidecar liveness metadata without logging reasoning text. (#148) — thanks @pdurlej.
+
+### Fixed
+
+- Bridge: keep generated Codex/Claude MCP config snippets clean on stdout so redirecting `oracle bridge claude-config --local-browser > .mcp.json` produces valid JSON.
 
 ## 0.10.0 — 2026-05-04
 

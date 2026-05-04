@@ -209,10 +209,14 @@ const normalizedArgv = process.argv.map((arg, index) => {
 const rawCliArgs = normalizedArgv.slice(2);
 const userCliArgs = rawCliArgs[0] === CLI_ENTRYPOINT ? rawCliArgs.slice(1) : rawCliArgs;
 const isTty = process.stdout.isTTY;
+const suppressIntro =
+  userCliArgs[0] === "bridge" &&
+  (userCliArgs[1] === "codex-config" || userCliArgs[1] === "claude-config");
 
 const program = new Command();
 let introPrinted = false;
 program.hook("preAction", () => {
+  if (suppressIntro) return;
   if (introPrinted) return;
   console.log(formatIntroLine(VERSION, { env: process.env, richTty: isTty }));
   introPrinted = true;
@@ -813,6 +817,16 @@ bridgeCommand
   .command("claude-config")
   .description("Print a Claude Code MCP config snippet (.mcp.json) for oracle-mcp.")
   .option("--print-token", "Include ORACLE_REMOTE_TOKEN in the snippet.", false)
+  .option(
+    "--local-browser",
+    "Use a local signed-in Chrome profile instead of a remote bridge.",
+    false,
+  )
+  .option("--oracle-home-dir <path>", "Override ORACLE_HOME_DIR in the generated snippet.")
+  .option(
+    "--browser-profile-dir <path>",
+    "Override ORACLE_BROWSER_PROFILE_DIR in the generated snippet.",
+  )
   .action(async (commandOptions) => {
     const { runBridgeClaudeConfig } = await import("../src/cli/bridge/claudeConfig.js");
     await runBridgeClaudeConfig(commandOptions);
