@@ -41,6 +41,11 @@ import { INPUT_SELECTORS } from "./constants.js";
 import { uploadAttachmentViaDataTransfer } from "./actions/remoteFileTransfer.js";
 import { ensureThinkingTime } from "./actions/thinkingTime.js";
 import { startThinkingStatusMonitor } from "./actions/thinkingStatus.js";
+import {
+  activateDeepResearch,
+  waitForDeepResearchCompletion,
+  waitForResearchPlanAutoConfirm,
+} from "./actions/deepResearch.js";
 import { estimateTokenCount, withRetries, delay } from "./utils.js";
 import { formatElapsed } from "../oracle/format.js";
 import { CHATGPT_URL, CONVERSATION_TURN_SELECTOR, DEFAULT_MODEL_STRATEGY } from "./constants.js";
@@ -661,9 +666,10 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     } else if (modelStrategy === "ignore") {
       logger("Model picker: skipped (strategy=ignore)");
     }
-    // Handle thinking time selection if specified
+    const deepResearch = config.researchMode === "deep";
+    // Handle thinking time selection if specified. Deep Research owns its own effort flow.
     const thinkingTime = config.thinkingTime;
-    if (thinkingTime) {
+    if (thinkingTime && !deepResearch) {
       await raceWithDisconnect(
         withRetries(() => ensureThinkingTime(Runtime, thinkingTime, logger), {
           retries: 2,
@@ -676,6 +682,25 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
             }
           },
         }),
+      );
+    }
+    if (deepResearch) {
+      await raceWithDisconnect(
+        withRetries(() => activateDeepResearch(Runtime, Input, logger), {
+          retries: 2,
+          delayMs: 500,
+          onRetry: (attempt, error) => {
+            if (options.verbose) {
+              logger(
+                `[retry] Deep Research activation attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
+              );
+            }
+          },
+        }),
+      );
+      await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+      logger(
+        `Prompt textarea ready (after Deep Research activation, ${promptText.length.toLocaleString()} chars queued)`,
       );
     }
     const profileLockTimeoutMs = manualLogin ? (config.profileLockTimeoutMs ?? 0) : 0;
@@ -809,6 +834,38 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       baselineAssistantText = submission.baselineAssistantText;
     } finally {
       await releaseProfileLockIfHeld();
+    }
+    if (deepResearch) {
+      await raceWithDisconnect(waitForResearchPlanAutoConfirm(Runtime, logger));
+      const researchResult = await raceWithDisconnect(
+        waitForDeepResearchCompletion(
+          Runtime,
+          logger,
+          config.timeoutMs,
+          baselineTurns,
+          Page,
+          client,
+        ),
+      );
+      await updateConversationHint("post-deep-research", 15_000).catch(() => false);
+      runStatus = "complete";
+      const durationMs = Date.now() - startedAt;
+      const tokens = estimateTokenCount(researchResult.text);
+      return {
+        answerText: researchResult.text,
+        answerMarkdown: researchResult.text,
+        answerHtml: researchResult.html,
+        tookMs: durationMs,
+        answerTokens: tokens,
+        answerChars: researchResult.text.length,
+        chromePid: chrome.pid,
+        chromePort: chrome.port,
+        chromeHost,
+        userDataDir,
+        chromeTargetId: lastTargetId,
+        tabUrl: lastUrl,
+        controllerPid: process.pid,
+      };
     }
     // Helper to normalize text for echo detection (collapse whitespace, lowercase)
     const normalizeForComparison = (text: string): string =>
@@ -1284,8 +1341,11 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         const totalSeconds = (Date.now() - startedAt) / 1000;
         logger(`Cleanup ${runStatus} • ${totalSeconds.toFixed(1)}s total`);
       }
-    } else if (!connectionClosedUnexpectedly) {
-      logger(`Chrome left running on port ${chrome.port} with profile ${userDataDir}`);
+    } else {
+      detachKeptChromeProcess(chrome);
+      if (!connectionClosedUnexpectedly) {
+        logger(`Chrome left running on port ${chrome.port} with profile ${userDataDir}`);
+      }
     }
     if (cleanupProfileLock) {
       const handle = cleanupProfileLock;
@@ -1463,6 +1523,14 @@ async function _assertNavigatedToHttp(
 }
 
 type BrowserChrome = LaunchedChrome & { host?: string };
+
+function detachKeptChromeProcess(chrome: Pick<LaunchedChrome, "process">): void {
+  try {
+    chrome.process?.unref();
+  } catch {
+    // Best-effort only; cleanup should not mask the original browser result.
+  }
+}
 
 async function acquireManualLoginChromeForRun(
   userDataDir: string,
@@ -1717,9 +1785,10 @@ async function runRemoteBrowserMode(
     } else if (modelStrategy === "ignore") {
       logger("Model picker: skipped (strategy=ignore)");
     }
-    // Handle thinking time selection if specified
+    const deepResearch = config.researchMode === "deep";
+    // Handle thinking time selection if specified. Deep Research owns its own effort flow.
     const thinkingTime = config.thinkingTime;
-    if (thinkingTime) {
+    if (thinkingTime && !deepResearch) {
       await withRetries(() => ensureThinkingTime(Runtime, thinkingTime, logger), {
         retries: 2,
         delayMs: 300,
@@ -1731,6 +1800,23 @@ async function runRemoteBrowserMode(
           }
         },
       });
+    }
+    if (deepResearch) {
+      await withRetries(() => activateDeepResearch(Runtime, Input, logger), {
+        retries: 2,
+        delayMs: 500,
+        onRetry: (attempt, error) => {
+          if (options.verbose) {
+            logger(
+              `[retry] Deep Research activation attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
+            );
+          }
+        },
+      });
+      await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
+      logger(
+        `Prompt textarea ready (after Deep Research activation, ${promptText.length.toLocaleString()} chars queued)`,
+      );
     }
 
     const submitOnce = async (prompt: string, submissionAttachments: BrowserAttachment[]) => {
@@ -1802,6 +1888,33 @@ async function runRemoteBrowserMode(
     });
     baselineTurns = submission.baselineTurns;
     baselineAssistantText = submission.baselineAssistantText;
+    if (deepResearch) {
+      await waitForResearchPlanAutoConfirm(Runtime, logger);
+      const researchResult = await waitForDeepResearchCompletion(
+        Runtime,
+        logger,
+        config.timeoutMs,
+        baselineTurns,
+        Page,
+        client,
+      );
+      await emitRuntimeHint();
+      const durationMs = Date.now() - startedAt;
+      const tokens = estimateTokenCount(researchResult.text);
+      return {
+        answerText: researchResult.text,
+        answerMarkdown: researchResult.text,
+        answerHtml: researchResult.html,
+        tookMs: durationMs,
+        answerTokens: tokens,
+        answerChars: researchResult.text.length,
+        chromePort: port,
+        chromeHost: host,
+        chromeTargetId: remoteTargetId ?? undefined,
+        tabUrl: lastUrl,
+        controllerPid: process.pid,
+      };
+    }
     // Helper to normalize text for echo detection (collapse whitespace, lowercase)
     const normalizeForComparison = (text: string): string =>
       text.toLowerCase().replace(/\s+/g, " ").trim();
@@ -2164,6 +2277,7 @@ export { resolveBrowserConfig, DEFAULT_BROWSER_CONFIG } from "./config.js";
 // biome-ignore lint/style/useNamingConvention: test-only export used in vitest suite
 export const __test__ = {
   closeRemoteConnectionAfterRun,
+  detachKeptChromeProcess,
   listIgnoredRemoteChromeFlags,
 };
 export { syncCookies } from "./cookies.js";
