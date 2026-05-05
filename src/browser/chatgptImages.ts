@@ -48,6 +48,26 @@ function buildAssistantImageExpression(minTurnIndex?: number): string {
     const MIN_TURN_INDEX = ${minTurnLiteral};
     const CONVERSATION_SELECTOR = ${conversationLiteral};
     const ASSISTANT_SELECTOR = ${assistantLiteral};
+    const isGeneratedImage = (img) => {
+      const url = img?.src || '';
+      if (!url.includes('/backend-api/estuary/content?id=file_')) return false;
+      const alt = String(img.alt || '').toLowerCase();
+      if (alt.includes('generated image')) return true;
+      let node = img;
+      while (node instanceof HTMLElement) {
+        if (String(node.id || '').startsWith('image-')) return true;
+        if (String(node.className || '').includes('imagegen-image')) return true;
+        node = node.parentElement;
+      }
+      return false;
+    };
+    const serializeImages = (root) =>
+      Array.from(root.querySelectorAll('img')).filter(isGeneratedImage).map((img) => ({
+        url: img.src || '',
+        alt: img.alt || '',
+        width: img.naturalWidth || 0,
+        height: img.naturalHeight || 0,
+      }));
     const isAssistantTurn = (node) => {
       if (!(node instanceof HTMLElement)) return false;
       const turnAttr = (node.getAttribute('data-turn') || node.dataset?.turn || '').toLowerCase();
@@ -64,14 +84,25 @@ function buildAssistantImageExpression(minTurnIndex?: number): string {
       if (!isAssistantTurn(turn)) continue;
       if (MIN_TURN_INDEX >= 0 && index < MIN_TURN_INDEX) continue;
       const messageRoot = turn.querySelector(ASSISTANT_SELECTOR) || turn;
-      return Array.from(messageRoot.querySelectorAll('img')).map((img) => ({
+      const images = serializeImages(messageRoot);
+      if (images.length > 0) return images;
+    }
+    const boundary =
+      MIN_TURN_INDEX > 0 && turns.length > 0
+        ? turns[Math.min(MIN_TURN_INDEX - 1, turns.length - 1)]
+        : null;
+    return Array.from(document.querySelectorAll('img'))
+      .filter(isGeneratedImage)
+      .filter((img) => {
+        if (!boundary) return true;
+        return Boolean(boundary.compareDocumentPosition(img) & Node.DOCUMENT_POSITION_FOLLOWING);
+      })
+      .map((img) => ({
         url: img.src || '',
         alt: img.alt || '',
         width: img.naturalWidth || 0,
         height: img.naturalHeight || 0,
-      })).filter((img) => img.url && img.url.includes('/backend-api/estuary/content?id=file_'));
-    }
-    return [];
+      }));
   })()`;
 }
 
