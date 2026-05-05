@@ -8,6 +8,7 @@
 - Browser: coordinate concurrent ChatGPT browser runs that share one manual-login profile with a tab lease registry, `--browser-max-concurrent-tabs`, stale lease cleanup, and shared Chrome discovery. (#150) — thanks @pdurlej.
 - Browser: add `--browser-research deep` / MCP `browserResearchMode: "deep"` for ChatGPT Deep Research browser runs, including progress monitoring, reattach recovery, and iframe report capture. (#151) — thanks @pdurlej.
 - Browser: save durable browser session artifacts, including transcripts, Deep Research reports, and ChatGPT-generated image files when downloadable image URLs are present. (#169) — thanks @pdurlej.
+- Browser: add repeatable `--browser-follow-up` prompts and MCP `browserFollowUps` for multi-turn ChatGPT browser consults in one conversation. (#170) — thanks @pdurlej.
 - MCP: add the `chatgpt-pro-heavy` consult preset, MCP dry-runs, browser model strategy passthrough, and `oracle bridge claude-config --local-browser` for Claude Code + local ChatGPT Pro browser consults. (#149) — thanks @pdurlej.
 
 ### Docs
