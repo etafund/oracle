@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import os from "node:os";
 import path from "node:path";
 import { DEFAULT_CHATGPT_COOKIE_NAMES, resolveBrowserConfig } from "../../src/browser/config.js";
-import { CHATGPT_URL } from "../../src/browser/constants.js";
+import { CHATGPT_URL, DEEP_RESEARCH_DEFAULT_TIMEOUT_MS } from "../../src/browser/constants.js";
 
 describe("resolveBrowserConfig", () => {
   const originalProfileDir = process.env.ORACLE_BROWSER_PROFILE_DIR;
@@ -25,6 +25,7 @@ describe("resolveBrowserConfig", () => {
     expect(resolved.manualLogin).toBe(isWindows);
     expect(resolved.profileLockTimeoutMs).toBe(300_000);
     expect(resolved.maxConcurrentTabs).toBe(3);
+    expect(resolved.researchMode).toBe("off");
   });
 
   test("applies overrides", () => {
@@ -39,6 +40,7 @@ describe("resolveBrowserConfig", () => {
       chromePath: "/Applications/Chrome",
       debug: true,
       maxConcurrentTabs: 5,
+      researchMode: "deep",
     });
     expect(resolved.url).toBe("https://example.com/");
     expect(resolved.timeoutMs).toBe(123);
@@ -50,6 +52,7 @@ describe("resolveBrowserConfig", () => {
     expect(resolved.chromePath).toBe("/Applications/Chrome");
     expect(resolved.debug).toBe(true);
     expect(resolved.maxConcurrentTabs).toBe(5);
+    expect(resolved.researchMode).toBe("deep");
   });
 
   test("rejects temporary chat URLs when desiredModel is Pro", () => {
@@ -81,5 +84,12 @@ describe("resolveBrowserConfig", () => {
     );
 
     expect(resolveBrowserConfig({ manualLogin: false }).manualLoginProfileDir).toBeNull();
+  });
+
+  test("uses the longer Deep Research timeout unless explicitly overridden", () => {
+    expect(resolveBrowserConfig({ researchMode: "deep" }).timeoutMs).toBe(
+      DEEP_RESEARCH_DEFAULT_TIMEOUT_MS,
+    );
+    expect(resolveBrowserConfig({ researchMode: "deep", timeoutMs: 123 }).timeoutMs).toBe(123);
   });
 });

@@ -55,6 +55,16 @@ describe("remote Chrome option warnings", () => {
 });
 
 describe("remote Chrome cleanup", () => {
+  test("unrefs a kept browser so the CLI can exit after preserving Chrome", () => {
+    const unref = vi.fn();
+
+    __test__.detachKeptChromeProcess({
+      process: { unref } as never,
+    });
+
+    expect(unref).toHaveBeenCalledTimes(1);
+  });
+
   test("closes the dedicated target after a completed run", async () => {
     const closeConnection = vi.fn().mockResolvedValue(undefined);
     const closeClient = vi.fn().mockResolvedValue(undefined);
