@@ -12,6 +12,105 @@ import type { ChromeClient } from "../../src/browser/types.js";
 import { setOracleHomeDirOverrideForTest } from "../../src/oracleHome.js";
 
 describe("readAssistantGeneratedImages", () => {
+  class FakeElement {
+    parentElement: FakeElement | null = null;
+    readonly children: FakeElement[];
+    readonly dataset: Record<string, string>;
+    readonly order: number;
+    readonly tagName: string;
+
+    constructor(
+      tagName: string,
+      private readonly attributes: Record<string, string>,
+      order: number,
+      children: FakeElement[] = [],
+    ) {
+      this.tagName = tagName.toUpperCase();
+      this.order = order;
+      this.children = children;
+      this.dataset = {};
+      for (const [key, value] of Object.entries(attributes)) {
+        if (key.startsWith("data-")) {
+          this.dataset[key.slice(5).replace(/-([a-z])/g, (_, char: string) => char.toUpperCase())] =
+            value;
+        }
+      }
+      for (const child of children) {
+        child.parentElement = this;
+      }
+    }
+
+    get id(): string {
+      return this.attributes.id ?? "";
+    }
+
+    get className(): string {
+      return this.attributes.class ?? "";
+    }
+
+    get src(): string {
+      return this.attributes.src ?? "";
+    }
+
+    get alt(): string {
+      return this.attributes.alt ?? "";
+    }
+
+    get naturalWidth(): number {
+      return Number(this.attributes.width ?? 0);
+    }
+
+    get naturalHeight(): number {
+      return Number(this.attributes.height ?? 0);
+    }
+
+    getAttribute(name: string): string | null {
+      return this.attributes[name] ?? null;
+    }
+
+    querySelector(selector: string): FakeElement | null {
+      return this.querySelectorAll(selector)[0] ?? null;
+    }
+
+    querySelectorAll(selector: string): FakeElement[] {
+      return flattenElements(this.children).filter((element) => matchesSelector(element, selector));
+    }
+
+    compareDocumentPosition(other: FakeElement): number {
+      return other.order > this.order ? 4 : 0;
+    }
+  }
+
+  function flattenElements(elements: FakeElement[]): FakeElement[] {
+    return elements.flatMap((element) => [element, ...flattenElements(element.children)]);
+  }
+
+  function matchesSelector(element: FakeElement, selector: string): boolean {
+    if (selector === "img") return element.tagName === "IMG";
+    if (selector.includes('data-testid^="conversation-turn"')) {
+      return String(element.getAttribute("data-testid") ?? "").startsWith("conversation-turn");
+    }
+    if (selector.includes('data-message-author-role="assistant"')) {
+      return element.getAttribute("data-message-author-role") === "assistant";
+    }
+    return false;
+  }
+
+  function evaluateImageExpression(expression: string, elements: FakeElement[]): unknown {
+    const document = {
+      querySelectorAll: (selector: string) =>
+        flattenElements(elements).filter((element) => matchesSelector(element, selector)),
+    };
+    return Function(
+      "document",
+      "HTMLElement",
+      "Node",
+      `return ${expression};`,
+    )(document, FakeElement, {
+      DOCUMENT_POSITION_FOLLOWING: 4,
+    });
+  }
+
   test("dedupes duplicate image urls by file id and keeps the largest candidate", async () => {
     const runtime = {
       evaluate: vi.fn().mockResolvedValue({
@@ -45,6 +144,46 @@ describe("readAssistantGeneratedImages", () => {
     expect(images[0]?.fileId).toBe("file_a");
     expect(images[0]?.width).toBe(1024);
     expect(images[1]?.fileId).toBe("file_b");
+  });
+
+  test("finds generated images rendered outside assistant turn wrappers", async () => {
+    const generatedImage = new FakeElement(
+      "img",
+      {
+        src: "https://chatgpt.com/backend-api/estuary/content?id=file_detached",
+        alt: "",
+        width: "1254",
+        height: "1254",
+      },
+      5,
+    );
+    const elements = [
+      new FakeElement(
+        "article",
+        { "data-testid": "conversation-turn-1", "data-message-author-role": "user" },
+        1,
+      ),
+      new FakeElement("div", { id: "image-detached" }, 4, [generatedImage]),
+      new FakeElement(
+        "article",
+        { "data-testid": "conversation-turn-2", "data-message-author-role": "assistant" },
+        8,
+      ),
+    ];
+    const runtime = {
+      evaluate: vi.fn(async ({ expression }: { expression: string }) => ({
+        result: { value: evaluateImageExpression(expression, elements) },
+      })),
+    } as unknown as ChromeClient["Runtime"];
+
+    const images = await readAssistantGeneratedImages(runtime, 0);
+
+    expect(images).toHaveLength(1);
+    expect(images[0]).toMatchObject({
+      fileId: "file_detached",
+      width: 1254,
+      height: 1254,
+    });
   });
 });
 

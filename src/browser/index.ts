@@ -990,6 +990,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     } finally {
       await releaseProfileLockIfHeld();
     }
+    const imageArtifactMinTurnIndex = baselineTurns;
     if (deepResearch) {
       await raceWithDisconnect(waitForResearchPlanAutoConfirm(Runtime, logger));
       const researchResult = await raceWithDisconnect(
@@ -1446,7 +1447,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       Runtime,
       Network,
       logger,
-      minTurnIndex: baselineTurns,
+      minTurnIndex: imageArtifactMinTurnIndex,
       sessionId: options.sessionId,
       generateImagePath: options.generateImagePath,
       outputPath: options.outputPath,
@@ -2178,6 +2179,7 @@ async function runRemoteBrowserMode(
     });
     baselineTurns = submission.baselineTurns;
     baselineAssistantText = submission.baselineAssistantText;
+    const imageArtifactMinTurnIndex = baselineTurns;
     if (deepResearch) {
       await waitForResearchPlanAutoConfirm(Runtime, logger);
       const researchResult = await waitForDeepResearchCompletion(
@@ -2567,7 +2569,7 @@ async function runRemoteBrowserMode(
       Runtime,
       Network,
       logger,
-      minTurnIndex: baselineTurns,
+      minTurnIndex: imageArtifactMinTurnIndex,
       sessionId: options.sessionId,
       generateImagePath: options.generateImagePath,
       outputPath: options.outputPath,
