@@ -8,7 +8,7 @@ and run the live API suite before shipping major transport changes.
 ## Prerequisites
 
 - macOS with Chrome installed (default profile signed in to ChatGPT Pro).
-- Node 22+ and `pnpm install` already completed.
+- Node 24+ and `pnpm install` already completed.
 - Headful display access (no `--browser-headless`).
 - When debugging, add `--browser-keep-browser` so Chrome stays open after Oracle exits, then connect with `pnpm exec tsx scripts/browser-tools.ts ...` (screenshot, eval, DOM picker, etc.).
 - Ensure no Chrome instances are force-terminated mid-run; let Oracle clean up once you’re done capturing state.

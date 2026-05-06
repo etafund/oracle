@@ -51,7 +51,7 @@ oracle --engine browser --browser-manual-login \
 Install globally: `npm install -g @steipete/oracle`
 Homebrew: `brew install steipete/tap/oracle`
 
-Requires Node 22+. Or use `npx -y @steipete/oracle …` (or pnpx).
+Requires Node 24+. Or use `npx -y @steipete/oracle …` (or pnpx).
 
 ```bash
 # Copy the bundle and paste into ChatGPT
