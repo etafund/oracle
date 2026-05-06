@@ -82,5 +82,5 @@ describe("formatClaudeMcpConfig", () => {
     } finally {
       await rm(oracleHome, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 });

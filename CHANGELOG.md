@@ -16,6 +16,7 @@
 ### Docs
 
 - Browser: document the new attach-running workflow and add a manual smoke test for the direct attach path.
+- Website: add the generated askoracle.dev docs site, social preview asset, and GitHub Pages deployment workflow.
 
 ### Changed
 
