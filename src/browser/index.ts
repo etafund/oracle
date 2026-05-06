@@ -20,6 +20,7 @@ import {
   connectWithNewTab,
   closeTab,
   closeRemoteChromeTarget,
+  closeBlankChromeTabs,
 } from "./chromeLifecycle.js";
 import { syncCookies } from "./cookies.js";
 import {
@@ -87,6 +88,7 @@ import {
   archiveChatGptConversation,
   resolveBrowserArchiveDecision,
 } from "./actions/archiveConversation.js";
+import { describeBrowserControlPlan, formatBrowserControlPlan } from "./controlPlan.js";
 
 export type { BrowserAutomationConfig, BrowserRunOptions, BrowserRunResult } from "./types.js";
 export { CHATGPT_URL, DEFAULT_MODEL_STRATEGY, DEFAULT_MODEL_TARGET } from "./constants.js";
@@ -586,6 +588,9 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         promptLength: promptText.length,
       })}`,
     );
+  }
+  for (const line of formatBrowserControlPlan(describeBrowserControlPlan(config), "browser")) {
+    logger(line);
   }
 
   if (config.attachRunning) {
@@ -1775,6 +1780,33 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     let keepBrowserOpen = effectiveKeepBrowser || preserveBrowserOnError;
     let cleanupProfileLock: ProfileRunLock | null = null;
     let terminatedRecordedChrome = false;
+    let otherActiveBrowserTabLeases: boolean | null = null;
+    const hasOtherActiveLeases = async () => {
+      if (!manualLogin || !tabLease) {
+        return false;
+      }
+      if (otherActiveBrowserTabLeases === null) {
+        otherActiveBrowserTabLeases = await hasOtherActiveBrowserTabLeases(
+          userDataDir,
+          tabLease.id,
+        );
+      }
+      return otherActiveBrowserTabLeases;
+    };
+    if (
+      runStatus === "complete" &&
+      manualLogin &&
+      !connectionClosedUnexpectedly &&
+      chrome?.port &&
+      ownsTarget
+    ) {
+      const otherLeasesActive = await hasOtherActiveLeases().catch(() => true);
+      if (!otherLeasesActive) {
+        await closeBlankChromeTabs(chrome.port, logger, chromeHost, {
+          excludeTargetIds: [isolatedTargetId, lastTargetId],
+        }).catch(() => undefined);
+      }
+    }
     if (!keepBrowserOpen && manualLogin && tabLease) {
       const cleanupLockTimeoutMs = Math.max(0, config.profileLockTimeoutMs ?? 0);
       if (cleanupLockTimeoutMs > 0) {
@@ -1784,9 +1816,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           sessionId: options.sessionId,
         }).catch(() => null);
       }
-      keepBrowserOpen = await hasOtherActiveBrowserTabLeases(userDataDir, tabLease.id).catch(
-        () => false,
-      );
+      keepBrowserOpen = await hasOtherActiveLeases().catch(() => false);
       if (keepBrowserOpen) {
         logger("[browser] Other ChatGPT tab leases still active; leaving shared Chrome running.");
       } else if (reusedChrome && !connectionClosedUnexpectedly) {
