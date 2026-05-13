@@ -365,14 +365,30 @@ async function fileExists(targetPath: string): Promise<boolean> {
   }
 }
 
-async function ensureUniqueSessionId(baseSlug: string): Promise<string> {
+function isAlreadyExistsError(error: unknown): boolean {
+  return Boolean(
+    error && typeof error === "object" && (error as { code?: string }).code === "EEXIST",
+  );
+}
+
+async function createUniqueSessionDir(
+  baseSlug: string,
+): Promise<{ sessionId: string; dir: string }> {
   let candidate = baseSlug;
   let suffix = 2;
-  while (await fileExists(sessionDir(candidate))) {
-    candidate = `${baseSlug}-${suffix}`;
-    suffix += 1;
+  for (;;) {
+    const dir = sessionDir(candidate);
+    try {
+      await fs.mkdir(dir);
+      return { sessionId: candidate, dir };
+    } catch (error) {
+      if (!isAlreadyExistsError(error)) {
+        throw error;
+      }
+      candidate = `${baseSlug}-${suffix}`;
+      suffix += 1;
+    }
   }
-  return candidate;
 }
 
 async function listModelRunFiles(sessionId: string): Promise<SessionModelRun[]> {
@@ -450,9 +466,7 @@ export async function initializeSession(
   await ensureSessionStorage();
   const baseSlug =
     baseSlugOverride || createSessionId(options.prompt || DEFAULT_SLUG, options.slug);
-  const sessionId = await ensureUniqueSessionId(baseSlug);
-  const dir = sessionDir(sessionId);
-  await ensureDir(dir);
+  const { sessionId, dir } = await createUniqueSessionDir(baseSlug);
   const mode = options.mode ?? "api";
   const browserConfig = options.browserConfig;
   const modelList: ModelName[] =

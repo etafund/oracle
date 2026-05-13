@@ -38,4 +38,51 @@ describe("startHeartbeat", () => {
     expect(log).not.toHaveBeenCalled();
     stop();
   });
+
+  test("stops cleanly when the active check fails", async () => {
+    const log = vi.fn();
+    const makeMessage = vi.fn(() => "tick");
+    const stop = startHeartbeat({
+      intervalMs: 25,
+      log,
+      isActive: () => {
+        throw new Error("active check failed");
+      },
+      makeMessage,
+    });
+
+    await vi.advanceTimersByTimeAsync(30);
+    await vi.advanceTimersByTimeAsync(30);
+
+    expect(makeMessage).not.toHaveBeenCalled();
+    expect(log).not.toHaveBeenCalled();
+    stop();
+  });
+
+  test("does not emit an in-flight heartbeat after stop", async () => {
+    const log = vi.fn();
+    let resolveMessage: ((message: string) => void) | undefined;
+    const makeMessage = vi.fn(
+      () =>
+        new Promise<string>((resolve) => {
+          resolveMessage = resolve;
+        }),
+    );
+
+    const stop = startHeartbeat({
+      intervalMs: 25,
+      log,
+      isActive: () => true,
+      makeMessage,
+    });
+
+    await vi.advanceTimersByTimeAsync(30);
+    expect(makeMessage).toHaveBeenCalledTimes(1);
+
+    stop();
+    resolveMessage?.("late tick");
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(log).not.toHaveBeenCalled();
+  });
 });
