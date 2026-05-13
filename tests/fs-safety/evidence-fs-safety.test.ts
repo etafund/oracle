@@ -169,6 +169,8 @@ describe("evidence filesystem safety conformance", () => {
       const written = await writeEvidence(sessionId, unsafeEvidence, {
         homeDir,
         runId: "run-fs-safety-quarantine",
+        evidenceMode: "unsafe",
+        acknowledgeUnsafeEvidence: true,
       });
 
       expect(written.quarantined).toBe(true);

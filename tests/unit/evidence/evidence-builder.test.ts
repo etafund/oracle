@@ -146,6 +146,8 @@ describe("browser evidence unit conformance", () => {
       const written = await writeEvidence("unit-session", unsafeEvidence, {
         homeDir,
         runId: "unit-run-1",
+        evidenceMode: "unsafe",
+        acknowledgeUnsafeEvidence: true,
       });
       const normalIndex = await listIndexedEvidence("unit-session", homeDir);
       const quarantineIndex = await listQuarantinedEvidence("unit-session", homeDir);
