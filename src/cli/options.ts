@@ -209,6 +209,75 @@ export function parseDurationOption(value: string | undefined, label: string): n
   return parsed;
 }
 
+export const CHATGPT_PRO_BROWSER_MODEL = "chatgpt-pro-latest" as const;
+export const CHATGPT_PRO_REMOTE_BROWSER_MODES = ["preferred", "required", "off"] as const;
+export const CHATGPT_PRO_EVIDENCE_MODES = ["redacted"] as const;
+
+export type ChatGptProBrowserModel = typeof CHATGPT_PRO_BROWSER_MODEL;
+export type ChatGptProRemoteBrowserMode = (typeof CHATGPT_PRO_REMOTE_BROWSER_MODES)[number];
+export type ChatGptProEvidenceMode = (typeof CHATGPT_PRO_EVIDENCE_MODES)[number];
+
+export function parseChatGptProRemoteBrowserOption(
+  value: string | undefined,
+): ChatGptProRemoteBrowserMode {
+  const normalized = normalizeChoice(value, "preferred");
+  if (isOneOf(normalized, CHATGPT_PRO_REMOTE_BROWSER_MODES)) {
+    return normalized;
+  }
+  throw new InvalidArgumentError('Remote browser mode must be "preferred", "required", or "off".');
+}
+
+export function parseChatGptProEvidenceOption(
+  value: string | undefined,
+): ChatGptProEvidenceMode {
+  const normalized = normalizeChoice(value, "redacted");
+  if (isOneOf(normalized, CHATGPT_PRO_EVIDENCE_MODES)) {
+    return normalized;
+  }
+  throw new InvalidArgumentError(
+    'ChatGPT Pro evidence mode must be "redacted"; raw evidence is not allowed on this protected route.',
+  );
+}
+
+export function normalizeChatGptProModelOption(
+  value: string | undefined,
+): ChatGptProBrowserModel {
+  const normalized = normalizeChoice(value, CHATGPT_PRO_BROWSER_MODEL);
+  if (isChatGptProModelAlias(normalized)) {
+    return CHATGPT_PRO_BROWSER_MODEL;
+  }
+  throw new InvalidArgumentError(
+    `ChatGPT Pro route cannot be downgraded with --model ${JSON.stringify(value)}. Use --model ${CHATGPT_PRO_BROWSER_MODEL} or a GPT Pro browser alias.`,
+  );
+}
+
+export function isChatGptProModelAlias(value: string | undefined): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  const collapsed = normalized.replace(/[\s_]+/gu, "-");
+  if (
+    collapsed === CHATGPT_PRO_BROWSER_MODEL ||
+    collapsed === "chatgpt-pro" ||
+    collapsed === "pro"
+  ) {
+    return true;
+  }
+  return (
+    collapsed.startsWith("gpt-5") &&
+    collapsed.includes("pro") &&
+    !collapsed.includes("codex")
+  );
+}
+
+function normalizeChoice(value: string | undefined, fallback: string): string {
+  const trimmed = value?.trim().toLowerCase();
+  return trimmed || fallback;
+}
+
+function isOneOf<const T extends readonly string[]>(value: string, allowed: T): value is T[number] {
+  return (allowed as readonly string[]).includes(value);
+}
+
 const V18_WORKFLOW_PROVIDER_SLOTS = [
   "chatgpt_pro_first_plan",
   "chatgpt_pro_synthesis",
