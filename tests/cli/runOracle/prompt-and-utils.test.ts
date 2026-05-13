@@ -99,6 +99,7 @@ describe("oracle utility helpers", () => {
     expect(parseIntOption(undefined)).toBeUndefined();
     expect(parseIntOption("42")).toBe(42);
     expect(() => parseIntOption("not-a-number")).toThrow("Value must be an integer.");
+    expect(() => parseIntOption("42ms")).toThrow("Value must be an integer.");
   });
 
   test("normalizeMaxFileSizeBytes rejects malformed numeric strings", () => {

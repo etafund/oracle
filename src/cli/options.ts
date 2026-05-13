@@ -86,8 +86,8 @@ export function collectTextValues(value: string, previous: string[] = []): strin
 }
 
 export function parseFloatOption(value: string): number {
-  const parsed = Number.parseFloat(value);
-  if (Number.isNaN(parsed)) {
+  const parsed = parseStrictNumber(value);
+  if (parsed === undefined) {
     throw new InvalidArgumentError("Value must be a number.");
   }
   return parsed;
@@ -97,8 +97,8 @@ export function parseIntOption(value: string | undefined): number | undefined {
   if (value == null) {
     return undefined;
   }
-  const parsed = Number.parseInt(value, 10);
-  if (Number.isNaN(parsed)) {
+  const parsed = parseStrictInteger(value);
+  if (parsed === undefined) {
     throw new InvalidArgumentError("Value must be an integer.");
   }
   return parsed;
@@ -121,8 +121,8 @@ export function parseHeartbeatOption(value: string | number | undefined): number
   if (normalized === "false" || normalized === "off") {
     return 0;
   }
-  const parsed = Number.parseFloat(normalized);
-  if (Number.isNaN(parsed) || parsed < 0) {
+  const parsed = parseStrictNumber(normalized);
+  if (parsed === undefined || parsed < 0) {
     throw new InvalidArgumentError("Heartbeat interval must be zero or a positive number.");
   }
   return parsed;
@@ -169,11 +169,29 @@ export function parseTimeoutOption(value: string | undefined): number | "auto" |
   if (value == null) return undefined;
   const normalized = value.trim().toLowerCase();
   if (normalized === "auto") return "auto";
-  const parsed = Number.parseFloat(normalized);
-  if (Number.isNaN(parsed) || parsed <= 0) {
+  const parsed = parseStrictNumber(normalized);
+  if (parsed === undefined || parsed <= 0) {
     throw new InvalidArgumentError('Timeout must be a positive number of seconds or "auto".');
   }
   return parsed;
+}
+
+function parseStrictInteger(value: string): number | undefined {
+  const trimmed = value.trim();
+  if (!/^[+-]?\d+$/u.test(trimmed)) {
+    return undefined;
+  }
+  const parsed = Number(trimmed);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
+function parseStrictNumber(value: string): number | undefined {
+  const trimmed = value.trim();
+  if (!/^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:e[+-]?\d+)?$/iu.test(trimmed)) {
+    return undefined;
+  }
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 export function parseDurationOption(value: string | undefined, label: string): number | undefined {

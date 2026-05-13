@@ -103,6 +103,10 @@ describe("parseFloatOption", () => {
   test("throws for NaN input", () => {
     expect(() => parseFloatOption("nope")).toThrow(InvalidArgumentError);
   });
+
+  test("throws for trailing text instead of truncating", () => {
+    expect(() => parseFloatOption("12.5seconds")).toThrow(InvalidArgumentError);
+  });
 });
 
 describe("parseIntOption", () => {
@@ -113,6 +117,10 @@ describe("parseIntOption", () => {
 
   test("throws for invalid integers", () => {
     expect(() => parseIntOption("not-a-number")).toThrow(InvalidArgumentError);
+  });
+
+  test("throws for trailing text instead of truncating", () => {
+    expect(() => parseIntOption("42px")).toThrow(InvalidArgumentError);
   });
 });
 
@@ -146,6 +154,7 @@ describe("parseHeartbeatOption", () => {
   test("rejects negative or non-numeric values", () => {
     expect(() => parseHeartbeatOption("-5")).toThrow(InvalidArgumentError);
     expect(() => parseHeartbeatOption("nope")).toThrow(InvalidArgumentError);
+    expect(() => parseHeartbeatOption("5s")).toThrow(InvalidArgumentError);
   });
 });
 
