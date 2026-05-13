@@ -122,7 +122,7 @@ function extractErrorCode(responseJson: unknown): number | undefined {
 }
 
 function extractGgdlUrls(rawText: string): string[] {
-  const matches = rawText.match(/https:\/\/lh3\.googleusercontent\.com\/gg-dl\/[^\s"']+/g) ?? [];
+  const matches = rawText.match(/https:\/\/lh3\.googleusercontent\.com\/gg-dl\/[^\s"',\]\\[]+/g) ?? [];
   const seen = new Set<string>();
   const urls: string[] = [];
   for (const match of matches) {
