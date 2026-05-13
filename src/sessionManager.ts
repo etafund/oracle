@@ -508,7 +508,7 @@ export async function initializeSession(
   await ensureSessionStorage();
   const baseSlug =
     baseSlugOverride || createSessionId(options.prompt || DEFAULT_SLUG, options.slug);
-  const { sessionId, dir } = await createUniqueSessionDir(baseSlug);
+  const { sessionId } = await createUniqueSessionDir(baseSlug);
   const mode = options.mode ?? "api";
   const browserConfig = options.browserConfig;
   const evidence = createPromptEvidence(options.prompt ?? "", options.providerBoundary);
