@@ -232,6 +232,29 @@ describe("oracle utility helpers", () => {
     }
   });
 
+  testNonWindows("nested .gitignore does not leak into sibling dirs sharing a prefix", async () => {
+    // Regression: an inner .gitignore at /repo/lib must not affect /repo/library
+    // just because the latter has lib as a string prefix.
+    const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-readfiles-gitignore-sibling-"));
+    try {
+      const innerDir = path.join(dir, "lib");
+      const siblingDir = path.join(dir, "library");
+      await mkdir(innerDir, { recursive: true });
+      await mkdir(siblingDir, { recursive: true });
+      // A wide-open ignore pattern inside /lib that, with the old prefix bug,
+      // would match anything under /library too via path.relative("../").
+      await writeFile(path.join(innerDir, ".gitignore"), "**\n", "utf8");
+      const siblingFile = path.join(siblingDir, "keep.ts");
+      await writeFile(siblingFile, "keep me", "utf8");
+
+      const files = await readFiles([siblingDir], { cwd: dir });
+      const basenames = files.map((file) => path.basename(file.path));
+      expect(basenames).toContain("keep.ts");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("readFiles skips default-ignored dirs when walking project roots", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-readfiles-ignore-default-"));
     try {
