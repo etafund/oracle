@@ -171,7 +171,9 @@ describe("oracle evidence show --json — json_envelope.v1 shape (oracle-eaz)", 
         );
         const envelope = captureJson(stdout);
         const result = jsonEnvelopeStrictSchema.safeParse(envelope);
-        expect(result.success, result.success ? "" : JSON.stringify(result.error.issues)).toBe(true);
+        expect(result.success, result.success ? "" : JSON.stringify(result.error.issues)).toBe(
+          true,
+        );
       },
     );
   });
@@ -311,10 +313,9 @@ describe("oracle evidence verify --json — json_envelope.v1 shape (oracle-eaz)"
 
         // Strict schema must accept the failure envelope.
         const parsed = jsonEnvelopeStrictSchema.safeParse(envelope);
-        expect(
-          parsed.success,
-          parsed.success ? "" : JSON.stringify(parsed.error.issues),
-        ).toBe(true);
+        expect(parsed.success, parsed.success ? "" : JSON.stringify(parsed.error.issues)).toBe(
+          true,
+        );
 
         // The function return preserves the underlying typed result.
         expect(result.ok).toBe(false);
