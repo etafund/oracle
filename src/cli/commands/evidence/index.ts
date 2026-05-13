@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { Command } from "commander";
 import { getOracleHomeDir } from "../../../oracleHome.js";
+import { registerEvidenceLedgerCommands } from "./ledger_register.js";
 
 const INDEX_FILENAMES = [
   "artifact-index.json",
@@ -134,6 +135,8 @@ export function registerEvidenceCommand(
         process.exitCode = 1;
       }
     });
+
+  registerEvidenceLedgerCommands(evidenceCommand, deps);
 
   return evidenceCommand;
 }
