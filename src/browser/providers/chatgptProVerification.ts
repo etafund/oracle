@@ -80,3 +80,100 @@ export function machineVerdict(machine: ChatGptProMachine): ChatGptProVerdict {
     evidenceId: machine.context.evidenceId,
   };
 }
+
+// ─── Output-capture wiring (oracle-qfl) ──────────────────────────────────────
+
+import {
+  captured,
+  emptyOutput,
+  hasBalancedMarkdown,
+  sha256OfText,
+  verifyTurnBinding,
+  type CaptureConfidence,
+  type CaptureVerdict,
+  type TurnBindingInput,
+} from "../output-capture/index.js";
+
+export {
+  // Re-export the output-capture surface so callers downstream of the
+  // FSM (formal plan + synthesis routes, doctor preflight) get the
+  // entire ChatGPT Pro browser pipeline from one module path.
+  DEFAULT_HEARTBEAT_INTERVAL_MS,
+  DEFAULT_PRO_HEAVY_WAIT_BUDGET_MS,
+  DEFAULT_PRO_WAIT_BUDGET_MS,
+  assertMarkdownPreserved,
+  backgroundPending,
+  captured,
+  countMarkdownStructure,
+  decideProLongWait,
+  decisionMentionsAnswerNowClick,
+  emptyOutput,
+  hasBalancedMarkdown,
+  isCapturedOk,
+  isTerminalDecision,
+  isWaiting,
+  needsReattach,
+  partial,
+  sha256OfText,
+  staleTurn,
+  verifyTurnBinding,
+  type CaptureConfidence,
+  type CaptureStatus,
+  type CaptureVerdict,
+  type MarkdownGuardInput,
+  type MarkdownGuardResult,
+  type ObservedThinkingState,
+  type ProLongWaitDecision,
+  type ProLongWaitInput,
+  type TurnBindingInput,
+  type TurnBindingResult,
+} from "../output-capture/index.js";
+
+export interface BuildChatGptCaptureVerdictInput {
+  /** Captured assistant text bytes. */
+  readonly text: string;
+  /** DOM-assigned turn id, when known. */
+  readonly turnId?: string | null;
+  /** DOM-assigned message id, when known. */
+  readonly messageId?: string | null;
+  /** Caller capture-confidence hint (DOM probe quality). */
+  readonly confidenceHint?: CaptureConfidence;
+  /** Turn binding inputs; when supplied the verdict short-circuits on stale. */
+  readonly turnBinding?: TurnBindingInput;
+}
+
+/**
+ * Build a single CaptureVerdict from observed DOM text + binding info.
+ * Encodes the full output-capture decision tree the bead asks for:
+ *
+ *   - turn binding failure → stale_turn
+ *   - empty text → output_capture_empty
+ *   - otherwise → captured, with sha256 + markdown preservation +
+ *     confidence rolled in
+ */
+export function buildChatGptCaptureVerdict(
+  input: BuildChatGptCaptureVerdictInput,
+): CaptureVerdict {
+  if (input.turnBinding) {
+    const binding = verifyTurnBinding(input.turnBinding);
+    if (!binding.bound && binding.staleVerdict) {
+      return binding.staleVerdict;
+    }
+  }
+
+  const bytes = Buffer.byteLength(input.text, "utf8");
+  if (bytes === 0) {
+    return emptyOutput();
+  }
+
+  const sha = sha256OfText(input.text);
+  const markdownPreserved = hasBalancedMarkdown(input.text);
+  return captured({
+    outputTextSha256: sha,
+    outputBytes: bytes,
+    captureConfidence: input.confidenceHint ?? (markdownPreserved ? "high" : "medium"),
+    turnId: input.turnId ?? null,
+    messageId: input.messageId ?? null,
+    markdownPreserved,
+  });
+}
