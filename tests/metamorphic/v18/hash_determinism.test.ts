@@ -21,7 +21,7 @@ import {
 class Rng {
   private state: number;
   constructor(seed: number) {
-    this.state = (seed | 0) || 1;
+    this.state = seed | 0 || 1;
   }
   next(): number {
     let x = this.state | 0;
@@ -68,14 +68,15 @@ function shuffleObjectKeysDeep(value: unknown, rng: Rng): unknown {
       [keys[i], keys[j]] = [keys[j] as string, keys[i] as string];
     }
     const out: Record<string, unknown> = {};
-    for (const k of keys) out[k] = shuffleObjectKeysDeep((value as Record<string, unknown>)[k], rng);
+    for (const k of keys)
+      out[k] = shuffleObjectKeysDeep((value as Record<string, unknown>)[k], rng);
     return out;
   }
   return value;
 }
 
 const ITERATIONS = 200;
-const BASE_SEED = 0x5EED5;
+const BASE_SEED = 0x5eed5;
 
 describe("Metamorphic: hash determinism + canonical-equivalence non-collision", () => {
   describe("sha256OfBytes", () => {
