@@ -4,6 +4,11 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { getOracleHomeDir } from "../oracleHome.js";
 import {
+  DEFAULT_BROWSER_LEASE_BACKOFF_MAX_MS,
+  browserLeaseBackoffDelayMs,
+  normalizeBrowserLeaseBackoffJitterRatio,
+} from "./lease_backoff.js";
+import {
   assertBrowserLeaseProvider,
   assertProfileIdHash,
   browserLeaseRecoveryCommand,
@@ -29,6 +34,21 @@ export interface BrowserLeaseStoreOptions {
   mutationLockTimeoutMs?: number;
   mutationLockStaleMs?: number;
   mutationLockPollMs?: number;
+  mutationLockBackoffMaxMs?: number;
+  mutationLockJitterRatio?: number;
+  mutationLockRandom?: () => number;
+  mutationLockNowMs?: () => number;
+  mutationLockSleep?: (milliseconds: number) => Promise<void>;
+  mutationLockPollObserver?: (event: BrowserLeaseMutationLockPollEvent) => void;
+}
+
+export interface BrowserLeaseMutationLockPollEvent {
+  readonly provider: BrowserLeaseProvider;
+  readonly attempt: number;
+  readonly elapsedMs: number;
+  readonly remainingMs: number;
+  readonly delayMs: number;
+  readonly lockPath: string;
 }
 
 export interface CreateBrowserLeaseInput {
@@ -396,7 +416,16 @@ async function acquireBrowserLeaseMutationLock(
     DEFAULT_BROWSER_LEASE_MUTATION_LOCK_POLL_MS,
     "Browser lease mutation lock poll interval",
   );
-  const startedAt = Date.now();
+  const backoffMaxMs = normalizeMilliseconds(
+    options.mutationLockBackoffMaxMs,
+    DEFAULT_BROWSER_LEASE_BACKOFF_MAX_MS,
+    "Browser lease mutation lock backoff cap",
+  );
+  const jitterRatio = normalizeBrowserLeaseBackoffJitterRatio(options.mutationLockJitterRatio);
+  const nowMs = options.mutationLockNowMs ?? (() => Date.now());
+  const sleepFn = options.mutationLockSleep ?? sleep;
+  const startedAt = nowMs();
+  let attempt = 0;
 
   for (;;) {
     try {
@@ -422,13 +451,31 @@ async function acquireBrowserLeaseMutationLock(
         throw error;
       }
       await removeStaleBrowserLeaseMutationLock(lockPath, staleMs);
-      const elapsedMs = Date.now() - startedAt;
+      const elapsedMs = Math.max(0, nowMs() - startedAt);
       if (elapsedMs >= timeoutMs) {
         throw new Error(
           `Timed out acquiring browser lease mutation lock for ${provider}; retry or remove ${lockPath} if no oracle process is using it.`,
         );
       }
-      await sleep(Math.min(pollMs, Math.max(1, timeoutMs - elapsedMs)));
+      const remainingMs = Math.max(1, timeoutMs - elapsedMs);
+      const delayMs = browserLeaseBackoffDelayMs({
+        attempt,
+        baseDelayMs: pollMs,
+        maxDelayMs: backoffMaxMs,
+        remainingMs,
+        jitterRatio,
+        random: options.mutationLockRandom,
+      });
+      options.mutationLockPollObserver?.({
+        provider,
+        attempt,
+        elapsedMs,
+        remainingMs,
+        delayMs,
+        lockPath,
+      });
+      attempt += 1;
+      await sleepFn(delayMs);
     }
   }
 }
