@@ -17,7 +17,7 @@ interface JsonEnvelopeForTest {
   readonly schema_version?: string;
   readonly ok?: boolean;
   readonly blocked_reason?: string | null;
-  readonly errors: readonly Array<{ readonly message?: string }>;
+  readonly errors: ReadonlyArray<{ readonly message?: string }>;
   readonly data?: Record<string, unknown> & {
     readonly events?: readonly EvidenceLedgerExportEventForTest[];
   };
