@@ -5,6 +5,27 @@ export interface HeartbeatConfig {
   makeMessage: (elapsedMs: number) => Promise<string | null> | string | null;
 }
 
+/**
+ * Compose multiple makeMessage providers into one. Each provider is
+ * invoked in order; the first non-null result wins. Useful for
+ * layering a `run_progress.v1` emitter on top of an existing
+ * heartbeat without modifying the caller's code paths.
+ *
+ * Additive helper — does not affect `startHeartbeat` behavior; callers
+ * that don't use it see identical semantics.
+ */
+export function composeHeartbeatMessages(
+  ...providers: ReadonlyArray<HeartbeatConfig["makeMessage"]>
+): HeartbeatConfig["makeMessage"] {
+  return async (elapsedMs: number) => {
+    for (const provider of providers) {
+      const result = await provider(elapsedMs);
+      if (result != null) return result;
+    }
+    return null;
+  };
+}
+
 export function startHeartbeat(config: HeartbeatConfig): () => void {
   const { intervalMs, log, isActive, makeMessage } = config;
   if (!intervalMs || intervalMs <= 0) {
