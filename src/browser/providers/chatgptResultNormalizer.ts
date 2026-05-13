@@ -18,6 +18,7 @@ import {
   type NormalizerCaptureSummary,
   type NormalizerEffortSummary,
 } from "../../oracle/v18/chatgpt_provider_result.js";
+import { tryQuarantineRawCaptureSync } from "../../oracle/v18/evidence_quarantine_raw.js";
 import type { OracleBrowserAccessPath } from "../../oracle/v18/provider_access_policy.js";
 import type { ProviderBoundaryPavMetadata } from "../../oracle/provider_boundaries_pav.js";
 import type { CaptureVerdict } from "../output-capture/captureVerdict.js";
@@ -81,22 +82,64 @@ export interface NormalizeChatGptRunInput {
   readonly model?: string;
   readonly degradationReason?: string;
   readonly error?: Record<string, unknown>;
+  /**
+   * Optional session id; when present, a parse failure persists the
+   * raw input bundle under `<homeDir>/sessions/<sessionId>/evidence/
+   * quarantine/raw_capture/` before re-throwing
+   * (oracle-v18-evidence-schema-parse-no-raw-quarantine-y00).
+   */
+  readonly sessionId?: string;
+  /** Optional override for the oracle home directory (test hook). */
+  readonly homeDir?: string;
+}
+
+/**
+ * Error subclass thrown when the underlying v18 schema parse fails.
+ * Wraps the original error and exposes the path of the raw-capture
+ * quarantine file (when one was successfully written) so post-mortem
+ * tooling can correlate logs with the persisted bytes.
+ */
+export class ChatGptNormalizerParseError extends Error {
+  readonly cause: unknown;
+  readonly quarantinePath: string | null;
+  constructor(cause: unknown, quarantinePath: string | null) {
+    const message =
+      cause instanceof Error ? cause.message : `chatgpt normalizer parse failed: ${String(cause)}`;
+    super(message);
+    this.name = "ChatGptNormalizerParseError";
+    this.cause = cause;
+    this.quarantinePath = quarantinePath;
+  }
 }
 
 export function normalizeChatGptRun(input: NormalizeChatGptRunInput): ChatGptProviderResultBuild {
-  return buildChatGptProviderResult({
-    slot: input.slot,
-    providerResultId: input.providerResultId,
-    accessPath: input.accessPath,
-    evidence: input.evidence,
-    capture: captureToSummary(input.capture),
-    effort: effortToSummary(input.effort),
-    promptManifestSha256: input.promptManifestSha256,
-    sourceBaselineSha256: input.sourceBaselineSha256,
-    providerBoundaryPav: input.providerBoundaryPav,
-    resultPath: input.resultPath,
-    model: input.model,
-    degradationReason: input.degradationReason,
-    error: input.error,
-  });
+  try {
+    return buildChatGptProviderResult({
+      slot: input.slot,
+      providerResultId: input.providerResultId,
+      accessPath: input.accessPath,
+      evidence: input.evidence,
+      capture: captureToSummary(input.capture),
+      effort: effortToSummary(input.effort),
+      promptManifestSha256: input.promptManifestSha256,
+      sourceBaselineSha256: input.sourceBaselineSha256,
+      providerBoundaryPav: input.providerBoundaryPav,
+      resultPath: input.resultPath,
+      model: input.model,
+      degradationReason: input.degradationReason,
+      error: input.error,
+    });
+  } catch (error) {
+    const quarantined = input.sessionId
+      ? tryQuarantineRawCaptureSync({
+          sessionId: input.sessionId,
+          homeDir: input.homeDir,
+          source: "chatgpt-normalizer",
+          error,
+          rawInput: input,
+          evidenceId: input.evidence?.evidence_id ?? null,
+        })
+      : null;
+    throw new ChatGptNormalizerParseError(error, quarantined?.path ?? null);
+  }
 }
