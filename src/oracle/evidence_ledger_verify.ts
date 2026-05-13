@@ -240,21 +240,26 @@ async function verifyEvidenceWrittenEntry({
     });
   }
 
-  if (fileSha !== indexEntry.sha256) {
+  const indexSha = requireSha256Hash(
+    indexEntry.sha256,
+    `artifact_index.${indexEntry.path}.sha256`,
+  );
+
+  if (fileSha !== indexSha) {
     issues.push({
       code: "evidence_file_hash_mismatch",
       field: `artifact_index.${indexEntry.path}.sha256`,
-      message: `evidence file hash ${fileSha} does not match artifact index hash ${indexEntry.sha256}`,
+      message: `evidence file hash ${fileSha} does not match artifact index hash ${indexSha}`,
       sequence: entry.sequence,
       evidence_id: evidenceId,
       path: expectedFilePath,
-      expected: indexEntry.sha256,
+      expected: indexSha,
       actual: fileSha,
     });
   }
 
   const ok =
-    fileSha === indexEntry.sha256 &&
+    fileSha === indexSha &&
     resolvedIndexPath.insideRoot &&
     resolvedIndexPath.path === path.resolve(expectedFilePath);
   return makeFileCheck(
@@ -263,7 +268,7 @@ async function verifyEvidenceWrittenEntry({
     expectedFilePath,
     indexEntry.path,
     fileSha,
-    indexEntry.sha256,
+    indexSha,
     ok,
   );
 }
@@ -310,6 +315,13 @@ function makeFileCheck(
     index_sha256: indexSha,
     ok,
   };
+}
+
+function requireSha256Hash(value: string, field: string): `sha256:${string}` {
+  if (!/^sha256:[0-9a-f]{64}$/.test(value)) {
+    throw new Error(`${field} has invalid hash format; expected sha256:<64-hex>.`);
+  }
+  return value as `sha256:${string}`;
 }
 
 function stripSingleJsonNewline(raw: string): string {
