@@ -99,34 +99,47 @@ async function waitForUi(ctx: ProviderDomFlowContext): Promise<void> {
 
 async function selectMode(ctx: ProviderDomFlowContext): Promise<void> {
   const toolsButtonSelectors = asSelectorLiteral(GEMINI_DEEP_THINK_SELECTORS.toolsButton);
-  const toolsClickResult = await ctx.evaluate<string>(
-    `(() => {
-      const btn = document.querySelector(${toolsButtonSelectors});
-      if (btn instanceof HTMLElement) {
-        btn.click();
-        return 'clicked';
-      }
-      return 'not-found';
-    })()`,
-  );
+  
+  let toolsClickResult = "not-found";
+  for (let i = 0; i < 10; i++) {
+    toolsClickResult = (await ctx.evaluate<string>(
+      `(() => {
+        const btn = document.querySelector(${toolsButtonSelectors});
+        if (btn instanceof HTMLElement) {
+          btn.click();
+          return 'clicked';
+        }
+        return 'not-found';
+      })()`,
+    )) ?? "not-found";
+    if (toolsClickResult === "clicked") break;
+    await ctx.delay(500);
+  }
+
   if (toolsClickResult !== "clicked") {
     throw new Error("Unable to open Gemini tools menu; Deep Think toggle is not accessible.");
   }
   await ctx.delay(1_000);
 
   const deepThinkItemSelectors = asSelectorLiteral(GEMINI_DEEP_THINK_SELECTORS.toolsMenuItem);
-  const deepThinkClickResult = await ctx.evaluate<string>(
-    `(() => {
-      const items = Array.from(document.querySelectorAll(${deepThinkItemSelectors}));
-      for (const item of items) {
-        const text = item.textContent?.trim().toLowerCase() ?? '';
-        if (!text.includes('deep think')) continue;
-        if (item instanceof HTMLElement) item.click();
-        return 'clicked';
-      }
-      return 'not-found';
-    })()`,
-  );
+  let deepThinkClickResult = "not-found";
+  for (let i = 0; i < 10; i++) {
+    deepThinkClickResult = (await ctx.evaluate<string>(
+      `(() => {
+        const items = Array.from(document.querySelectorAll(${deepThinkItemSelectors}));
+        for (const item of items) {
+          const text = item.textContent?.trim().toLowerCase() ?? '';
+          if (!text.includes('deep think')) continue;
+          if (item instanceof HTMLElement) item.click();
+          return 'clicked';
+        }
+        return 'not-found';
+      })()`,
+    )) ?? "not-found";
+    if (deepThinkClickResult === "clicked") break;
+    await ctx.delay(500);
+  }
+
   if (deepThinkClickResult !== "clicked") {
     throw new Error('Unable to select "Deep Think" from Gemini tools menu.');
   }
@@ -150,22 +163,30 @@ async function selectMode(ctx: ProviderDomFlowContext): Promise<void> {
 async function typePrompt(ctx: ProviderDomFlowContext): Promise<void> {
   ctx.log?.("[gemini-web] Typing prompt...");
   const inputSelector = asSelectorLiteral(GEMINI_DEEP_THINK_SELECTORS.input);
-  const typeResult = await ctx.evaluate<string>(
-    `(() => {
-      const editor = document.querySelector(${inputSelector});
-      if (!(editor instanceof HTMLElement)) return 'no-editor';
-      editor.focus();
-      editor.textContent = '';
-      if (typeof document.execCommand === 'function') {
-        document.execCommand('insertText', false, ${JSON.stringify(ctx.prompt)});
-      } else {
-        editor.textContent = ${JSON.stringify(ctx.prompt)};
-        editor.dispatchEvent(new InputEvent('input', { bubbles: true, data: ${JSON.stringify(ctx.prompt)} }));
-      }
-      const typed = (editor.textContent || '').trim().length > 0;
-      return typed ? 'typed' : 'empty';
-    })()`,
-  );
+  let typeResult = "no-editor";
+  
+  for (let i = 0; i < 10; i++) {
+    typeResult = (await ctx.evaluate<string>(
+      `(() => {
+        const editor = document.querySelector(${inputSelector});
+        if (!(editor instanceof HTMLElement)) return 'no-editor';
+        editor.focus();
+        editor.textContent = '';
+        if (typeof document.execCommand === 'function') {
+          document.execCommand('insertText', false, ${JSON.stringify(ctx.prompt)});
+        } else {
+          editor.textContent = ${JSON.stringify(ctx.prompt)};
+          editor.dispatchEvent(new InputEvent('input', { bubbles: true, data: ${JSON.stringify(ctx.prompt)} }));
+        }
+        const typed = (editor.textContent || '').trim().length > 0;
+        return typed ? 'typed' : 'empty';
+      })()`,
+    )) ?? "no-editor";
+    
+    if (typeResult === "typed") break;
+    await ctx.delay(500);
+  }
+
   if (typeResult !== "typed") {
     throw new Error(`Failed to type Gemini prompt (status=${typeResult ?? "unknown"}).`);
   }
@@ -176,22 +197,30 @@ async function submitPrompt(ctx: ProviderDomFlowContext): Promise<void> {
   ctx.log?.("[gemini-web] Sending prompt...");
   const inputSelector = asSelectorLiteral(GEMINI_DEEP_THINK_SELECTORS.input);
   const sendButtonSelectors = asSelectorLiteral(GEMINI_DEEP_THINK_SELECTORS.sendButton);
-  const sendResult = await ctx.evaluate<string>(
-    `(() => {
-      const btn = document.querySelector(${sendButtonSelectors});
-      if (btn instanceof HTMLElement) {
-        btn.click();
-        return 'clicked';
-      }
-      const editor = document.querySelector(${inputSelector});
-      if (editor instanceof HTMLElement) {
-        editor.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
-        editor.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true }));
-        return 'enter';
-      }
-      return 'not-found';
-    })()`,
-  );
+  
+  let sendResult = "not-found";
+  for (let i = 0; i < 10; i++) {
+    sendResult = (await ctx.evaluate<string>(
+      `(() => {
+        const btn = document.querySelector(${sendButtonSelectors});
+        if (btn instanceof HTMLElement && !btn.hasAttribute('disabled')) {
+          btn.click();
+          return 'clicked';
+        }
+        const editor = document.querySelector(${inputSelector});
+        if (editor instanceof HTMLElement) {
+          editor.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+          editor.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true }));
+          return 'enter';
+        }
+        return 'not-found';
+      })()`,
+    )) ?? "not-found";
+    
+    if (sendResult === "clicked" || sendResult === "enter") break;
+    await ctx.delay(500);
+  }
+
   if (sendResult !== "clicked" && sendResult !== "enter") {
     throw new Error("Failed to submit prompt in Gemini Deep Think mode (send control not found).");
   }
