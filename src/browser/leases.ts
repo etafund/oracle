@@ -24,6 +24,7 @@ export const DEFAULT_BROWSER_LEASE_TTL_SECONDS = 15 * 60;
 const DEFAULT_BROWSER_LEASE_MUTATION_LOCK_TIMEOUT_MS = 5_000;
 const DEFAULT_BROWSER_LEASE_MUTATION_LOCK_STALE_MS = 30_000;
 const DEFAULT_BROWSER_LEASE_MUTATION_LOCK_POLL_MS = 10;
+const sameProcessMutationQueues = new Map<string, Promise<void>>();
 
 export interface BrowserLeaseStoreOptions {
   leaseDir?: string;
@@ -385,11 +386,37 @@ async function withBrowserLeaseMutationLock<T>(
   options: BrowserLeaseStoreOptions,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const release = await acquireBrowserLeaseMutationLock(provider, options);
+  const lockPath = browserLeaseMutationLockPath(provider, options);
+  return withSameProcessBrowserLeaseMutationQueue(lockPath, async () => {
+    const release = await acquireBrowserLeaseMutationLock(provider, options);
+    try {
+      return await fn();
+    } finally {
+      await release();
+    }
+  });
+}
+
+async function withSameProcessBrowserLeaseMutationQueue<T>(
+  lockPath: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const previous = sameProcessMutationQueues.get(lockPath) ?? Promise.resolve();
+  let releaseLocalQueue!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    releaseLocalQueue = resolve;
+  });
+  const current = previous.catch(() => undefined).then(() => gate);
+  sameProcessMutationQueues.set(lockPath, current);
+  await previous.catch(() => undefined);
+
   try {
     return await fn();
   } finally {
-    await release();
+    releaseLocalQueue();
+    if (sameProcessMutationQueues.get(lockPath) === current) {
+      sameProcessMutationQueues.delete(lockPath);
+    }
   }
 }
 
@@ -618,9 +645,13 @@ function defaultCommandSummary(): string {
 }
 
 function isNotFoundError(error: unknown): boolean {
-  return Boolean(error && typeof error === "object" && (error as { code?: string }).code === "ENOENT");
+  return Boolean(
+    error && typeof error === "object" && (error as { code?: string }).code === "ENOENT",
+  );
 }
 
 function isAlreadyExistsError(error: unknown): boolean {
-  return Boolean(error && typeof error === "object" && (error as { code?: string }).code === "EEXIST");
+  return Boolean(
+    error && typeof error === "object" && (error as { code?: string }).code === "EEXIST",
+  );
 }
