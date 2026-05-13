@@ -27,12 +27,14 @@ export const consultInputSchema = z
 
 export type ConsultInput = z.infer<typeof consultInputSchema>;
 
-export const sessionsInputSchema = z.object({
-  id: z.string().optional(),
-  hours: z.number().optional(),
-  limit: z.number().optional(),
-  includeAll: z.boolean().optional(),
-  detail: z.boolean().optional(),
-});
+export const sessionsInputSchema = z
+  .object({
+    id: z.string().min(1).optional(),
+    hours: z.number().finite().nonnegative().optional(),
+    limit: z.number().int().positive().optional(),
+    includeAll: z.boolean().optional(),
+    detail: z.boolean().optional(),
+  })
+  .strict();
 
 export type SessionsInput = z.infer<typeof sessionsInputSchema>;
