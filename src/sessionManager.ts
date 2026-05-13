@@ -1,6 +1,6 @@
 import path from "node:path";
 import fs from "node:fs/promises";
-import { createWriteStream } from "node:fs";
+import { createWriteStream, mkdirSync } from "node:fs";
 import type { WriteStream } from "node:fs";
 import net from "node:net";
 import { createHash } from "node:crypto";
@@ -666,9 +666,12 @@ async function attachModelRuns(meta: SessionMetadata, sessionId: string): Promis
 
 export function createSessionLogWriter(sessionId: string, model?: string): SessionLogWriter {
   const targetPath = model ? modelLogPath(sessionId, model) : logPath(sessionId);
-  if (model) {
-    void ensureDir(modelsDir(sessionId));
-  }
+  // createWriteStream opens the underlying fd lazily on first write; if the
+  // parent dir does not exist yet (non-init callers: resume/recovery paths)
+  // the first write races a fire-and-forget mkdir and surfaces ENOENT on
+  // the stream's 'error' event. Create the dir synchronously here so the
+  // lazy open never sees a missing parent.
+  mkdirSync(path.dirname(targetPath), { recursive: true });
   const stream = createWriteStream(targetPath, { flags: "a" });
   const logLine = (line = ""): void => {
     stream.write(`${line}\n`);
