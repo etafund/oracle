@@ -387,6 +387,35 @@ export const contextSerializationPolicySchema = z
   .passthrough();
 export type ContextSerializationPolicy = z.infer<typeof contextSerializationPolicySchema>;
 
+// ─── artifact_index.v1 ───────────────────────────────────────────────────────
+
+export const ARTIFACT_INDEX_SCHEMA_VERSION = "artifact_index.v1" as const;
+
+export const artifactIndexEntrySchema = z
+  .object({
+    // `artifact_id` is optional per the schema fixture; v17 premortem controls
+    // ship without an id but still need to round-trip in the index.
+    artifact_id: z.string().optional(),
+    kind: z.string(),
+    path: z.string(),
+    sha256: sha256HashSchema,
+  })
+  .passthrough();
+export type ArtifactIndexEntry = z.infer<typeof artifactIndexEntrySchema>;
+
+export const artifactIndexSchema = z
+  .object({
+    schema_version: z.literal(ARTIFACT_INDEX_SCHEMA_VERSION),
+    artifacts: z.array(artifactIndexEntrySchema),
+    // Oracle promotes these documented extensions to typed access; they keep
+    // round-tripping via passthrough and the contract still accepts indexes
+    // that omit them.
+    bundle_version: bundleVersionSchema.optional(),
+    run_id: z.string().optional(),
+  })
+  .passthrough();
+export type ArtifactIndex = z.infer<typeof artifactIndexSchema>;
+
 // ─── Core extension policy invariants ────────────────────────────────────────
 // Per docs/contract-core-extension-policy.md: unknown extension fields must
 // never override these critical core flags when consumers gate decisions.
@@ -433,6 +462,7 @@ export const v18Contracts = {
     schemaVersion: CONTEXT_SERIALIZATION_POLICY_SCHEMA_VERSION,
     schema: contextSerializationPolicySchema,
   },
+  artifactIndex: { schemaVersion: ARTIFACT_INDEX_SCHEMA_VERSION, schema: artifactIndexSchema },
 } as const;
 
 export type V18ContractName = keyof typeof v18Contracts;
