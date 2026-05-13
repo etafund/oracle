@@ -13,7 +13,13 @@
 //    `next_command`, `fix_command`, and `retry_safe` so callers never have
 //    to parse prose for recovery state.
 
-import { JSON_ENVELOPE_SCHEMA_VERSION, type JsonEnvelope } from "./contracts.js";
+import { z } from "zod";
+
+import {
+  JSON_ENVELOPE_SCHEMA_VERSION,
+  jsonEnvelopeSchema,
+  type JsonEnvelope,
+} from "./contracts.js";
 
 /**
  * The required error code taxonomy from v18 spec §12.
@@ -189,4 +195,97 @@ function toErrorRecord(entry: V18ErrorEntry): Record<string, unknown> {
     record.details = entry.details;
   }
   return record;
+}
+
+// ─── strict failure-arm refinement ─────────────────────────────────────────
+//
+// jsonEnvelopeSchema in ./contracts.ts intentionally stays permissive — it
+// validates shape but not the v18 recovery contract for failures. Schema
+// consumers that don't also call assertRecoveryContract were accepting
+// malformed `ok=false` envelopes (errors[] empty, retry_safe null, etc.),
+// which let unrecoverable robot errors slip through unnoticed.
+//
+// jsonEnvelopeStrictSchema layers a discriminated refinement on top: the
+// success arm (ok=true) parses identically to the base schema, while the
+// failure arm (ok=false) enforces every v18 §12 invariant at parse time so
+// callers can rely on parse success as proof of recoverability.
+
+/**
+ * Schema for a single entry inside `errors[]` of a v18 failure envelope.
+ *
+ * Strict-core / permissive-extension: `error_code` must be drawn from the
+ * v18 taxonomy and `message` must be non-empty, but extra keys round-trip
+ * via `.passthrough()` so callers can carry structured detail.
+ */
+export const v18ErrorEntrySchema = z
+  .object({
+    error_code: z.enum(V18_ERROR_CODES),
+    message: z.string().min(1, "v18 error entry message must be non-empty"),
+  })
+  .passthrough();
+
+/**
+ * Strict variant of {@link jsonEnvelopeSchema}: rejects malformed
+ * `ok=false` envelopes that violate the v18 recovery contract.
+ *
+ * Failure-arm invariants (all enforced at parse time):
+ * - `errors` must be a non-empty array.
+ * - Each `errors[i]` must carry an `error_code` from {@link V18_ERROR_CODES}
+ *   and a non-empty `message`.
+ * - `retry_safe` must be a boolean (no `null` — every failure must declare
+ *   whether retry is safe).
+ * - `blocked_reason` must be a non-empty string (no `null`, no `""`).
+ *
+ * Success envelopes (ok=true) pass through unchanged; their recovery
+ * fields stay nullable per the base schema. The inferred TypeScript type
+ * matches {@link JsonEnvelope} exactly — this is a runtime narrowing, not
+ * a type change.
+ */
+export const jsonEnvelopeStrictSchema = jsonEnvelopeSchema.superRefine(
+  (envelope, ctx) => {
+    if (envelope.ok) return;
+    if (envelope.retry_safe === null || typeof envelope.retry_safe !== "boolean") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["retry_safe"],
+        message: "v18 failure envelope requires retry_safe to be a boolean (not null)",
+      });
+    }
+    if (typeof envelope.blocked_reason !== "string" || envelope.blocked_reason.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["blocked_reason"],
+        message: "v18 failure envelope requires a non-empty blocked_reason string",
+      });
+    }
+    if (!Array.isArray(envelope.errors) || envelope.errors.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["errors"],
+        message: "v18 failure envelope requires errors[] to be a non-empty array",
+      });
+      return;
+    }
+    for (let index = 0; index < envelope.errors.length; index += 1) {
+      const result = v18ErrorEntrySchema.safeParse(envelope.errors[index]);
+      if (result.success) continue;
+      for (const issue of result.error.issues) {
+        ctx.addIssue({
+          ...issue,
+          path: ["errors", index, ...issue.path],
+        });
+      }
+    }
+  },
+);
+
+/**
+ * Parse and validate an envelope under the strict failure-arm contract.
+ *
+ * Thin wrapper around {@link jsonEnvelopeStrictSchema}.safeParse — included
+ * for symmetry with {@link assertRecoveryContract}, which checks the same
+ * invariants but throws instead of returning a result object.
+ */
+export function parseJsonEnvelopeStrict(value: unknown): z.ZodSafeParseResult<JsonEnvelope> {
+  return jsonEnvelopeStrictSchema.safeParse(value);
 }
