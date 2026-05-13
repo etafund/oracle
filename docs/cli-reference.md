@@ -14,6 +14,10 @@ This is the curated cheatsheet. The authoritative source is always `oracle --hel
 | `oracle session <id>`          | Replay or block on a stored session.                               |
 | `oracle restart <id>`          | Re-run with the same prompt + files.                               |
 | `oracle serve`                 | Run the remote browser host (see [Browser Mode](browser-mode.md)). |
+| `oracle remote doctor`         | Probe the configured remote endpoint (TCP + `/health`). `--json` emits a `remote_browser_endpoint.v1` envelope. |
+| `oracle remote status`         | Print the resolved remote endpoint config without touching the network. `--json` for machine-readable output. |
+| `oracle remote attach`         | Probe attach readiness against a caller-supplied host. Use `--host <h:p> --token-env <ENV>` so the token never appears in argv. |
+| `oracle bridge doctor --json`  | Same `remote_browser_endpoint.v1` envelope as `oracle remote doctor`, plus bridge-specific connectivity checks. |
 | `oracle bridge claude-config`  | Emit a `.mcp.json` for Claude Code (see [MCP](mcp.md)).            |
 | `oracle tui`                   | Interactive TUI (humans only).                                     |
 | `oracle-mcp`                   | Stdio MCP server entrypoint.                                       |

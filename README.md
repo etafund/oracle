@@ -96,6 +96,11 @@ npx -y @steipete/oracle status --hours 72
 npx -y @steipete/oracle session <id> --render
 npx -y @steipete/oracle restart <id>
 
+# Diagnose the remote browser endpoint (no auth tokens on argv)
+npx -y @steipete/oracle remote doctor --json
+npx -y @steipete/oracle remote status --json
+npx -y @steipete/oracle remote attach --host remote.host:9473 --token-env ORACLE_REMOTE_TOKEN --json
+
 # TUI (interactive, only for humans)
 npx -y @steipete/oracle tui
 ```
