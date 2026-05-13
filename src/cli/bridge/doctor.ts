@@ -9,6 +9,7 @@ import { detectChromeBinary, detectChromeCookieDb } from "../../browser/detect.j
 import { formatCodexMcpSnippet } from "./codexConfig.js";
 
 import type { RemoteBrowserEndpointV1 } from "../../remote/types.js";
+import type { RemoteHealthResult } from "../../remote/health.js";
 
 export interface BridgeDoctorCliOptions {
   verbose?: boolean;
@@ -22,6 +23,23 @@ function normalizeOptionalString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed.length ? trimmed : undefined;
+}
+
+function applyHealthMetadata(
+  endpoint: RemoteBrowserEndpointV1,
+  health: RemoteHealthResult,
+): void {
+  endpoint.version = health.version ?? null;
+  endpoint.uptimeSeconds = health.uptimeSeconds ?? null;
+  endpoint.auth_profile_id_hash = health.authProfileIdHash ?? null;
+  endpoint.provider_locks = health.providerLocks ?? [];
+}
+
+function formatHealthFailure(health: RemoteHealthResult): string | undefined {
+  if (!health.statusCode) {
+    return health.error;
+  }
+  return `HTTP ${health.statusCode} (${health.error ?? "unknown error"})`;
 }
 
 function resolveRemoteServiceConfigForDoctor(
@@ -100,16 +118,14 @@ export async function runBridgeDoctor(options: BridgeDoctorCliOptions): Promise<
         });
         if (health.ok) {
           endpoint.status = "healthy";
-          endpoint.version = health.version ?? null;
-          endpoint.uptimeSeconds = health.uptimeSeconds ?? null;
-          endpoint.auth_profile_id_hash = health.authProfileIdHash ?? null;
-          endpoint.provider_locks = health.providerLocks ?? [];
+          applyHealthMetadata(endpoint, health);
+        } else if (health.busy) {
+          endpoint.status = "unknown";
+          applyHealthMetadata(endpoint, health);
+          endpoint.error = formatHealthFailure(health) ?? "remote host is busy";
         } else {
           endpoint.status = "auth_failed";
-          endpoint.error = health.error;
-          if (health.statusCode) {
-            endpoint.error = `HTTP ${health.statusCode} (${health.error ?? "unknown error"})`;
-          }
+          endpoint.error = formatHealthFailure(health);
         }
       }
     }
@@ -175,6 +191,13 @@ export async function runBridgeDoctor(options: BridgeDoctorCliOptions): Promise<
       if (health.ok) {
         const meta = health.version ? `oracle ${health.version}` : "ok";
         lines.push(chalk.dim(`Auth (/health): ${chalk.green(meta)}`));
+      } else if (health.busy) {
+        const detail = health.error ?? "remote host is busy";
+        const suffix = health.statusCode ? `HTTP ${health.statusCode}` : "busy";
+        fail.push(`Remote host is busy: ${detail}`);
+        const meta = health.version ? `oracle ${health.version}` : "ok";
+        lines.push(chalk.dim(`Auth (/health): ${chalk.green(meta)}`));
+        lines.push(chalk.dim(`Run availability (/runs): ${chalk.red(`${suffix} (${detail})`)}`));
       } else {
         const detail = health.error ?? "unknown error";
         fail.push(`Remote auth failed: ${detail}`);
