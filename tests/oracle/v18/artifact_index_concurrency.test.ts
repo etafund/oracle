@@ -41,7 +41,10 @@ afterEach(async () => {
 
 function realHash(seed: string): `sha256:${string}` {
   // Non-placeholder digest so the v18 hash guard would accept it.
-  const hex = seed.padEnd(64, "1").slice(0, 64).replace(/[^0-9a-f]/g, "1");
+  const hex = seed
+    .padEnd(64, "1")
+    .slice(0, 64)
+    .replace(/[^0-9a-f]/g, "1");
   return `sha256:${hex}`;
 }
 
@@ -131,17 +134,20 @@ describe("upsertArtifactIndexEntry — concurrent writers", () => {
     expect(final!.artifacts).toHaveLength(20);
   });
 
-  testNonWindows("upsert replaces a prior entry with the same artifact_id (no duplicate)", async () => {
-    const indexFile = path.join(workDir, "dedup.json");
-    await upsertArtifactIndexEntry(indexFile, entry("ev-dup"));
-    await upsertArtifactIndexEntry(indexFile, {
-      ...entry("ev-dup"),
-      path: "evidence/ev-dup-renamed.json",
-    });
-    const final = await readArtifactIndex(indexFile);
-    expect(final?.artifacts).toHaveLength(1);
-    expect(final?.artifacts[0].path).toBe("evidence/ev-dup-renamed.json");
-  });
+  testNonWindows(
+    "upsert replaces a prior entry with the same artifact_id (no duplicate)",
+    async () => {
+      const indexFile = path.join(workDir, "dedup.json");
+      await upsertArtifactIndexEntry(indexFile, entry("ev-dup"));
+      await upsertArtifactIndexEntry(indexFile, {
+        ...entry("ev-dup"),
+        path: "evidence/ev-dup-renamed.json",
+      });
+      const final = await readArtifactIndex(indexFile);
+      expect(final?.artifacts).toHaveLength(1);
+      expect(final?.artifacts[0].path).toBe("evidence/ev-dup-renamed.json");
+    },
+  );
 
   testNonWindows("concurrent upserts on DIFFERENT files do not block each other", async () => {
     // Two distinct index files have their own locks. We submit twenty

@@ -30,10 +30,7 @@ import fs from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 
-import {
-  canonicalJSON,
-  readArtifactIndex,
-} from "./evidence.js";
+import { canonicalJSON, readArtifactIndex } from "./evidence.js";
 import type { ArtifactIndex, ArtifactIndexEntry } from "./contracts.js";
 
 // ─── Per-path async mutex ────────────────────────────────────────────────────
@@ -63,7 +60,10 @@ async function withIndexLock<T>(indexFile: string, work: () => Promise<T>): Prom
   const next = new Promise<void>((resolve) => {
     release = resolve;
   });
-  ACTIVE_LOCKS.set(key, prior.then(() => next));
+  ACTIVE_LOCKS.set(
+    key,
+    prior.then(() => next),
+  );
   try {
     await prior; // Wait for prior holder to finish.
     return await work();

@@ -45,9 +45,7 @@ export function redactBrowserEvidenceAlways<T>(payload: T): RedactionResult<T> {
 
 function redactInternal(value: unknown, removed: string[], pathPrefix: string): unknown {
   if (Array.isArray(value)) {
-    return value.map((entry, idx) =>
-      redactInternal(entry, removed, `${pathPrefix}[${idx}]`),
-    );
+    return value.map((entry, idx) => redactInternal(entry, removed, `${pathPrefix}[${idx}]`));
   }
   if (value !== null && typeof value === "object") {
     const out: Record<string, unknown> = {};

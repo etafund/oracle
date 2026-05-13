@@ -6,10 +6,7 @@ import {
   capabilityById,
   type CapabilityId,
 } from "@src/oracle/capabilities/registry.ts";
-import {
-  buildCapabilitiesEnvelope,
-  runCapabilities,
-} from "@src/cli/commands/capabilities.ts";
+import { buildCapabilitiesEnvelope, runCapabilities } from "@src/cli/commands/capabilities.ts";
 import {
   BROWSER_EVIDENCE_SCHEMA_VERSION,
   CONTEXT_SERIALIZATION_POLICY_SCHEMA_VERSION,
@@ -78,10 +75,7 @@ describe("remote_browser capability — missing config flow", () => {
     expect(remote?.fix_command).toContain("ORACLE_REMOTE_HOST");
     expect(remote?.notes.host_present).toBe(false);
     expect(remote?.notes.token_present).toBe(false);
-    expect(remote?.notes.missing_env_vars).toEqual([
-      "ORACLE_REMOTE_HOST",
-      "ORACLE_REMOTE_TOKEN",
-    ]);
+    expect(remote?.notes.missing_env_vars).toEqual(["ORACLE_REMOTE_HOST", "ORACLE_REMOTE_TOKEN"]);
   });
 
   test("with both env vars present, remote_browser is ready", () => {
@@ -218,7 +212,9 @@ describe("never prints secrets — redaction of tokens/account data", () => {
       "sk-gemini-private",
       "agent@example.com",
     ]) {
-      expect(serialized, `secret "${secret}" must not appear in capabilities output`).not.toContain(secret);
+      expect(serialized, `secret "${secret}" must not appear in capabilities output`).not.toContain(
+        secret,
+      );
     }
     // We DO surface ENV VAR NAMES (those are not secrets).
     expect(serialized).toContain("ORACLE_REMOTE_HOST");

@@ -65,7 +65,7 @@ const TOON_MARKERS = [
   { kind: "markdown_fence", text: "```toon\nrows[1]{id}: 1\n```" },
   { kind: "markdown_fence", text: "   ~~~ toon meta\nitems[2]{id,name}:\n  1,Ada\n~~~" },
   { kind: "xml_tag", text: "<toon>" },
-  { kind: "xml_tag", text: "<TOON kind=\"packet\"/>" },
+  { kind: "xml_tag", text: '<TOON kind="packet"/>' },
   { kind: "legacy_marker", text: "TOON_BLOCK" },
 ] as const;
 
@@ -163,9 +163,7 @@ describe("TOON passthrough fuzz harness", () => {
   test("arbitrary prompt strings pass through unchanged with exact byte hashes", () => {
     const rng = new Rng(0x70_00_0001);
     for (let i = 0; i < 500; i += 1) {
-      const prompt = rng.bool()
-        ? randomPrompt(rng, 180)
-        : promptWithRandomMarkers(rng, 140).prompt;
+      const prompt = rng.bool() ? randomPrompt(rng, 180) : promptWithRandomMarkers(rng, 140).prompt;
       const result = createToonPromptPassthrough(prompt);
 
       expect(result.providerPrompt).toBe(prompt);
@@ -238,8 +236,7 @@ describe("TOON passthrough fuzz harness", () => {
         true,
       );
       expect(
-        metadata.toon_rust_prefer_cli === null ||
-          typeof metadata.toon_rust_prefer_cli === "string",
+        metadata.toon_rust_prefer_cli === null || typeof metadata.toon_rust_prefer_cli === "string",
       ).toBe(true);
       expect(
         metadata.toon_rust_source_repo === null ||

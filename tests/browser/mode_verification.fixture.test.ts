@@ -154,10 +154,7 @@ describe("ChatGPT fixture-driven mode verification", () => {
 
     expect(machine.state).toBe("ui_drift_suspected");
     expect(machine.context.effort?.status).toBe("ui_drift_suspected");
-    expect(machine.context.effort?.observedLabels).toEqual([
-      "Quantum Ultra",
-      "Nebula Reasoning",
-    ]);
+    expect(machine.context.effort?.observedLabels).toEqual(["Quantum Ultra", "Nebula Reasoning"]);
     expect(machineVerdict(machine).errorCode).toBe("ui_drift_suspected");
   });
 
@@ -225,9 +222,7 @@ describe("Gemini fixture-driven mode verification", () => {
     );
 
     expect(machine.state).toBe("deep_think_unverified");
-    expect(geminiDeepThinkMachineVerdict(machine).errorCode).toBe(
-      "gemini_deep_think_unverified",
-    );
+    expect(geminiDeepThinkMachineVerdict(machine).errorCode).toBe("gemini_deep_think_unverified");
     expect(machine.context.failureReason).toMatch(/does not verify Deep Think/);
   });
 
@@ -240,9 +235,7 @@ describe("Gemini fixture-driven mode verification", () => {
 
     expect(machine.state).toBe("deep_think_unverified");
     expect(machine.context.deepThink?.deepThinkLabel).toBe("Canvas");
-    expect(geminiDeepThinkMachineVerdict(machine).errorCode).toBe(
-      "gemini_deep_think_unverified",
-    );
+    expect(geminiDeepThinkMachineVerdict(machine).errorCode).toBe("gemini_deep_think_unverified");
   });
 
   test("high-if-exposed thinking-level snapshot verifies the highest visible option", async () => {
@@ -262,10 +255,6 @@ describe("Gemini fixture-driven mode verification", () => {
       thinkingLevelVerified: true,
       selectedIsHighestVisible: true,
     });
-    expect(machine.context.deepThink?.observedLabels).toEqual([
-      "Deep Think",
-      "standard",
-      "high",
-    ]);
+    expect(machine.context.deepThink?.observedLabels).toEqual(["Deep Think", "standard", "high"]);
   });
 });

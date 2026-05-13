@@ -97,7 +97,10 @@ function parseArgs(argv: readonly string[]): CliArgs {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--phases" && argv[i + 1]) {
-      phases = argv[++i].split(",").map((s) => s.trim()).filter(Boolean);
+      phases = argv[++i]
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
     } else if (arg === "--artifact-dir" && argv[i + 1]) {
       artifactDir = resolve(argv[++i]);
     } else if (arg === "--live") {

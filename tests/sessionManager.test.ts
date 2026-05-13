@@ -133,13 +133,9 @@ describe("session lifecycle", () => {
   });
 
   test("initializeSession can persist optional PAV boundary metadata without raw prompt text", async () => {
-    const prompt = [
-      "unique-session-boundary-prompt",
-      "```toon",
-      "rows[1]{id}: 1",
-      "```",
-      "",
-    ].join("\n");
+    const prompt = ["unique-session-boundary-prompt", "```toon", "rows[1]{id}: 1", "```", ""].join(
+      "\n",
+    );
     const metadata = await sessionModule.initializeSession(
       {
         prompt,

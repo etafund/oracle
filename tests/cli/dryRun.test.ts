@@ -54,7 +54,9 @@ describe("runDryRunSummary", () => {
     expect(joined).toContain("Live provider/browser action: disabled");
     expect(joined).toContain("Provider/browser locks: not acquired");
     expect(joined).toMatch(/Prompt hash plan: prompt_sha256=sha256:[a-f0-9]{64}/);
-    expect(joined).toContain('Recovery command plan: no session is created; live runs print "oracle session <id>"');
+    expect(joined).toContain(
+      'Recovery command plan: no session is created; live runs print "oracle session <id>"',
+    );
     expect(joined.indexOf("a.md")).toBeLessThan(joined.indexOf("b.md"));
   });
 

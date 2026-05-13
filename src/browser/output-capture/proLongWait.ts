@@ -11,11 +11,7 @@
 // clocks without needing a real browser. The driver loop wires it up
 // to actual DOM probes + heartbeat sinks.
 
-import {
-  backgroundPending,
-  needsReattach,
-  type CaptureVerdict,
-} from "./captureVerdict.js";
+import { backgroundPending, needsReattach, type CaptureVerdict } from "./captureVerdict.js";
 
 // Default budgets sourced from AGENTS.md:
 //   "Pro browser runs: allow up to 10 minutes"

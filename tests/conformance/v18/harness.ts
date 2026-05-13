@@ -48,10 +48,7 @@ export interface ValidationFailure {
   message: string;
 }
 
-export function validateEnvelope(
-  value: unknown,
-  schema: JsonEnvelopeSchema,
-): ValidationFailure[] {
+export function validateEnvelope(value: unknown, schema: JsonEnvelopeSchema): ValidationFailure[] {
   const failures: ValidationFailure[] = [];
   if (!isObject(value)) {
     failures.push({ pointer: "", message: "envelope must be a JSON object" });

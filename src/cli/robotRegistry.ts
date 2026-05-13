@@ -17,9 +17,7 @@
 // present and that the recovery_fields list stays aligned with
 // `robot_surface.v1`.
 
-import {
-  CAPABILITY_LEASE_SCHEMA_VERSION,
-} from "../oracle/v18/capability_lease.js";
+import { CAPABILITY_LEASE_SCHEMA_VERSION } from "../oracle/v18/capability_lease.js";
 import {
   ARTIFACT_INDEX_SCHEMA_VERSION,
   BROWSER_EVIDENCE_SCHEMA_VERSION,
@@ -184,8 +182,7 @@ export const ROBOT_COMMANDS: readonly RobotCommandEntry[] = Object.freeze([
   entry({
     name: "browser-leases-acquire",
     command: "oracle browser leases acquire --provider <chatgpt|gemini> --json",
-    purpose:
-      "Acquire a browser provider lease before running a Pro / Deep Think browser session.",
+    purpose: "Acquire a browser provider lease before running a Pro / Deep Think browser session.",
     paid_calls: false,
     dry_run: false,
     required_env: [],
@@ -315,20 +312,22 @@ export interface RobotSurfacePayload {
  * matches the canonical bundle's `robots.json` shape.
  */
 export function buildRobotSurfacePayload(): RobotSurfacePayload {
-  const commands = ROBOT_COMMANDS.map((cmd): Record<string, unknown> => ({
-    name: cmd.name,
-    command: cmd.command,
-    purpose: cmd.purpose,
-    paid_calls: cmd.paid_calls,
-    dry_run: cmd.dry_run,
-    required_env: [...cmd.required_env],
-    output_schema_version: cmd.output_schema_version,
-    recovery_fields: [...cmd.recovery_fields],
-    touches_network: cmd.touches_network,
-    touches_chrome: cmd.touches_chrome,
-    ...(cmd.mock_command ? { mock_command: cmd.mock_command } : {}),
-    ...(cmd.docs_path ? { docs_path: cmd.docs_path } : {}),
-  }));
+  const commands = ROBOT_COMMANDS.map(
+    (cmd): Record<string, unknown> => ({
+      name: cmd.name,
+      command: cmd.command,
+      purpose: cmd.purpose,
+      paid_calls: cmd.paid_calls,
+      dry_run: cmd.dry_run,
+      required_env: [...cmd.required_env],
+      output_schema_version: cmd.output_schema_version,
+      recovery_fields: [...cmd.recovery_fields],
+      touches_network: cmd.touches_network,
+      touches_chrome: cmd.touches_chrome,
+      ...(cmd.mock_command ? { mock_command: cmd.mock_command } : {}),
+      ...(cmd.docs_path ? { docs_path: cmd.docs_path } : {}),
+    }),
+  );
   return {
     schema_version: ROBOT_SURFACE_SCHEMA_VERSION,
     bundle_version: V18_BUNDLE_VERSION,

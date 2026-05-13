@@ -1,12 +1,5 @@
-import {
-  browserEvidenceSchema,
-  type BrowserEvidence,
-} from "./contracts.js";
-import {
-  writeEvidence,
-  type WriteEvidenceOptions,
-  type WrittenEvidence,
-} from "./evidence.js";
+import { browserEvidenceSchema, type BrowserEvidence } from "./contracts.js";
+import { writeEvidence, type WriteEvidenceOptions, type WrittenEvidence } from "./evidence.js";
 
 export type EvidenceMode = "safe" | "unsafe";
 
@@ -21,8 +14,7 @@ export interface EvidenceModeGateOptions {
 }
 
 export interface WriteEvidenceWithModeOptions
-  extends WriteEvidenceOptions,
-    EvidenceModeGateOptions {}
+  extends WriteEvidenceOptions, EvidenceModeGateOptions {}
 
 export class UnsafeEvidenceModeError extends Error {
   constructor(message: string) {

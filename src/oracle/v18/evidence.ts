@@ -99,15 +99,9 @@ function isForbiddenKey(key: string): boolean {
   return FORBIDDEN_KEY_SUBSTRINGS.some((sub) => lower.includes(sub));
 }
 
-function redactInternal(
-  input: unknown,
-  removed: string[],
-  pathPrefix: string,
-): unknown {
+function redactInternal(input: unknown, removed: string[], pathPrefix: string): unknown {
   if (Array.isArray(input)) {
-    return input.map((entry, index) =>
-      redactInternal(entry, removed, `${pathPrefix}[${index}]`),
-    );
+    return input.map((entry, index) => redactInternal(entry, removed, `${pathPrefix}[${index}]`));
   }
   if (isPlainObject(input)) {
     const out: Record<string, unknown> = {};
@@ -154,9 +148,7 @@ const EVIDENCE_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,127}$/i;
 
 function assertSafeEvidenceId(id: string): void {
   if (!EVIDENCE_ID_PATTERN.test(id)) {
-    throw new Error(
-      `Invalid evidence id: "${id}". Must match [a-z0-9][a-z0-9._-]{0,127}.`,
-    );
+    throw new Error(`Invalid evidence id: "${id}". Must match [a-z0-9][a-z0-9._-]{0,127}.`);
   }
   if (id.includes("..")) {
     throw new Error(`Invalid evidence id: "${id}"`);
@@ -190,17 +182,11 @@ export function quarantineFilePath(
   return path.join(quarantineDir(sessionId, homeDir), `${evidenceId}.json`);
 }
 
-export function evidenceIndexPath(
-  sessionId: string,
-  homeDir = getOracleHomeDir(),
-): string {
+export function evidenceIndexPath(sessionId: string, homeDir = getOracleHomeDir()): string {
   return path.join(evidenceDir(sessionId, homeDir), INDEX_FILENAME);
 }
 
-export function quarantineIndexPath(
-  sessionId: string,
-  homeDir = getOracleHomeDir(),
-): string {
+export function quarantineIndexPath(sessionId: string, homeDir = getOracleHomeDir()): string {
   return path.join(quarantineDir(sessionId, homeDir), INDEX_FILENAME);
 }
 
@@ -290,10 +276,7 @@ export async function readArtifactIndex(indexFile: string): Promise<ArtifactInde
   }
 }
 
-export async function writeArtifactIndex(
-  indexFile: string,
-  index: ArtifactIndex,
-): Promise<void> {
+export async function writeArtifactIndex(indexFile: string, index: ArtifactIndex): Promise<void> {
   await fs.mkdir(path.dirname(indexFile), { recursive: true, mode: 0o700 });
   await fs.writeFile(indexFile, `${canonicalJSON(index)}\n`, "utf8");
   if (process.platform !== "win32") {

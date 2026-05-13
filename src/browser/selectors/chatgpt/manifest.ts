@@ -134,10 +134,7 @@ export const CHATGPT_SELECTOR_MANIFEST: readonly ChatGptSelectorEntry[] = Object
   {
     purpose: "answer_now_cta",
     provider: "chatgpt",
-    primary: [
-      'button[data-testid="stop-answer-now-button"]',
-      'button[aria-label^="Answer now"]',
-    ],
+    primary: ['button[data-testid="stop-answer-now-button"]', 'button[aria-label^="Answer now"]'],
     fallback: ['button[aria-label*="Answer now" i]', 'button:has-text("Answer now")'],
     labelExpectations: { text: ["Answer now"], ariaLabel: ["answer now"] },
     confidence: "high",
@@ -148,10 +145,7 @@ export const CHATGPT_SELECTOR_MANIFEST: readonly ChatGptSelectorEntry[] = Object
   {
     purpose: "thinking_state",
     provider: "chatgpt",
-    primary: [
-      'div[data-testid="thinking-indicator"]',
-      'div[role="status"][aria-live="polite"]',
-    ],
+    primary: ['div[data-testid="thinking-indicator"]', 'div[role="status"][aria-live="polite"]'],
     fallback: ['div[class*="thinking"]', 'div[aria-busy="true"]'],
     labelExpectations: {
       text: ["Thinking…", "Reasoning…", "Pro thinking", "Heavy thinking"],
@@ -237,7 +231,7 @@ export const CHATGPT_SELECTOR_MANIFEST: readonly ChatGptSelectorEntry[] = Object
     purpose: "composer_textarea",
     provider: "chatgpt",
     primary: [
-      '#prompt-textarea',
+      "#prompt-textarea",
       'textarea[data-testid="composer-input"]',
       'div[contenteditable="true"][data-testid="composer-input"]',
     ],
@@ -271,9 +265,7 @@ const ENTRIES_BY_PURPOSE: ReadonlyMap<ChatGptSelectorPurpose, ChatGptSelectorEnt
 );
 
 /** Return the manifest entry for a given purpose, or null if not registered. */
-export function chatgptSelector(
-  purpose: ChatGptSelectorPurpose,
-): ChatGptSelectorEntry | null {
+export function chatgptSelector(purpose: ChatGptSelectorPurpose): ChatGptSelectorEntry | null {
   return ENTRIES_BY_PURPOSE.get(purpose) ?? null;
 }
 

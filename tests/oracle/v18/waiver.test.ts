@@ -20,11 +20,7 @@ function buildWaiver(overrides: Record<string, unknown> = {}): Record<string, un
     created_by: "human_orchestrator",
     expires_at: "2026-05-13T00:00:00Z",
     must_surface_in_handoff: true,
-    non_waivable_slots: [
-      "chatgpt_pro_first_plan",
-      "chatgpt_pro_synthesis",
-      "gemini_deep_think",
-    ],
+    non_waivable_slots: ["chatgpt_pro_first_plan", "chatgpt_pro_synthesis", "gemini_deep_think"],
     profile: "balanced",
     provider_slot: "xai_grok_reasoning",
     reason: "Optional reviewer unavailable; quorum already satisfied.",
@@ -98,10 +94,11 @@ describe("evaluateFallbackWaiver — non-waivable protected slots", () => {
   test.each(NON_WAIVABLE_PROTECTED_SLOTS)(
     "%s cannot be waived even with a matching payload",
     (slot) => {
-      const verdict = evaluateFallbackWaiver(
-        buildWaiver({ provider_slot: slot }),
-        { slot, profile: "balanced", now: NOW },
-      );
+      const verdict = evaluateFallbackWaiver(buildWaiver({ provider_slot: slot }), {
+        slot,
+        profile: "balanced",
+        now: NOW,
+      });
       expect(verdict.applicable).toBe(false);
       expect(verdict.synthesis_eligible_after_waiver).toBe(false);
       expect(
@@ -123,9 +120,7 @@ describe("evaluateFallbackWaiver — non-waivable protected slots", () => {
       { slot: "chatgpt_pro_synthesis", profile: "balanced", now: NOW },
     );
     expect(verdict.applicable).toBe(false);
-    expect(
-      verdict.reasons.some((r) => r.message.includes("Oracle's canonical list")),
-    ).toBe(true);
+    expect(verdict.reasons.some((r) => r.message.includes("Oracle's canonical list"))).toBe(true);
   });
 });
 
@@ -136,40 +131,39 @@ describe("evaluateFallbackWaiver — invariant rejections", () => {
       { slot: "xai_grok_reasoning", profile: "balanced", now: NOW },
     );
     expect(verdict.applicable).toBe(false);
-    expect(
-      verdict.reasons.find((r) => r.field === "fallback_waiver.expires_at")?.code,
-    ).toBe("provider_login_required");
+    expect(verdict.reasons.find((r) => r.field === "fallback_waiver.expires_at")?.code).toBe(
+      "provider_login_required",
+    );
   });
 
   test("user_acknowledged=false is rejected", () => {
-    const verdict = evaluateFallbackWaiver(
-      buildWaiver({ user_acknowledged: false }),
-      { slot: "xai_grok_reasoning", profile: "balanced", now: NOW },
-    );
+    const verdict = evaluateFallbackWaiver(buildWaiver({ user_acknowledged: false }), {
+      slot: "xai_grok_reasoning",
+      profile: "balanced",
+      now: NOW,
+    });
     expect(verdict.applicable).toBe(false);
-    expect(
-      verdict.reasons.some((r) => r.field === "fallback_waiver.user_acknowledged"),
-    ).toBe(true);
+    expect(verdict.reasons.some((r) => r.field === "fallback_waiver.user_acknowledged")).toBe(true);
   });
 
   test("profile mismatch is rejected (balanced waiver does not cover audit)", () => {
-    const verdict = evaluateFallbackWaiver(
-      buildWaiver({ profile: "balanced" }),
-      { slot: "xai_grok_reasoning", profile: "audit", now: NOW },
-    );
+    const verdict = evaluateFallbackWaiver(buildWaiver({ profile: "balanced" }), {
+      slot: "xai_grok_reasoning",
+      profile: "audit",
+      now: NOW,
+    });
     expect(verdict.applicable).toBe(false);
     expect(verdict.reasons.some((r) => r.field === "fallback_waiver.profile")).toBe(true);
   });
 
   test("slot mismatch is rejected (waiver for xai cannot cover deepseek)", () => {
-    const verdict = evaluateFallbackWaiver(
-      buildWaiver({ provider_slot: "xai_grok_reasoning" }),
-      { slot: "deepseek_v4_pro_reasoning_search", profile: "balanced", now: NOW },
-    );
+    const verdict = evaluateFallbackWaiver(buildWaiver({ provider_slot: "xai_grok_reasoning" }), {
+      slot: "deepseek_v4_pro_reasoning_search",
+      profile: "balanced",
+      now: NOW,
+    });
     expect(verdict.applicable).toBe(false);
-    expect(
-      verdict.reasons.some((r) => r.field === "fallback_waiver.provider_slot"),
-    ).toBe(true);
+    expect(verdict.reasons.some((r) => r.field === "fallback_waiver.provider_slot")).toBe(true);
   });
 
   test("malformed payload returns reasons + non-applicable", () => {
@@ -183,10 +177,11 @@ describe("evaluateFallbackWaiver — invariant rejections", () => {
   });
 
   test("malformed expires_at is rejected", () => {
-    const verdict = evaluateFallbackWaiver(
-      buildWaiver({ expires_at: "not-a-date" }),
-      { slot: "xai_grok_reasoning", profile: "balanced", now: NOW },
-    );
+    const verdict = evaluateFallbackWaiver(buildWaiver({ expires_at: "not-a-date" }), {
+      slot: "xai_grok_reasoning",
+      profile: "balanced",
+      now: NOW,
+    });
     expect(verdict.applicable).toBe(false);
     expect(verdict.reasons.some((r) => r.field === "fallback_waiver.expires_at")).toBe(true);
   });

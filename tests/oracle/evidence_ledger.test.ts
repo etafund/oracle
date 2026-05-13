@@ -15,10 +15,7 @@ import {
   readEvidenceLedger,
   summarizeEvidenceLedger,
 } from "../../src/oracle/evidence_ledger.js";
-import {
-  isPlaceholderHash,
-  sha256OfBytes,
-} from "../../src/oracle/v18/evidence.js";
+import { isPlaceholderHash, sha256OfBytes } from "../../src/oracle/v18/evidence.js";
 import { runEvidenceLedgerShow } from "../../src/cli/commands/evidence/ledger.js";
 
 const testNonWindows = process.platform === "win32" ? test.skip : test;

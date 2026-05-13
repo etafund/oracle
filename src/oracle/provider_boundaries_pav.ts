@@ -35,7 +35,11 @@ export interface ProviderBoundaryPavMetadata {
   readonly prompt_semantics: "unchanged";
   readonly raw_prompt_in_metadata: false;
   readonly ownership: ProviderBoundaryPavOwnership;
-  readonly policy_scope: "protected_workflow_slot" | "api_allowed_workflow_slot" | "non_oracle_cli_slot" | "ordinary_oracle_usage";
+  readonly policy_scope:
+    | "protected_workflow_slot"
+    | "api_allowed_workflow_slot"
+    | "non_oracle_cli_slot"
+    | "ordinary_oracle_usage";
   readonly slot_access: AccessEligibilityVerdict;
   readonly protected_slot_metadata: ProtectedSlotMetadata | null;
   readonly context_serialization: ContextSerializationBoundary;
@@ -127,9 +131,7 @@ function ownershipForSlot(slot: string): ProviderBoundaryPavOwnership {
   return "ordinary_oracle";
 }
 
-function policyScopeForSlot(
-  slot: string,
-): ProviderBoundaryPavMetadata["policy_scope"] {
+function policyScopeForSlot(slot: string): ProviderBoundaryPavMetadata["policy_scope"] {
   if (PROTECTED_SLOT_SET.has(slot)) return "protected_workflow_slot";
   if (API_ALLOWED_SLOT_SET.has(slot)) return "api_allowed_workflow_slot";
   if (NON_ORACLE_CLI_SLOT_SET.has(slot)) return "non_oracle_cli_slot";

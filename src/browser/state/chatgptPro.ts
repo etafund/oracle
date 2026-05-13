@@ -270,11 +270,7 @@ export function transition(
         return failureFrom(ctxWithEffort, "ui_drift_suspected", verdict.reason);
       }
       // status === "unverified" → extended reasoning unverified.
-      return failureFrom(
-        ctxWithEffort,
-        "extended_reasoning_unverified",
-        verdict.reason,
-      );
+      return failureFrom(ctxWithEffort, "extended_reasoning_unverified", verdict.reason);
     }
 
     case "mode_verified_same_session":

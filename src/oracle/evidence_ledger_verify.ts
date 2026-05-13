@@ -240,10 +240,7 @@ async function verifyEvidenceWrittenEntry({
     });
   }
 
-  const indexSha = requireSha256Hash(
-    indexEntry.sha256,
-    `artifact_index.${indexEntry.path}.sha256`,
-  );
+  const indexSha = requireSha256Hash(indexEntry.sha256, `artifact_index.${indexEntry.path}.sha256`);
 
   if (fileSha !== indexSha) {
     issues.push({

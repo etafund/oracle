@@ -5,10 +5,7 @@
 
 import { describe, expect, test } from "vitest";
 
-import {
-  describeSharedBrowserProfile,
-  deriveProfileIdHash,
-} from "../../../src/browser/profile.js";
+import { describeSharedBrowserProfile, deriveProfileIdHash } from "../../../src/browser/profile.js";
 import {
   assertNoSecretsInPublicView,
   buildSharedProfileView,

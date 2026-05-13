@@ -34,3 +34,28 @@ export interface SerializedAttachment extends BrowserAttachment {
   fileName: string;
   contentBase64: string;
 }
+
+export interface RemoteBrowserEndpointV1 {
+  _schema: "remote_browser_endpoint.v1";
+  endpoint_id: string;
+  mode: "preferred" | "required" | "off";
+  status:
+    | "healthy"
+    | "unreachable"
+    | "auth_failed"
+    | "missing_token"
+    | "not_configured"
+    | "unknown";
+  host_env: string | null;
+  token_env: string | null;
+  host_hash: string | null;
+  auth_profile_id_hash: string | null;
+  no_plaintext_secrets: boolean;
+  shared_profile_policy: boolean;
+  provider_locks: string[];
+  doctor_command: string;
+  recover_command: string;
+  version: string | null;
+  uptimeSeconds: number | null;
+  error?: string;
+}

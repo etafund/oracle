@@ -8,11 +8,7 @@
 // mapping table between FSM states and ledger event types.
 
 import { appendEvidenceLedgerEvent } from "../../oracle/evidence_ledger.js";
-import {
-  errorCodeForFailure,
-  isFailureState,
-  isSuccessState,
-} from "../state/chatgptPro.js";
+import { errorCodeForFailure, isFailureState, isSuccessState } from "../state/chatgptPro.js";
 import type {
   ChatGptProEvent,
   ChatGptProLegalState,
@@ -28,9 +24,7 @@ import type { EvidenceLedgerEventType } from "../../oracle/evidence_ledger.js";
  * response_waiting) intentionally do NOT emit ledger entries — the
  * ledger is for milestones, not every micro-transition.
  */
-const STATE_TO_LEDGER_EVENT: Partial<
-  Record<ChatGptProLegalState, EvidenceLedgerEventType>
-> = {
+const STATE_TO_LEDGER_EVENT: Partial<Record<ChatGptProLegalState, EvidenceLedgerEventType>> = {
   remote_or_local_browser_connected: "browser_attached",
   login_verified: "login_verified",
   mode_verified_same_session: "mode_verified_same_session",
@@ -182,7 +176,7 @@ async function maybeAppendLedger(input: MaybeAppendInput): Promise<DriverAppendR
       provider_slot: input.options.providerSlot,
       evidence_id:
         eventType === "evidence_written"
-          ? input.machine.context.evidenceId ?? input.options.evidenceId
+          ? (input.machine.context.evidenceId ?? input.options.evidenceId)
           : undefined,
       timestamp: input.options.now?.().toISOString(),
       metadata: buildLedgerMetadata(eventType, input),

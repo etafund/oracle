@@ -29,7 +29,11 @@ function buildSnapshot(overrides: Record<string, unknown> = {}): Record<string, 
     refresh_required_before_live_provider_calls: true,
     schema_version: PROVIDER_DOCS_SNAPSHOT_SCHEMA_VERSION,
     sources: [
-      { provider: "chatgpt", relevant_claim: "Pro labels may drift", url: "https://example.invalid/pro" },
+      {
+        provider: "chatgpt",
+        relevant_claim: "Pro labels may drift",
+        url: "https://example.invalid/pro",
+      },
     ],
     ...overrides,
   };
@@ -112,11 +116,9 @@ describe(`premortem ${FM.id}: ${FM.title}`, () => {
       new Date(NOW.getTime() + 3_600_000), // 1h later
     );
     expect(result.consumed).toBe(false);
-    expect(
-      result.reasons.find(
-        (r) => r.field === "capability_lease.expires_at",
-      )?.code,
-    ).toBe("provider_login_required");
+    expect(result.reasons.find((r) => r.field === "capability_lease.expires_at")?.code).toBe(
+      "provider_login_required",
+    );
   });
 
   test("stale-only blocking envelope passes the v18 json_envelope contract", () => {

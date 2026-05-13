@@ -60,8 +60,7 @@ const verifiedEvidence = {
   selected_effort_is_highest_visible: true,
   selector_manifest_version: "chatgpt-pro-v1",
   session_id_hash: "sha256:2a97516c354b68848cdbd8f54a226a0a55b21ed138e207ad6c5cbb9c00aa5aea",
-  transition_log_sha256:
-    "sha256:9c9c239de9790a1c12bbda6a34c7fc8b69c05612237dfb3cedaedd3a130fd82f",
+  transition_log_sha256: "sha256:9c9c239de9790a1c12bbda6a34c7fc8b69c05612237dfb3cedaedd3a130fd82f",
   unsafe_artifacts_quarantined: true,
   verification_method: "same_session_ui_observation_plus_selector_trace",
   verification_scope: "same_browser_session_before_prompt_submit",
@@ -82,8 +81,7 @@ const synthesisReadyResult = {
   },
   evidence_id: "evidence-demo-chatgpt_pro_first_plan",
   model: "chatgpt-pro-latest",
-  prompt_manifest_sha256:
-    "sha256:69223c8fae80b46ec663079168f541e9308eb835d7720212f8222bf1f239cb18",
+  prompt_manifest_sha256: "sha256:69223c8fae80b46ec663079168f541e9308eb835d7720212f8222bf1f239cb18",
   provider_family: "chatgpt",
   provider_result_id: "provider-result-demo-chatgpt_pro_first_plan",
   provider_slot: "chatgpt_pro_first_plan",
@@ -92,8 +90,7 @@ const synthesisReadyResult = {
   result_path: ".apr/runs/demo/plans/chatgpt_pro_first_plan/output.md",
   result_text_sha256: "sha256:1a8f9f53b1c104b8e875b567fa926c96106866aa67b84ceb0ae9b79cc2b6f069",
   schema_version: PROVIDER_RESULT_SCHEMA_VERSION,
-  source_baseline_sha256:
-    "sha256:b91d369c3f7250980878f782559b0c4ccc00a829603c88cf555c0b23bdd12ee6",
+  source_baseline_sha256: "sha256:b91d369c3f7250980878f782559b0c4ccc00a829603c88cf555c0b23bdd12ee6",
   status: "success",
   synthesis_eligible: true,
 };
@@ -184,9 +181,8 @@ describe("evaluateBrowserEvidenceTrust — typed core gating", () => {
     const verdict = evaluateBrowserEvidenceTrust(adversarial);
     expect(verdict.eligible).toBe(false);
     expect(
-      verdict.blockedReasons.find(
-        (r) => r.field === "browser_evidence.reasoning_effort_verified",
-      )?.code,
+      verdict.blockedReasons.find((r) => r.field === "browser_evidence.reasoning_effort_verified")
+        ?.code,
     ).toBe("chatgpt_extended_reasoning_unverified");
   });
 
@@ -227,17 +223,15 @@ describe("evaluateBrowserEvidenceTrust — typed core gating", () => {
     delete stripped.prompt_sha256;
     const verdict = evaluateBrowserEvidenceTrust(stripped);
     expect(verdict.eligible).toBe(false);
-    expect(
-      verdict.blockedReasons.some((r) => r.field === "browser_evidence.prompt_sha256"),
-    ).toBe(true);
+    expect(verdict.blockedReasons.some((r) => r.field === "browser_evidence.prompt_sha256")).toBe(
+      true,
+    );
   });
 });
 
 describe("evaluateProviderResultSynthesisEligibility — typed core gating", () => {
   test("happy path is eligible", () => {
-    expect(
-      evaluateProviderResultSynthesisEligibility(synthesisReadyResult).eligible,
-    ).toBe(true);
+    expect(evaluateProviderResultSynthesisEligibility(synthesisReadyResult).eligible).toBe(true);
   });
 
   test("synthesis_eligible=false blocks even with eligible_for_synthesis extension", () => {
@@ -269,9 +263,9 @@ describe("evaluateProviderResultSynthesisEligibility — typed core gating", () 
     });
     expect(verdict.eligible).toBe(false);
     expect(verdict.blockedReasons.some((r) => r.field === "provider_result.evidence")).toBe(true);
-    expect(
-      verdict.blockedReasons.some((r) => r.field === "provider_result.evidence_id"),
-    ).toBe(true);
+    expect(verdict.blockedReasons.some((r) => r.field === "provider_result.evidence_id")).toBe(
+      true,
+    );
   });
 });
 
@@ -299,9 +293,9 @@ describe("evaluateProviderApiAllowed — api_allowed gating", () => {
       status: "blocked",
     });
     expect(verdict.eligible).toBe(false);
-    expect(
-      verdict.blockedReasons.find((r) => r.field === "provider_capability.status")?.code,
-    ).toBe("provider_login_required");
+    expect(verdict.blockedReasons.find((r) => r.field === "provider_capability.status")?.code).toBe(
+      "provider_login_required",
+    );
   });
 });
 
@@ -378,9 +372,7 @@ describe("evaluateSynthesisGate — combined gate", () => {
   });
 
   test("works without capability or evidence inputs", () => {
-    expect(
-      evaluateSynthesisGate({ result: synthesisReadyResult }).eligible,
-    ).toBe(true);
+    expect(evaluateSynthesisGate({ result: synthesisReadyResult }).eligible).toBe(true);
   });
 });
 

@@ -7,26 +7,26 @@ Ergonomics), §12 (Error Codes), and
 ## json_envelope.v1
 
 | Clause source           | Requirement                                            | Tested |
-|-------------------------|--------------------------------------------------------|--------|
-| schema §required         | All 11 required fields present                         | yes    |
-| schema §type             | `ok: boolean`                                          | yes    |
-| schema §type             | `schema_version: string` (literal `json_envelope.v1`)  | yes    |
-| schema §type             | `data` is object / array / string / null               | yes    |
-| schema §type             | `meta: object`                                         | yes    |
-| schema §type             | `errors[]` items are objects                           | yes    |
-| schema §type             | `warnings[]` items are strings                         | yes    |
-| schema §type             | `commands: object`                                     | yes    |
-| schema §type             | `blocked_reason: string \| null`                       | yes    |
-| schema §type             | `next_command: string \| null`                         | yes    |
-| schema §type             | `fix_command: string \| null`                          | yes    |
-| schema §type             | `retry_safe: boolean \| null`                          | yes    |
-| schema §additionalProps  | Extension keys round-trip without dropping             | yes    |
-| spec §11 recovery        | Failure envelopes carry `blocked_reason`               | yes    |
-| spec §11 recovery        | Failure envelopes carry `next_command` / `fix_command` | yes    |
-| spec §11 recovery        | Failure envelopes declare `retry_safe`                 | yes    |
-| spec §12 error taxonomy  | All 12 canonical error codes are known                 | yes    |
-| spec §12 error taxonomy  | `error_code` validation rejects unknown codes          | yes    |
-| canonical fixture        | `fixtures/json-envelope.ok.json` parses                | yes    |
+| ----------------------- | ------------------------------------------------------ | ------ |
+| schema §required        | All 11 required fields present                         | yes    |
+| schema §type            | `ok: boolean`                                          | yes    |
+| schema §type            | `schema_version: string` (literal `json_envelope.v1`)  | yes    |
+| schema §type            | `data` is object / array / string / null               | yes    |
+| schema §type            | `meta: object`                                         | yes    |
+| schema §type            | `errors[]` items are objects                           | yes    |
+| schema §type            | `warnings[]` items are strings                         | yes    |
+| schema §type            | `commands: object`                                     | yes    |
+| schema §type            | `blocked_reason: string \| null`                       | yes    |
+| schema §type            | `next_command: string \| null`                         | yes    |
+| schema §type            | `fix_command: string \| null`                          | yes    |
+| schema §type            | `retry_safe: boolean \| null`                          | yes    |
+| schema §additionalProps | Extension keys round-trip without dropping             | yes    |
+| spec §11 recovery       | Failure envelopes carry `blocked_reason`               | yes    |
+| spec §11 recovery       | Failure envelopes carry `next_command` / `fix_command` | yes    |
+| spec §11 recovery       | Failure envelopes declare `retry_safe`                 | yes    |
+| spec §12 error taxonomy | All 12 canonical error codes are known                 | yes    |
+| spec §12 error taxonomy | `error_code` validation rejects unknown codes          | yes    |
+| canonical fixture       | `fixtures/json-envelope.ok.json` parses                | yes    |
 
 ## Not covered (by this harness, intentional)
 

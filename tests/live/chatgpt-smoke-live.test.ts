@@ -42,7 +42,8 @@ const LOCK_LABEL = "chatgpt-browser";
           "ORACLE_LIVE_TEST=1 ORACLE_LIVE_BROWSER=1 pnpm vitest run tests/live/chatgpt-smoke-live.test.ts",
         run_command:
           "oracle --engine browser --provider chatgpt --model gpt-5.5-pro --chatgpt-pro --extended-reasoning --remote-browser preferred --evidence redacted --prompt <redacted>",
-        manual_test_doc: "docs/manual-tests.md#opt-in-live-browser-smoke-tests-chatgpt-pro-gemini-deep-think",
+        manual_test_doc:
+          "docs/manual-tests.md#opt-in-live-browser-smoke-tests-chatgpt-pro-gemini-deep-think",
         reattach_command: `oracle session ${sessionId} --render`,
         evidence_verify_command: `oracle evidence verify ${sessionId} --json`,
       });

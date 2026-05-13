@@ -3,14 +3,16 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const { resolveRemoteServiceConfig } = vi.hoisted(() => ({
-  resolveRemoteServiceConfig: vi.fn(({ cliHost, cliToken }: { cliHost?: string; cliToken?: string }) => ({
-    host: cliHost,
-    token: cliToken,
-    mode: "preferred",
-    hostHash: cliHost ? "cli-host-hash-1234" : undefined,
-    redactedToken: cliToken ? "***" : undefined,
-    sources: { host: "cli", token: "cli", mode: "cli" },
-  })),
+  resolveRemoteServiceConfig: vi.fn(
+    ({ cliHost, cliToken }: { cliHost?: string; cliToken?: string }) => ({
+      host: cliHost,
+      token: cliToken,
+      mode: "preferred",
+      hostHash: cliHost ? "cli-host-hash-1234" : undefined,
+      redactedToken: cliToken ? "***" : undefined,
+      sources: { host: "cli", token: "cli", mode: "cli" },
+    }),
+  ),
 }));
 
 interface MockTcp {
@@ -30,9 +32,7 @@ interface MockHealth {
 const { checkTcpConnection, checkRemoteHealth } = vi.hoisted(() => ({
   checkTcpConnection: vi.fn<(host: string, timeoutMs?: number) => Promise<MockTcp>>(),
   checkRemoteHealth:
-    vi.fn<
-      (opts: { host: string; token?: string; timeoutMs?: number }) => Promise<MockHealth>
-    >(),
+    vi.fn<(opts: { host: string; token?: string; timeoutMs?: number }) => Promise<MockHealth>>(),
 }));
 
 vi.mock("../../../src/remote/remoteServiceConfig.js", () => ({ resolveRemoteServiceConfig }));

@@ -157,9 +157,7 @@ describe("buildRunProgressEvent — required shape", () => {
       now: NOW,
     });
     expect((event as Record<string, unknown>).blocked_on_provider).toBe("chatgpt");
-    expect((event as Record<string, unknown>).blocked_on_error_code).toBe(
-      "chatgpt_pro_unverified",
-    );
+    expect((event as Record<string, unknown>).blocked_on_error_code).toBe("chatgpt_pro_unverified");
     expect((event as Record<string, unknown>).fallback_available).toBe(true);
   });
 

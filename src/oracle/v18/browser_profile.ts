@@ -31,13 +31,12 @@ export const BROWSER_SHARED_PROFILE_LOCKS = {
 } as const;
 
 export type SharedProfileProvider = keyof typeof BROWSER_SHARED_PROFILE_LOCKS;
-export type SharedProfileLockName =
-  (typeof BROWSER_SHARED_PROFILE_LOCKS)[SharedProfileProvider];
+export type SharedProfileLockName = (typeof BROWSER_SHARED_PROFILE_LOCKS)[SharedProfileProvider];
 
 const LOCK_NAME_TO_PROVIDER: ReadonlyMap<string, SharedProfileProvider> = new Map(
-  (Object.entries(BROWSER_SHARED_PROFILE_LOCKS) as [SharedProfileProvider, SharedProfileLockName][]).map(
-    ([provider, lock]) => [lock, provider],
-  ),
+  (
+    Object.entries(BROWSER_SHARED_PROFILE_LOCKS) as [SharedProfileProvider, SharedProfileLockName][]
+  ).map(([provider, lock]) => [lock, provider]),
 );
 
 export const BROWSER_SHARED_PROFILE_PROVIDERS: readonly SharedProfileProvider[] = Object.freeze(
@@ -148,7 +147,9 @@ export const FORBIDDEN_PUBLIC_PROFILE_KEYS: readonly string[] = Object.freeze([
   "token",
 ]);
 
-const FORBIDDEN_PUBLIC_PROFILE_KEY_SET: ReadonlySet<string> = new Set(FORBIDDEN_PUBLIC_PROFILE_KEYS);
+const FORBIDDEN_PUBLIC_PROFILE_KEY_SET: ReadonlySet<string> = new Set(
+  FORBIDDEN_PUBLIC_PROFILE_KEYS,
+);
 
 export const SHARED_PROFILE_REDACTION_ERROR_CODE: V18ErrorCode = "remote_browser_unavailable";
 

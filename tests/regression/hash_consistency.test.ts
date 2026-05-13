@@ -21,10 +21,7 @@ import {
 } from "../../src/oracle/v18/hash_consistency.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-const PLAN_BUNDLE = path.resolve(
-  moduleDir,
-  "../../PLAN/oracle-vnext-plan-bundle-v18.0.0",
-);
+const PLAN_BUNDLE = path.resolve(moduleDir, "../../PLAN/oracle-vnext-plan-bundle-v18.0.0");
 
 async function loadFixture<T = unknown>(rel: string): Promise<T> {
   return JSON.parse(await readFile(path.join(PLAN_BUNDLE, rel), "utf8")) as T;
@@ -95,9 +92,10 @@ describe("plan-bundle fixtures: negative matrix (drift detection)", () => {
       string,
       unknown
     >;
-    const evidence = (await loadFixture(
-      "fixtures/chatgpt-pro-evidence.json",
-    )) as Record<string, unknown>;
+    const evidence = (await loadFixture("fixtures/chatgpt-pro-evidence.json")) as Record<
+      string,
+      unknown
+    >;
     if (field.startsWith("evidence.")) {
       const key = field.slice("evidence.".length);
       evidence[key] = value;
@@ -124,22 +122,20 @@ describe("plan-bundle fixtures: negative matrix (drift detection)", () => {
   });
 
   test("tampering with result.provider_result_id is detected", async () => {
-    const { result, evidence } = await corruptChatGpt(
-      "provider_result_id",
-      "tampered-result-id",
-    );
+    const { result, evidence } = await corruptChatGpt("provider_result_id", "tampered-result-id");
     const verdict = verifyHashConsistency({ result, evidence });
     expect(verdict.consistent).toBe(false);
-    expect(
-      verdict.mismatches.some((m) => m.field === "provider_result.provider_result_id"),
-    ).toBe(true);
+    expect(verdict.mismatches.some((m) => m.field === "provider_result.provider_result_id")).toBe(
+      true,
+    );
     expect(consistencyCodes(verdict)).toContain("chatgpt_pro_unverified");
   });
 
   test("API substitution attempt for ChatGPT Pro is rejected", async () => {
-    const result = (await loadFixture(
-      "fixtures/provider-result.chatgpt.json",
-    )) as Record<string, unknown>;
+    const result = (await loadFixture("fixtures/provider-result.chatgpt.json")) as Record<
+      string,
+      unknown
+    >;
     // Swap the access path for an OpenAI API call.
     result.access_path = "openai_api";
     result.provider_family = "openai_api";
@@ -151,9 +147,10 @@ describe("plan-bundle fixtures: negative matrix (drift detection)", () => {
   });
 
   test("API substitution attempt for Gemini Deep Think is rejected", async () => {
-    const result = (await loadFixture(
-      "fixtures/provider-result.gemini.json",
-    )) as Record<string, unknown>;
+    const result = (await loadFixture("fixtures/provider-result.gemini.json")) as Record<
+      string,
+      unknown
+    >;
     result.access_path = "gemini_api";
     result.provider_family = "gemini_api";
     const evidence = await loadFixture("fixtures/gemini-deep-think-evidence.json");
@@ -163,35 +160,40 @@ describe("plan-bundle fixtures: negative matrix (drift detection)", () => {
   });
 
   test("unverified evidence cannot back synthesis_eligible=true", async () => {
-    const result = (await loadFixture(
-      "fixtures/provider-result.chatgpt.json",
-    )) as Record<string, unknown>;
-    const evidence = (await loadFixture(
-      "fixtures/chatgpt-pro-evidence.json",
-    )) as Record<string, unknown>;
+    const result = (await loadFixture("fixtures/provider-result.chatgpt.json")) as Record<
+      string,
+      unknown
+    >;
+    const evidence = (await loadFixture("fixtures/chatgpt-pro-evidence.json")) as Record<
+      string,
+      unknown
+    >;
     evidence.mode_verified = false;
     const verdict = verifyHashConsistency({ result, evidence });
-    expect(
-      verdict.mismatches.some((m) => m.field === "provider_result.synthesis_eligible"),
-    ).toBe(true);
+    expect(verdict.mismatches.some((m) => m.field === "provider_result.synthesis_eligible")).toBe(
+      true,
+    );
   });
 
   test("prompt-submitted-before-verification flag flips evidence trust", async () => {
-    const result = (await loadFixture(
-      "fixtures/provider-result.chatgpt.json",
-    )) as Record<string, unknown>;
-    const evidence = (await loadFixture(
-      "fixtures/chatgpt-pro-evidence.json",
-    )) as Record<string, unknown>;
+    const result = (await loadFixture("fixtures/provider-result.chatgpt.json")) as Record<
+      string,
+      unknown
+    >;
+    const evidence = (await loadFixture("fixtures/chatgpt-pro-evidence.json")) as Record<
+      string,
+      unknown
+    >;
     evidence.verified_before_prompt_submit = false;
     const verdict = verifyHashConsistency({ result, evidence });
     expect(consistencyCodes(verdict)).toContain("prompt_submitted_before_verification");
   });
 
   test("a ChatGPT result that lacks an evidence ledger entirely is rejected", async () => {
-    const result = (await loadFixture(
-      "fixtures/provider-result.chatgpt.json",
-    )) as Record<string, unknown>;
+    const result = (await loadFixture("fixtures/provider-result.chatgpt.json")) as Record<
+      string,
+      unknown
+    >;
     result.evidence = null;
     result.evidence_id = null;
     const verdict = verifyHashConsistency({ result });
@@ -200,9 +202,10 @@ describe("plan-bundle fixtures: negative matrix (drift detection)", () => {
   });
 
   test("xAI slot pretending to carry browser evidence is flagged", async () => {
-    const result = (await loadFixture(
-      "fixtures/provider-result.xai.json",
-    )) as Record<string, unknown>;
+    const result = (await loadFixture("fixtures/provider-result.xai.json")) as Record<
+      string,
+      unknown
+    >;
     // Smuggle in evidence material.
     result.evidence_id = "evidence-demo-chatgpt_pro_first_plan";
     result.evidence = {
@@ -213,9 +216,7 @@ describe("plan-bundle fixtures: negative matrix (drift detection)", () => {
     const evidence = await loadFixture("fixtures/chatgpt-pro-evidence.json");
     const verdict = verifyHashConsistency({ result, evidence });
     expect(verdict.consistent).toBe(false);
-    expect(
-      verdict.mismatches.some((m) => m.message.includes("API-allowed slot")),
-    ).toBe(true);
+    expect(verdict.mismatches.some((m) => m.message.includes("API-allowed slot"))).toBe(true);
   });
 });
 
@@ -242,11 +243,9 @@ describe("plan-bundle fixtures: artifact-index tamper detection", () => {
       artifactIndex: index,
       artifactBytes: { "evidence.json": JSON.stringify(evidence) },
     });
-    expect(
-      verdict.mismatches.some(
-        (m) => m.field === "artifact_index.evidence.json.sha256",
-      ),
-    ).toBe(true);
+    expect(verdict.mismatches.some((m) => m.field === "artifact_index.evidence.json.sha256")).toBe(
+      true,
+    );
   });
 
   test("accepts on-disk bytes whose hash matches the index", async () => {

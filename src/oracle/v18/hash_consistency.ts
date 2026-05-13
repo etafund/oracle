@@ -92,10 +92,7 @@ export interface VerifyHashConsistencyInput {
 
 // ─── Parse helpers (collect schema errors instead of throwing) ───────────────
 
-function parseProviderResult(
-  value: unknown,
-  out: ConsistencyMismatch[],
-): ProviderResult | null {
+function parseProviderResult(value: unknown, out: ConsistencyMismatch[]): ProviderResult | null {
   const parsed = providerResultSchema.safeParse(value);
   if (!parsed.success) {
     for (const issue of parsed.error.issues) {
@@ -119,10 +116,7 @@ function parseEvidence(value: unknown, out: ConsistencyMismatch[]): BrowserEvide
   return parsed.data as BrowserEvidence;
 }
 
-function parseArtifactIndex(
-  value: unknown,
-  out: ConsistencyMismatch[],
-): ArtifactIndex | null {
+function parseArtifactIndex(value: unknown, out: ConsistencyMismatch[]): ArtifactIndex | null {
   const parsed = artifactIndexSchema.safeParse(value);
   if (!parsed.success) {
     for (const issue of parsed.error.issues) {
@@ -141,7 +135,9 @@ function familyMatchesProvider(family: string, provider: "chatgpt" | "gemini"): 
   // provider (`chatgpt`, `gemini`), or a more specific identifier that
   // starts with the provider name (e.g. `chatgpt_pro_synthesis`). Either
   // is accepted; everything else is a family mismatch.
-  return family === provider || family.startsWith(`${provider}_`) || family.startsWith(`${provider}-`);
+  return (
+    family === provider || family.startsWith(`${provider}_`) || family.startsWith(`${provider}-`)
+  );
 }
 
 function pickErrorCodeForSlot(slot: string | null): V18ErrorCode | null {
@@ -254,11 +250,7 @@ function checkResultEvidencePair(
   if (slotIsProtected) {
     if (!evidence.mode_verified) {
       out.push(
-        mismatch(
-          "browser_evidence.mode_verified",
-          `must be true for protected slot ${slot}`,
-          code,
-        ),
+        mismatch("browser_evidence.mode_verified", `must be true for protected slot ${slot}`, code),
       );
     }
     if (!evidence.verified_before_prompt_submit) {
@@ -270,7 +262,10 @@ function checkResultEvidencePair(
         ),
       );
     }
-    if (result.synthesis_eligible && (!evidence.mode_verified || !evidence.verified_before_prompt_submit)) {
+    if (
+      result.synthesis_eligible &&
+      (!evidence.mode_verified || !evidence.verified_before_prompt_submit)
+    ) {
       out.push(
         mismatch(
           "provider_result.synthesis_eligible",
@@ -324,9 +319,7 @@ function checkArtifactIndex(
 ): void {
   // If the result ships an evidence_id, the index should reference it.
   if (result.evidence_id) {
-    const referenced = index.artifacts.find(
-      (entry) => entry.artifact_id === result.evidence_id,
-    );
+    const referenced = index.artifacts.find((entry) => entry.artifact_id === result.evidence_id);
     if (!referenced) {
       out.push(
         mismatch(
@@ -382,8 +375,7 @@ export function verifyHashConsistency(input: VerifyHashConsistencyInput): Consis
   const result = parseProviderResult(input.result, mismatches);
   if (!result) return fail(mismatches);
 
-  const evidence =
-    input.evidence === undefined ? null : parseEvidence(input.evidence, mismatches);
+  const evidence = input.evidence === undefined ? null : parseEvidence(input.evidence, mismatches);
   // Schema-parse failures on evidence are already recorded; continue so
   // the index check can still run.
 

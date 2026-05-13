@@ -90,9 +90,7 @@ describe("ChatGPT Pro FSM — taxonomy", () => {
     expect(errorCodeForFailure("prompt_submitted_before_verification")).toBe(
       "prompt_submitted_before_verification",
     );
-    expect(errorCodeForFailure("remote_browser_unavailable")).toBe(
-      "remote_browser_unavailable",
-    );
+    expect(errorCodeForFailure("remote_browser_unavailable")).toBe("remote_browser_unavailable");
     expect(errorCodeForFailure("remote_browser_unavailable_mid_run")).toBe(
       "remote_browser_unavailable",
     );
@@ -404,10 +402,12 @@ describe("isProLabel helper", () => {
     expect(isProLabel(label)).toBe(expected);
   });
 
-  test.each([["GPT-5.5", false], ["Standard", false], ["", false], ["Pro Extended", false]])(
-    "rejects %s",
-    (label, expected) => {
-      expect(isProLabel(label)).toBe(expected);
-    },
-  );
+  test.each([
+    ["GPT-5.5", false],
+    ["Standard", false],
+    ["", false],
+    ["Pro Extended", false],
+  ])("rejects %s", (label, expected) => {
+    expect(isProLabel(label)).toBe(expected);
+  });
 });

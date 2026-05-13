@@ -3,10 +3,7 @@ import { readdirSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import {
-  ORACLE_PREMORTEM_FAILURE_MODES,
-  listPremortemIds,
-} from "@tests/_helpers/premortem.ts";
+import { ORACLE_PREMORTEM_FAILURE_MODES, listPremortemIds } from "@tests/_helpers/premortem.ts";
 
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
 
@@ -48,7 +45,10 @@ describe("premortem coverage matrix", () => {
 
   test("every entry declares at least one Oracle acceptance check and one control", () => {
     for (const fm of ORACLE_PREMORTEM_FAILURE_MODES) {
-      expect(fm.oracle_acceptance_checks.length, `${fm.id} has no acceptance checks`).toBeGreaterThan(0);
+      expect(
+        fm.oracle_acceptance_checks.length,
+        `${fm.id} has no acceptance checks`,
+      ).toBeGreaterThan(0);
       expect(fm.oracle_controls.length, `${fm.id} has no controls`).toBeGreaterThan(0);
     }
   });

@@ -33,8 +33,7 @@ describe("sanitizeEvidenceLedgerAppendMetadata", () => {
     const sanitized = sanitizeEvidenceLedgerAppendMetadata({
       prompt_sha256: HASH_A,
       token_hash: HASH_B,
-      provider_note:
-        "retry with Bearer supersecret-token-12345 and sk-test-secret0000000",
+      provider_note: "retry with Bearer supersecret-token-12345 and sk-test-secret0000000",
       nested: {
         callback: "https://example.test/cb?access_token=secret-value&ok=1",
         message:
@@ -88,8 +87,7 @@ describe("appendEvidenceLedgerEvent append-time sanitization", () => {
           failure_reason:
             "upstream callback https://example.test/cb?access_token=append-secret-value",
           nested: {
-            message:
-              "cookie=append-cookie-secret; raw_output=append-private-output",
+            message: "cookie=append-cookie-secret; raw_output=append-private-output",
           },
           array: [{ detail: "api_key=append-api-secret" }],
         },
@@ -101,8 +99,7 @@ describe("appendEvidenceLedgerEvent append-time sanitization", () => {
       prompt_sha256: HASH_A,
       token_hash: HASH_B,
       provider_note: "retry with Bearer [redacted]",
-      failure_reason:
-        "upstream callback https://example.test/cb?access_token=[redacted]",
+      failure_reason: "upstream callback https://example.test/cb?access_token=[redacted]",
     });
 
     const raw = await readFile(evidenceLedgerPath(SESSION_ID, homeDir), "utf8");

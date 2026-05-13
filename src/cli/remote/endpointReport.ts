@@ -162,7 +162,10 @@ export function isHealthyReport(report: RemoteBrowserEndpointV1): boolean {
  * Defensive: scan a serialised report for token-looking material. Used
  * by callers as a last-line guard before printing.
  */
-export function reportLeaksToken(report: RemoteBrowserEndpointV1, rawToken: string | undefined): boolean {
+export function reportLeaksToken(
+  report: RemoteBrowserEndpointV1,
+  rawToken: string | undefined,
+): boolean {
   if (!rawToken) return false;
   return JSON.stringify(report).includes(rawToken);
 }

@@ -57,106 +57,115 @@ describe("evidence ledger command registration", () => {
     );
   });
 
-  testNonWindows("routes ledger show through the registered command tree with a JSON envelope", async () => {
-    await appendEvidenceLedgerEvent(SESSION_ID, { type: "session_started" }, { homeDir });
-    const output = captureConsole();
-    const program = createRegisteredProgram();
+  testNonWindows(
+    "routes ledger show through the registered command tree with a JSON envelope",
+    async () => {
+      await appendEvidenceLedgerEvent(SESSION_ID, { type: "session_started" }, { homeDir });
+      const output = captureConsole();
+      const program = createRegisteredProgram();
 
-    await program.parseAsync(["evidence", "ledger", "show", SESSION_ID, "--json"], {
-      from: "user",
-    });
+      await program.parseAsync(["evidence", "ledger", "show", SESSION_ID, "--json"], {
+        from: "user",
+      });
 
-    const envelope = parseJsonEnvelope(output.stdout);
-    expect(envelope).toMatchObject({
-      schema_version: "json_envelope.v1",
-      ok: true,
-      data: {
-        schema_version: "evidence_ledger.v1",
-        session_id: SESSION_ID,
-        entry_count: 1,
-        chain_valid: true,
-      },
-      meta: { tool: "oracle evidence ledger show" },
-    });
-    expect(process.exitCode).toBeUndefined();
-  });
-
-  testNonWindows("sets a failing exit code for invalid registered ledger verify sessions", async () => {
-    const output = captureConsole();
-    const program = createRegisteredProgram();
-
-    await program.parseAsync(["evidence", "ledger", "verify", "../outside", "--json"], {
-      from: "user",
-    });
-
-    const envelope = parseJsonEnvelope(output.stdout);
-    expect(envelope).toMatchObject({
-      schema_version: "json_envelope.v1",
-      ok: false,
-      blocked_reason: "output_capture_unverified",
-    });
-    expect(envelope.errors[0]?.message).toMatch(/Invalid session id/);
-    expect(process.exitCode).toBe(1);
-  });
-
-  testNonWindows("routes sanitized and quarantined ledger exports through registration", async () => {
-    await appendEvidenceLedgerEvent(
-      SESSION_ID,
-      {
-        type: "evidence_quarantined",
-        evidence_id: "unsafe-1",
-        metadata: {
-          redaction_policy: "unsafe_debug",
-          evidence_sha256: HASH_A,
-          operator_note: "safe handoff note",
+      const envelope = parseJsonEnvelope(output.stdout);
+      expect(envelope).toMatchObject({
+        schema_version: "json_envelope.v1",
+        ok: true,
+        data: {
+          schema_version: "evidence_ledger.v1",
+          session_id: SESSION_ID,
+          entry_count: 1,
+          chain_valid: true,
         },
-      },
-      { homeDir },
-    );
-    const output = captureConsole();
+        meta: { tool: "oracle evidence ledger show" },
+      });
+      expect(process.exitCode).toBeUndefined();
+    },
+  );
 
-    await createRegisteredProgram().parseAsync(
-      ["evidence", "ledger", "export", SESSION_ID, "--sanitized", "--json"],
-      { from: "user" },
-    );
-    const sanitized = parseJsonEnvelope(output.stdout);
-    expect(sanitized).toMatchObject({
-      schema_version: "json_envelope.v1",
-      ok: true,
-      data: {
-        schema_version: "evidence_ledger_export.v1",
-        session_id: SESSION_ID,
-        export_mode: "sanitized",
-        quarantined_included: false,
-        quarantined_entry_count: 1,
-      },
-    });
-    expect(firstEvent(sanitized)?.quarantined_metadata_included).toBe(false);
-    expect(firstEvent(sanitized)?.event?.metadata).toMatchObject({
-      metadata_omitted_from_sanitized_export: true,
-      redaction_policy: "unsafe_debug",
-      evidence_sha256: HASH_A,
-    });
+  testNonWindows(
+    "sets a failing exit code for invalid registered ledger verify sessions",
+    async () => {
+      const output = captureConsole();
+      const program = createRegisteredProgram();
 
-    output.stdout.length = 0;
-    await createRegisteredProgram().parseAsync(
-      ["evidence", "ledger", "export", SESSION_ID, "--quarantined", "--json"],
-      { from: "user" },
-    );
-    const quarantined = parseJsonEnvelope(output.stdout);
-    expect(quarantined).toMatchObject({
-      schema_version: "json_envelope.v1",
-      ok: true,
-      data: {
-        schema_version: "evidence_ledger_export.v1",
-        session_id: SESSION_ID,
-        export_mode: "quarantined",
-        quarantined_included: true,
-      },
-    });
-    expect(firstEvent(quarantined)?.quarantined_metadata_included).toBe(true);
-    expect(firstEvent(quarantined)?.event?.metadata?.operator_note).toBe("safe handoff note");
-  });
+      await program.parseAsync(["evidence", "ledger", "verify", "../outside", "--json"], {
+        from: "user",
+      });
+
+      const envelope = parseJsonEnvelope(output.stdout);
+      expect(envelope).toMatchObject({
+        schema_version: "json_envelope.v1",
+        ok: false,
+        blocked_reason: "output_capture_unverified",
+      });
+      expect(envelope.errors[0]?.message).toMatch(/Invalid session id/);
+      expect(process.exitCode).toBe(1);
+    },
+  );
+
+  testNonWindows(
+    "routes sanitized and quarantined ledger exports through registration",
+    async () => {
+      await appendEvidenceLedgerEvent(
+        SESSION_ID,
+        {
+          type: "evidence_quarantined",
+          evidence_id: "unsafe-1",
+          metadata: {
+            redaction_policy: "unsafe_debug",
+            evidence_sha256: HASH_A,
+            operator_note: "safe handoff note",
+          },
+        },
+        { homeDir },
+      );
+      const output = captureConsole();
+
+      await createRegisteredProgram().parseAsync(
+        ["evidence", "ledger", "export", SESSION_ID, "--sanitized", "--json"],
+        { from: "user" },
+      );
+      const sanitized = parseJsonEnvelope(output.stdout);
+      expect(sanitized).toMatchObject({
+        schema_version: "json_envelope.v1",
+        ok: true,
+        data: {
+          schema_version: "evidence_ledger_export.v1",
+          session_id: SESSION_ID,
+          export_mode: "sanitized",
+          quarantined_included: false,
+          quarantined_entry_count: 1,
+        },
+      });
+      expect(firstEvent(sanitized)?.quarantined_metadata_included).toBe(false);
+      expect(firstEvent(sanitized)?.event?.metadata).toMatchObject({
+        metadata_omitted_from_sanitized_export: true,
+        redaction_policy: "unsafe_debug",
+        evidence_sha256: HASH_A,
+      });
+
+      output.stdout.length = 0;
+      await createRegisteredProgram().parseAsync(
+        ["evidence", "ledger", "export", SESSION_ID, "--quarantined", "--json"],
+        { from: "user" },
+      );
+      const quarantined = parseJsonEnvelope(output.stdout);
+      expect(quarantined).toMatchObject({
+        schema_version: "json_envelope.v1",
+        ok: true,
+        data: {
+          schema_version: "evidence_ledger_export.v1",
+          session_id: SESSION_ID,
+          export_mode: "quarantined",
+          quarantined_included: true,
+        },
+      });
+      expect(firstEvent(quarantined)?.quarantined_metadata_included).toBe(true);
+      expect(firstEvent(quarantined)?.event?.metadata?.operator_note).toBe("safe handoff note");
+    },
+  );
 });
 
 function createRegisteredProgram(): Command {

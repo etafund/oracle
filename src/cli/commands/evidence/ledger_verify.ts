@@ -24,9 +24,7 @@ const SESSION_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
 
 function assertSafeSessionId(value: string): void {
   if (!SESSION_ID_PATTERN.test(value)) {
-    throw new Error(
-      `Invalid session id: "${value}". Must match [a-zA-Z0-9][a-zA-Z0-9._-]{0,127}.`,
-    );
+    throw new Error(`Invalid session id: "${value}". Must match [a-zA-Z0-9][a-zA-Z0-9._-]{0,127}.`);
   }
 }
 

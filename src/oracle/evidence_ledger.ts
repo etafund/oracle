@@ -20,12 +20,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import {
-  canonicalJSON,
-  evidenceDir,
-  isPlaceholderHash,
-  sha256OfBytes,
-} from "./v18/evidence.js";
+import { canonicalJSON, evidenceDir, isPlaceholderHash, sha256OfBytes } from "./v18/evidence.js";
 import { serializeEvidenceLedgerAppend } from "./evidence_ledger_concurrency.js";
 import { sanitizeEvidenceLedgerAppendMetadata } from "./evidence_ledger_sanitize_append.js";
 import {
@@ -200,8 +195,7 @@ async function appendEvidenceLedgerEventUnlocked(
   const sequence = prior.nextSequence;
   const prevHash = prior.prevHash;
 
-  const timestamp =
-    event.timestamp ?? (options.now ? options.now() : new Date()).toISOString();
+  const timestamp = event.timestamp ?? (options.now ? options.now() : new Date()).toISOString();
 
   const entryWithoutHash = {
     schema_version: EVIDENCE_LEDGER_SCHEMA_VERSION,
@@ -339,8 +333,7 @@ function verifyChainInternal(entries: readonly EvidenceLedgerEntry[]): string | 
     if (entry.sequence !== i) {
       return `entry ${i} has out-of-order sequence ${entry.sequence}`;
     }
-    const expectedPrev =
-      i === 0 ? EVIDENCE_LEDGER_GENESIS_HASH : entries[i - 1].entry_hash;
+    const expectedPrev = i === 0 ? EVIDENCE_LEDGER_GENESIS_HASH : entries[i - 1].entry_hash;
     if (entry.prev_hash !== expectedPrev) {
       return `entry ${i} prev_hash ${entry.prev_hash} does not match expected ${expectedPrev}`;
     }

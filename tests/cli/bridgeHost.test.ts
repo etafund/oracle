@@ -16,9 +16,9 @@ describe("bridge host CLI argument handling", () => {
     expect(() =>
       splitShellLikeArgs(`-o "ProxyJump=bastion`, { optionName: "--ssh-extra-args" }),
     ).toThrow(/--ssh-extra-args has an unterminated double quote/);
-    expect(() =>
-      splitShellLikeArgs("-i key\\", { optionName: "--ssh-extra-args" }),
-    ).toThrow(/--ssh-extra-args ends with an unfinished escape/);
+    expect(() => splitShellLikeArgs("-i key\\", { optionName: "--ssh-extra-args" })).toThrow(
+      /--ssh-extra-args ends with an unfinished escape/,
+    );
   });
 
   test("rejects conflicting command mode flags", () => {

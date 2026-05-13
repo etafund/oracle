@@ -41,17 +41,15 @@ describe(`premortem ${FM.id}: ${FM.title}`, () => {
     expect(FM.oracle_acceptance_checks.length).toBeGreaterThan(0);
   });
 
-  test.each(NON_WAIVABLE_PROTECTED_SLOTS)(
-    "%s cannot be waived under any payload",
-    (slot) => {
-      const verdict = evaluateFallbackWaiver(
-        buildWaiver({ provider_slot: slot }),
-        { slot, profile: "balanced", now: NOW },
-      );
-      expect(verdict.applicable).toBe(false);
-      expect(verdict.synthesis_eligible_after_waiver).toBe(false);
-    },
-  );
+  test.each(NON_WAIVABLE_PROTECTED_SLOTS)("%s cannot be waived under any payload", (slot) => {
+    const verdict = evaluateFallbackWaiver(buildWaiver({ provider_slot: slot }), {
+      slot,
+      profile: "balanced",
+      now: NOW,
+    });
+    expect(verdict.applicable).toBe(false);
+    expect(verdict.synthesis_eligible_after_waiver).toBe(false);
+  });
 
   test("a waiver that empties its own non_waivable_slots cannot expand scope", () => {
     const verdict = evaluateFallbackWaiver(
@@ -62,9 +60,7 @@ describe(`premortem ${FM.id}: ${FM.title}`, () => {
       { slot: "chatgpt_pro_synthesis", profile: "balanced", now: NOW },
     );
     expect(verdict.applicable).toBe(false);
-    expect(
-      verdict.reasons.some((r) => r.message.includes("Oracle's canonical list")),
-    ).toBe(true);
+    expect(verdict.reasons.some((r) => r.message.includes("Oracle's canonical list"))).toBe(true);
   });
 
   test("expired waivers are rejected with provider_login_required (no silent retry)", () => {
@@ -73,9 +69,9 @@ describe(`premortem ${FM.id}: ${FM.title}`, () => {
       { slot: "xai_grok_reasoning", profile: "balanced", now: NOW },
     );
     expect(verdict.applicable).toBe(false);
-    expect(
-      verdict.reasons.find((r) => r.field === "fallback_waiver.expires_at")?.code,
-    ).toBe("provider_login_required");
+    expect(verdict.reasons.find((r) => r.field === "fallback_waiver.expires_at")?.code).toBe(
+      "provider_login_required",
+    );
   });
 
   test("rejected waivers FORCE must_surface_in_handoff=true (audit trail visibility)", () => {

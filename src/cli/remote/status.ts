@@ -43,9 +43,7 @@ export async function runRemoteStatus(options: RemoteStatusCliOptions): Promise<
   lines.push(chalk.dim(`endpoint: ${report.endpoint_id}`));
   lines.push(chalk.dim(`host: ${resolved.host ?? "(unset)"} (${resolved.sources.host})`));
   lines.push(
-    chalk.dim(
-      `token: ${resolved.redactedToken ?? "(unset)"} (${resolved.sources.token})`,
-    ),
+    chalk.dim(`token: ${resolved.redactedToken ?? "(unset)"} (${resolved.sources.token})`),
   );
   lines.push(chalk.dim(`status: ${report.status}`));
   console.log(lines.join("\n"));

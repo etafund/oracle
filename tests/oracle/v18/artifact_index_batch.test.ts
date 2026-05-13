@@ -36,7 +36,10 @@ afterEach(async () => {
 });
 
 function entry(id: string): ArtifactIndexEntry {
-  const hex = id.padEnd(64, "1").slice(0, 64).replace(/[^0-9a-f]/g, "1");
+  const hex = id
+    .padEnd(64, "1")
+    .slice(0, 64)
+    .replace(/[^0-9a-f]/g, "1");
   return {
     artifact_id: id,
     kind: "browser_evidence",
@@ -130,17 +133,13 @@ describe("upsertArtifactIndexEntries — perf (atomic commits)", () => {
       for (const id of ids) {
         await upsertArtifactIndexEntry(singleFile, entry(id));
       }
-      const singleRenames = renameSpy.mock.calls.filter(
-        ([, dest]) => dest === singleFile,
-      ).length;
+      const singleRenames = renameSpy.mock.calls.filter(([, dest]) => dest === singleFile).length;
 
       renameSpy.mockClear();
 
       // Batch path: ONE rename against batchFile.
       await upsertArtifactIndexEntries(batchFile, ids.map(entry));
-      const batchRenames = renameSpy.mock.calls.filter(
-        ([, dest]) => dest === batchFile,
-      ).length;
+      const batchRenames = renameSpy.mock.calls.filter(([, dest]) => dest === batchFile).length;
 
       expect(singleRenames).toBe(50);
       expect(batchRenames).toBe(1);
@@ -150,30 +149,26 @@ describe("upsertArtifactIndexEntries — perf (atomic commits)", () => {
       const batchIndex = await readArtifactIndex(batchFile);
       expect(singleIndex?.artifacts).toHaveLength(50);
       expect(batchIndex?.artifacts).toHaveLength(50);
-      const sortIds = (xs: { artifact_id?: string }[]) =>
-        xs.map((x) => x.artifact_id).sort();
+      const sortIds = (xs: { artifact_id?: string }[]) => xs.map((x) => x.artifact_id).sort();
       expect(sortIds(batchIndex!.artifacts)).toEqual(sortIds(singleIndex!.artifacts));
     },
   );
 
-  testNonWindows(
-    "batch read happens ONCE regardless of entry count",
-    async () => {
-      const indexFile = path.join(workDir, "one-read.json");
-      const readSpy = vi.spyOn(fs, "readFile");
-      await upsertArtifactIndexEntries(
-        indexFile,
-        Array.from({ length: 20 }, (_, i) => entry(`ev-r-${i}`)),
-      );
-      // Filter to just our target index file (other readFile calls
-      // for unrelated test fixtures should not pollute the count).
-      const indexReads = readSpy.mock.calls.filter(([f]) => f === indexFile).length;
-      // One read because the file does not exist on first call —
-      // readArtifactIndex catches the ENOENT and treats it as a fresh
-      // index. Subsequent re-reads inside the batch path: zero.
-      expect(indexReads).toBeLessThanOrEqual(1);
-    },
-  );
+  testNonWindows("batch read happens ONCE regardless of entry count", async () => {
+    const indexFile = path.join(workDir, "one-read.json");
+    const readSpy = vi.spyOn(fs, "readFile");
+    await upsertArtifactIndexEntries(
+      indexFile,
+      Array.from({ length: 20 }, (_, i) => entry(`ev-r-${i}`)),
+    );
+    // Filter to just our target index file (other readFile calls
+    // for unrelated test fixtures should not pollute the count).
+    const indexReads = readSpy.mock.calls.filter(([f]) => f === indexFile).length;
+    // One read because the file does not exist on first call —
+    // readArtifactIndex catches the ENOENT and treats it as a fresh
+    // index. Subsequent re-reads inside the batch path: zero.
+    expect(indexReads).toBeLessThanOrEqual(1);
+  });
 
   testNonWindows("batch writes one canonical JSON blob (one writeFile/open)", async () => {
     // The lock helper writes via fs.open(...).writeFile(...) on a

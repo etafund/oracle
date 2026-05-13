@@ -8,8 +8,11 @@ import { checkTcpConnection, checkRemoteHealth } from "../../remote/health.js";
 import { detectChromeBinary, detectChromeCookieDb } from "../../browser/detect.js";
 import { formatCodexMcpSnippet } from "./codexConfig.js";
 
+import type { RemoteBrowserEndpointV1 } from "../../remote/types.js";
+
 export interface BridgeDoctorCliOptions {
   verbose?: boolean;
+  json?: boolean;
 }
 
 type ResolveRemoteServiceConfigInput = Parameters<typeof resolveRemoteServiceConfig>[0];
@@ -43,16 +46,14 @@ function resolveRemoteServiceConfigForDoctor(
       host,
       token: undefined,
       mode: "preferred",
-      hostHash: host
-        ? createHash("sha256").update(host).digest("hex").slice(0, 12)
-        : undefined,
+      hostHash: host ? createHash("sha256").update(host).digest("hex").slice(0, 12) : undefined,
       redactedToken: undefined,
       sources: { host: source, token: "unset", mode: "default" },
     } as ResolvedRemoteServiceConfig;
   }
 }
 
-export async function runBridgeDoctor(_options: BridgeDoctorCliOptions): Promise<void> {
+export async function runBridgeDoctor(options: BridgeDoctorCliOptions): Promise<void> {
   const { config: userConfig, path: configPath, loaded } = await loadUserConfig();
   const version = getCliVersion();
 
@@ -62,6 +63,62 @@ export async function runBridgeDoctor(_options: BridgeDoctorCliOptions): Promise
     userConfig,
     env: process.env,
   });
+
+  if (options.json) {
+    const endpoint: RemoteBrowserEndpointV1 = {
+      _schema: "remote_browser_endpoint.v1",
+      endpoint_id: resolvedRemote.hostHash || "local",
+      mode: resolvedRemote.mode,
+      status: "unknown",
+      host_env: process.env.ORACLE_REMOTE_HOST || null,
+      token_env: process.env.ORACLE_REMOTE_TOKEN ? "***" : null,
+      host_hash: resolvedRemote.hostHash || null,
+      auth_profile_id_hash: null,
+      no_plaintext_secrets: true,
+      shared_profile_policy: true,
+      provider_locks: [],
+      doctor_command: "oracle remote doctor",
+      recover_command: "oracle remote doctor",
+      version: null,
+      uptimeSeconds: null,
+    };
+
+    if (!resolvedRemote.host) {
+      endpoint.status = "not_configured";
+    } else if (!resolvedRemote.token) {
+      endpoint.status = "missing_token";
+    } else {
+      const tcp = await checkTcpConnection(resolvedRemote.host, 2000);
+      if (!tcp.ok) {
+        endpoint.status = "unreachable";
+        endpoint.error = tcp.error;
+      } else {
+        const health = await checkRemoteHealth({
+          host: resolvedRemote.host,
+          token: resolvedRemote.token,
+          timeoutMs: 5000,
+        });
+        if (health.ok) {
+          endpoint.status = "healthy";
+          endpoint.version = health.version ?? null;
+          endpoint.uptimeSeconds = health.uptimeSeconds ?? null;
+          endpoint.auth_profile_id_hash = health.authProfileIdHash ?? null;
+          endpoint.provider_locks = health.providerLocks ?? [];
+        } else {
+          endpoint.status = "auth_failed";
+          endpoint.error = health.error;
+          if (health.statusCode) {
+            endpoint.error = `HTTP ${health.statusCode} (${health.error ?? "unknown error"})`;
+          }
+        }
+      }
+    }
+
+    console.log(JSON.stringify(endpoint, null, 2));
+    process.exitCode =
+      endpoint.status === "healthy" || endpoint.status === "not_configured" ? 0 : 1;
+    return;
+  }
 
   const lines: string[] = [];
   const fail: string[] = [];
@@ -84,10 +141,14 @@ export async function runBridgeDoctor(_options: BridgeDoctorCliOptions): Promise
 
   if (resolvedRemote.host) {
     lines.push(`Remote service: ${chalk.green("configured")}`);
-    lines.push(chalk.dim(`remoteHost: ${resolvedRemote.host} (${resolvedRemote.sources.host})`));
     lines.push(
       chalk.dim(
-        `remoteToken: ${resolvedRemote.token ? "set" : "missing"} (${resolvedRemote.sources.token})`,
+        `remoteHost: ${resolvedRemote.host} (${resolvedRemote.sources.host}) [hash: ${resolvedRemote.hostHash}]`,
+      ),
+    );
+    lines.push(
+      chalk.dim(
+        `remoteToken: ${resolvedRemote.redactedToken ?? "missing"} (${resolvedRemote.sources.token})`,
       ),
     );
 

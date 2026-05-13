@@ -25,8 +25,7 @@ export type ProtectedRunEnvelope =
   | ProtectedRunDispatchEnvelope;
 
 export interface ProtectedRunCliOptions
-  extends ChatGptProRunCliOptions,
-    GeminiDeepThinkRunCliOptions {
+  extends ChatGptProRunCliOptions, GeminiDeepThinkRunCliOptions {
   provider?: string;
   json?: boolean;
 }
@@ -150,9 +149,7 @@ function rewriteChatGptRunCommand(envelope: ChatGptProRunEnvelope): ChatGptProRu
   };
 }
 
-function rewriteGeminiRunCommand(
-  envelope: GeminiDeepThinkRunEnvelope,
-): GeminiDeepThinkRunEnvelope {
+function rewriteGeminiRunCommand(envelope: GeminiDeepThinkRunEnvelope): GeminiDeepThinkRunEnvelope {
   if (!envelope.data) {
     return envelope;
   }
@@ -190,7 +187,8 @@ function buildDispatchFailure(
       generated_at: generatedAt,
     },
     blocked_reason: "protected_provider_required",
-    next_command: "oracle run --provider chatgpt --chatgpt-pro --extended-reasoning --prompt <redacted> --json",
+    next_command:
+      "oracle run --provider chatgpt --chatgpt-pro --extended-reasoning --prompt <redacted> --json",
     fix_command: "--provider chatgpt|gemini",
     retry_safe: false,
     errors: [

@@ -83,9 +83,7 @@ export interface NormalizeChatGptRunInput {
   readonly error?: Record<string, unknown>;
 }
 
-export function normalizeChatGptRun(
-  input: NormalizeChatGptRunInput,
-): ChatGptProviderResultBuild {
+export function normalizeChatGptRun(input: NormalizeChatGptRunInput): ChatGptProviderResultBuild {
   return buildChatGptProviderResult({
     slot: input.slot,
     providerResultId: input.providerResultId,

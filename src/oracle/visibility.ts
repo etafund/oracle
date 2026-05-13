@@ -8,16 +8,9 @@ import {
   type BudgetVerdict,
   type SlotRuntimeEstimate,
 } from "./runtime_budget.js";
-import {
-  V18_BUNDLE_VERSION,
-  createEnvelope,
-  type JsonEnvelope,
-} from "./v18/index.js";
+import { V18_BUNDLE_VERSION, createEnvelope, type JsonEnvelope } from "./v18/index.js";
 import { isNonWaivableSlot } from "./v18/protected_slot_boundaries.js";
-import {
-  buildWaiverHandoffMetadata,
-  type WaiverHandoffMetadata,
-} from "./v18/waiver.js";
+import { buildWaiverHandoffMetadata, type WaiverHandoffMetadata } from "./v18/waiver.js";
 
 export const ORACLE_VISIBILITY_STATUS_SCHEMA_VERSION = "oracle_visibility_status.v1" as const;
 
@@ -204,10 +197,7 @@ function buildBudgetSummary(
     costUsd: input.budget.consumedCostUsd,
     tokens: input.budget.consumedTokens,
   });
-  const approval = isApprovalSatisfied(
-    input.budget.budget,
-    input.budget.approvalsPresent ?? [],
-  );
+  const approval = isApprovalSatisfied(input.budget.budget, input.budget.approvalsPresent ?? []);
   const required =
     typeof input.budget.budget === "object" &&
     input.budget.budget != null &&

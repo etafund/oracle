@@ -123,9 +123,7 @@ function parseBaseline(value: unknown, out: BaselineMismatch[]): SourceBaseline 
   const parsed = sourceBaselineSchema.safeParse(value);
   if (!parsed.success) {
     for (const issue of parsed.error.issues) {
-      out.push(
-        mismatch(["source_baseline", ...issue.path.map(String)].join("."), issue.message),
-      );
+      out.push(mismatch(["source_baseline", ...issue.path.map(String)].join("."), issue.message));
     }
     return null;
   }
@@ -159,27 +157,19 @@ export interface VerifySourceTrustInput {
  * Missing trust tiers for baseline source IDs are surfaced as
  * mismatches when `strict` is true (default).
  */
-export function verifySourceTrustCrossReference(
-  input: VerifySourceTrustInput,
-): BaselineVerdict {
+export function verifySourceTrustCrossReference(input: VerifySourceTrustInput): BaselineVerdict {
   const out: BaselineMismatch[] = [];
   const trust = parseTrust(input.trust, out);
   if (!trust) return fail(out);
 
-  const baseline =
-    input.baseline === undefined ? null : parseBaseline(input.baseline, out);
+  const baseline = input.baseline === undefined ? null : parseBaseline(input.baseline, out);
 
   // Duplicate trust source IDs.
   const trustIds = new Map<string, number>();
   trust.sources.forEach((entry, idx) => {
     const count = trustIds.get(entry.id) ?? 0;
     if (count > 0) {
-      out.push(
-        mismatch(
-          `source_trust.sources[${idx}].id`,
-          `duplicate source id "${entry.id}"`,
-        ),
-      );
+      out.push(mismatch(`source_trust.sources[${idx}].id`, `duplicate source id "${entry.id}"`));
     }
     trustIds.set(entry.id, count + 1);
   });
@@ -240,10 +230,7 @@ export function verifyTraceability(input: VerifyTraceabilityInput): BaselineVerd
   if (!parsed.success) {
     for (const issue of parsed.error.issues) {
       out.push(
-        mismatch(
-          ["traceability_matrix", ...issue.path.map(String)].join("."),
-          issue.message,
-        ),
+        mismatch(["traceability_matrix", ...issue.path.map(String)].join("."), issue.message),
       );
     }
     return fail(out);
@@ -268,12 +255,7 @@ export function verifyTraceability(input: VerifyTraceabilityInput): BaselineVerd
   const testIds = new Set<string>();
   (matrix.tests ?? []).forEach((test, idx) => {
     if (testIds.has(test.id)) {
-      out.push(
-        mismatch(
-          `traceability_matrix.tests[${idx}].id`,
-          `duplicate test id "${test.id}"`,
-        ),
-      );
+      out.push(mismatch(`traceability_matrix.tests[${idx}].id`, `duplicate test id "${test.id}"`));
     }
     testIds.add(test.id);
   });

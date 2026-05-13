@@ -22,11 +22,7 @@
 
 import { z } from "zod";
 
-import {
-  artifactIndexSchema,
-  sha256HashSchema,
-  type ArtifactIndex,
-} from "./contracts.js";
+import { artifactIndexSchema, sha256HashSchema, type ArtifactIndex } from "./contracts.js";
 import { isPlaceholderHash, sha256OfBytes } from "./evidence.js";
 
 // ─── Schema ──────────────────────────────────────────────────────────────────
@@ -100,9 +96,7 @@ function parseBaseline(value: unknown, out: BaselineMismatch[]): SourceBaseline 
   const parsed = sourceBaselineSchema.safeParse(value);
   if (!parsed.success) {
     for (const issue of parsed.error.issues) {
-      out.push(
-        mismatch(["source_baseline", ...issue.path.map(String)].join("."), issue.message),
-      );
+      out.push(mismatch(["source_baseline", ...issue.path.map(String)].join("."), issue.message));
     }
     return null;
   }
@@ -113,9 +107,7 @@ function parseIndex(value: unknown, out: BaselineMismatch[]): ArtifactIndex | nu
   const parsed = artifactIndexSchema.safeParse(value);
   if (!parsed.success) {
     for (const issue of parsed.error.issues) {
-      out.push(
-        mismatch(["artifact_index", ...issue.path.map(String)].join("."), issue.message),
-      );
+      out.push(mismatch(["artifact_index", ...issue.path.map(String)].join("."), issue.message));
     }
     return null;
   }
@@ -251,10 +243,7 @@ export function checkArtifactIndexLinks(input: ArtifactLinkInput): BaselineVerdi
     });
     if (matches.length === 0) {
       out.push(
-        mismatch(
-          `artifact_index.expected[${i}]`,
-          `no entry matched ${JSON.stringify(expected)}`,
-        ),
+        mismatch(`artifact_index.expected[${i}]`, `no entry matched ${JSON.stringify(expected)}`),
       );
     }
   });

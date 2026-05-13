@@ -42,7 +42,8 @@ const LOCK_LABEL = "gemini-deep-think";
           "ORACLE_LIVE_TEST=1 ORACLE_LIVE_BROWSER=1 pnpm vitest run tests/live/gemini-smoke-live.test.ts",
         run_command:
           "oracle --engine browser --provider gemini --model gemini-3-pro-deep-think --gemini-deep-think --gemini-deep-think-fallback fail --remote-browser preferred --evidence redacted --prompt <redacted>",
-        manual_test_doc: "docs/manual-tests.md#opt-in-live-browser-smoke-tests-chatgpt-pro-gemini-deep-think",
+        manual_test_doc:
+          "docs/manual-tests.md#opt-in-live-browser-smoke-tests-chatgpt-pro-gemini-deep-think",
         reattach_command: `oracle session ${sessionId} --render`,
         evidence_verify_command: `oracle evidence ledger verify ${sessionId} --json`,
       });

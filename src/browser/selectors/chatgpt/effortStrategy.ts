@@ -113,9 +113,7 @@ export function tierForLabel(label: string): ChatGptEffortTierEntry | null {
  * hashing so two runs that observed the same labels in different order
  * produce the same digest.
  */
-export function availableEffortLabelsHash(
-  labels: readonly string[],
-): `sha256:${string}` {
+export function availableEffortLabelsHash(labels: readonly string[]): `sha256:${string}` {
   const canonical = [...labels]
     .map((l) => l.trim().replace(/\s+/g, " "))
     .filter((l) => l.length > 0)
@@ -200,8 +198,7 @@ export function pickHighestVisibleEffort(
       availableEffortLabelsHash: hash,
       selectorManifestVersion: SELECTOR_MANIFEST_VERSION,
       errorCode: "output_capture_unverified",
-      reason:
-        "No effort-picker labels were visible; the effort control may be missing or hidden.",
+      reason: "No effort-picker labels were visible; the effort control may be missing or hidden.",
       observedLabels,
     };
   }

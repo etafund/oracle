@@ -35,7 +35,9 @@ export async function runStatusVisibility(
 ): Promise<OracleVisibilityStatusResult> {
   const result = buildOracleVisibilityStatus(options);
   const writer = io.stdout ?? ((text: string) => console.log(text));
-  writer(options.json === false ? formatStatusVisibility(result) : stableJsonStringify(result.envelope));
+  writer(
+    options.json === false ? formatStatusVisibility(result) : stableJsonStringify(result.envelope),
+  );
   return result;
 }
 

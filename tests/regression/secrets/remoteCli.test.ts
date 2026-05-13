@@ -37,7 +37,8 @@ const { loadUserConfig } = vi.hoisted(() => ({
 }));
 
 const { resolveRemoteServiceConfig } = vi.hoisted(() => ({
-  resolveRemoteServiceConfig: vi.fn<(input?: { cliHost?: string; cliToken?: string }) => MockResolved>(),
+  resolveRemoteServiceConfig:
+    vi.fn<(input?: { cliHost?: string; cliToken?: string }) => MockResolved>(),
 }));
 
 const { checkTcpConnection, checkRemoteHealth } = vi.hoisted(() => ({

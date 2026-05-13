@@ -123,7 +123,10 @@ export function isSafeRelativeArtifactPath(value: string): boolean {
 
 export function isPathUnderRoot(root: string, candidate: string): boolean {
   const relative = path.relative(root, candidate);
-  return relative === "" || (relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative));
+  return (
+    relative === "" ||
+    (relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative))
+  );
 }
 
 export interface FsSafetyTempDir {
@@ -173,7 +176,7 @@ export async function probeFsyncSemantics(dir: string): Promise<FsyncProbeResult
   const probeFile = path.join(dir, "fsync-probe.json");
   const fileHandle = await fs.open(probeFile, "w");
   try {
-    await fileHandle.writeFile("{\"ok\":true}\n", "utf8");
+    await fileHandle.writeFile('{"ok":true}\n', "utf8");
     await fileHandle.sync();
   } finally {
     await fileHandle.close();

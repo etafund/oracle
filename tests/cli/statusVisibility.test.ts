@@ -1,7 +1,10 @@
 import { describe, expect, test } from "vitest";
 import { V18_BUNDLE_VERSION } from "../../src/oracle/v18/index.js";
 import { buildOracleVisibilityStatus } from "../../src/oracle/visibility.js";
-import { formatStatusVisibility, runStatusVisibility } from "../../src/cli/commands/statusVisibility.js";
+import {
+  formatStatusVisibility,
+  runStatusVisibility,
+} from "../../src/cli/commands/statusVisibility.js";
 
 const NOW = new Date("2026-05-13T00:00:00.000Z");
 

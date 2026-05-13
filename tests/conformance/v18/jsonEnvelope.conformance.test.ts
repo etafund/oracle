@@ -70,7 +70,8 @@ describe("json_envelope.v1 conformance harness", () => {
 
   test("canonical ok fixture validates against the schema", async () => {
     const log = createStructuredTestLog({
-      testName: "json_envelope.v1 conformance harness > canonical ok fixture validates against the schema",
+      testName:
+        "json_envelope.v1 conformance harness > canonical ok fixture validates against the schema",
       evidencePointer: "PLAN/oracle-vnext-plan-bundle-v18.0.0/fixtures/json-envelope.ok.json",
       now: () => "2026-05-13T00:00:00.000Z",
     });
@@ -189,7 +190,12 @@ describe("createEnvelope helper", () => {
 
   test("data accepts every schema-allowed shape", async () => {
     schema = await loadJsonEnvelopeSchema();
-    for (const data of [null, "string-data", [] as unknown[], { x: 1 } as Record<string, unknown>]) {
+    for (const data of [
+      null,
+      "string-data",
+      [] as unknown[],
+      { x: 1 } as Record<string, unknown>,
+    ]) {
       const env = createEnvelope({ ok: true, data, meta: {} });
       expect(validateEnvelope(env, schema)).toEqual([]);
     }

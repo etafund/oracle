@@ -53,9 +53,7 @@ describe(`premortem ${FM.id}: ${FM.title}`, () => {
     expect(result.consumed).toBe(false);
     expect(result.lease).toBeNull();
     // Map to the right v18 error code so the recover surface is machine-readable.
-    expect(
-      result.reasons.some((r) => r.code === "provider_login_required"),
-    ).toBe(true);
+    expect(result.reasons.some((r) => r.code === "provider_login_required")).toBe(true);
   });
 
   test("lease expires_at in the past flips eligibility even when status=active", () => {

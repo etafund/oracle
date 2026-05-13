@@ -10,11 +10,7 @@
 
 import type { Command } from "commander";
 
-import {
-  V18_BUNDLE_VERSION,
-  createEnvelope,
-  type JsonEnvelope,
-} from "../../oracle/v18/index.js";
+import { V18_BUNDLE_VERSION, createEnvelope, type JsonEnvelope } from "../../oracle/v18/index.js";
 import {
   ROBOT_ERROR_FIELDS_REQUIRED,
   buildRobotSurfacePayload,
@@ -82,9 +78,7 @@ function formatHuman(result: RobotDocsCommandResult): string {
   const { payload } = result;
   const lines: string[] = [];
   lines.push(`🧿 oracle robot-docs (${payload.bundle_version})`);
-  lines.push(
-    `tool=${payload.tool}  json_envelope_required=${payload.json_envelope_required}`,
-  );
+  lines.push(`tool=${payload.tool}  json_envelope_required=${payload.json_envelope_required}`);
   lines.push(`error_fields_required: ${payload.error_fields_required.join(", ")}`);
   lines.push("");
   for (const cmd of payload.commands) {

@@ -209,7 +209,9 @@ describe("verifyHashConsistency — mismatches", () => {
       result: buildResult({ provider_family: "gemini" }),
       evidence: buildEvidence(),
     });
-    expect(verdict.mismatches.some((m) => m.field === "provider_result.provider_family")).toBe(true);
+    expect(verdict.mismatches.some((m) => m.field === "provider_result.provider_family")).toBe(
+      true,
+    );
   });
 
   test("result_text_sha256 mismatch maps to output_capture_unverified", () => {
@@ -226,9 +228,9 @@ describe("verifyHashConsistency — mismatches", () => {
       evidence: buildEvidence({ provider_result_id: "result-B" }),
     });
     expect(verdict.consistent).toBe(false);
-    expect(
-      verdict.mismatches.some((m) => m.field === "provider_result.provider_result_id"),
-    ).toBe(true);
+    expect(verdict.mismatches.some((m) => m.field === "provider_result.provider_result_id")).toBe(
+      true,
+    );
   });
 
   test("prompt_manifest_sha256 differs from evidence.prompt_sha256 by design (no mismatch)", () => {
@@ -255,9 +257,9 @@ describe("verifyHashConsistency — mismatches", () => {
       result: buildResult(),
       evidence: buildEvidence({ mode_verified: false }),
     });
-    expect(
-      verdict.mismatches.some((m) => m.field === "provider_result.synthesis_eligible"),
-    ).toBe(true);
+    expect(verdict.mismatches.some((m) => m.field === "provider_result.synthesis_eligible")).toBe(
+      true,
+    );
   });
 
   test("protected slot with API access_path is rejected even when evidence is verified", () => {
@@ -308,7 +310,12 @@ describe("verifyHashConsistency — artifact index", () => {
       result: buildResult(),
       evidence: buildEvidence(),
       artifactIndex: buildIndex([
-        { artifact_id: "something-else", kind: "browser_evidence", path: "x.json", sha256: HASHES.output },
+        {
+          artifact_id: "something-else",
+          kind: "browser_evidence",
+          path: "x.json",
+          sha256: HASHES.output,
+        },
       ]),
     });
     expect(verdict.mismatches.some((m) => m.field === "artifact_index.artifacts")).toBe(true);
@@ -322,14 +329,17 @@ describe("verifyHashConsistency — artifact index", () => {
       result: buildResult(),
       evidence: buildEvidence(),
       artifactIndex: buildIndex([
-        { artifact_id: "evidence-test-1", kind: "browser_evidence", path: "evidence-test-1.json", sha256: stale },
+        {
+          artifact_id: "evidence-test-1",
+          kind: "browser_evidence",
+          path: "evidence-test-1.json",
+          sha256: stale,
+        },
       ]),
       artifactBytes: { "evidence-test-1.json": bytes },
     });
     expect(
-      verdict.mismatches.some(
-        (m) => m.field === "artifact_index.evidence-test-1.json.sha256",
-      ),
+      verdict.mismatches.some((m) => m.field === "artifact_index.evidence-test-1.json.sha256"),
     ).toBe(true);
     // Sanity: the computed hash is non-trivial.
     expect(realHash).toMatch(/^sha256:[0-9a-f]{64}$/);
@@ -342,7 +352,12 @@ describe("verifyHashConsistency — artifact index", () => {
       result: buildResult(),
       evidence: buildEvidence(),
       artifactIndex: buildIndex([
-        { artifact_id: "evidence-test-1", kind: "browser_evidence", path: "evidence.json", sha256: realHash },
+        {
+          artifact_id: "evidence-test-1",
+          kind: "browser_evidence",
+          path: "evidence.json",
+          sha256: realHash,
+        },
       ]),
       artifactBytes: { "evidence.json": bytes },
     });
@@ -354,13 +369,16 @@ describe("verifyHashConsistency — artifact index", () => {
       result: buildResult(),
       evidence: buildEvidence(),
       artifactIndex: buildIndex([
-        { artifact_id: "evidence-test-1", kind: "browser_evidence", path: "evidence.json", sha256: HASHES.output },
+        {
+          artifact_id: "evidence-test-1",
+          kind: "browser_evidence",
+          path: "evidence.json",
+          sha256: HASHES.output,
+        },
       ]),
       artifactBytes: {},
     });
-    expect(
-      verdict.mismatches.some((m) => m.message.includes("missing bytes")),
-    ).toBe(true);
+    expect(verdict.mismatches.some((m) => m.message.includes("missing bytes"))).toBe(true);
   });
 });
 

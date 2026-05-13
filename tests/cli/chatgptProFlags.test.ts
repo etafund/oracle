@@ -16,10 +16,7 @@ import {
   runChatGptProDryRun,
 } from "../../src/cli/commands/run/chatgptPro.js";
 
-function parseOptions(
-  addFlags: (command: Command) => Command,
-  argv: string[],
-): OptionValues {
+function parseOptions(addFlags: (command: Command) => Command, argv: string[]): OptionValues {
   const command = new Command();
   command.exitOverride();
   command.configureOutput({

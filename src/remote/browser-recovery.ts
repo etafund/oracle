@@ -38,8 +38,7 @@ export function createRemoteBrowserRecoveryFailure(
         kind: input.kind,
         error_code: "remote_browser_token_missing",
         blocked_reason: "remote_browser_token_missing",
-        message:
-          input.message ?? "A remote browser host is configured but no token was provided.",
+        message: input.message ?? "A remote browser host is configured but no token was provided.",
         next_command: "export ORACLE_REMOTE_TOKEN=<token>",
         fix_command: "oracle config set browser.remoteToken <token>",
         retry_safe: false,
@@ -163,32 +162,30 @@ export function toRemoteBrowserRecoveryEnvelope(
   failure: RemoteBrowserRecoveryFailure,
 ): JsonEnvelope {
   const data: Record<string, unknown> = { ...failure };
-  return createErrorEnvelope(
-    {
-      errors: [
-        {
-          error_code: failure.error_code,
-          message: failure.message,
-          details: {
-            kind: failure.kind,
-            ...(failure.required_env ? { required_env: failure.required_env } : {}),
-            docs_url_or_path: failure.docs_url_or_path,
-            ...(failure.host_hash ? { host_hash: failure.host_hash } : {}),
-            ...(failure.details ? failure.details : {}),
-          },
+  return createErrorEnvelope({
+    errors: [
+      {
+        error_code: failure.error_code,
+        message: failure.message,
+        details: {
+          kind: failure.kind,
+          ...(failure.required_env ? { required_env: failure.required_env } : {}),
+          docs_url_or_path: failure.docs_url_or_path,
+          ...(failure.host_hash ? { host_hash: failure.host_hash } : {}),
+          ...(failure.details ? failure.details : {}),
         },
-      ],
-      meta: {
-        recovery_schema_version: failure.schema_version,
-        failure_kind: failure.kind,
       },
-      data,
-      next_command: failure.next_command,
-      fix_command: failure.fix_command,
-      retry_safe: failure.retry_safe,
-      blocked_reason: failure.blocked_reason,
+    ],
+    meta: {
+      recovery_schema_version: failure.schema_version,
+      failure_kind: failure.kind,
     },
-  );
+    data,
+    next_command: failure.next_command,
+    fix_command: failure.fix_command,
+    retry_safe: failure.retry_safe,
+    blocked_reason: failure.blocked_reason,
+  });
 }
 
 export function createRemoteBrowserRecoveryError(

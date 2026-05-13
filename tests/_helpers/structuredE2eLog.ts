@@ -9,10 +9,7 @@
 import { writeFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
-import {
-  redactStructuredTestMetadata,
-  type StructuredTestLogRecord,
-} from "./structuredTestLog.js";
+import { redactStructuredTestMetadata, type StructuredTestLogRecord } from "./structuredTestLog.js";
 
 export type E2eStepStatus = "ok" | "blocked" | "skipped" | "error";
 
@@ -156,7 +153,10 @@ export function createE2eLog(options: CreateE2eLogOptions): E2eLog {
         records.push(record);
         jsonl.push(JSON.stringify(record));
       }
-      return { value: value as Awaited<ReturnType<typeof fn>>, record: records[records.length - 1] };
+      return {
+        value: value as Awaited<ReturnType<typeof fn>>,
+        record: records[records.length - 1],
+      };
     },
 
     records: () => records.slice(),
@@ -228,7 +228,9 @@ export function assertE2eArtifactPacket(packet: E2eArtifactPacket): void {
     throw new Error(`artifact packet elapsed_ms is invalid: ${packet.elapsed_ms}`);
   }
   if (packet.step_count !== packet.steps.length) {
-    throw new Error(`step_count ${packet.step_count} disagrees with steps.length ${packet.steps.length}`);
+    throw new Error(
+      `step_count ${packet.step_count} disagrees with steps.length ${packet.steps.length}`,
+    );
   }
   for (const step of packet.steps) {
     if (!step.step.trim()) throw new Error("step name is empty");

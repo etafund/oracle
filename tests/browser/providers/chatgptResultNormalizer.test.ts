@@ -28,10 +28,7 @@ import {
 import type { EffortStrategyResult } from "../../../src/browser/selectors/chatgpt/effortStrategy.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-const PLAN_BUNDLE = path.resolve(
-  moduleDir,
-  "../../../PLAN/oracle-vnext-plan-bundle-v18.0.0",
-);
+const PLAN_BUNDLE = path.resolve(moduleDir, "../../../PLAN/oracle-vnext-plan-bundle-v18.0.0");
 
 async function loadFixture<T = unknown>(rel: string): Promise<T> {
   return JSON.parse(await readFile(path.join(PLAN_BUNDLE, rel), "utf8")) as T;
@@ -112,7 +109,9 @@ describe("normalizeChatGptRun — happy path matches canonical fixture", () => {
       providerResultId: "provider-result-roundtrip",
       accessPath: "oracle_browser_local",
       evidence,
-      capture: capturedVerdict({ outputTextSha256: evidence.output_text_sha256 as `sha256:${string}` }),
+      capture: capturedVerdict({
+        outputTextSha256: evidence.output_text_sha256 as `sha256:${string}`,
+      }),
       effort: effortVerified(),
       promptManifestSha256: PROMPT_MANIFEST_HASH,
       sourceBaselineSha256: SOURCE_BASELINE_HASH,
@@ -123,12 +122,7 @@ describe("normalizeChatGptRun — happy path matches canonical fixture", () => {
     const fixture = await loadFixture<Record<string, unknown>>(
       "fixtures/provider-result.chatgpt.json",
     );
-    for (const key of [
-      "schema_version",
-      "provider_family",
-      "provider_slot",
-      "reasoning_effort",
-    ]) {
+    for (const key of ["schema_version", "provider_family", "provider_slot", "reasoning_effort"]) {
       expect((build.result as Record<string, unknown>)[key]).toBe(fixture[key]);
     }
   });
@@ -146,7 +140,9 @@ describe("normalizeChatGptRun — happy path matches canonical fixture", () => {
       providerResultId: "provider-result-test-synth",
       accessPath: "oracle_browser_remote",
       evidence: synthEvidence,
-      capture: capturedVerdict({ outputTextSha256: synthEvidence.output_text_sha256 as `sha256:${string}` }),
+      capture: capturedVerdict({
+        outputTextSha256: synthEvidence.output_text_sha256 as `sha256:${string}`,
+      }),
       effort: effortVerified(),
       promptManifestSha256: PROMPT_MANIFEST_HASH,
       sourceBaselineSha256: SOURCE_BASELINE_HASH,
@@ -165,7 +161,9 @@ describe("normalizeChatGptRun — happy path matches canonical fixture", () => {
       providerResultId: "id-1",
       accessPath: "oracle_browser_remote",
       evidence,
-      capture: capturedVerdict({ outputTextSha256: evidence.output_text_sha256 as `sha256:${string}` }),
+      capture: capturedVerdict({
+        outputTextSha256: evidence.output_text_sha256 as `sha256:${string}`,
+      }),
       effort: effortVerified({ selected: "Pro Extended", tier: "pro_extended", rank: 50 }),
       promptManifestSha256: PROMPT_MANIFEST_HASH,
       sourceBaselineSha256: SOURCE_BASELINE_HASH,
@@ -199,7 +197,9 @@ describe("normalizeChatGptRun — happy path matches canonical fixture", () => {
       providerResultId: "id-pav-boundary",
       accessPath: "oracle_browser_remote",
       evidence,
-      capture: capturedVerdict({ outputTextSha256: evidence.output_text_sha256 as `sha256:${string}` }),
+      capture: capturedVerdict({
+        outputTextSha256: evidence.output_text_sha256 as `sha256:${string}`,
+      }),
       effort: effortVerified(),
       promptManifestSha256: boundary.prompt_sha256,
       sourceBaselineSha256: SOURCE_BASELINE_HASH,
@@ -244,7 +244,9 @@ describe("normalizeChatGptRun — negative: API substitution", () => {
       // exact regression we want to catch.
       accessPath: "openai_api",
       evidence,
-      capture: capturedVerdict({ outputTextSha256: evidence.output_text_sha256 as `sha256:${string}` }),
+      capture: capturedVerdict({
+        outputTextSha256: evidence.output_text_sha256 as `sha256:${string}`,
+      }),
       effort: effortVerified(),
       promptManifestSha256: PROMPT_MANIFEST_HASH,
       sourceBaselineSha256: SOURCE_BASELINE_HASH,
@@ -254,9 +256,7 @@ describe("normalizeChatGptRun — negative: API substitution", () => {
     // to false with the chatgpt_pro_unverified v18 error code.
     expect(build.synthesisDowngraded).toBe(true);
     expect(build.result.synthesis_eligible).toBe(false);
-    expect(
-      build.blockedReasons.some((r) => r.field === "provider_result.access_path"),
-    ).toBe(true);
+    expect(build.blockedReasons.some((r) => r.field === "provider_result.access_path")).toBe(true);
     expect(build.blockedReasons.some((r) => r.code === "chatgpt_pro_unverified")).toBe(true);
   });
 
@@ -267,7 +267,9 @@ describe("normalizeChatGptRun — negative: API substitution", () => {
       providerResultId: "id-3",
       accessPath: "oracle_browser_remote",
       evidence,
-      capture: capturedVerdict({ outputTextSha256: evidence.output_text_sha256 as `sha256:${string}` }),
+      capture: capturedVerdict({
+        outputTextSha256: evidence.output_text_sha256 as `sha256:${string}`,
+      }),
       effort: effortVerified(),
       promptManifestSha256: PROMPT_MANIFEST_HASH,
       sourceBaselineSha256: SOURCE_BASELINE_HASH,
@@ -288,7 +290,9 @@ describe("normalizeChatGptRun — negative: unverified evidence", () => {
       providerResultId: "id-4",
       accessPath: "oracle_browser_remote",
       evidence: unverified,
-      capture: capturedVerdict({ outputTextSha256: unverified.output_text_sha256 as `sha256:${string}` }),
+      capture: capturedVerdict({
+        outputTextSha256: unverified.output_text_sha256 as `sha256:${string}`,
+      }),
       effort: effortVerified(),
       promptManifestSha256: PROMPT_MANIFEST_HASH,
       sourceBaselineSha256: SOURCE_BASELINE_HASH,
@@ -296,9 +300,9 @@ describe("normalizeChatGptRun — negative: unverified evidence", () => {
     expect(build.synthesisDowngraded).toBe(true);
     expect(build.result.synthesis_eligible).toBe(false);
     expect(build.result.status).not.toBe("success");
-    expect(
-      build.blockedReasons.some((r) => r.field === "browser_evidence.mode_verified"),
-    ).toBe(true);
+    expect(build.blockedReasons.some((r) => r.field === "browser_evidence.mode_verified")).toBe(
+      true,
+    );
     expect(build.blockedReasons.some((r) => r.code === "chatgpt_pro_unverified")).toBe(true);
   });
 
@@ -313,7 +317,9 @@ describe("normalizeChatGptRun — negative: unverified evidence", () => {
       providerResultId: "id-5",
       accessPath: "oracle_browser_remote",
       evidence: tainted,
-      capture: capturedVerdict({ outputTextSha256: tainted.output_text_sha256 as `sha256:${string}` }),
+      capture: capturedVerdict({
+        outputTextSha256: tainted.output_text_sha256 as `sha256:${string}`,
+      }),
       effort: effortVerified(),
       promptManifestSha256: PROMPT_MANIFEST_HASH,
       sourceBaselineSha256: SOURCE_BASELINE_HASH,
@@ -335,14 +341,16 @@ describe("normalizeChatGptRun — negative: unverified evidence", () => {
       providerResultId: "id-6",
       accessPath: "oracle_browser_remote",
       evidence: wrongSlot,
-      capture: capturedVerdict({ outputTextSha256: wrongSlot.output_text_sha256 as `sha256:${string}` }),
+      capture: capturedVerdict({
+        outputTextSha256: wrongSlot.output_text_sha256 as `sha256:${string}`,
+      }),
       effort: effortVerified(),
       promptManifestSha256: PROMPT_MANIFEST_HASH,
       sourceBaselineSha256: SOURCE_BASELINE_HASH,
     });
-    expect(
-      build.blockedReasons.some((r) => r.field === "browser_evidence.provider_slot"),
-    ).toBe(true);
+    expect(build.blockedReasons.some((r) => r.field === "browser_evidence.provider_slot")).toBe(
+      true,
+    );
   });
 });
 
@@ -354,7 +362,9 @@ describe("normalizeChatGptRun — negative: effort drift / unknown", () => {
       providerResultId: "id-7",
       accessPath: "oracle_browser_remote",
       evidence,
-      capture: capturedVerdict({ outputTextSha256: evidence.output_text_sha256 as `sha256:${string}` }),
+      capture: capturedVerdict({
+        outputTextSha256: evidence.output_text_sha256 as `sha256:${string}`,
+      }),
       effort: effortVerified({
         status: "ui_drift_suspected",
         selected: null,
@@ -380,7 +390,9 @@ describe("normalizeChatGptRun — negative: effort drift / unknown", () => {
       providerResultId: "id-8",
       accessPath: "oracle_browser_remote",
       evidence,
-      capture: capturedVerdict({ outputTextSha256: evidence.output_text_sha256 as `sha256:${string}` }),
+      capture: capturedVerdict({
+        outputTextSha256: evidence.output_text_sha256 as `sha256:${string}`,
+      }),
       effort: effortVerified({ selectedIsHighestVisible: false }),
       promptManifestSha256: PROMPT_MANIFEST_HASH,
       sourceBaselineSha256: SOURCE_BASELINE_HASH,
@@ -398,7 +410,9 @@ describe("normalizeChatGptRun — negative: effort drift / unknown", () => {
       providerResultId: "id-9",
       accessPath: "oracle_browser_remote",
       evidence,
-      capture: capturedVerdict({ outputTextSha256: evidence.output_text_sha256 as `sha256:${string}` }),
+      capture: capturedVerdict({
+        outputTextSha256: evidence.output_text_sha256 as `sha256:${string}`,
+      }),
       effort: effortVerified({
         status: "unverified",
         selected: null,
@@ -447,9 +461,7 @@ describe("normalizeChatGptRun — negative: capture failures", () => {
       promptManifestSha256: PROMPT_MANIFEST_HASH,
       sourceBaselineSha256: SOURCE_BASELINE_HASH,
     });
-    expect(
-      build.blockedReasons.some((r) => r.code === "output_capture_unverified"),
-    ).toBe(true);
+    expect(build.blockedReasons.some((r) => r.code === "output_capture_unverified")).toBe(true);
     expect(build.result.status).toBe("failed");
   });
 });

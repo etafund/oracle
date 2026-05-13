@@ -30,9 +30,7 @@ describe("CLI provider boundary", () => {
       /will not satisfy workflow slots/i,
     );
     expect(() => resolveApiModel("claude-code-opus")).toThrow(/not a model name/i);
-    expect(() => inferModelFromLabel("codex-thinking-fast-draft")).toThrow(
-      /not a model name/i,
-    );
+    expect(() => inferModelFromLabel("codex-thinking-fast-draft")).toThrow(/not a model name/i);
   });
 
   test("keeps ordinary API aliases and custom provider ids available", () => {

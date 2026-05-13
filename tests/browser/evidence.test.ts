@@ -104,7 +104,9 @@ describe("buildBrowserEvidence — success paths", () => {
   test("prompt bytes and output bytes round-trip through SHA-256", () => {
     const prompt = "private prompt bytes ✓";
     const output = "expected output bytes ✓";
-    const evidence = buildBrowserEvidence(buildBaseInput({ promptBytes: prompt, outputBytes: output }));
+    const evidence = buildBrowserEvidence(
+      buildBaseInput({ promptBytes: prompt, outputBytes: output }),
+    );
     expect(evidence.prompt_sha256).toBe(sha256OfBytes(prompt));
     expect(evidence.output_text_sha256).toBe(sha256OfBytes(output));
   });
@@ -166,15 +168,16 @@ describe("buildBrowserEvidence — timestamp ordering", () => {
   });
 
   test("verified_at after prompt_submitted_at is rejected when verified_before_prompt_submit=true", () => {
-    expect(() =>
-      buildBrowserEvidence(
-        buildBaseInput({
-          mode_verified: false,
-          verified_before_prompt_submit: true,
-          verified_at: "2026-05-12T00:00:10Z",
-          prompt_submitted_at: "2026-05-12T00:00:05Z",
-        }),
-      ),
+    expect(
+      () =>
+        buildBrowserEvidence(
+          buildBaseInput({
+            mode_verified: false,
+            verified_before_prompt_submit: true,
+            verified_at: "2026-05-12T00:00:10Z",
+            prompt_submitted_at: "2026-05-12T00:00:05Z",
+          }),
+        ),
       // Surfaces the mode_verified contradiction before timestamp check,
       // which is fine — both indicate a malformed claim.
     ).toThrow();
@@ -220,25 +223,19 @@ describe("buildBrowserEvidence — timestamp ordering", () => {
 describe("buildBrowserEvidence — placeholder hash rejection", () => {
   test("all-zeros session_id_hash is rejected as a placeholder", () => {
     expect(() =>
-      buildBrowserEvidence(
-        buildBaseInput({ session_id_hash: `sha256:${"0".repeat(64)}` }),
-      ),
+      buildBrowserEvidence(buildBaseInput({ session_id_hash: `sha256:${"0".repeat(64)}` })),
     ).toThrowError(/session_id_hash.*placeholder/i);
   });
 
   test("all-fs hash is rejected", () => {
     expect(() =>
-      buildBrowserEvidence(
-        buildBaseInput({ session_id_hash: `sha256:${"f".repeat(64)}` }),
-      ),
+      buildBrowserEvidence(buildBaseInput({ session_id_hash: `sha256:${"f".repeat(64)}` })),
     ).toThrowError(/session_id_hash.*placeholder/i);
   });
 
   test("malformed hash regex is rejected", () => {
     expect(() =>
-      buildBrowserEvidence(
-        buildBaseInput({ session_id_hash: "sha256:short" }),
-      ),
+      buildBrowserEvidence(buildBaseInput({ session_id_hash: "sha256:short" })),
     ).toThrowError(/session_id_hash/);
   });
 
@@ -255,9 +252,7 @@ describe("buildBrowserEvidence — placeholder hash rejection", () => {
     const realPrecomputed: HashableInput = {
       precomputedHash: realHash("transition-log-content"),
     };
-    const evidence = buildBrowserEvidence(
-      buildBaseInput({ transition_log: realPrecomputed }),
-    );
+    const evidence = buildBrowserEvidence(buildBaseInput({ transition_log: realPrecomputed }));
     expect(evidence.transition_log_sha256).toBe(realPrecomputed.precomputedHash);
   });
 });

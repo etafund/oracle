@@ -54,8 +54,7 @@ export interface RemoteBrowserAuthFailedFailure extends RemoteBrowserRecoveryFai
   readonly required_env: readonly ["ORACLE_REMOTE_TOKEN"];
 }
 
-export interface RemoteBrowserProfileUnavailableFailure
-  extends RemoteBrowserRecoveryFailureBase {
+export interface RemoteBrowserProfileUnavailableFailure extends RemoteBrowserRecoveryFailureBase {
   readonly kind: "remote_browser_profile_unavailable";
   readonly error_code: "remote_browser_unavailable";
   readonly blocked_reason: "remote_browser_unavailable";
@@ -70,8 +69,7 @@ export interface ProviderLoginRequiredFailure extends RemoteBrowserRecoveryFailu
   readonly provider: "chatgpt" | "gemini" | (string & {});
 }
 
-export interface RemoteBrowserRequiredUnavailableFailure
-  extends RemoteBrowserRecoveryFailureBase {
+export interface RemoteBrowserRequiredUnavailableFailure extends RemoteBrowserRecoveryFailureBase {
   readonly kind: "remote_browser_required_unavailable";
   readonly error_code: "remote_browser_unavailable";
   readonly blocked_reason: "remote_browser_unavailable";

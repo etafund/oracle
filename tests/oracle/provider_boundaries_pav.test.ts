@@ -188,8 +188,6 @@ describe("PAV context serialization boundary", () => {
       canonical_storage_format: "json",
     };
 
-    expect(digestContextSerializationPolicy(left)).toEqual(
-      digestContextSerializationPolicy(right),
-    );
+    expect(digestContextSerializationPolicy(left)).toEqual(digestContextSerializationPolicy(right));
   });
 });

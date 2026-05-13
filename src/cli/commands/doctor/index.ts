@@ -86,8 +86,7 @@ export function buildDefaultAggregateDoctorOptions(
 ): Partial<AggregateDoctorOptions> {
   return {
     providerDocsCheck: overrides.providerDocsCheck ?? (async () => defaultProviderDocsCheck()),
-    browserLeasesCheck:
-      overrides.browserLeasesCheck ?? (async () => defaultBrowserLeasesCheck()),
+    browserLeasesCheck: overrides.browserLeasesCheck ?? (async () => defaultBrowserLeasesCheck()),
     evidenceStorageCheck:
       overrides.evidenceStorageCheck ?? (async () => defaultEvidenceStorageCheck()),
     ...overrides,

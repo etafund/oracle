@@ -158,10 +158,7 @@ describe("browser leases command surface", () => {
         },
         { stdout: () => undefined },
       );
-      const lease = dataArray<{ lease: { lease_id: string } }>(
-        status.data,
-        "leases",
-      )[0].lease;
+      const lease = dataArray<{ lease: { lease_id: string } }>(status.data, "leases")[0].lease;
       expect(lease.lease_id).toBe("lease-existing");
     });
   });

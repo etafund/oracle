@@ -4,10 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { quarantineInvalidEvidenceArtifact } from "@src/browser/evidence-quarantine.ts";
-import {
-  BROWSER_EVIDENCE_SCHEMA_VERSION,
-  V18_BUNDLE_VERSION,
-} from "@src/oracle/v18/contracts.ts";
+import { BROWSER_EVIDENCE_SCHEMA_VERSION, V18_BUNDLE_VERSION } from "@src/oracle/v18/contracts.ts";
 import {
   evidenceIndexPath,
   listIndexedEvidence,
@@ -16,10 +13,7 @@ import {
   quarantineIndexPath,
   readArtifactIndex,
 } from "@src/oracle/v18/evidence.ts";
-import {
-  UnsafeEvidenceModeError,
-  writeEvidenceWithMode,
-} from "@src/oracle/v18/evidence_unsafe.ts";
+import { UnsafeEvidenceModeError, writeEvidenceWithMode } from "@src/oracle/v18/evidence_unsafe.ts";
 
 function buildEvidence(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {

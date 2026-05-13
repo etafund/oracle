@@ -135,9 +135,8 @@ describe("detectSilentDowngrade — no silent downgrade for protected slots", ()
     });
     expect(verdict.degraded).toBe(true);
     expect(
-      verdict.reasons.find(
-        (r) => r.field === "provider_result.observed_reasoning_effort_label",
-      )?.code,
+      verdict.reasons.find((r) => r.field === "provider_result.observed_reasoning_effort_label")
+        ?.code,
     ).toBe("gemini_deep_think_unverified");
   });
 
@@ -150,9 +149,7 @@ describe("detectSilentDowngrade — no silent downgrade for protected slots", ()
     });
     expect(verdict.degraded).toBe(true);
     expect(
-      verdict.reasons.some(
-        (r) => r.field === "provider_result.selected_effort_is_highest_visible",
-      ),
+      verdict.reasons.some((r) => r.field === "provider_result.selected_effort_is_highest_visible"),
     ).toBe(true);
   });
 
@@ -204,9 +201,9 @@ describe("detectSilentDowngrade — no silent downgrade for protected slots", ()
       result_text_length: 0,
     });
     expect(verdict.degraded).toBe(true);
-    expect(
-      verdict.reasons.find((r) => r.field === "provider_result.result_text")?.code,
-    ).toBe("output_capture_empty");
+    expect(verdict.reasons.find((r) => r.field === "provider_result.result_text")?.code).toBe(
+      "output_capture_empty",
+    );
   });
 });
 
@@ -220,9 +217,7 @@ describe("assessProtectedSlot — fail-closed vs exploratory semantics", () => {
     expect(status.presence).toBe("absent");
     expect(status.blocks_synthesis).toBe(true);
     expect(status.non_waivable).toBe(true);
-    expect(
-      status.reasons.find((r) => r.code === "chatgpt_pro_unverified"),
-    ).toBeTruthy();
+    expect(status.reasons.find((r) => r.code === "chatgpt_pro_unverified")).toBeTruthy();
   });
 
   test("audit + protected slot absent → blocks synthesis", () => {
@@ -232,9 +227,7 @@ describe("assessProtectedSlot — fail-closed vs exploratory semantics", () => {
       present: false,
     });
     expect(status.blocks_synthesis).toBe(true);
-    expect(
-      status.reasons.find((r) => r.code === "gemini_deep_think_unverified"),
-    ).toBeTruthy();
+    expect(status.reasons.find((r) => r.code === "gemini_deep_think_unverified")).toBeTruthy();
   });
 
   test("fast + optional non-protected slot absent → absent_optional, does not block", () => {

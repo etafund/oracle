@@ -8,6 +8,8 @@ export interface RemoteHealthResult {
   error?: string;
   version?: string;
   uptimeSeconds?: number;
+  authProfileIdHash?: string;
+  providerLocks?: string[];
 }
 
 export async function checkTcpConnection(
@@ -74,11 +76,17 @@ export async function checkRemoteHealth({
       const ok = (response.json as { ok?: unknown }).ok === true;
       const version = (response.json as { version?: unknown }).version;
       const uptimeSeconds = (response.json as { uptimeSeconds?: unknown }).uptimeSeconds;
+      const authProfileIdHash = (response.json as { authProfileIdHash?: unknown })
+        .authProfileIdHash;
+      const providerLocks = (response.json as { providerLocks?: unknown }).providerLocks;
+
       return {
         ok,
         statusCode: response.statusCode,
         version: typeof version === "string" ? version : undefined,
         uptimeSeconds: typeof uptimeSeconds === "number" ? uptimeSeconds : undefined,
+        authProfileIdHash: typeof authProfileIdHash === "string" ? authProfileIdHash : undefined,
+        providerLocks: Array.isArray(providerLocks) ? providerLocks : undefined,
       };
     }
     if (response.statusCode === 404) {

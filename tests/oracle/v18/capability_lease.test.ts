@@ -76,9 +76,9 @@ describe("evaluateCapabilityLease", () => {
     );
     expect(verdict.fresh).toBe(false);
     expect(verdict.status).toBe("expired");
-    expect(
-      verdict.reasons.find((r) => r.field === "capability_lease.expires_at")?.code,
-    ).toBe("provider_login_required");
+    expect(verdict.reasons.find((r) => r.field === "capability_lease.expires_at")?.code).toBe(
+      "provider_login_required",
+    );
   });
 
   test("status=revoked surfaces with inactive status", () => {
@@ -117,9 +117,9 @@ describe("consumeCapabilityLease — fresh leases skip the probe", () => {
     );
     expect(result.consumed).toBe(false);
     expect(result.lease).toBeNull();
-    expect(
-      result.reasons.find((r) => r.field === "capability_lease.expires_at")?.code,
-    ).toBe("provider_login_required");
+    expect(result.reasons.find((r) => r.field === "capability_lease.expires_at")?.code).toBe(
+      "provider_login_required",
+    );
   });
 
   test("capability mismatch is rejected", () => {
@@ -129,9 +129,7 @@ describe("consumeCapabilityLease — fresh leases skip the probe", () => {
       NOW,
     );
     expect(result.consumed).toBe(false);
-    expect(
-      result.reasons.some((r) => r.field === "capability_lease.capability"),
-    ).toBe(true);
+    expect(result.reasons.some((r) => r.field === "capability_lease.capability")).toBe(true);
   });
 
   test("provider mismatch is rejected", () => {
@@ -141,9 +139,7 @@ describe("consumeCapabilityLease — fresh leases skip the probe", () => {
       NOW,
     );
     expect(result.consumed).toBe(false);
-    expect(
-      result.reasons.some((r) => r.field === "capability_lease.provider"),
-    ).toBe(true);
+    expect(result.reasons.some((r) => r.field === "capability_lease.provider")).toBe(true);
   });
 
   test("requireSameSession=true is satisfied when lease enforces it", () => {
@@ -170,9 +166,7 @@ describe("consumeCapabilityLease — fresh leases skip the probe", () => {
       NOW,
     );
     expect(result.consumed).toBe(false);
-    const reason = result.reasons.find(
-      (r) => r.field === "capability_lease.same_session_required",
-    );
+    const reason = result.reasons.find((r) => r.field === "capability_lease.same_session_required");
     expect(reason?.code).toBe("prompt_submitted_before_verification");
   });
 

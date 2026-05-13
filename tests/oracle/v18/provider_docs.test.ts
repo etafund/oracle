@@ -71,9 +71,7 @@ describe("evaluateProviderDocsFreshness", () => {
     );
     expect(verdict.fresh).toBe(false);
     expect(verdict.status).toBe("stale_age");
-    const reason = verdict.reasons.find(
-      (r) => r.field === "provider_docs_snapshot.max_age_days",
-    );
+    const reason = verdict.reasons.find((r) => r.field === "provider_docs_snapshot.max_age_days");
     expect(reason?.code).toBe("ui_drift_suspected");
   });
 
@@ -88,9 +86,9 @@ describe("evaluateProviderDocsFreshness", () => {
     expect(verdict.fresh).toBe(false);
     expect(verdict.status).toBe("expired");
     expect(verdict.expiresInMs).toBeLessThan(0);
-    expect(
-      verdict.reasons.find((r) => r.field === "provider_docs_snapshot.expires_at")?.code,
-    ).toBe("ui_drift_suspected");
+    expect(verdict.reasons.find((r) => r.field === "provider_docs_snapshot.expires_at")?.code).toBe(
+      "ui_drift_suspected",
+    );
   });
 
   test("malformed payload returns status=invalid with schema reasons", () => {
