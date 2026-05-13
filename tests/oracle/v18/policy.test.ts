@@ -11,6 +11,10 @@ import {
   evaluateProviderResultSynthesisEligibility,
   evaluateSynthesisGate,
 } from "@src/oracle/v18/index.ts";
+import {
+  assertStructuredTestLogRecords,
+  createStructuredTestLog,
+} from "../../_helpers/structuredTestLog.js";
 
 // Verified baseline objects taken from
 // PLAN/oracle-vnext-plan-bundle-v18.0.0/fixtures/. Each one represents the
@@ -111,9 +115,36 @@ const apiAllowedCapability = {
 
 describe("evaluateBrowserEvidenceTrust — happy path", () => {
   test("verified evidence passes", () => {
+    const emitted: string[] = [];
+    const log = createStructuredTestLog({
+      testName: "evaluateBrowserEvidenceTrust — happy path > verified evidence passes",
+      evidencePointer: verifiedEvidence.evidence_id,
+      emit: (line) => emitted.push(line),
+      now: () => "2026-05-13T00:00:00.000Z",
+    });
+    log.record("arrange", {
+      provider_slot: verifiedEvidence.provider_slot,
+      evidence_path: synthesisReadyResult.evidence.path,
+    });
     const verdict = evaluateBrowserEvidenceTrust(verifiedEvidence);
+    log.record("assert", {
+      eligible: verdict.eligible,
+      blocked_reason_count: verdict.blockedReasons.length,
+      raw_prompt_text: "private prompt must not be persisted",
+      remote_token: "sk-test-secret-value",
+    });
     expect(verdict.eligible).toBe(true);
     expect(verdict.blockedReasons).toEqual([]);
+    const records = emitted.map((line) => JSON.parse(line));
+    assertStructuredTestLogRecords(records);
+    expect(records[0]).toMatchObject({
+      timestamp: "2026-05-13T00:00:00.000Z",
+      test_name: "evaluateBrowserEvidenceTrust — happy path > verified evidence passes",
+      phase: "arrange",
+      evidence_pointer: "evidence-demo-chatgpt_pro_first_plan",
+    });
+    expect(JSON.stringify(records)).not.toContain("private prompt must not be persisted");
+    expect(JSON.stringify(records)).not.toContain("sk-test-secret-value");
   });
 });
 

@@ -31,6 +31,10 @@ import {
   validateEnvelope,
   type JsonEnvelopeSchema,
 } from "./harness.js";
+import {
+  assertStructuredTestLogRecords,
+  createStructuredTestLog,
+} from "../../_helpers/structuredTestLog.js";
 
 let schema: JsonEnvelopeSchema;
 let okFixture: Record<string, unknown>;
@@ -65,10 +69,29 @@ describe("json_envelope.v1 conformance harness", () => {
   });
 
   test("canonical ok fixture validates against the schema", async () => {
+    const log = createStructuredTestLog({
+      testName: "json_envelope.v1 conformance harness > canonical ok fixture validates against the schema",
+      evidencePointer: "PLAN/oracle-vnext-plan-bundle-v18.0.0/fixtures/json-envelope.ok.json",
+      now: () => "2026-05-13T00:00:00.000Z",
+    });
+    log.record("arrange", {
+      schema_pointer: "PLAN/oracle-vnext-plan-bundle-v18.0.0/contracts/json-envelope.schema.json",
+    });
     schema = await loadJsonEnvelopeSchema();
     okFixture = await loadOkFixture();
-    expect(validateEnvelope(okFixture, schema)).toEqual([]);
+    const failures = validateEnvelope(okFixture, schema);
+    log.record("assert", {
+      validation_failure_count: failures.length,
+      schema_version: okFixture.schema_version,
+    });
+    expect(failures).toEqual([]);
     expect(okFixture.schema_version).toBe("json_envelope.v1");
+    assertStructuredTestLogRecords(log.records());
+    expect(log.jsonLines()).toHaveLength(2);
+    expect(JSON.parse(log.jsonLines()[0] ?? "{}")).toMatchObject({
+      phase: "arrange",
+      evidence_pointer: "PLAN/oracle-vnext-plan-bundle-v18.0.0/fixtures/json-envelope.ok.json",
+    });
   });
 
   test.each([
