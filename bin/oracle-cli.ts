@@ -363,11 +363,7 @@ program
       false,
     ),
   )
-  .addOption(
-    new Option("--deep-think", "Alias for --gemini-deep-think.")
-      .default(false)
-      .hideHelp(),
-  )
+  .addOption(new Option("--deep-think", "Alias for --gemini-deep-think.").default(false).hideHelp())
   .addOption(
     new Option("--gemini-deep-think-fallback <mode>", "Deep Think fallback policy.")
       .choices(["fail"])
@@ -1245,7 +1241,12 @@ function resolveHeartbeatIntervalMs(seconds: number | undefined): number | undef
 }
 
 function normalizeProtectedProviderToken(value: string | undefined): string {
-  return value?.trim().toLowerCase().replace(/[\s_]+/gu, "-") ?? "";
+  return (
+    value
+      ?.trim()
+      .toLowerCase()
+      .replace(/[\s_]+/gu, "-") ?? ""
+  );
 }
 
 function providerSelectsGeminiDeepThink(value: string | undefined): boolean {

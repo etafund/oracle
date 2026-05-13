@@ -391,9 +391,7 @@ function geminiEffortLabelsFromVerdict(
   return verdict.observedLabels;
 }
 
-function buildGeminiBrowserEvidence(
-  input: EmitV18GeminiBrowserArtifactsInput,
-): BrowserEvidence {
+function buildGeminiBrowserEvidence(input: EmitV18GeminiBrowserArtifactsInput): BrowserEvidence {
   const promptSha = sha(input.capture.promptText);
   const outputSha = sha(input.capture.answerText);
   const verdict = input.capture.deepThink;
@@ -403,9 +401,8 @@ function buildGeminiBrowserEvidence(
   // categorical `tier` / `status`; mirror the ChatGPT helper's choice
   // (verified ⇒ tier label, otherwise status) so downstream consumers
   // see a stable enum-like string across providers.
-  const effortRank: string = verdict.status === "verified"
-    ? (verdict.tier ?? "highest_visible")
-    : verdict.status;
+  const effortRank: string =
+    verdict.status === "verified" ? (verdict.tier ?? "highest_visible") : verdict.status;
 
   const raw = {
     available_effort_labels_hash: verdict.availableEffortLabelsHash,
@@ -426,7 +423,10 @@ function buildGeminiBrowserEvidence(
     mode_verified: input.capture.modeVerified,
     next_command: null,
     observed_reasoning_effort_label:
-      verdict.deepThinkLabel ?? verdict.selected ?? geminiEffortLabelsFromVerdict(verdict)[0] ?? "Deep Think",
+      verdict.deepThinkLabel ??
+      verdict.selected ??
+      geminiEffortLabelsFromVerdict(verdict)[0] ??
+      "Deep Think",
     output_text_sha256: outputSha,
     prompt_sha256: promptSha,
     prompt_submitted_at: new Date().toISOString(),
