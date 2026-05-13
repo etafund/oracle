@@ -180,7 +180,11 @@ describe(`premortem ${FM.id}: ${FM.title}`, () => {
           redaction_policy: "unsafe_debug",
           evidence_id: "evidence-premortem-fm009-unsafe",
         });
-        const written = await writeEvidence("sess-fm009-unsafe", payload, { homeDir });
+        const written = await writeEvidence("sess-fm009-unsafe", payload, {
+          homeDir,
+          evidenceMode: "unsafe",
+          acknowledgeUnsafeEvidence: true,
+        });
 
         expect(written.quarantined).toBe(true);
         expect(written.indexed).toBe(false);

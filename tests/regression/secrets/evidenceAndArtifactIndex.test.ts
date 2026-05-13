@@ -210,6 +210,8 @@ describe("writeEvidence — unsafe_debug quarantine flow", () => {
       const written = await writeEvidence("sess-q-2", evidence, {
         homeDir,
         allowQuarantine: true,
+        evidenceMode: "unsafe",
+        acknowledgeUnsafeEvidence: true,
       });
 
       expect(written.quarantined).toBe(true);

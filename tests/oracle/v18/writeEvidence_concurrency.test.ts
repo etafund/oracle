@@ -126,6 +126,8 @@ describe("writeEvidence concurrent artifact-index updates", () => {
         writeEvidence(sessionId, buildEvidence(id, "unsafe_debug"), {
           homeDir,
           runId: "run-concurrent-quarantine",
+          evidenceMode: "unsafe",
+          acknowledgeUnsafeEvidence: true,
         }),
       ),
     );
