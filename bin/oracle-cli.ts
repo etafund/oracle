@@ -200,6 +200,7 @@ type ResolvedCliOptions = Omit<CliOptions, "model"> & {
 interface RestartCommandOptions {
   // tri-state: `true` (forced wait), `false` (forced detach), `undefined` (auto)
   wait?: boolean;
+  remoteBrowser?: string;
   remoteHost?: string;
   remoteToken?: string;
 }

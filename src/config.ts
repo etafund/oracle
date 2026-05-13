@@ -29,6 +29,8 @@ export interface BrowserConfigDefaults {
   remoteHost?: string | null;
   /** Access token clients must provide to the remote `oracle serve` instance. */
   remoteToken?: string | null;
+  /** Remote browser mode: preferred, required, or off. */
+  remoteBrowser?: string | null;
   /** Optional metadata for the SSH reverse-tunnel that makes remoteHost reachable. */
   remoteViaSshReverseTunnel?: RemoteViaSshReverseTunnelConfig | null;
   timeoutMs?: number;
