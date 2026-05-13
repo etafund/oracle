@@ -3,7 +3,6 @@ import os from "node:os";
 import { mkdir } from "node:fs/promises";
 import type { BrowserRunOptions, BrowserLogger, ChromeClient } from "../browser/types.js";
 import { launchChrome, connectWithNewTab, closeTab } from "../browser/chromeLifecycle.js";
-import { resolveBrowserConfig } from "../browser/config.js";
 import {
   readDevToolsPort,
   writeDevToolsActivePort,
@@ -11,6 +10,7 @@ import {
   cleanupStaleProfileState,
   verifyDevToolsReachable,
 } from "../browser/profileState.js";
+import { resolveGeminiBrowserConfig } from "./config.js";
 
 export interface GeminiBrowserSession {
   profileDir: string;
@@ -31,7 +31,7 @@ export async function openGeminiBrowserSession(
   input: OpenGeminiBrowserSessionInput,
 ): Promise<GeminiBrowserSession> {
   const { browserConfig, keepBrowserDefault, purpose, log } = input;
-  const resolvedConfig = resolveBrowserConfig({
+  const resolvedConfig = resolveGeminiBrowserConfig({
     ...browserConfig,
     manualLogin: true,
     keepBrowser: browserConfig?.keepBrowser ?? keepBrowserDefault,
