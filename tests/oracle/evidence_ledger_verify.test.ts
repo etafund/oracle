@@ -4,10 +4,7 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
-import {
-  appendEvidenceLedgerEvent,
-  evidenceLedgerPath,
-} from "../../src/oracle/evidence_ledger.js";
+import { appendEvidenceLedgerEvent, evidenceLedgerPath } from "../../src/oracle/evidence_ledger.js";
 import {
   evidenceFilePath,
   evidenceIndexPath,
@@ -95,23 +92,26 @@ async function writeEvidenceAndLedger(evidenceId = "evidence-ledger-verify-1"): 
 }
 
 describe("verifyEvidenceLedger", () => {
-  testNonWindows("passes when the ledger chain, evidence file, and artifact index agree", async () => {
-    await writeEvidenceAndLedger();
+  testNonWindows(
+    "passes when the ledger chain, evidence file, and artifact index agree",
+    async () => {
+      await writeEvidenceAndLedger();
 
-    const result = await verifyEvidenceLedger(SESSION_ID, { homeDir });
+      const result = await verifyEvidenceLedger(SESSION_ID, { homeDir });
 
-    expect(result.ok).toBe(true);
-    expect(result.chain_valid).toBe(true);
-    expect(result.evidence_written_count).toBe(1);
-    expect(result.files_checked).toBe(1);
-    expect(result.artifact_index_present).toBe(true);
-    expect(result.issues).toEqual([]);
-    expect(result.file_checks[0]).toMatchObject({
-      evidence_id: "evidence-ledger-verify-1",
-      artifact_index_path: "evidence-ledger-verify-1.json",
-      ok: true,
-    });
-  });
+      expect(result.ok).toBe(true);
+      expect(result.chain_valid).toBe(true);
+      expect(result.evidence_written_count).toBe(1);
+      expect(result.files_checked).toBe(1);
+      expect(result.artifact_index_present).toBe(true);
+      expect(result.issues).toEqual([]);
+      expect(result.file_checks[0]).toMatchObject({
+        evidence_id: "evidence-ledger-verify-1",
+        artifact_index_path: "evidence-ledger-verify-1.json",
+        ok: true,
+      });
+    },
+  );
 
   testNonWindows("reports a broken prev_hash chain before trusting file checks", async () => {
     await writeEvidenceAndLedger();
@@ -157,39 +157,45 @@ describe("verifyEvidenceLedger", () => {
     expect(result.file_checks[0]?.file_sha256).toBeNull();
   });
 
-  testNonWindows("fails when artifact index sha256 does not match on-disk evidence bytes", async () => {
-    await writeEvidenceAndLedger();
-    await writeFile(
-      evidenceFilePath(SESSION_ID, "evidence-ledger-verify-1", homeDir),
-      `${JSON.stringify({ evidence_id: "evidence-ledger-verify-1", tampered: true })}\n`,
-      "utf8",
-    );
+  testNonWindows(
+    "fails when artifact index sha256 does not match on-disk evidence bytes",
+    async () => {
+      await writeEvidenceAndLedger();
+      await writeFile(
+        evidenceFilePath(SESSION_ID, "evidence-ledger-verify-1", homeDir),
+        `${JSON.stringify({ evidence_id: "evidence-ledger-verify-1", tampered: true })}\n`,
+        "utf8",
+      );
 
-    const result = await verifyEvidenceLedger(SESSION_ID, { homeDir });
+      const result = await verifyEvidenceLedger(SESSION_ID, { homeDir });
 
-    expect(result.ok).toBe(false);
-    expect(result.issues.map((issue) => issue.code)).toContain("evidence_file_hash_mismatch");
-    expect(result.file_checks[0]?.file_sha256).not.toBe(result.file_checks[0]?.index_sha256);
-  });
+      expect(result.ok).toBe(false);
+      expect(result.issues.map((issue) => issue.code)).toContain("evidence_file_hash_mismatch");
+      expect(result.file_checks[0]?.file_sha256).not.toBe(result.file_checks[0]?.index_sha256);
+    },
+  );
 
-  testNonWindows("fails when artifact index path points outside the evidence directory", async () => {
-    await writeEvidenceAndLedger();
-    const indexPath = evidenceIndexPath(SESSION_ID, homeDir);
-    const index = await readArtifactIndex(indexPath);
-    expect(index).not.toBeNull();
-    await writeArtifactIndex(indexPath, {
-      ...index!,
-      artifacts: index!.artifacts.map((entry) => ({
-        ...entry,
-        path: "../escape.json",
-      })),
-    });
+  testNonWindows(
+    "fails when artifact index path points outside the evidence directory",
+    async () => {
+      await writeEvidenceAndLedger();
+      const indexPath = evidenceIndexPath(SESSION_ID, homeDir);
+      const index = await readArtifactIndex(indexPath);
+      expect(index).not.toBeNull();
+      await writeArtifactIndex(indexPath, {
+        ...index!,
+        artifacts: index!.artifacts.map((entry) => ({
+          ...entry,
+          path: "../escape.json",
+        })),
+      });
 
-    const result = await verifyEvidenceLedger(SESSION_ID, { homeDir });
+      const result = await verifyEvidenceLedger(SESSION_ID, { homeDir });
 
-    expect(result.ok).toBe(false);
-    expect(result.issues.map((issue) => issue.code)).toContain("artifact_index_path_escape");
-  });
+      expect(result.ok).toBe(false);
+      expect(result.issues.map((issue) => issue.code)).toContain("artifact_index_path_escape");
+    },
+  );
 });
 
 describe("runEvidenceLedgerVerify", () => {

@@ -39,10 +39,7 @@ import {
   createErrorEnvelope,
 } from "../../src/oracle/v18/json_envelope.js";
 import { normalizeChatGptRun } from "../../src/browser/providers/chatgptResultNormalizer.js";
-import {
-  consistencyCodes,
-  verifyHashConsistency,
-} from "../../src/oracle/v18/hash_consistency.js";
+import { consistencyCodes, verifyHashConsistency } from "../../src/oracle/v18/hash_consistency.js";
 import { evidenceFilePath, writeEvidence } from "../../src/oracle/v18/evidence.js";
 import { assertNoLeaks } from "../_helpers/secretLeakDetector.js";
 import {
@@ -50,10 +47,7 @@ import {
   runMockChatGptScript,
   type MockChatGptScript,
 } from "../_helpers/mockProvider.ts";
-import {
-  assertE2eArtifactPacket,
-  createE2eLog,
-} from "../_helpers/structuredE2eLog.js";
+import { assertE2eArtifactPacket, createE2eLog } from "../_helpers/structuredE2eLog.js";
 
 const PROMPT_MANIFEST_HASH = `sha256:${"c".repeat(63)}1` as const;
 const SOURCE_BASELINE_HASH = `sha256:${"d".repeat(63)}1` as const;
@@ -341,9 +335,7 @@ describe("Oracle E2E mock-route rehearsal — blocker surfaces recovery envelope
     );
     expect(normalize.value.synthesisDowngraded).toBe(true);
     expect(normalize.value.result.synthesis_eligible).toBe(false);
-    expect(
-      normalize.value.blockedReasons.some((r) => r.code === "ui_drift_suspected"),
-    ).toBe(true);
+    expect(normalize.value.blockedReasons.some((r) => r.code === "ui_drift_suspected")).toBe(true);
 
     const errorEnv = createErrorEnvelope({
       errors: [
@@ -358,8 +350,7 @@ describe("Oracle E2E mock-route rehearsal — blocker surfaces recovery envelope
       ],
       meta: { tool: "oracle chatgpt run", mock_or_live: "mock" },
       next_command: "oracle chatgpt doctor --pro --extended-reasoning --json",
-      fix_command:
-        "oracle browser sessions recover --provider chatgpt --json",
+      fix_command: "oracle browser sessions recover --provider chatgpt --json",
       retry_safe: true,
     });
     await log.step(

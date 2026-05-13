@@ -113,16 +113,16 @@ describe("loadUserConfig", () => {
 
     expect(result.loaded).toBe(false);
     expect(result.config).toEqual({});
-    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/Expected .* to contain a JSON object/));
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(/Expected .* to contain a JSON object/),
+    );
   });
 
   it("writes config atomically into a newly created directory", async () => {
     const target = path.join(tempDir, "nested", "config.json");
 
     await Promise.all(
-      Array.from({ length: 8 }, (_, index) =>
-        writeUserConfig({ model: `model-${index}` }, target),
-      ),
+      Array.from({ length: 8 }, (_, index) => writeUserConfig({ model: `model-${index}` }, target)),
     );
 
     const raw = await fs.readFile(target, "utf8");

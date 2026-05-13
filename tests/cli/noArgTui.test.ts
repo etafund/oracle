@@ -13,9 +13,8 @@ vi.mock("../../src/cli/sessionDisplay.js", () => ({
 const launchTuiMock = vi.mocked(await import("../../src/cli/tui/index.js")).launchTui as ReturnType<
   typeof vi.fn
 >;
-const showStatusMock = vi.mocked(
-  await import("../../src/cli/sessionDisplay.js"),
-).showStatus as ReturnType<typeof vi.fn>;
+const showStatusMock = vi.mocked(await import("../../src/cli/sessionDisplay.js"))
+  .showStatus as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   vi.clearAllMocks();

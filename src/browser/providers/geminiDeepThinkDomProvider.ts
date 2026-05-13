@@ -1,6 +1,9 @@
 import type { ProviderDomAdapter, ProviderDomFlowContext } from "../providerDomFlow.js";
 import { joinSelectors } from "../providerDomFlow.js";
-import { GEMINI_DEEP_THINK_MANIFEST, getManifestSelectorLiteral } from "../../gemini-web/selectors/geminiDeepThinkManifest.js";
+import {
+  GEMINI_DEEP_THINK_MANIFEST,
+  getManifestSelectorLiteral,
+} from "../../gemini-web/selectors/geminiDeepThinkManifest.js";
 
 const UI_TIMEOUT_MS = 60_000;
 const RESPONSE_TIMEOUT_MS = 10 * 60_000;
@@ -100,11 +103,12 @@ async function waitForUi(ctx: ProviderDomFlowContext): Promise<void> {
 
 async function selectMode(ctx: ProviderDomFlowContext): Promise<void> {
   const toolsButtonSelectors = asSelectorLiteral(GEMINI_DEEP_THINK_SELECTORS.toolsButton);
-  
+
   let toolsClickResult = "not-found";
   for (let i = 0; i < 10; i++) {
-    toolsClickResult = (await ctx.evaluate<string>(
-      `(() => {
+    toolsClickResult =
+      (await ctx.evaluate<string>(
+        `(() => {
         const btn = document.querySelector(${toolsButtonSelectors});
         if (btn instanceof HTMLElement) {
           btn.click();
@@ -112,7 +116,7 @@ async function selectMode(ctx: ProviderDomFlowContext): Promise<void> {
         }
         return 'not-found';
       })()`,
-    )) ?? "not-found";
+      )) ?? "not-found";
     if (toolsClickResult === "clicked") break;
     await ctx.delay(500);
   }
@@ -125,8 +129,9 @@ async function selectMode(ctx: ProviderDomFlowContext): Promise<void> {
   const deepThinkItemSelectors = asSelectorLiteral(GEMINI_DEEP_THINK_SELECTORS.toolsMenuItem);
   let deepThinkClickResult = "not-found";
   for (let i = 0; i < 10; i++) {
-    deepThinkClickResult = (await ctx.evaluate<string>(
-      `(() => {
+    deepThinkClickResult =
+      (await ctx.evaluate<string>(
+        `(() => {
         const items = Array.from(document.querySelectorAll(${deepThinkItemSelectors}));
         for (const item of items) {
           const text = item.textContent?.trim().toLowerCase() ?? '';
@@ -136,7 +141,7 @@ async function selectMode(ctx: ProviderDomFlowContext): Promise<void> {
         }
         return 'not-found';
       })()`,
-    )) ?? "not-found";
+      )) ?? "not-found";
     if (deepThinkClickResult === "clicked") break;
     await ctx.delay(500);
   }
@@ -165,10 +170,11 @@ async function typePrompt(ctx: ProviderDomFlowContext): Promise<void> {
   ctx.log?.("[gemini-web] Typing prompt...");
   const inputSelector = asSelectorLiteral(GEMINI_DEEP_THINK_SELECTORS.input);
   let typeResult = "no-editor";
-  
+
   for (let i = 0; i < 10; i++) {
-    typeResult = (await ctx.evaluate<string>(
-      `(() => {
+    typeResult =
+      (await ctx.evaluate<string>(
+        `(() => {
         const editor = document.querySelector(${inputSelector});
         if (!(editor instanceof HTMLElement)) return 'no-editor';
         editor.focus();
@@ -182,8 +188,8 @@ async function typePrompt(ctx: ProviderDomFlowContext): Promise<void> {
         const typed = (editor.textContent || '').trim().length > 0;
         return typed ? 'typed' : 'empty';
       })()`,
-    )) ?? "no-editor";
-    
+      )) ?? "no-editor";
+
     if (typeResult === "typed") break;
     await ctx.delay(500);
   }
@@ -198,11 +204,12 @@ async function submitPrompt(ctx: ProviderDomFlowContext): Promise<void> {
   ctx.log?.("[gemini-web] Sending prompt...");
   const inputSelector = asSelectorLiteral(GEMINI_DEEP_THINK_SELECTORS.input);
   const sendButtonSelectors = asSelectorLiteral(GEMINI_DEEP_THINK_SELECTORS.sendButton);
-  
+
   let sendResult = "not-found";
   for (let i = 0; i < 10; i++) {
-    sendResult = (await ctx.evaluate<string>(
-      `(() => {
+    sendResult =
+      (await ctx.evaluate<string>(
+        `(() => {
         const btn = document.querySelector(${sendButtonSelectors});
         if (btn instanceof HTMLElement && !btn.hasAttribute('disabled')) {
           btn.click();
@@ -216,8 +223,8 @@ async function submitPrompt(ctx: ProviderDomFlowContext): Promise<void> {
         }
         return 'not-found';
       })()`,
-    )) ?? "not-found";
-    
+      )) ?? "not-found";
+
     if (sendResult === "clicked" || sendResult === "enter") break;
     await ctx.delay(500);
   }
@@ -294,14 +301,15 @@ async function extractThoughts(ctx: ProviderDomFlowContext): Promise<string | nu
 
   let thinkResult = "no-toggle";
   for (let i = 0; i < 10; i++) {
-    thinkResult = (await ctx.evaluate<string>(
-      `(() => {
+    thinkResult =
+      (await ctx.evaluate<string>(
+        `(() => {
         const toggle = document.querySelector(${thoughtsToggleSel});
         if (!(toggle instanceof HTMLElement)) return 'no-toggle';
         toggle.click();
         return 'clicked';
       })()`,
-    )) ?? "no-toggle";
+      )) ?? "no-toggle";
     if (thinkResult === "clicked") break;
     await ctx.delay(500);
   }
@@ -329,7 +337,9 @@ async function extractThoughts(ctx: ProviderDomFlowContext): Promise<string | nu
     : null;
 }
 
-async function applyHighIfExposedStrategy(ctx: ProviderDomFlowContext): Promise<{ verified: boolean; effort?: string }> {
+async function applyHighIfExposedStrategy(
+  ctx: ProviderDomFlowContext,
+): Promise<{ verified: boolean; effort?: string }> {
   const manifest = GEMINI_DEEP_THINK_MANIFEST;
   if (!manifest.thinkingLevelControl) {
     return { verified: false };
@@ -381,4 +391,3 @@ export const geminiDeepThinkWithStrategyDomProvider: ProviderDomAdapter = {
     await applyHighIfExposedStrategy(ctx);
   },
 };
-

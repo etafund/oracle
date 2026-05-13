@@ -18,10 +18,7 @@ import {
   runGeminiDeepThinkDryRun,
 } from "../../src/cli/commands/run/geminiDeepThink.js";
 
-function parseOptions(
-  addFlags: (command: Command) => Command,
-  argv: string[],
-): OptionValues {
+function parseOptions(addFlags: (command: Command) => Command, argv: string[]): OptionValues {
   const command = new Command();
   command.exitOverride();
   command.configureOutput({
@@ -133,12 +130,8 @@ describe("Gemini Deep Think CLI flag helpers", () => {
       evidence: { mode: "redacted", redacted: true },
       fallback: "fail",
     });
-    expect(() => parseGeminiDeepThinkEvidenceOption("raw")).toThrow(
-      "raw evidence is not allowed",
-    );
-    expect(() => parseGeminiDeepThinkFallbackOption("allow")).toThrow(
-      "cannot silently downgrade",
-    );
+    expect(() => parseGeminiDeepThinkEvidenceOption("raw")).toThrow("raw evidence is not allowed");
+    expect(() => parseGeminiDeepThinkFallbackOption("allow")).toThrow("cannot silently downgrade");
   });
 
   test("maps Gemini Deep Think browser aliases to the protected route model", () => {

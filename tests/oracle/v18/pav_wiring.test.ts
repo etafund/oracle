@@ -15,12 +15,14 @@ import {
 
 const SECRET_PROMPT = "PLEASE_DO_NOT_LEAK_THIS_PROMPT_BODY";
 
-function buildSnapshot(overrides: {
-  providerSlot?: string;
-  providerFamily?: string;
-  requestedMode?: "browser" | "api" | "file-bundle";
-  prompt?: string;
-} = {}) {
+function buildSnapshot(
+  overrides: {
+    providerSlot?: string;
+    providerFamily?: string;
+    requestedMode?: "browser" | "api" | "file-bundle";
+    prompt?: string;
+  } = {},
+) {
   return createProviderBoundaryPavSnapshot({
     providerPrompt: overrides.prompt ?? SECRET_PROMPT,
     providerFamily: overrides.providerFamily ?? "chatgpt",
@@ -165,9 +167,7 @@ describe("attachPavToSessionRecord", () => {
     const snap = buildSnapshot();
     const updated = attachPavToSessionRecord(session, snap);
     // Check the pav block specifically — never serializes the prompt.
-    const pavOnly = JSON.stringify(
-      (updated as Record<string, unknown>).pav,
-    );
+    const pavOnly = JSON.stringify((updated as Record<string, unknown>).pav);
     expect(pavOnly).not.toContain(SECRET_PROMPT);
   });
 

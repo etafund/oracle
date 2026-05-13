@@ -14,10 +14,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, test } from "vitest";
 
-import {
-  describeSharedBrowserProfile,
-  deriveProfileIdHash,
-} from "../../../src/browser/profile.js";
+import { describeSharedBrowserProfile, deriveProfileIdHash } from "../../../src/browser/profile.js";
 import {
   BROWSER_SHARED_PROFILE_LOCKS,
   BROWSER_SHARED_PROFILE_PROVIDERS,
@@ -36,10 +33,7 @@ import {
 } from "../../../src/oracle/v18/browser_profile.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-const PLAN_BUNDLE = path.resolve(
-  moduleDir,
-  "../../../PLAN/oracle-vnext-plan-bundle-v18.0.0",
-);
+const PLAN_BUNDLE = path.resolve(moduleDir, "../../../PLAN/oracle-vnext-plan-bundle-v18.0.0");
 
 async function loadFixture<T = unknown>(rel: string): Promise<T> {
   return JSON.parse(await readFile(path.join(PLAN_BUNDLE, rel), "utf8")) as T;
@@ -242,9 +236,9 @@ describe("buildSharedProfileView", () => {
 
 describe("assertNoSecretsInPublicView", () => {
   test("flags cookies at the top level", () => {
-    expect(() =>
-      assertNoSecretsInPublicView({ cookies: [{ name: "session" }] }),
-    ).toThrow(/forbidden keys/i);
+    expect(() => assertNoSecretsInPublicView({ cookies: [{ name: "session" }] })).toThrow(
+      /forbidden keys/i,
+    );
   });
 
   test("flags a nested raw_profile_path", () => {

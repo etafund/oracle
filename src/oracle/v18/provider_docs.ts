@@ -26,11 +26,7 @@
 import { z } from "zod";
 
 import { V18_BUNDLE_VERSION, type JsonEnvelope } from "./contracts.js";
-import {
-  createErrorEnvelope,
-  type V18ErrorCode,
-  type V18ErrorEntry,
-} from "./json_envelope.js";
+import { createErrorEnvelope, type V18ErrorCode, type V18ErrorEntry } from "./json_envelope.js";
 
 export const PROVIDER_DOCS_SNAPSHOT_SCHEMA_VERSION = "provider_docs_snapshot.v1" as const;
 

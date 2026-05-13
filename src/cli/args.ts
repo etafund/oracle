@@ -1,7 +1,4 @@
-export function splitShellLikeArgs(
-  input: string,
-  options: { optionName?: string } = {},
-): string[] {
+export function splitShellLikeArgs(input: string, options: { optionName?: string } = {}): string[] {
   const label = options.optionName ?? "argument string";
   const args: string[] = [];
   let current = "";

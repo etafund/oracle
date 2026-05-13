@@ -34,63 +34,72 @@ afterEach(async () => {
 });
 
 describe("evidence ledger head-cache nonfatal updates", () => {
-  testNonWindows("flush failure after disk append does not reject or corrupt the chain", async () => {
-    const sessionId = "session-cache-flush-fails";
-    const filePath = evidenceLedgerPath(sessionId, homeDir);
+  testNonWindows(
+    "flush failure after disk append does not reject or corrupt the chain",
+    async () => {
+      const sessionId = "session-cache-flush-fails";
+      const filePath = evidenceLedgerPath(sessionId, homeDir);
 
-    for (let index = 0; index < DEFAULT_EVIDENCE_LEDGER_HEAD_CACHE_FLUSH_INTERVAL - 1; index += 1) {
-      await appendEvidenceLedgerEvent(
+      for (
+        let index = 0;
+        index < DEFAULT_EVIDENCE_LEDGER_HEAD_CACHE_FLUSH_INTERVAL - 1;
+        index += 1
+      ) {
+        await appendEvidenceLedgerEvent(
+          sessionId,
+          {
+            type: "evidence_written",
+            evidence_id: `ev-${index}`,
+            timestamp: `2026-05-13T00:00:${String(index).padStart(2, "0")}.000Z`,
+          },
+          { homeDir },
+        );
+      }
+
+      const cachePath = evidenceLedgerHeadCachePath(filePath);
+      await mkdir(cachePath, { recursive: true });
+
+      const appended = await appendEvidenceLedgerEvent(
         sessionId,
         {
-          type: "evidence_written",
-          evidence_id: `ev-${index}`,
-          timestamp: `2026-05-13T00:00:${String(index).padStart(2, "0")}.000Z`,
+          type: "run_completed",
+          timestamp: "2026-05-13T00:01:00.000Z",
         },
         { homeDir },
       );
-    }
 
-    const cachePath = evidenceLedgerHeadCachePath(filePath);
-    await mkdir(cachePath, { recursive: true });
+      expect(appended.entry.sequence).toBe(DEFAULT_EVIDENCE_LEDGER_HEAD_CACHE_FLUSH_INTERVAL - 1);
+      expect(getEvidenceLedgerHeadCacheStats().nonFatalUpdateFailures).toBe(1);
 
-    const appended = await appendEvidenceLedgerEvent(
-      sessionId,
-      {
-        type: "run_completed",
-        timestamp: "2026-05-13T00:01:00.000Z",
-      },
-      { homeDir },
-    );
+      const afterFailedFlush = await readEvidenceLedger(sessionId, { homeDir });
+      expect(afterFailedFlush.chainValid).toBe(true);
+      expect(afterFailedFlush.entries).toHaveLength(
+        DEFAULT_EVIDENCE_LEDGER_HEAD_CACHE_FLUSH_INTERVAL,
+      );
 
-    expect(appended.entry.sequence).toBe(
-      DEFAULT_EVIDENCE_LEDGER_HEAD_CACHE_FLUSH_INTERVAL - 1,
-    );
-    expect(getEvidenceLedgerHeadCacheStats().nonFatalUpdateFailures).toBe(1);
+      await rm(cachePath, { recursive: true, force: true });
+      resetEvidenceLedgerHeadCacheStats();
 
-    const afterFailedFlush = await readEvidenceLedger(sessionId, { homeDir });
-    expect(afterFailedFlush.chainValid).toBe(true);
-    expect(afterFailedFlush.entries).toHaveLength(DEFAULT_EVIDENCE_LEDGER_HEAD_CACHE_FLUSH_INTERVAL);
+      const reconciled = await appendEvidenceLedgerEvent(
+        sessionId,
+        {
+          type: "browser_attached",
+          mode: "remote",
+          timestamp: "2026-05-13T00:01:01.000Z",
+        },
+        { homeDir },
+      );
 
-    await rm(cachePath, { recursive: true, force: true });
-    resetEvidenceLedgerHeadCacheStats();
+      const finalLedger = await readEvidenceLedger(sessionId, { homeDir });
+      const prior = finalLedger.entries[finalLedger.entries.length - 2];
 
-    const reconciled = await appendEvidenceLedgerEvent(
-      sessionId,
-      {
-        type: "browser_attached",
-        mode: "remote",
-        timestamp: "2026-05-13T00:01:01.000Z",
-      },
-      { homeDir },
-    );
-
-    const finalLedger = await readEvidenceLedger(sessionId, { homeDir });
-    const prior = finalLedger.entries[finalLedger.entries.length - 2];
-
-    expect(reconciled.entry.sequence).toBe(DEFAULT_EVIDENCE_LEDGER_HEAD_CACHE_FLUSH_INTERVAL);
-    expect(reconciled.entry.prev_hash).toBe(prior.entry_hash);
-    expect(getEvidenceLedgerHeadCacheStats().tailReads).toBe(1);
-    expect(finalLedger.chainValid).toBe(true);
-    expect(finalLedger.entries).toHaveLength(DEFAULT_EVIDENCE_LEDGER_HEAD_CACHE_FLUSH_INTERVAL + 1);
-  });
+      expect(reconciled.entry.sequence).toBe(DEFAULT_EVIDENCE_LEDGER_HEAD_CACHE_FLUSH_INTERVAL);
+      expect(reconciled.entry.prev_hash).toBe(prior.entry_hash);
+      expect(getEvidenceLedgerHeadCacheStats().tailReads).toBe(1);
+      expect(finalLedger.chainValid).toBe(true);
+      expect(finalLedger.entries).toHaveLength(
+        DEFAULT_EVIDENCE_LEDGER_HEAD_CACHE_FLUSH_INTERVAL + 1,
+      );
+    },
+  );
 });

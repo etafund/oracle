@@ -6,11 +6,7 @@
 
 import type { Command } from "commander";
 
-import {
-  V18_BUNDLE_VERSION,
-  createEnvelope,
-  type JsonEnvelope,
-} from "../../oracle/v18/index.js";
+import { V18_BUNDLE_VERSION, createEnvelope, type JsonEnvelope } from "../../oracle/v18/index.js";
 import {
   ORACLE_CAPABILITIES_SCHEMA_VERSION,
   buildCapabilityReport,
@@ -61,9 +57,7 @@ export function buildCapabilitiesEnvelope(
     };
     return (order[a.status] ?? 99) - (order[b.status] ?? 99);
   });
-  const headline = ranked.find(
-    (entry) => entry.fix_command != null || entry.next_command != null,
-  );
+  const headline = ranked.find((entry) => entry.fix_command != null || entry.next_command != null);
 
   const envelope = createEnvelope({
     ok: true,
@@ -112,9 +106,7 @@ function formatHuman(result: CapabilitiesCommandResult): string {
   const { report } = result;
   const lines: string[] = [];
   lines.push(`🧿 oracle capabilities (${report.bundle_version})`);
-  lines.push(
-    `generated_at=${report.generated_at}  ci=${report.ci}  tty=${report.tty}`,
-  );
+  lines.push(`generated_at=${report.generated_at}  ci=${report.ci}  tty=${report.tty}`);
   lines.push("");
   for (const entry of report.capabilities) {
     lines.push(`[${entry.status.toUpperCase()}] ${entry.id}`);

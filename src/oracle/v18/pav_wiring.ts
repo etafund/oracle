@@ -23,10 +23,7 @@ import type { ProviderBoundaryPavSnapshot } from "../provider_boundaries_pav.js"
  * Identical to `snapshot.metadata` minus the `boundary_roles` block
  * (which is informational policy text, not run-specific data).
  */
-export type PavBoundaryMetadata = Omit<
-  ProviderBoundaryPavSnapshot["metadata"],
-  "boundary_roles"
->;
+export type PavBoundaryMetadata = Omit<ProviderBoundaryPavSnapshot["metadata"], "boundary_roles">;
 
 /** Returns the persistable metadata projection of a PAV snapshot. */
 export function projectPavMetadata(snapshot: ProviderBoundaryPavSnapshot): PavBoundaryMetadata {
@@ -58,7 +55,13 @@ export function assertNoRawPromptInMetadata(payload: unknown): void {
   // raw_prompt_in_metadata:false; we look for the actual bytes by
   // checking for fields that would only exist if a caller leaked the
   // prompt body.
-  const banned = ["providerPrompt", "raw_prompt", "prompt_text", "prompt_body", "prompt_bytes_text"];
+  const banned = [
+    "providerPrompt",
+    "raw_prompt",
+    "prompt_text",
+    "prompt_body",
+    "prompt_bytes_text",
+  ];
   for (const key of banned) {
     if (serialized.includes(`"${key}":`)) {
       throw new Error(

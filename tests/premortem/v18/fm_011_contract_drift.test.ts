@@ -151,9 +151,7 @@ describe(`premortem ${FM.id}: ${FM.title}`, () => {
     const verdict = evaluateProviderResultSynthesisEligibility(adversarialResult);
     expect(verdict.eligible).toBe(false);
     expect(
-      verdict.blockedReasons.some(
-        (r) => r.field === "provider_result.synthesis_eligible",
-      ),
+      verdict.blockedReasons.some((r) => r.field === "provider_result.synthesis_eligible"),
     ).toBe(true);
 
     const apiVerdict = evaluateProviderApiAllowed({

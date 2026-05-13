@@ -176,6 +176,12 @@ export function parseTimeoutOption(value: string | undefined): number | "auto" |
   return parsed;
 }
 
+export function parseToonPassthroughOption(value: string | undefined): boolean {
+  if (value == null) return false;
+  const normalized = value.trim().toLowerCase();
+  return ["true", "1", "yes", "on", "passthrough"].includes(normalized);
+}
+
 function parseStrictInteger(value: string): number | undefined {
   const trimmed = value.trim();
   if (!/^[+-]?\d+$/u.test(trimmed)) {
@@ -227,9 +233,7 @@ export function parseChatGptProRemoteBrowserOption(
   throw new InvalidArgumentError('Remote browser mode must be "preferred", "required", or "off".');
 }
 
-export function parseChatGptProEvidenceOption(
-  value: string | undefined,
-): ChatGptProEvidenceMode {
+export function parseChatGptProEvidenceOption(value: string | undefined): ChatGptProEvidenceMode {
   const normalized = normalizeChoice(value, "redacted");
   if (isOneOf(normalized, CHATGPT_PRO_EVIDENCE_MODES)) {
     return normalized;
@@ -239,9 +243,7 @@ export function parseChatGptProEvidenceOption(
   );
 }
 
-export function normalizeChatGptProModelOption(
-  value: string | undefined,
-): ChatGptProBrowserModel {
+export function normalizeChatGptProModelOption(value: string | undefined): ChatGptProBrowserModel {
   const normalized = normalizeChoice(value, CHATGPT_PRO_BROWSER_MODEL);
   if (isChatGptProModelAlias(normalized)) {
     return CHATGPT_PRO_BROWSER_MODEL;
@@ -262,11 +264,7 @@ export function isChatGptProModelAlias(value: string | undefined): boolean {
   ) {
     return true;
   }
-  return (
-    collapsed.startsWith("gpt-5") &&
-    collapsed.includes("pro") &&
-    !collapsed.includes("codex")
-  );
+  return collapsed.startsWith("gpt-5") && collapsed.includes("pro") && !collapsed.includes("codex");
 }
 
 export const GEMINI_DEEP_THINK_BROWSER_MODEL = "gemini-3.1-pro-deep-think" as const;
@@ -365,9 +363,7 @@ const V18_WORKFLOW_PROVIDER_SLOTS = [
   "xai_grok_reasoning",
 ] as const;
 
-const V18_WORKFLOW_PROVIDER_SLOT_SET: ReadonlySet<string> = new Set(
-  V18_WORKFLOW_PROVIDER_SLOTS,
-);
+const V18_WORKFLOW_PROVIDER_SLOT_SET: ReadonlySet<string> = new Set(V18_WORKFLOW_PROVIDER_SLOTS);
 
 function normalizeWorkflowProviderSlotCandidate(value: string): string {
   return value.trim().toLowerCase().replace(/-+/gu, "_");

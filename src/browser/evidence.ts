@@ -102,10 +102,7 @@ function parseIsoTimestamp(value: string, field: string): number {
   return ms;
 }
 
-function requireNonEmptyBytes(
-  value: string | Uint8Array,
-  field: string,
-): string | Uint8Array {
+function requireNonEmptyBytes(value: string | Uint8Array, field: string): string | Uint8Array {
   const length = typeof value === "string" ? value.length : value.byteLength;
   if (length === 0) {
     throw new BrowserEvidenceBuildError(field, "must be non-empty bytes");
@@ -121,9 +118,7 @@ function hashHashable(input: HashableInput, field: string): `sha256:${string}` {
   return sha256OfBytes(input.bytes);
 }
 
-function hashAvailableEffortLabels(
-  input: readonly string[] | HashableInput,
-): `sha256:${string}` {
+function hashAvailableEffortLabels(input: readonly string[] | HashableInput): `sha256:${string}` {
   if (Array.isArray(input)) {
     if (input.length === 0) {
       throw new BrowserEvidenceBuildError(
@@ -191,16 +186,11 @@ export function buildBrowserEvidence(input: BuildBrowserEvidenceInput): BrowserE
   const available_effort_labels_hash = hashAvailableEffortLabels(input.available_effort_labels);
   const session_id_hash = assertRealHash(input.session_id_hash, "session_id_hash");
   const observed_mode_label_hash =
-    input.observed_mode_label != null
-      ? sha256OfBytes(input.observed_mode_label)
-      : undefined;
+    input.observed_mode_label != null ? sha256OfBytes(input.observed_mode_label) : undefined;
 
   // Timestamps
   const verifiedAtMs = parseIsoTimestamp(input.verified_at, "verified_at");
-  const promptSubmittedAtMs = parseIsoTimestamp(
-    input.prompt_submitted_at,
-    "prompt_submitted_at",
-  );
+  const promptSubmittedAtMs = parseIsoTimestamp(input.prompt_submitted_at, "prompt_submitted_at");
   if (
     (input.mode_verified || input.verified_before_prompt_submit) &&
     verifiedAtMs > promptSubmittedAtMs

@@ -151,9 +151,7 @@ export interface BuildChatGptCaptureVerdictInput {
  *   - otherwise → captured, with sha256 + markdown preservation +
  *     confidence rolled in
  */
-export function buildChatGptCaptureVerdict(
-  input: BuildChatGptCaptureVerdictInput,
-): CaptureVerdict {
+export function buildChatGptCaptureVerdict(input: BuildChatGptCaptureVerdictInput): CaptureVerdict {
   if (input.turnBinding) {
     const binding = verifyTurnBinding(input.turnBinding);
     if (!binding.bound && binding.staleVerdict) {

@@ -19,12 +19,7 @@ import type { V18ErrorCode } from "./json_envelope.js";
 
 export const CAPABILITY_LEASE_SCHEMA_VERSION = "capability_lease.v1" as const;
 
-export const capabilityLeaseStatusSchema = z.enum([
-  "active",
-  "expired",
-  "revoked",
-  "failed",
-]);
+export const capabilityLeaseStatusSchema = z.enum(["active", "expired", "revoked", "failed"]);
 export type CapabilityLeaseStatus = z.infer<typeof capabilityLeaseStatusSchema>;
 
 export const capabilityLeaseSchema = z
@@ -73,10 +68,7 @@ function pathFromIssue(prefix: string, path: readonly (string | number | symbol)
  *   * `expires_at > now`, AND
  *   * `issued_at` is a valid ISO-8601 timestamp.
  */
-export function evaluateCapabilityLease(
-  input: unknown,
-  now: Date = new Date(),
-): LeaseFreshness {
+export function evaluateCapabilityLease(input: unknown, now: Date = new Date()): LeaseFreshness {
   const reasons: LeaseReason[] = [];
   const parsed = capabilityLeaseSchema.safeParse(input);
   if (!parsed.success) {
@@ -241,7 +233,9 @@ export interface IssueCapabilityLeaseInput {
 
 export function issueCapabilityLease(input: IssueCapabilityLeaseInput): CapabilityLease {
   if (!Number.isFinite(input.ttlSeconds) || input.ttlSeconds <= 0) {
-    throw new Error(`capability_lease.ttlSeconds must be a positive number; got ${input.ttlSeconds}`);
+    throw new Error(
+      `capability_lease.ttlSeconds must be a positive number; got ${input.ttlSeconds}`,
+    );
   }
   const issuedMs = Date.parse(input.issued_at);
   if (!Number.isFinite(issuedMs)) {

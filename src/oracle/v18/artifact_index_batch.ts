@@ -33,8 +33,7 @@ import type { ArtifactIndex, ArtifactIndexEntry } from "./contracts.js";
 
 // ─── Batch mutator ───────────────────────────────────────────────────────────
 
-export interface SerializeArtifactIndexBatchUpdateOptions
-  extends SerializeArtifactIndexUpdateOptions {
+export interface SerializeArtifactIndexBatchUpdateOptions extends SerializeArtifactIndexUpdateOptions {
   /** Optional factory for the genesis index when the file does not exist. */
   readonly emptyIndex?: () => ArtifactIndex;
 }
@@ -92,10 +91,7 @@ export async function upsertArtifactIndexEntries(
   return result.index;
 }
 
-function mergeBatch(
-  index: ArtifactIndex,
-  entries: readonly ArtifactIndexEntry[],
-): ArtifactIndex {
+function mergeBatch(index: ArtifactIndex, entries: readonly ArtifactIndexEntry[]): ArtifactIndex {
   // Build (artifact_id, path) -> entry maps in arrival order so later
   // entries win. We then filter out any pre-existing index entries that
   // collide with the batched ones on either key, and append the batch.

@@ -100,7 +100,9 @@ export function partial(input: {
   };
 }
 
-export function emptyOutput(reason = "generation complete but output text is empty"): CaptureVerdict {
+export function emptyOutput(
+  reason = "generation complete but output text is empty",
+): CaptureVerdict {
   return {
     status: "empty",
     outputTextSha256: null,
@@ -152,10 +154,7 @@ export function backgroundPending(input: {
   };
 }
 
-export function needsReattach(input: {
-  sessionId: string;
-  reason: string;
-}): CaptureVerdict {
+export function needsReattach(input: { sessionId: string; reason: string }): CaptureVerdict {
   return {
     status: "needs_reattach",
     outputTextSha256: null,

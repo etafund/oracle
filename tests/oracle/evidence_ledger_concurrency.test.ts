@@ -47,9 +47,7 @@ describe("evidence ledger append concurrency", () => {
     expect(read.chainValid).toBe(true);
     expect(read.chainFailure).toBeNull();
     expect(read.entries).toHaveLength(appendCount);
-    expect(new Set(results.map((result) => result.entry.sequence)).size).toBe(
-      appendCount,
-    );
+    expect(new Set(results.map((result) => result.entry.sequence)).size).toBe(appendCount);
 
     for (let index = 0; index < read.entries.length; index += 1) {
       expect(read.entries[index].sequence).toBe(index);

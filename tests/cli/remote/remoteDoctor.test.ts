@@ -40,9 +40,7 @@ interface MockHealth {
 const { checkTcpConnection, checkRemoteHealth } = vi.hoisted(() => ({
   checkTcpConnection: vi.fn<(host: string, timeoutMs?: number) => Promise<MockTcp>>(),
   checkRemoteHealth:
-    vi.fn<
-      (opts: { host: string; token?: string; timeoutMs?: number }) => Promise<MockHealth>
-    >(),
+    vi.fn<(opts: { host: string; token?: string; timeoutMs?: number }) => Promise<MockHealth>>(),
 }));
 
 vi.mock("../../../src/config.js", () => ({ loadUserConfig }));

@@ -44,7 +44,13 @@ export function isChatGptProSlot(value: unknown): value is ChatGptProSlot {
 
 export interface NormalizerCaptureSummary {
   /** Capture status from oracle-qfl `CaptureVerdict`. */
-  readonly status: "captured" | "partial" | "empty" | "stale_turn" | "background_pending" | "needs_reattach";
+  readonly status:
+    | "captured"
+    | "partial"
+    | "empty"
+    | "stale_turn"
+    | "background_pending"
+    | "needs_reattach";
   /** sha256 of captured text bytes (null when nothing was captured). */
   readonly outputTextSha256: `sha256:${string}` | null;
   /** Whether markdown structure was preserved in the capture. */
@@ -122,11 +128,7 @@ export interface ChatGptProviderResultBuild {
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
 
-function blocker(
-  field: string,
-  message: string,
-  code: V18ErrorCode | null = null,
-): BlockedReason {
+function blocker(field: string, message: string, code: V18ErrorCode | null = null): BlockedReason {
   return { code, field, message };
 }
 
@@ -216,7 +218,11 @@ export function buildChatGptProviderResult(
   if (input.capture.status !== "captured") {
     if (input.capture.status === "empty") {
       blockedReasons.push(
-        blocker("provider_result.result_text_sha256", "output capture is empty", "output_capture_empty"),
+        blocker(
+          "provider_result.result_text_sha256",
+          "output capture is empty",
+          "output_capture_empty",
+        ),
       );
     } else if (input.capture.status === "stale_turn") {
       blockedReasons.push(
@@ -241,7 +247,11 @@ export function buildChatGptProviderResult(
   if (input.effort.status !== "verified") {
     if (input.effort.status === "ui_drift_suspected") {
       blockedReasons.push(
-        blocker("provider_result.reasoning_effort_verified", input.effort.status, "ui_drift_suspected"),
+        blocker(
+          "provider_result.reasoning_effort_verified",
+          input.effort.status,
+          "ui_drift_suspected",
+        ),
       );
     } else {
       blockedReasons.push(
@@ -292,7 +302,9 @@ export function buildChatGptProviderResult(
 
   const status: ProviderResult["status"] =
     input.statusOverride ??
-    (input.degradationReason ? "degraded" : deriveStatus(input.capture, input.effort, input.evidence));
+    (input.degradationReason
+      ? "degraded"
+      : deriveStatus(input.capture, input.effort, input.evidence));
   const synthesisDowngraded = blockedReasons.length > 0;
   const synthesis_eligible = !synthesisDowngraded && status === "success";
 
@@ -307,7 +319,8 @@ export function buildChatGptProviderResult(
     provider_nomenclature: "ChatGPT browser model-picker highest visible thinking effort",
   };
   if (input.effort.tier) reasoningConfig.canonical_effort_tier = input.effort.tier;
-  if (input.effort.selected) reasoningConfig.observed_reasoning_effort_label = input.effort.selected;
+  if (input.effort.selected)
+    reasoningConfig.observed_reasoning_effort_label = input.effort.selected;
 
   const draft: Record<string, unknown> = {
     schema_version: PROVIDER_RESULT_SCHEMA_VERSION,

@@ -174,10 +174,7 @@ describe("approval helpers", () => {
   });
 
   test("isApprovalSatisfied returns satisfied=true when budget declares no approvals", () => {
-    const result = isApprovalSatisfied(
-      buildBudget({ required_approvals: undefined }),
-      [],
-    );
+    const result = isApprovalSatisfied(buildBudget({ required_approvals: undefined }), []);
     expect(result.satisfied).toBe(true);
   });
 });

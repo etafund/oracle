@@ -39,8 +39,7 @@ export const ORACLE_PREMORTEM_FAILURE_MODES: readonly PremortemFailureMode[] = O
     id: "FM-001",
     title: "Browser automation succeeds in the wrong mode",
     owner: "oracle" as FailureModeOwner,
-    oracle_relevance:
-      "Oracle owns same-session evidence and the picker-label verification gate.",
+    oracle_relevance: "Oracle owns same-session evidence and the picker-label verification gate.",
     oracle_acceptance_checks: Object.freeze([
       "browser_evidence requires verified_before_prompt_submit=true",
       "build rejects evidence whose verified_at is after prompt_submitted_at",
@@ -58,8 +57,7 @@ export const ORACLE_PREMORTEM_FAILURE_MODES: readonly PremortemFailureMode[] = O
     id: "FM-002",
     title: "Remote browser is unreliable under real load",
     owner: "oracle" as FailureModeOwner,
-    oracle_relevance:
-      "Oracle owns lease TTL + reconnect state machine + recover_command emission.",
+    oracle_relevance: "Oracle owns lease TTL + reconnect state machine + recover_command emission.",
     oracle_acceptance_checks: Object.freeze([
       "expired capability_lease cannot be consumed without re-probe",
       "stale lease forces provider_login_required",
@@ -92,8 +90,7 @@ export const ORACLE_PREMORTEM_FAILURE_MODES: readonly PremortemFailureMode[] = O
     id: "FM-007",
     title: "Provider docs and model names drift faster than the bundle",
     owner: "apr" as FailureModeOwner,
-    oracle_relevance:
-      "Oracle owns provider-docs-snapshot freshness gate + capability_lease TTL.",
+    oracle_relevance: "Oracle owns provider-docs-snapshot freshness gate + capability_lease TTL.",
     oracle_acceptance_checks: Object.freeze([
       "stale provider docs snapshot blocks live calls when refresh_required=true",
       "fresh capability lease is consumable within TTL",

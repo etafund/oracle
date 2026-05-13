@@ -124,14 +124,7 @@ describe("decideProLongWait — Answer now is benign", () => {
       { sessionIsReattachable: true, sessionId: "s-1" },
       { sessionIsReattachable: false, sessionId: undefined },
     ];
-    const elapsedSamples = [
-      0,
-      30_000,
-      5 * 60_000,
-      BUDGET - 1,
-      BUDGET,
-      BUDGET + 60_000,
-    ];
+    const elapsedSamples = [0, 30_000, 5 * 60_000, BUDGET - 1, BUDGET, BUDGET + 60_000];
 
     for (const state of states) {
       for (const heartbeatsEmitted of heartbeatsCases) {

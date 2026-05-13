@@ -45,9 +45,7 @@ export const TERMINAL_RUN_PROGRESS_STATES: ReadonlySet<RunProgressState> = new S
   "non_retryable_failure",
 ]);
 
-export const HANDOFF_ELIGIBLE_STATES: ReadonlySet<RunProgressState> = new Set([
-  "completed",
-]);
+export const HANDOFF_ELIGIBLE_STATES: ReadonlySet<RunProgressState> = new Set(["completed"]);
 
 export interface RunProgressStageProfile {
   /** Stable profile name reported on the event (matches v18 fixture). */
@@ -248,13 +246,11 @@ export interface RunProgressTrackerState {
   readonly last_event_at: string;
 }
 
-export function initialRunProgress(
-  input: {
-    run_id: string;
-    profile?: RunProgressStageProfile;
-    now?: Date;
-  },
-): RunProgressTrackerState {
+export function initialRunProgress(input: {
+  run_id: string;
+  profile?: RunProgressStageProfile;
+  now?: Date;
+}): RunProgressTrackerState {
   const profile = input.profile ?? BALANCED_RUN_PROFILE;
   return {
     run_id: input.run_id,

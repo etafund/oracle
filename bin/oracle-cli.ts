@@ -673,6 +673,12 @@ program
   )
   .addOption(
     new Option(
+      "--remote-browser <mode>",
+      "Controls whether remote browser infrastructure is used. Modes: preferred (default), required, off.",
+    ).choices(["preferred", "required", "off"]),
+  )
+  .addOption(
+    new Option(
       "--remote-host <host:port>",
       "Delegate browser runs to a remote `oracle serve` instance.",
     ),
@@ -1486,6 +1492,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   const remoteConfig = resolveRemoteServiceConfig({
     cliHost: options.remoteHost,
     cliToken: options.remoteToken,
+    cliMode: options.remoteBrowser,
     userConfig,
     env: process.env,
   });
@@ -2137,6 +2144,7 @@ async function restartSession(sessionId: string, options: RestartCommandOptions)
   const remoteConfig = resolveRemoteServiceConfig({
     cliHost: options.remoteHost,
     cliToken: options.remoteToken,
+    cliMode: options.remoteBrowser,
     userConfig,
     env: process.env,
   });

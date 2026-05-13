@@ -353,10 +353,7 @@ function createPromptEvidence(prompt: string): {
 
 function printDeterministicFileTokenStats(
   { stats, totalTokens }: FileTokenStats,
-  {
-    inputTokenBudget,
-    log,
-  }: { inputTokenBudget?: number; log: (message: string) => void },
+  { inputTokenBudget, log }: { inputTokenBudget?: number; log: (message: string) => void },
 ): void {
   if (!stats.length) {
     return;

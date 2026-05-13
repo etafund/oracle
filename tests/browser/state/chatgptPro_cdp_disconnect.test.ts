@@ -67,9 +67,7 @@ describe("ChatGPT Pro CDP disconnect FSM recovery", () => {
     const pending = applyCdpDisconnectDecision(submitted, decision);
     expect(pending.state).toBe("reattach_pending");
     expect(pending.context.stateBeforeReattach).toBe("prompt_submitted");
-    expect(pending.context.reattachRecoveryCommand).toBe(
-      "oracle session session-zwd --render",
-    );
+    expect(pending.context.reattachRecoveryCommand).toBe("oracle session session-zwd --render");
     expect(pending.context.failureReason).toContain("oracle session session-zwd --render");
 
     const resumed = pending.send({
@@ -119,9 +117,7 @@ describe("ChatGPT Pro CDP disconnect FSM recovery", () => {
       promptSha256: PROMPT_HASH,
     });
     expect(attemptedSubmit.state).toBe("prompt_submitted_before_verification");
-    expect(machineVerdict(attemptedSubmit).errorCode).toBe(
-      "prompt_submitted_before_verification",
-    );
+    expect(machineVerdict(attemptedSubmit).errorCode).toBe("prompt_submitted_before_verification");
     expect(attemptedSubmit.context.failureReason).toContain("reattach_pending");
   });
 });

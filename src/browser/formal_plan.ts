@@ -100,7 +100,9 @@ export function validateChatGptProFormalPlanRoute(
       ),
     );
   } else if (policy === "preferred" && accessPath === "oracle_browser_local") {
-    warnings.push("Remote browser is preferred for ChatGPT Pro formal-plan routes; using local browser access.");
+    warnings.push(
+      "Remote browser is preferred for ChatGPT Pro formal-plan routes; using local browser access.",
+    );
   }
 
   if (isFailureState(machine.state)) {
@@ -184,7 +186,8 @@ export function validateChatGptProFormalPlanRoute(
     observed_reasoning_effort_label: effort?.selected ?? null,
     effort_rank: effort?.rank ?? null,
     available_effort_labels_hash: effort?.availableEffortLabelsHash ?? null,
-    selector_manifest_version: effort?.selectorManifestVersion ?? context.selectorManifestVersion ?? null,
+    selector_manifest_version:
+      effort?.selectorManifestVersion ?? context.selectorManifestVersion ?? null,
     session_id_hash: context.sessionIdHash,
     blockers: uniqueBlockers,
     warnings,

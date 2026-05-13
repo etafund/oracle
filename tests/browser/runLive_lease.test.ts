@@ -29,12 +29,12 @@ function buildOptions(
 
 describe("detectBrowserLeaseProvider", () => {
   test("returns 'chatgpt' for chatgpt.com URLs", () => {
-    expect(
-      detectBrowserLeaseProvider(buildOptions({ chatgptUrl: "https://chatgpt.com/" })),
-    ).toBe("chatgpt");
-    expect(
-      detectBrowserLeaseProvider(buildOptions({ url: "https://chat.openai.com/c/abc" })),
-    ).toBe("chatgpt");
+    expect(detectBrowserLeaseProvider(buildOptions({ chatgptUrl: "https://chatgpt.com/" }))).toBe(
+      "chatgpt",
+    );
+    expect(detectBrowserLeaseProvider(buildOptions({ url: "https://chat.openai.com/c/abc" }))).toBe(
+      "chatgpt",
+    );
   });
 
   test("returns 'gemini' for gemini.google.com URLs", () => {
@@ -46,7 +46,9 @@ describe("detectBrowserLeaseProvider", () => {
   test("returns null when no provider URL is configured", () => {
     expect(detectBrowserLeaseProvider(buildOptions({}))).toBeNull();
     expect(detectBrowserLeaseProvider(buildOptions({ chatgptUrl: "" }))).toBeNull();
-    expect(detectBrowserLeaseProvider(buildOptions({ chatgptUrl: "https://example.com/" }))).toBeNull();
+    expect(
+      detectBrowserLeaseProvider(buildOptions({ chatgptUrl: "https://example.com/" })),
+    ).toBeNull();
   });
 
   test("explicit provider hint takes precedence over URL detection", () => {
@@ -91,9 +93,7 @@ describe("wrapBrowserExecutorWithLease — happy path acquire/release", () => {
       onLeaseReleased: released,
     });
 
-    const result = await wrapped(
-      buildOptions({ chatgptUrl: "https://chatgpt.com/" }),
-    );
+    const result = await wrapped(buildOptions({ chatgptUrl: "https://chatgpt.com/" }));
 
     expect(executor).toHaveBeenCalledOnce();
     expect(acquired).toHaveBeenCalledOnce();
@@ -106,9 +106,7 @@ describe("wrapBrowserExecutorWithLease — happy path acquire/release", () => {
   test("Gemini run records gemini provider on the lease evidence", async () => {
     const executor = vi.fn(async () => successResult);
     const wrapped = wrapBrowserExecutorWithLease(executor, { leaseDir });
-    const result = await wrapped(
-      buildOptions({ chatgptUrl: "https://gemini.google.com/app" }),
-    );
+    const result = await wrapped(buildOptions({ chatgptUrl: "https://gemini.google.com/app" }));
     expect(result.lease.provider).toBe("gemini");
     expect(result.lease.status).toBe("released");
   });
@@ -132,9 +130,9 @@ describe("wrapBrowserExecutorWithLease — happy path acquire/release", () => {
       onLeaseReleased: released,
     });
 
-    await expect(
-      wrapped(buildOptions({ chatgptUrl: "https://chatgpt.com/" })),
-    ).rejects.toBe(failure);
+    await expect(wrapped(buildOptions({ chatgptUrl: "https://chatgpt.com/" }))).rejects.toBe(
+      failure,
+    );
     expect(order).toEqual(["acquired", "executor", "released"]);
   });
 
@@ -163,9 +161,9 @@ describe("wrapBrowserExecutorWithLease — happy path acquire/release", () => {
   test("throws when no ChatGPT/Gemini provider is configured", async () => {
     const executor = vi.fn(async () => successResult);
     const wrapped = wrapBrowserExecutorWithLease(executor, { leaseDir });
-    await expect(
-      wrapped(buildOptions({ chatgptUrl: "https://example.com/" })),
-    ).rejects.toThrow(/unable to detect ChatGPT\/Gemini provider/i);
+    await expect(wrapped(buildOptions({ chatgptUrl: "https://example.com/" }))).rejects.toThrow(
+      /unable to detect ChatGPT\/Gemini provider/i,
+    );
     expect(executor).not.toHaveBeenCalled();
   });
 });
@@ -188,9 +186,7 @@ describe("wrapWithLeaseOrPassthrough — forgiving variant", () => {
       leaseDir,
       onLeaseAcquired: acquired,
     });
-    const result = await wrapped(
-      buildOptions({ chatgptUrl: "https://example.com/" }),
-    );
+    const result = await wrapped(buildOptions({ chatgptUrl: "https://example.com/" }));
     expect(executor).toHaveBeenCalledOnce();
     expect(acquired).not.toHaveBeenCalled();
     // Passthrough returns the raw BrowserRunResult without a `lease` field.
@@ -206,9 +202,7 @@ describe("wrapWithLeaseOrPassthrough — forgiving variant", () => {
       onLeaseAcquired: acquired,
       onLeaseReleased: released,
     });
-    const result = await wrapped(
-      buildOptions({ chatgptUrl: "https://chatgpt.com/" }),
-    );
+    const result = await wrapped(buildOptions({ chatgptUrl: "https://chatgpt.com/" }));
     expect(acquired).toHaveBeenCalledOnce();
     expect(released).toHaveBeenCalledOnce();
     expect((result as unknown as Record<string, unknown>).lease).toBeDefined();

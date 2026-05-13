@@ -26,8 +26,7 @@ const tsEntrypoint = path.join(here, "oracle-cli.ts");
 
 const argvScript = process.argv[1];
 const isInvokedAsScript =
-  typeof argvScript === "string" &&
-  pathToFileURL(argvScript).href === import.meta.url;
+  typeof argvScript === "string" && pathToFileURL(argvScript).href === import.meta.url;
 
 // ─── Module-import mode: re-export the .ts source symbols ───────────────────
 //

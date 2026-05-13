@@ -32,9 +32,7 @@ const FAKES = [
   { name: "raw-output", value: "the original model output with PII" },
 ];
 
-function buildEvidence(
-  overrides: Record<string, unknown> = {},
-): Record<string, unknown> {
+function buildEvidence(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     available_effort_labels_hash: `sha256:${"a".repeat(64)}`,
     browser_effort_strategy: "select_highest_visible",
@@ -171,9 +169,7 @@ describe("writeEvidence — on-disk artifacts are leak-free", () => {
   testNonWindows("file path matches evidenceFilePath helper (no path traversal)", async () => {
     const evidence = buildEvidence(leakyOverrides());
     const written = await writeEvidence("sess-3", evidence, { homeDir });
-    expect(written.path).toBe(
-      evidenceFilePath("sess-3", "leak-regression-evidence-1", homeDir),
-    );
+    expect(written.path).toBe(evidenceFilePath("sess-3", "leak-regression-evidence-1", homeDir));
   });
 });
 

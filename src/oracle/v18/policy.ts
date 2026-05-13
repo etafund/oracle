@@ -22,10 +22,7 @@ import {
   type ProviderCapability,
   type ProviderResult,
 } from "./contracts.js";
-import {
-  V18_ERROR_CODES,
-  type V18ErrorCode,
-} from "./json_envelope.js";
+import { V18_ERROR_CODES, type V18ErrorCode } from "./json_envelope.js";
 
 export interface BlockedReason {
   /** v18 error code from `V18_ERROR_CODES` when one applies; else `null`. */
@@ -157,9 +154,7 @@ export function evaluateProviderResultSynthesisEligibility(
     reasons.push(reason("provider_result.synthesis_eligible", "must be true"));
   }
   if (result.status !== "success") {
-    reasons.push(
-      reason("provider_result.status", `must be "success" (was "${result.status}")`),
-    );
+    reasons.push(reason("provider_result.status", `must be "success" (was "${result.status}")`));
   }
   if (options.evidenceRequired) {
     if (!result.evidence_id) {

@@ -81,7 +81,7 @@ describe("runBridgeDoctor --json", () => {
 
     expect(logSpy).toHaveBeenCalledTimes(1);
     const jsonOutput = JSON.parse(logSpy.mock.calls[0][0]);
-    
+
     expect(jsonOutput._schema).toBe("remote_browser_endpoint.v1");
     expect(jsonOutput.status).toBe("healthy");
     expect(jsonOutput.version).toBe("1.2.3");

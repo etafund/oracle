@@ -28,10 +28,7 @@ import {
 } from "../../../src/oracle/v18/source_trust.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-const PLAN_BUNDLE = path.resolve(
-  moduleDir,
-  "../../../PLAN/oracle-vnext-plan-bundle-v18.0.0",
-);
+const PLAN_BUNDLE = path.resolve(moduleDir, "../../../PLAN/oracle-vnext-plan-bundle-v18.0.0");
 
 async function loadFixture<T = unknown>(rel: string): Promise<T> {
   return JSON.parse(await readFile(path.join(PLAN_BUNDLE, rel), "utf8")) as T;
@@ -46,9 +43,7 @@ function buildBaseline(overrides: Record<string, unknown> = {}): Record<string, 
     bundle_version: "v18.0.0",
     artifact_name: SOURCE_LOCK_ARTIFACT_NAME,
     policy: "baseline",
-    sources: [
-      { id: "brief", kind: "local_file", path: ".vibe/brief.md", sha256: REAL_HASH },
-    ],
+    sources: [{ id: "brief", kind: "local_file", path: ".vibe/brief.md", sha256: REAL_HASH }],
     ...overrides,
   };
 }
@@ -69,14 +64,13 @@ describe("sourceBaselineSchema", () => {
 
   test("rejects wrong schema_version literal", () => {
     expect(
-      sourceBaselineSchema.safeParse(buildBaseline({ schema_version: "source_baseline.v2" })).success,
+      sourceBaselineSchema.safeParse(buildBaseline({ schema_version: "source_baseline.v2" }))
+        .success,
     ).toBe(false);
   });
 
   test("rejects unknown policy enum value", () => {
-    expect(
-      sourceBaselineSchema.safeParse(buildBaseline({ policy: "ULTRA" })).success,
-    ).toBe(false);
+    expect(sourceBaselineSchema.safeParse(buildBaseline({ policy: "ULTRA" })).success).toBe(false);
   });
 
   test("accepts mode omitted (only policy is required)", () => {
@@ -86,9 +80,7 @@ describe("sourceBaselineSchema", () => {
 
 describe("checkPolicyModeAgreement", () => {
   test("agrees when only policy is present", () => {
-    expect(
-      checkPolicyModeAgreement(buildBaseline() as unknown as SourceBaseline),
-    ).toEqual([]);
+    expect(checkPolicyModeAgreement(buildBaseline() as unknown as SourceBaseline)).toEqual([]);
   });
 
   test("agrees when policy === mode", () => {
@@ -118,9 +110,7 @@ describe("checkPolicyModeAgreement", () => {
 
 describe("checkNoPlaceholderHashes", () => {
   test("passes for real sha256 digests", () => {
-    expect(
-      checkNoPlaceholderHashes(buildBaseline() as unknown as SourceBaseline),
-    ).toEqual([]);
+    expect(checkNoPlaceholderHashes(buildBaseline() as unknown as SourceBaseline)).toEqual([]);
   });
 
   test("rejects an all-zero sha256 (canonical placeholder)", () => {
@@ -402,9 +392,7 @@ describe("verifyTraceability", () => {
       },
     });
     expect(verdict.consistent).toBe(false);
-    expect(
-      verdict.mismatches.some((m) => m.message.includes("duplicate requirement")),
-    ).toBe(true);
+    expect(verdict.mismatches.some((m) => m.message.includes("duplicate requirement"))).toBe(true);
   });
 
   test("flags duplicate test ids", () => {
@@ -429,9 +417,7 @@ describe("verifyTraceability", () => {
       },
     });
     expect(verdict.consistent).toBe(false);
-    expect(
-      verdict.mismatches.some((m) => m.message.includes("nonexistent_test")),
-    ).toBe(true);
+    expect(verdict.mismatches.some((m) => m.message.includes("nonexistent_test"))).toBe(true);
   });
 
   test("knownTestIds overrides the default tests[] check", () => {

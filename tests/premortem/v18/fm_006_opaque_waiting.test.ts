@@ -1,9 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import {
-  RUN_PROGRESS_SCHEMA_VERSION,
-  V18_BUNDLE_VERSION,
-} from "@src/oracle/v18/index.ts";
+import { RUN_PROGRESS_SCHEMA_VERSION, V18_BUNDLE_VERSION } from "@src/oracle/v18/index.ts";
 import {
   applyRunProgressEvent,
   buildRunProgressEvent,
@@ -54,19 +51,14 @@ describe(`premortem ${FM.id}: ${FM.title}`, () => {
       now: new Date(NOW.getTime() + 2_000),
     });
     expect((event as Record<string, unknown>).blocked_on_provider).toBe("chatgpt");
-    expect((event as Record<string, unknown>).blocked_on_error_code).toBe(
-      "chatgpt_pro_unverified",
-    );
+    expect((event as Record<string, unknown>).blocked_on_error_code).toBe("chatgpt_pro_unverified");
   });
 
   test("heartbeat NDJSON line carries the v18 contract but no reasoning text", () => {
-    const tracker = applyRunProgressEvent(
-      initialRunProgress({ run_id: "run-fm006", now: NOW }),
-      {
-        type: "prompt_thinking" as never, // run_progress doesn't model thinking directly; advance
-        at: NOW.getTime() + 1_000,
-      } as never,
-    );
+    const tracker = applyRunProgressEvent(initialRunProgress({ run_id: "run-fm006", now: NOW }), {
+      type: "prompt_thinking" as never, // run_progress doesn't model thinking directly; advance
+      at: NOW.getTime() + 1_000,
+    } as never);
     void tracker; // tests for thinking live in reconnect/heartbeat; we just ensure the run_progress message provider is sanitized.
     const provider = runProgressMessageProvider(() =>
       buildRunProgressEvent({

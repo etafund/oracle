@@ -136,8 +136,7 @@ const browserEvidenceFixture = {
   selected_effort_is_highest_visible: true,
   selector_manifest_version: "chatgpt-pro-v1",
   session_id_hash: "sha256:2a97516c354b68848cdbd8f54a226a0a55b21ed138e207ad6c5cbb9c00aa5aea",
-  transition_log_sha256:
-    "sha256:9c9c239de9790a1c12bbda6a34c7fc8b69c05612237dfb3cedaedd3a130fd82f",
+  transition_log_sha256: "sha256:9c9c239de9790a1c12bbda6a34c7fc8b69c05612237dfb3cedaedd3a130fd82f",
   unsafe_artifacts_quarantined: true,
   verification_method: "same_session_ui_observation_plus_selector_trace",
   verification_scope: "same_browser_session_before_prompt_submit",
@@ -164,8 +163,7 @@ const browserSessionFixture = {
 };
 
 const remoteBrowserEndpointFixture = {
-  auth_profile_id_hash:
-    "sha256:5145a2449252f93357efa5387da50412bfab629736717a22f2b5dcdcd3ca01e1",
+  auth_profile_id_hash: "sha256:5145a2449252f93357efa5387da50412bfab629736717a22f2b5dcdcd3ca01e1",
   bundle_version: V18_BUNDLE_VERSION,
   doctor_command: "oracle remote doctor --json",
   endpoint_id: "remote-browser-demo",
@@ -220,8 +218,7 @@ const providerResultFixture = {
   },
   evidence_id: "evidence-demo-chatgpt_pro_first_plan",
   model: "chatgpt-pro-latest",
-  prompt_manifest_sha256:
-    "sha256:69223c8fae80b46ec663079168f541e9308eb835d7720212f8222bf1f239cb18",
+  prompt_manifest_sha256: "sha256:69223c8fae80b46ec663079168f541e9308eb835d7720212f8222bf1f239cb18",
   provider_family: "chatgpt",
   provider_result_id: "provider-result-demo-chatgpt_pro_first_plan",
   provider_slot: "chatgpt_pro_first_plan",
@@ -230,8 +227,7 @@ const providerResultFixture = {
   result_path: ".apr/runs/demo/plans/chatgpt_pro_first_plan/output.md",
   result_text_sha256: "sha256:1a8f9f53b1c104b8e875b567fa926c96106866aa67b84ceb0ae9b79cc2b6f069",
   schema_version: PROVIDER_RESULT_SCHEMA_VERSION,
-  source_baseline_sha256:
-    "sha256:b91d369c3f7250980878f782559b0c4ccc00a829603c88cf555c0b23bdd12ee6",
+  source_baseline_sha256: "sha256:b91d369c3f7250980878f782559b0c4ccc00a829603c88cf555c0b23bdd12ee6",
   status: "success",
   synthesis_eligible: true,
 };
@@ -389,11 +385,7 @@ describe("v18 contract bundle metadata", () => {
 
 describe("sha256HashSchema", () => {
   test("accepts canonical sha256 hash strings", () => {
-    expect(() =>
-      sha256HashSchema.parse(
-        "sha256:" + "a".repeat(64),
-      ),
-    ).not.toThrow();
+    expect(() => sha256HashSchema.parse("sha256:" + "a".repeat(64))).not.toThrow();
   });
 
   test("rejects malformed or wrong-length digests", () => {
@@ -550,9 +542,7 @@ describe("required-field enforcement (sample of high-impact schemas)", () => {
   });
 
   test("robot_surface requires tool and commands", () => {
-    expect(() =>
-      robotSurfaceSchema.parse({ ...robotSurfaceFixture, tool: undefined }),
-    ).toThrow();
+    expect(() => robotSurfaceSchema.parse({ ...robotSurfaceFixture, tool: undefined })).toThrow();
     expect(() =>
       robotSurfaceSchema.parse({ ...robotSurfaceFixture, commands: undefined }),
     ).toThrow();

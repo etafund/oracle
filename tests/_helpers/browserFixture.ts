@@ -59,9 +59,7 @@ export async function loadBrowserFixture(
   };
 }
 
-export function extractChatGptModeProbe(
-  snapshot: BrowserFixtureSnapshot,
-): ChatGptFixtureModeProbe {
+export function extractChatGptModeProbe(snapshot: BrowserFixtureSnapshot): ChatGptFixtureModeProbe {
   const model = selectedElement(snapshot, "chatgpt-model-option");
   const efforts = elementsByRole(snapshot, "chatgpt-effort-option");
   return {
@@ -71,9 +69,7 @@ export function extractChatGptModeProbe(
   };
 }
 
-export function extractGeminiModeProbe(
-  snapshot: BrowserFixtureSnapshot,
-): GeminiFixtureModeProbe {
+export function extractGeminiModeProbe(snapshot: BrowserFixtureSnapshot): GeminiFixtureModeProbe {
   const model = selectedElement(snapshot, "gemini-model-option");
   const selectedDeepThink = selectedElement(snapshot, "gemini-deep-think-option");
   const selectedNonDeepThink = selectedElement(snapshot, "gemini-tool-option");
@@ -84,8 +80,7 @@ export function extractGeminiModeProbe(
     observedThinkingLevelLabels: thinkingLevels.map((element) => element.text),
     selectedThinkingLevel: thinkingLevels.find((element) => element.selected)?.text ?? null,
     thinkingLevelControlExposed:
-      thinkingLevels.length > 0 ||
-      snapshot.html.includes('data-thinking-level-control="exposed"'),
+      thinkingLevels.length > 0 || snapshot.html.includes('data-thinking-level-control="exposed"'),
   };
 }
 
@@ -161,8 +156,7 @@ export function geminiEventsFromFixture(
 
 function extractFixtureElements(html: string): BrowserFixtureElement[] {
   const elements: BrowserFixtureElement[] = [];
-  const tagPattern =
-    /<([a-z][a-z0-9-]*)\b(?=[^>]*\bdata-oracle-role=)([^>]*)>([\s\S]*?)<\/\1>/giu;
+  const tagPattern = /<([a-z][a-z0-9-]*)\b(?=[^>]*\bdata-oracle-role=)([^>]*)>([\s\S]*?)<\/\1>/giu;
   for (const match of html.matchAll(tagPattern)) {
     const attrs = parseAttrs(match[2] ?? "");
     const role = attrs["data-oracle-role"];

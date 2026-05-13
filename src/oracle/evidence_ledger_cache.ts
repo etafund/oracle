@@ -4,8 +4,7 @@ import path from "node:path";
 import type { EvidenceLedgerEntry } from "./evidence_ledger.js";
 import { canonicalJSON, sha256OfBytes } from "./v18/evidence.js";
 
-export const EVIDENCE_LEDGER_HEAD_CACHE_SCHEMA_VERSION =
-  "evidence_ledger_head_cache.v1" as const;
+export const EVIDENCE_LEDGER_HEAD_CACHE_SCHEMA_VERSION = "evidence_ledger_head_cache.v1" as const;
 export const DEFAULT_EVIDENCE_LEDGER_HEAD_CACHE_FLUSH_INTERVAL = 32;
 
 const TAIL_READ_CHUNK_BYTES = 4096;

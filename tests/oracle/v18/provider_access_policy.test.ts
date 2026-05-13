@@ -36,10 +36,7 @@ import {
 } from "../../../src/oracle/v18/index.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-const PLAN_BUNDLE = path.resolve(
-  moduleDir,
-  "../../../PLAN/oracle-vnext-plan-bundle-v18.0.0",
-);
+const PLAN_BUNDLE = path.resolve(moduleDir, "../../../PLAN/oracle-vnext-plan-bundle-v18.0.0");
 
 async function loadAccessPolicyFixture(): Promise<unknown> {
   const filePath = path.join(PLAN_BUNDLE, "fixtures/provider-access-policy.json");
@@ -312,15 +309,18 @@ describe("protectedSlotMetadataFor", () => {
     expect(protectedSlotMetadataFor("unknown")).toBeNull();
   });
 
-  test.each(PROTECTED_SLOTS)("emits api_substitution_allowed_for_this_slot=false for %s", (slot) => {
-    const metadata = protectedSlotMetadataFor(slot);
-    expect(metadata).not.toBeNull();
-    expect(metadata?.protected_slot).toBe(true);
-    expect(metadata?.api_substitution_allowed_for_this_slot).toBe(false);
-    expect(metadata?.required_provider_family).toBe(PROTECTED_SLOT_FAMILY[slot]);
-    expect(metadata?.required_access_paths).toEqual(ORACLE_BROWSER_ACCESS_PATHS);
-    expect(metadata?.unverified_error_code).toBe(PROTECTED_SLOT_UNVERIFIED_CODE[slot]);
-  });
+  test.each(PROTECTED_SLOTS)(
+    "emits api_substitution_allowed_for_this_slot=false for %s",
+    (slot) => {
+      const metadata = protectedSlotMetadataFor(slot);
+      expect(metadata).not.toBeNull();
+      expect(metadata?.protected_slot).toBe(true);
+      expect(metadata?.api_substitution_allowed_for_this_slot).toBe(false);
+      expect(metadata?.required_provider_family).toBe(PROTECTED_SLOT_FAMILY[slot]);
+      expect(metadata?.required_access_paths).toEqual(ORACLE_BROWSER_ACCESS_PATHS);
+      expect(metadata?.unverified_error_code).toBe(PROTECTED_SLOT_UNVERIFIED_CODE[slot]);
+    },
+  );
 
   test("PROTECTED_SLOT_UNVERIFIED_CODE maps every protected slot to a v18 error code", () => {
     expect(PROTECTED_SLOT_UNVERIFIED_CODE.chatgpt_pro_first_plan).toBe("chatgpt_pro_unverified");

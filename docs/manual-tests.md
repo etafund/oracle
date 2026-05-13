@@ -20,15 +20,15 @@ and run the live API suite before shipping major transport changes.
 
 Run the named v18 phases via the orchestrator instead of memorising vitest paths. CI-safe by default; the `live` phase is opt-in and gated on `--live` + `ORACLE_LIVE_TEST=1`.
 
-| Command                       | What it runs                                                                                          |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `pnpm test:v18`               | All CI-safe phases (`unit`, `fixtures`, `e2e:mock`, `privacy`, `conform`).                            |
-| `pnpm test:v18:unit`          | `tests/oracle/v18/` — contract validators, policy gates, evidence helpers, hash consistency.          |
-| `pnpm test:v18:fixtures`      | `tests/browser/selectors/`, `tests/browser/providers/` — selector manifest + result normalizers.       |
-| `pnpm test:v18:e2e:mock`      | `tests/e2e/` — full pipeline rehearsal (capabilities → lease → run → evidence → provider_result).      |
-| `pnpm test:v18:privacy`       | Secret-leak regression suite + hash-consistency regression.                                            |
-| `pnpm test:v18-conformance`   | `json_envelope.v1` JSON Schema 2020-12 conformance harness.                                            |
-| `pnpm test:v18:live`          | `tests/live/` — only when `--live` + `ORACLE_LIVE_TEST=1`. Skipped otherwise (no paid/browser calls).  |
+| Command                     | What it runs                                                                                          |
+| --------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `pnpm test:v18`             | All CI-safe phases (`unit`, `fixtures`, `e2e:mock`, `privacy`, `conform`).                            |
+| `pnpm test:v18:unit`        | `tests/oracle/v18/` — contract validators, policy gates, evidence helpers, hash consistency.          |
+| `pnpm test:v18:fixtures`    | `tests/browser/selectors/`, `tests/browser/providers/` — selector manifest + result normalizers.      |
+| `pnpm test:v18:e2e:mock`    | `tests/e2e/` — full pipeline rehearsal (capabilities → lease → run → evidence → provider_result).     |
+| `pnpm test:v18:privacy`     | Secret-leak regression suite + hash-consistency regression.                                           |
+| `pnpm test:v18-conformance` | `json_envelope.v1` JSON Schema 2020-12 conformance harness.                                           |
+| `pnpm test:v18:live`        | `tests/live/` — only when `--live` + `ORACLE_LIVE_TEST=1`. Skipped otherwise (no paid/browser calls). |
 
 Outputs land in `.oracle-v18-validation/` by default (override with `tsx scripts/v18-validation.ts --artifact-dir <path>`): `summary.json` carries the per-phase verdict + timing + log paths; each `<phase>.log` is the captured vitest stdout/stderr. Per AGENTS.md: live runs never auto-click ChatGPT's "Answer now" — let Pro thinking run its 10m–1h budget and reattach via `oracle session <id> --render` if the CLI returns before the answer.
 

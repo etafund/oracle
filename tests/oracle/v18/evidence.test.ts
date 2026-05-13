@@ -216,9 +216,7 @@ describe("canonicalJSON + sha256OfBytes", () => {
 
   test("sha256OfBytes returns the sha256:<hex> shape", () => {
     const out = sha256OfBytes("hello");
-    expect(out).toBe(
-      "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
-    );
+    expect(out).toBe("sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
   });
 });
 
@@ -324,9 +322,7 @@ describe("writeEvidence + artifact index", () => {
     const onDisk = JSON.parse(raw);
     const allKeys = collectKeys(onDisk);
     for (const key of allKeys) {
-      expect(FORBIDDEN_KEY_TEST(key), `forbidden key "${key}" present in evidence`).toBe(
-        false,
-      );
+      expect(FORBIDDEN_KEY_TEST(key), `forbidden key "${key}" present in evidence`).toBe(false);
     }
     expect(written.removedPaths).toEqual(
       expect.arrayContaining([
@@ -368,15 +364,18 @@ describe("writeEvidence + artifact index", () => {
     }
   });
 
-  testNonWindows("redaction_policy: off writes typed-core only (no extension keys to strip)", async () => {
-    const evidence = buildEvidence({ redaction_policy: "off" });
-    // No forbidden fields injected; result should be schema-typed core only.
-    const written = await writeEvidence("sess-3", evidence, { homeDir });
-    const raw = await readFile(written.path, "utf8");
-    const parsed = JSON.parse(raw);
-    expect(parsed.redaction_policy).toBe("off");
-    expect(parsed.evidence_id).toBe(evidence.evidence_id);
-  });
+  testNonWindows(
+    "redaction_policy: off writes typed-core only (no extension keys to strip)",
+    async () => {
+      const evidence = buildEvidence({ redaction_policy: "off" });
+      // No forbidden fields injected; result should be schema-typed core only.
+      const written = await writeEvidence("sess-3", evidence, { homeDir });
+      const raw = await readFile(written.path, "utf8");
+      const parsed = JSON.parse(raw);
+      expect(parsed.redaction_policy).toBe("off");
+      expect(parsed.evidence_id).toBe(evidence.evidence_id);
+    },
+  );
 
   testNonWindows("unsafe_debug goes to quarantine and is excluded from normal index", async () => {
     const evidence = buildEvidence({
@@ -409,19 +408,22 @@ describe("writeEvidence + artifact index", () => {
     ).rejects.toThrow(/unsafe_debug/);
   });
 
-  testNonWindows("re-writing the same evidence_id replaces the index entry (no duplicates)", async () => {
-    const first = buildEvidence({ evidence_id: "evidence-replay-1" });
-    const second = buildEvidence({
-      evidence_id: "evidence-replay-1",
-      mode_verified: false,
-    });
-    await writeEvidence("sess-6", first, { homeDir });
-    const written2 = await writeEvidence("sess-6", second, { homeDir });
+  testNonWindows(
+    "re-writing the same evidence_id replaces the index entry (no duplicates)",
+    async () => {
+      const first = buildEvidence({ evidence_id: "evidence-replay-1" });
+      const second = buildEvidence({
+        evidence_id: "evidence-replay-1",
+        mode_verified: false,
+      });
+      await writeEvidence("sess-6", first, { homeDir });
+      const written2 = await writeEvidence("sess-6", second, { homeDir });
 
-    const index = await readArtifactIndex(evidenceIndexPath("sess-6", homeDir));
-    expect(index!.artifacts).toHaveLength(1);
-    expect(index!.artifacts[0].sha256).toBe(written2.sha256);
-  });
+      const index = await readArtifactIndex(evidenceIndexPath("sess-6", homeDir));
+      expect(index!.artifacts).toHaveLength(1);
+      expect(index!.artifacts[0].sha256).toBe(written2.sha256);
+    },
+  );
 
   testNonWindows("run_id from options propagates into the index envelope", async () => {
     const evidence = buildEvidence({ evidence_id: "evidence-run-1" });
@@ -444,9 +446,7 @@ describe("artifact_index.v1 contract", () => {
     expect(() =>
       artifactIndexSchema.parse({
         schema_version: ARTIFACT_INDEX_SCHEMA_VERSION,
-        artifacts: [
-          { artifact_id: "a", kind: "browser_evidence", path: "a.json", sha256: "bad" },
-        ],
+        artifacts: [{ artifact_id: "a", kind: "browser_evidence", path: "a.json", sha256: "bad" }],
       }),
     ).toThrow();
   });

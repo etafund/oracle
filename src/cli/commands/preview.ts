@@ -7,11 +7,7 @@
 
 import type { Command } from "commander";
 
-import {
-  V18_BUNDLE_VERSION,
-  createEnvelope,
-  type JsonEnvelope,
-} from "../../oracle/v18/index.js";
+import { V18_BUNDLE_VERSION, createEnvelope, type JsonEnvelope } from "../../oracle/v18/index.js";
 import {
   estimateSlotRuntime,
   isApprovalSatisfied,
@@ -107,8 +103,7 @@ function previewSlotEntry(
   const blockers: string[] = [];
   let nextCommand: string | null = null;
   const optional = input.optional === true;
-  const skippable =
-    optional && input.quorum_satisfied === true; // optional reviewer after quorum can be skipped
+  const skippable = optional && input.quorum_satisfied === true; // optional reviewer after quorum can be skipped
   if (!estimate) {
     return {
       slot: input.slot,
@@ -130,7 +125,10 @@ function previewSlotEntry(
   }
   // Approvals (required for any paid_call slot under live_fanout policy).
   if (estimate.paid_call && !skippable) {
-    const { satisfied, missing } = isApprovalSatisfied(options.budget, options.approvalsPresent ?? []);
+    const { satisfied, missing } = isApprovalSatisfied(
+      options.budget,
+      options.approvalsPresent ?? [],
+    );
     if (!satisfied && missing.includes("live_fanout")) {
       blockers.push("live_fanout approval is required but not present");
       nextCommand = "oracle capabilities --json  # confirm the run requires live_fanout";
@@ -210,11 +208,13 @@ export function buildPreviewPayload(options: PreviewCommandOptions): PreviewPayl
     options.budget,
     options.approvalsPresent ?? [],
   );
-  const required = (options.budget &&
+  const required = (
+    options.budget &&
     typeof options.budget === "object" &&
     Array.isArray((options.budget as Record<string, unknown>).required_approvals)
       ? ((options.budget as Record<string, unknown>).required_approvals as string[])
-      : []) as readonly string[];
+      : []
+  ) as readonly string[];
   return {
     schema_version: ORACLE_PREVIEW_SCHEMA_VERSION,
     bundle_version: V18_BUNDLE_VERSION,
@@ -292,7 +292,9 @@ function formatHuman(result: PreviewResult): string {
         : entry.paid_call
           ? "PAID"
           : "FREE";
-    lines.push(`[${tag}] ${entry.slot}  risk=${entry.primary_risk}  ~${entry.typical_wall_seconds}s/max ${entry.max_wall_seconds}s`);
+    lines.push(
+      `[${tag}] ${entry.slot}  risk=${entry.primary_risk}  ~${entry.typical_wall_seconds}s/max ${entry.max_wall_seconds}s`,
+    );
     for (const blocker of entry.blockers) {
       lines.push(`    blocker: ${blocker}`);
     }
@@ -318,13 +320,11 @@ export function registerPreviewCommand(program: Command): Command {
         // Production wiring (file/stdin parsing for --slots/--budget)
         // lives in the CLI bootstrap layer; this registration ensures
         // the command exists in the registry and human help text.
-        await runPreview(
-          {
-            profile: "balanced",
-            slots: [],
-            json: commandOptions.json ?? true,
-          },
-        );
+        await runPreview({
+          profile: "balanced",
+          slots: [],
+          json: commandOptions.json ?? true,
+        });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         process.stderr.write(`oracle preview failed: ${message}\n`);

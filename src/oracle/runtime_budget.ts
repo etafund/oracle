@@ -40,12 +40,7 @@ export type RuntimeBudget = z.infer<typeof runtimeBudgetSchema>;
 
 // ─── Per-slot runtime estimates (static) ─────────────────────────────────────
 
-export type SlotPrimaryRisk =
-  | "time"
-  | "tokens"
-  | "subscription_quota"
-  | "human_action"
-  | "none";
+export type SlotPrimaryRisk = "time" | "tokens" | "subscription_quota" | "human_action" | "none";
 
 export interface SlotRuntimeEstimate {
   readonly slot: string;
@@ -198,10 +193,7 @@ export interface BudgetTrackerState {
   readonly consumedTokens: number;
 }
 
-export function createBudgetTracker(input: {
-  budget: unknown;
-  now: Date;
-}): BudgetTrackerState {
+export function createBudgetTracker(input: { budget: unknown; now: Date }): BudgetTrackerState {
   const budget = runtimeBudgetSchema.parse(input.budget);
   return {
     budget,

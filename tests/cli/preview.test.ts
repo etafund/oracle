@@ -162,9 +162,7 @@ describe("buildPreviewPayload — optional reviewer after quorum", () => {
   test("optional WITHOUT quorum_satisfied still runs (active, not skippable)", () => {
     const payload = buildPreviewPayload({
       profile: "balanced",
-      slots: [
-        { slot: "xai_grok_reasoning", optional: true, quorum_satisfied: false },
-      ],
+      slots: [{ slot: "xai_grok_reasoning", optional: true, quorum_satisfied: false }],
       budget: buildBudget(),
       approvalsPresent: ["live_fanout"],
       remote_browser_available: true,
@@ -286,10 +284,7 @@ describe("runPreview — CLI surface (no live calls)", () => {
     await runPreview(
       {
         profile: "balanced",
-        slots: [
-          { slot: "chatgpt_pro_first_plan" },
-          { slot: "gemini_deep_think" },
-        ],
+        slots: [{ slot: "chatgpt_pro_first_plan" }, { slot: "gemini_deep_think" }],
         budget: buildBudget(),
         approvalsPresent: ["live_fanout"],
         remote_browser_available: true,

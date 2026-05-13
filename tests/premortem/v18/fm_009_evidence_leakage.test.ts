@@ -161,7 +161,9 @@ describe(`premortem ${FM.id}: ${FM.title}`, () => {
       }
 
       // Path is the normal evidence dir, NOT quarantine.
-      expect(written.path).toBe(evidenceFilePath("sess-fm009", "evidence-premortem-fm009", homeDir));
+      expect(written.path).toBe(
+        evidenceFilePath("sess-fm009", "evidence-premortem-fm009", homeDir),
+      );
       expect(written.indexed).toBe(true);
       expect(written.quarantined).toBe(false);
     } finally {
@@ -169,35 +171,40 @@ describe(`premortem ${FM.id}: ${FM.title}`, () => {
     }
   });
 
-  testNonWindows("unsafe_debug evidence is quarantined and excluded from the normal index", async () => {
-    const homeDir = await mkdtemp(path.join(os.tmpdir(), "oracle-premortem-fm009-uq-"));
-    try {
-      const payload = buildEvidencePayload({
-        redaction_policy: "unsafe_debug",
-        evidence_id: "evidence-premortem-fm009-unsafe",
-      });
-      const written = await writeEvidence("sess-fm009-unsafe", payload, { homeDir });
+  testNonWindows(
+    "unsafe_debug evidence is quarantined and excluded from the normal index",
+    async () => {
+      const homeDir = await mkdtemp(path.join(os.tmpdir(), "oracle-premortem-fm009-uq-"));
+      try {
+        const payload = buildEvidencePayload({
+          redaction_policy: "unsafe_debug",
+          evidence_id: "evidence-premortem-fm009-unsafe",
+        });
+        const written = await writeEvidence("sess-fm009-unsafe", payload, { homeDir });
 
-      expect(written.quarantined).toBe(true);
-      expect(written.indexed).toBe(false);
-      expect(written.path).toBe(
-        quarantineFilePath("sess-fm009-unsafe", "evidence-premortem-fm009-unsafe", homeDir),
-      );
+        expect(written.quarantined).toBe(true);
+        expect(written.indexed).toBe(false);
+        expect(written.path).toBe(
+          quarantineFilePath("sess-fm009-unsafe", "evidence-premortem-fm009-unsafe", homeDir),
+        );
 
-      // Normal index does NOT include the quarantined entry.
-      const normalEntries = await listIndexedEvidence("sess-fm009-unsafe", homeDir);
-      expect(normalEntries).toEqual([]);
-      // Quarantine has its own index.
-      const quarantineEntries = await listQuarantinedEvidence("sess-fm009-unsafe", homeDir);
-      expect(quarantineEntries).toHaveLength(1);
-      expect(quarantineEntries[0].artifact_id).toBe("evidence-premortem-fm009-unsafe");
+        // Normal index does NOT include the quarantined entry.
+        const normalEntries = await listIndexedEvidence("sess-fm009-unsafe", homeDir);
+        expect(normalEntries).toEqual([]);
+        // Quarantine has its own index.
+        const quarantineEntries = await listQuarantinedEvidence("sess-fm009-unsafe", homeDir);
+        expect(quarantineEntries).toHaveLength(1);
+        expect(quarantineEntries[0].artifact_id).toBe("evidence-premortem-fm009-unsafe");
 
-      // Normal index file does not exist (no entries written).
-      await expect(readFile(evidenceIndexPath("sess-fm009-unsafe", homeDir), "utf8")).rejects.toThrow();
-    } finally {
-      await rm(homeDir, { recursive: true, force: true });
-    }
-  });
+        // Normal index file does not exist (no entries written).
+        await expect(
+          readFile(evidenceIndexPath("sess-fm009-unsafe", homeDir), "utf8"),
+        ).rejects.toThrow();
+      } finally {
+        await rm(homeDir, { recursive: true, force: true });
+      }
+    },
+  );
 
   test("FORBIDDEN_LEAKED_VALUES covers the canonical premortem leak markers", () => {
     expect(FORBIDDEN_LEAKED_VALUES.length).toBeGreaterThan(0);

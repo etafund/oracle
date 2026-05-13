@@ -10,10 +10,7 @@ import {
   listRobotCommands,
   type RobotCommandEntry,
 } from "@src/cli/robotRegistry.ts";
-import {
-  buildRobotDocsEnvelope,
-  runRobotDocs,
-} from "@src/cli/commands/robotDocs.ts";
+import { buildRobotDocsEnvelope, runRobotDocs } from "@src/cli/commands/robotDocs.ts";
 import {
   JSON_ENVELOPE_SCHEMA_VERSION,
   ROBOT_SURFACE_SCHEMA_VERSION,
@@ -166,10 +163,7 @@ describe("buildRobotDocsEnvelope — json_envelope.v1 conformance", () => {
 describe("runRobotDocs — CLI surface behavior", () => {
   test("default JSON invocation writes a single envelope to stdout", async () => {
     const chunks: string[] = [];
-    await runRobotDocs(
-      { json: true },
-      { stdout: (text) => chunks.push(text) },
-    );
+    await runRobotDocs({ json: true }, { stdout: (text) => chunks.push(text) });
     expect(chunks.length).toBe(1);
     const parsed = JSON.parse(chunks[0]);
     expect(parsed.schema_version).toBe(JSON_ENVELOPE_SCHEMA_VERSION);
@@ -180,10 +174,7 @@ describe("runRobotDocs — CLI surface behavior", () => {
 
   test("--no-json writes a deterministic human summary listing every command", async () => {
     const chunks: string[] = [];
-    await runRobotDocs(
-      { json: false },
-      { stdout: (text) => chunks.push(text) },
-    );
+    await runRobotDocs({ json: false }, { stdout: (text) => chunks.push(text) });
     const text = chunks.join("");
     for (const name of REQUIRED_COMMAND_NAMES) {
       expect(text).toContain(name);
@@ -202,10 +193,7 @@ describe("runRobotDocs — CLI surface behavior", () => {
 describe("robot-docs does not leak secrets", () => {
   test("output never contains common secret patterns", async () => {
     const chunks: string[] = [];
-    await runRobotDocs(
-      { json: true },
-      { stdout: (text) => chunks.push(text) },
-    );
+    await runRobotDocs({ json: true }, { stdout: (text) => chunks.push(text) });
     const text = chunks.join("");
     for (const pattern of [/sk-[a-z0-9-]{6,}/i, /Bearer\s+\w/i, /token=/i, /password=/i]) {
       expect(text).not.toMatch(pattern);

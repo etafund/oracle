@@ -187,9 +187,7 @@ describe("evidence filesystem safety conformance", () => {
         path: `${evidenceId}.json`,
       });
       expect(isSafeRelativeArtifactPath(quarantineIndex!.artifacts[0].path)).toBe(true);
-      expect(await listQuarantinedEvidence(sessionId, homeDir)).toEqual(
-        quarantineIndex!.artifacts,
-      );
+      expect(await listQuarantinedEvidence(sessionId, homeDir)).toEqual(quarantineIndex!.artifacts);
     });
   });
 
@@ -226,9 +224,9 @@ describe("evidence filesystem safety conformance", () => {
       expect(raw.endsWith("\n")).toBe(true);
       expect(raw.trimEnd()).toBe(canonicalJSON(second));
       expect(await readArtifactIndex(indexFile)).toEqual(second);
-      expect((await readdir(path.dirname(indexFile))).filter((name) => name.includes(".tmp"))).toEqual(
-        [],
-      );
+      expect(
+        (await readdir(path.dirname(indexFile))).filter((name) => name.includes(".tmp")),
+      ).toEqual([]);
 
       const fsync = await probeFsyncSemantics(path.join(homeDir, "fsync probe"));
       expect(fsync.file).toBe("synced");

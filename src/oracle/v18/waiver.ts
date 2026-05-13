@@ -18,10 +18,7 @@ import { z } from "zod";
 
 import { V18_BUNDLE_VERSION } from "./contracts.js";
 import type { V18ErrorCode } from "./json_envelope.js";
-import {
-  NON_WAIVABLE_PROTECTED_SLOTS,
-  isNonWaivableSlot,
-} from "./protected_slot_boundaries.js";
+import { NON_WAIVABLE_PROTECTED_SLOTS, isNonWaivableSlot } from "./protected_slot_boundaries.js";
 
 export const FALLBACK_WAIVER_SCHEMA_VERSION = "fallback_waiver.v1" as const;
 
@@ -205,10 +202,7 @@ export function evaluateFallbackWaiver(
  * Convenience: return true iff the waiver is currently applicable.
  * Use when callers want a boolean gate without a verdict.
  */
-export function isWaiverApplicable(
-  input: unknown,
-  request: WaiverEvaluationRequest,
-): boolean {
+export function isWaiverApplicable(input: unknown, request: WaiverEvaluationRequest): boolean {
   return evaluateFallbackWaiver(input, request).applicable;
 }
 

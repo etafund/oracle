@@ -52,9 +52,7 @@ export function serializeRemoteRunPayloadForWire(payload: RemoteRunPayload): str
   return JSON.stringify(sanitizeRemoteRunPayloadForWire(payload));
 }
 
-export function sanitizeRemoteRunPayloadForHost(
-  payload: RemoteRunPayload,
-): RemoteRunPayload {
+export function sanitizeRemoteRunPayloadForHost(payload: RemoteRunPayload): RemoteRunPayload {
   const sanitized = sanitizeRemoteRunPayloadForWire(payload);
   return {
     ...sanitized,

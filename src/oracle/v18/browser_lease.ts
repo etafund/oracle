@@ -6,7 +6,10 @@ import {
 } from "./contracts.js";
 
 export type BrowserLeaseProvider = BrowserLease["provider"];
-export type StoredBrowserLeaseStatus = Extract<BrowserLease["status"], "acquired" | "expired" | "released">;
+export type StoredBrowserLeaseStatus = Extract<
+  BrowserLease["status"],
+  "acquired" | "expired" | "released"
+>;
 export type BrowserLeaseReadState =
   | "missing"
   | "active"
@@ -69,7 +72,10 @@ export function browserLeaseLockName(provider: BrowserLeaseProvider): string {
   return `${provider}.shared-browser-profile`;
 }
 
-export function browserLeaseRecoveryCommand(provider: BrowserLeaseProvider, leaseId?: string): string {
+export function browserLeaseRecoveryCommand(
+  provider: BrowserLeaseProvider,
+  leaseId?: string,
+): string {
   const leasePart = leaseId ? ` --lease-id ${leaseId}` : "";
   return `oracle browser leases recover --provider ${provider}${leasePart}`;
 }
@@ -101,7 +107,8 @@ export function buildStoredBrowserLease(
     command_summary: input.commandSummary,
     local_pid: input.localPid,
     remote_session_id: input.remoteSessionId,
-    safe_recovery_command: input.safeRecoveryCommand ?? browserLeaseRecoveryCommand(provider, input.leaseId),
+    safe_recovery_command:
+      input.safeRecoveryCommand ?? browserLeaseRecoveryCommand(provider, input.leaseId),
     blocked_reason: null,
     next_command: null,
     fix_command: null,

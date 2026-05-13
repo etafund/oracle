@@ -8,10 +8,7 @@ import {
   createBrowserLease,
   readBrowserLease,
 } from "@src/browser/leases.ts";
-import {
-  browserLeaseLockName,
-  type BrowserLeaseProvider,
-} from "@src/oracle/v18/browser_lease.ts";
+import { browserLeaseLockName, type BrowserLeaseProvider } from "@src/oracle/v18/browser_lease.ts";
 
 import {
   REPRESENTATIVE_HOME_PATHS,

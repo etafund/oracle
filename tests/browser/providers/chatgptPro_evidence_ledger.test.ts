@@ -113,42 +113,48 @@ describe("sendWithLedger — happy path", () => {
     ]);
   });
 
-  testNonWindows("intermediate FSM states (model menu, pro candidate, effort) do NOT add entries", async () => {
-    const machine = createChatGptProMachine();
-    const driver = await startChatGptProLedger(machine, {
-      sessionId: SESSION_ID,
-      homeDir,
-      providerSlot: "chatgpt_pro_first_plan",
-    });
-    await drive(driver, HAPPY_PATH);
-    const read = await readEvidenceLedger(SESSION_ID, { homeDir });
-    expect(read.entries).toHaveLength(8);
-    // Confirm none of the intermediate-state event types snuck in.
-    const types = new Set(read.entries.map((e) => e.event.type));
-    expect(types.has("evidence_quarantined")).toBe(false);
-  });
+  testNonWindows(
+    "intermediate FSM states (model menu, pro candidate, effort) do NOT add entries",
+    async () => {
+      const machine = createChatGptProMachine();
+      const driver = await startChatGptProLedger(machine, {
+        sessionId: SESSION_ID,
+        homeDir,
+        providerSlot: "chatgpt_pro_first_plan",
+      });
+      await drive(driver, HAPPY_PATH);
+      const read = await readEvidenceLedger(SESSION_ID, { homeDir });
+      expect(read.entries).toHaveLength(8);
+      // Confirm none of the intermediate-state event types snuck in.
+      const types = new Set(read.entries.map((e) => e.event.type));
+      expect(types.has("evidence_quarantined")).toBe(false);
+    },
+  );
 
-  testNonWindows("ledger metadata captures session_id_hash, prompt_sha256, output_text_sha256", async () => {
-    const machine = createChatGptProMachine();
-    const driver = await startChatGptProLedger(machine, {
-      sessionId: SESSION_ID,
-      homeDir,
-      providerSlot: "chatgpt_pro_first_plan",
-    });
-    await drive(driver, HAPPY_PATH);
-    const read = await readEvidenceLedger(SESSION_ID, { homeDir });
-    const byType = Object.fromEntries(read.entries.map((e) => [e.event.type, e.event]));
-    expect((byType.mode_verified_same_session.metadata as Record<string, unknown>).session_id_hash).toBe(
-      SESSION_HASH,
-    );
-    expect((byType.prompt_submitted.metadata as Record<string, unknown>).prompt_sha256).toBe(
-      PROMPT_HASH,
-    );
-    expect((byType.response_arrived.metadata as Record<string, unknown>).output_text_sha256).toBe(
-      OUTPUT_HASH,
-    );
-    expect((byType.response_arrived.metadata as Record<string, unknown>).output_bytes).toBe(4096);
-  });
+  testNonWindows(
+    "ledger metadata captures session_id_hash, prompt_sha256, output_text_sha256",
+    async () => {
+      const machine = createChatGptProMachine();
+      const driver = await startChatGptProLedger(machine, {
+        sessionId: SESSION_ID,
+        homeDir,
+        providerSlot: "chatgpt_pro_first_plan",
+      });
+      await drive(driver, HAPPY_PATH);
+      const read = await readEvidenceLedger(SESSION_ID, { homeDir });
+      const byType = Object.fromEntries(read.entries.map((e) => [e.event.type, e.event]));
+      expect(
+        (byType.mode_verified_same_session.metadata as Record<string, unknown>).session_id_hash,
+      ).toBe(SESSION_HASH);
+      expect((byType.prompt_submitted.metadata as Record<string, unknown>).prompt_sha256).toBe(
+        PROMPT_HASH,
+      );
+      expect((byType.response_arrived.metadata as Record<string, unknown>).output_text_sha256).toBe(
+        OUTPUT_HASH,
+      );
+      expect((byType.response_arrived.metadata as Record<string, unknown>).output_bytes).toBe(4096);
+    },
+  );
 
   testNonWindows("evidence_written entry carries the evidence_id", async () => {
     const machine = createChatGptProMachine();
@@ -228,26 +234,29 @@ describe("sendWithLedger — failure paths produce run_failed with v18 error cod
     );
   });
 
-  testNonWindows("empty effort labels → run_failed with chatgpt_extended_reasoning_unverified", async () => {
-    const machine = createChatGptProMachine();
-    const driver = await startChatGptProLedger(machine, {
-      sessionId: SESSION_ID,
-      homeDir,
-      providerSlot: "chatgpt_pro_first_plan",
-    });
-    await drive(driver, [
-      { type: "browser_connected", mode: "remote" },
-      { type: "login_verified" },
-      { type: "model_menu_opened" },
-      { type: "pro_candidate_selected", modelLabel: "Pro" },
-      { type: "effort_candidate_selected", observedEffortLabels: [] },
-    ]);
-    const read = await readEvidenceLedger(SESSION_ID, { homeDir });
-    const failure = read.entries.find((e) => e.event.type === "run_failed");
-    expect((failure!.event.metadata as Record<string, unknown>).error_code).toBe(
-      "chatgpt_extended_reasoning_unverified",
-    );
-  });
+  testNonWindows(
+    "empty effort labels → run_failed with chatgpt_extended_reasoning_unverified",
+    async () => {
+      const machine = createChatGptProMachine();
+      const driver = await startChatGptProLedger(machine, {
+        sessionId: SESSION_ID,
+        homeDir,
+        providerSlot: "chatgpt_pro_first_plan",
+      });
+      await drive(driver, [
+        { type: "browser_connected", mode: "remote" },
+        { type: "login_verified" },
+        { type: "model_menu_opened" },
+        { type: "pro_candidate_selected", modelLabel: "Pro" },
+        { type: "effort_candidate_selected", observedEffortLabels: [] },
+      ]);
+      const read = await readEvidenceLedger(SESSION_ID, { homeDir });
+      const failure = read.entries.find((e) => e.event.type === "run_failed");
+      expect((failure!.event.metadata as Record<string, unknown>).error_code).toBe(
+        "chatgpt_extended_reasoning_unverified",
+      );
+    },
+  );
 
   testNonWindows("zero-byte response → run_failed with output_capture_empty", async () => {
     const machine = createChatGptProMachine();
@@ -273,24 +282,27 @@ describe("sendWithLedger — failure paths produce run_failed with v18 error cod
     );
   });
 
-  testNonWindows("illegal prompt-before-verify → run_failed with prompt_submitted_before_verification", async () => {
-    const machine = createChatGptProMachine();
-    const driver = await startChatGptProLedger(machine, {
-      sessionId: SESSION_ID,
-      homeDir,
-      providerSlot: "chatgpt_pro_first_plan",
-    });
-    await drive(driver, [
-      { type: "browser_connected", mode: "remote" },
-      { type: "login_verified" },
-      { type: "submit_prompt", promptSha256: PROMPT_HASH },
-    ]);
-    const read = await readEvidenceLedger(SESSION_ID, { homeDir });
-    const failure = read.entries.find((e) => e.event.type === "run_failed");
-    expect((failure!.event.metadata as Record<string, unknown>).error_code).toBe(
-      "prompt_submitted_before_verification",
-    );
-  });
+  testNonWindows(
+    "illegal prompt-before-verify → run_failed with prompt_submitted_before_verification",
+    async () => {
+      const machine = createChatGptProMachine();
+      const driver = await startChatGptProLedger(machine, {
+        sessionId: SESSION_ID,
+        homeDir,
+        providerSlot: "chatgpt_pro_first_plan",
+      });
+      await drive(driver, [
+        { type: "browser_connected", mode: "remote" },
+        { type: "login_verified" },
+        { type: "submit_prompt", promptSha256: PROMPT_HASH },
+      ]);
+      const read = await readEvidenceLedger(SESSION_ID, { homeDir });
+      const failure = read.entries.find((e) => e.event.type === "run_failed");
+      expect((failure!.event.metadata as Record<string, unknown>).error_code).toBe(
+        "prompt_submitted_before_verification",
+      );
+    },
+  );
 });
 
 // ─── Driver invariants ──────────────────────────────────────────────────────
@@ -332,24 +344,27 @@ describe("driver invariants", () => {
     expect(types).toEqual(["session_started", "browser_attached", "login_verified"]);
   });
 
-  testNonWindows("failure states are absorbing — subsequent events do not double-log run_failed", async () => {
-    const machine = createChatGptProMachine();
-    const driver = await startChatGptProLedger(machine, {
-      sessionId: SESSION_ID,
-      homeDir,
-      providerSlot: "chatgpt_pro_first_plan",
-    });
-    const final = await drive(driver, [
-      { type: "browser_connect_failed", reason: "ECONNREFUSED" },
-      // These should not advance the FSM and should NOT add ledger entries.
-      { type: "browser_connected", mode: "remote" },
-      { type: "login_verified" },
-    ]);
-    expect(final.machine.state).toBe("remote_browser_unavailable");
-    const read = await readEvidenceLedger(SESSION_ID, { homeDir });
-    const runFailedEntries = read.entries.filter((e) => e.event.type === "run_failed");
-    expect(runFailedEntries).toHaveLength(1);
-  });
+  testNonWindows(
+    "failure states are absorbing — subsequent events do not double-log run_failed",
+    async () => {
+      const machine = createChatGptProMachine();
+      const driver = await startChatGptProLedger(machine, {
+        sessionId: SESSION_ID,
+        homeDir,
+        providerSlot: "chatgpt_pro_first_plan",
+      });
+      const final = await drive(driver, [
+        { type: "browser_connect_failed", reason: "ECONNREFUSED" },
+        // These should not advance the FSM and should NOT add ledger entries.
+        { type: "browser_connected", mode: "remote" },
+        { type: "login_verified" },
+      ]);
+      expect(final.machine.state).toBe("remote_browser_unavailable");
+      const read = await readEvidenceLedger(SESSION_ID, { homeDir });
+      const runFailedEntries = read.entries.filter((e) => e.event.type === "run_failed");
+      expect(runFailedEntries).toHaveLength(1);
+    },
+  );
 
   testNonWindows("driver respects pre-existing entries (chains from current tail)", async () => {
     // Simulate a session that already has manually-appended bootstrap
@@ -377,19 +392,22 @@ describe("driver invariants", () => {
 // ─── applyChatGptProEvents short-circuit interaction ─────────────────────────
 
 describe("driver + applyChatGptProEvents short-circuit", () => {
-  testNonWindows("driver-based and applyChatGptProEvents-based runs agree on FSM state", async () => {
-    const machine = createChatGptProMachine();
-    const direct = applyChatGptProEvents(machine, HAPPY_PATH);
-    expect(direct.state).toBe("success");
+  testNonWindows(
+    "driver-based and applyChatGptProEvents-based runs agree on FSM state",
+    async () => {
+      const machine = createChatGptProMachine();
+      const direct = applyChatGptProEvents(machine, HAPPY_PATH);
+      expect(direct.state).toBe("success");
 
-    const driver = await startChatGptProLedger(machine, {
-      sessionId: SESSION_ID,
-      homeDir,
-      providerSlot: "chatgpt_pro_first_plan",
-    });
-    const driven = await drive(driver, HAPPY_PATH);
-    expect(driven.machine.state).toBe(direct.state);
-    expect(driven.machine.context.evidenceId).toBe(direct.context.evidenceId);
-    expect(driven.machine.context.outputTextSha256).toBe(direct.context.outputTextSha256);
-  });
+      const driver = await startChatGptProLedger(machine, {
+        sessionId: SESSION_ID,
+        homeDir,
+        providerSlot: "chatgpt_pro_first_plan",
+      });
+      const driven = await drive(driver, HAPPY_PATH);
+      expect(driven.machine.state).toBe(direct.state);
+      expect(driven.machine.context.evidenceId).toBe(direct.context.evidenceId);
+      expect(driven.machine.context.outputTextSha256).toBe(direct.context.outputTextSha256);
+    },
+  );
 });

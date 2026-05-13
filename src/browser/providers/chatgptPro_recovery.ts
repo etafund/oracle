@@ -167,9 +167,7 @@ export interface RecoverChatgptProRunResult {
   readonly envelope: JsonEnvelope;
 }
 
-export function recoverChatgptProRun(
-  input: RecoverChatgptProRunInput,
-): RecoverChatgptProRunResult {
+export function recoverChatgptProRun(input: RecoverChatgptProRunInput): RecoverChatgptProRunResult {
   const snapshot = snapshotChatgptProRun(input);
   const decision = decideChatgptProResume(
     snapshot,

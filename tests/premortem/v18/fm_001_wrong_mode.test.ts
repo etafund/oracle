@@ -6,10 +6,7 @@ import {
   buildBrowserEvidence,
   type BuildBrowserEvidenceInput,
 } from "@src/browser/evidence.ts";
-import {
-  evaluateBrowserEvidenceTrust,
-  evaluateSynthesisGate,
-} from "@src/oracle/v18/index.ts";
+import { evaluateBrowserEvidenceTrust, evaluateSynthesisGate } from "@src/oracle/v18/index.ts";
 import { detectSilentDowngrade } from "@src/oracle/v18/protected_slot_boundaries.ts";
 import { PLACEHOLDER_SHA256, premortemForId } from "@tests/_helpers/premortem.ts";
 
@@ -86,9 +83,9 @@ describe(`premortem ${FM.id}: ${FM.title}`, () => {
     );
     const trust = evaluateBrowserEvidenceTrust(evidence);
     expect(trust.eligible).toBe(false);
-    expect(
-      trust.blockedReasons.some((r) => r.field === "browser_evidence.mode_verified"),
-    ).toBe(true);
+    expect(trust.blockedReasons.some((r) => r.field === "browser_evidence.mode_verified")).toBe(
+      true,
+    );
   });
 
   test("placeholder hashes (all-zeros) are rejected at build time", () => {
@@ -143,9 +140,8 @@ describe(`premortem ${FM.id}: silent-downgrade detector`, () => {
     expect(verdict.degraded).toBe(true);
     expect(verdict.synthesis_eligible).toBe(false);
     expect(
-      verdict.reasons.find(
-        (r) => r.field === "provider_result.observed_reasoning_effort_label",
-      )?.code,
+      verdict.reasons.find((r) => r.field === "provider_result.observed_reasoning_effort_label")
+        ?.code,
     ).toBe("chatgpt_pro_unverified");
   });
 

@@ -163,7 +163,9 @@ export async function runBrowserLeasesAcquire(
     const current = await Promise.all(
       normalized.providers.map((provider) => readProviderLease(provider, normalized, options)),
     );
-    const blocker = current.find((result) => result.state !== "missing" && result.state !== "released");
+    const blocker = current.find(
+      (result) => result.state !== "missing" && result.state !== "released",
+    );
     if (blocker) {
       throw stateError(
         `Cannot acquire ${blocker.provider}; lease is ${blocker.state}.`,
@@ -249,9 +251,7 @@ function addCommonOptions(command: Command): Command {
     .option("--profile-id-hash <hash>", "Expected shared profile_id_hash.");
 }
 
-async function runAndSetExitCode(
-  callback: () => Promise<BrowserLeasesEnvelope>,
-): Promise<void> {
+async function runAndSetExitCode(callback: () => Promise<BrowserLeasesEnvelope>): Promise<void> {
   const envelope = await callback();
   if (!envelope.ok) {
     process.exitCode = 1;

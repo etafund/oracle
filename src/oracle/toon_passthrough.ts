@@ -63,9 +63,7 @@ export interface ToonPolicyMetadata {
 }
 
 export interface ToonPassthroughWarning {
-  readonly code:
-    | "toon_prompt_blocks_json_fallback"
-    | "toon_rust_policy_not_executed";
+  readonly code: "toon_prompt_blocks_json_fallback" | "toon_rust_policy_not_executed";
   readonly severity: "warning";
   readonly message: string;
   readonly policy_metadata: ToonPolicyMetadata;
@@ -123,9 +121,7 @@ export function createToonPromptPassthrough(
   options: ToonPromptPassthroughOptions = {},
 ): ToonPromptPassthroughResult {
   const markers = detectToonPromptBlocks(prompt);
-  const policyMetadata = summarizeContextSerializationPolicy(
-    options.contextSerializationPolicy,
-  );
+  const policyMetadata = summarizeContextSerializationPolicy(options.contextSerializationPolicy);
   return {
     providerPrompt: passthroughToProviderPrompt(prompt),
     prompt_payload_format: "text",
@@ -188,10 +184,7 @@ export function summarizeContextSerializationPolicy(
       policy?.legal_review_required,
       DEFAULT_POLICY_METADATA.legal_review_required,
     ),
-    toon_rust_enabled: booleanValue(
-      toonRust?.enabled,
-      DEFAULT_POLICY_METADATA.toon_rust_enabled,
-    ),
+    toon_rust_enabled: booleanValue(toonRust?.enabled, DEFAULT_POLICY_METADATA.toon_rust_enabled),
     toon_rust_enabled_by_default: booleanValue(
       toonRust?.enabled_by_default,
       DEFAULT_POLICY_METADATA.toon_rust_enabled_by_default,
@@ -218,9 +211,7 @@ export function summarizeContextSerializationPolicy(
 export const hasToonBlocks = hasToonPromptBlocks;
 export const hashToonPromptBytes = hashPromptBytes;
 
-export function checkToonPolicyWarning(
-  policy?: ToonRustPolicyLike,
-): string | null {
+export function checkToonPolicyWarning(policy?: ToonRustPolicyLike): string | null {
   const result = createToonPromptPassthrough("", {
     contextSerializationPolicy: { toon_rust: policy },
   });

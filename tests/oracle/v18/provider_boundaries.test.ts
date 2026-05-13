@@ -148,9 +148,7 @@ describe("evaluateApiSubstitution — subscription-CLI guard (Claude / Codex)", 
       accessPath: "anthropic_api",
     });
     expect(verdict.eligible).toBe(false);
-    expect(
-      verdict.reasons.some((r) => r.field === "provider_result.access_path"),
-    ).toBe(true);
+    expect(verdict.reasons.some((r) => r.field === "provider_result.access_path")).toBe(true);
     expect(verdict.reasons.every((r) => r.code === "provider_login_required")).toBe(true);
   });
 
@@ -286,14 +284,10 @@ describe("listApiSubstitutionRules — surface for capabilities/doctor", () => {
     const rules = listApiSubstitutionRules();
     for (const rule of rules) {
       if (rule.slot === "claude_code_opus") {
-        expect(rule.required_access_path).toBe(
-          SUBSCRIPTION_CLI_ACCESS_PATHS.claude_code_opus,
-        );
+        expect(rule.required_access_path).toBe(SUBSCRIPTION_CLI_ACCESS_PATHS.claude_code_opus);
       }
       if (rule.slot === "xai_grok_reasoning") {
-        expect(rule.required_access_path).toBe(
-          API_ALLOWED_SLOT_ACCESS_PATHS.xai_grok_reasoning,
-        );
+        expect(rule.required_access_path).toBe(API_ALLOWED_SLOT_ACCESS_PATHS.xai_grok_reasoning);
       }
       if (rule.slot === "deepseek_v4_pro_reasoning_search") {
         expect(rule.required_access_path).toBe(

@@ -28,9 +28,7 @@ export const NON_WAIVABLE_PROTECTED_SLOTS = [
 ] as const;
 export type NonWaivableProtectedSlot = (typeof NON_WAIVABLE_PROTECTED_SLOTS)[number];
 
-const NON_WAIVABLE_PROTECTED_SLOT_SET: ReadonlySet<string> = new Set(
-  NON_WAIVABLE_PROTECTED_SLOTS,
-);
+const NON_WAIVABLE_PROTECTED_SLOT_SET: ReadonlySet<string> = new Set(NON_WAIVABLE_PROTECTED_SLOTS);
 
 export function isNonWaivableSlot(slot: unknown): slot is NonWaivableProtectedSlot {
   return typeof slot === "string" && NON_WAIVABLE_PROTECTED_SLOT_SET.has(slot);
@@ -204,7 +202,10 @@ export function detectSilentDowngrade(input: DowngradeInspectionInput): Downgrad
 
   // 4. Access path: must be an Oracle browser path. API substitution
   //    is the headline downgrade we are guarding against.
-  if (typeof input.access_path === "string" && !ORACLE_BROWSER_ACCESS_PATHS.has(input.access_path)) {
+  if (
+    typeof input.access_path === "string" &&
+    !ORACLE_BROWSER_ACCESS_PATHS.has(input.access_path)
+  ) {
     reasons.push({
       code,
       field: "provider_result.access_path",

@@ -79,9 +79,7 @@ function buildVerdict(reasons: AccessReason[]): AccessEligibilityVerdict {
  * `provider_family` and `access_path` are compared case-sensitively;
  * the v18 fixtures use lowercased identifiers everywhere.
  */
-export function evaluateApiSubstitution(
-  inputs: ApiSubstitutionInputs,
-): AccessEligibilityVerdict {
+export function evaluateApiSubstitution(inputs: ApiSubstitutionInputs): AccessEligibilityVerdict {
   // Pane 5's primitive owns the ChatGPT / Gemini / API-allowed-via-browser
   // rules. Defer to it first; if it already blocked the route, surface
   // those reasons verbatim.

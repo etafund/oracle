@@ -102,9 +102,9 @@ describe("detectLeaks — forbidden-key recursion", () => {
       { fakes: [] },
     );
     expect(leaks.some((l) => l.kind === "forbidden-key" && l.name === "auth_headers")).toBe(true);
-    expect(
-      leaks.find((l) => l.name === "auth_headers")?.pointer,
-    ).toBe("/evidence/browser/auth_headers");
+    expect(leaks.find((l) => l.name === "auth_headers")?.pointer).toBe(
+      "/evidence/browser/auth_headers",
+    );
   });
 
   test("flags forbidden keys inside arrays", () => {
@@ -113,9 +113,7 @@ describe("detectLeaks — forbidden-key recursion", () => {
       { fakes: [] },
     );
     expect(leaks.some((l) => l.name === "cookie")).toBe(true);
-    expect(leaks.find((l) => l.name === "cookie")?.pointer).toBe(
-      "/provider_locks/0/cookie",
-    );
+    expect(leaks.find((l) => l.name === "cookie")?.pointer).toBe("/provider_locks/0/cookie");
   });
 
   test("respects the stores_ carve-out for privacy declarations", () => {

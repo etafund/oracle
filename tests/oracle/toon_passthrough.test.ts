@@ -67,7 +67,7 @@ describe("TOON prompt-block passthrough", () => {
       "  2,Linus",
       "```",
       "",
-      "<toon kind=\"packet\">opaque bytes stay provider text</toon>",
+      '<toon kind="packet">opaque bytes stay provider text</toon>',
       "TOON_BLOCK: legacy marker",
       "",
     ].join("\r\n");
@@ -136,7 +136,9 @@ describe("TOON prompt-block passthrough", () => {
   });
 
   test("surfaces v18 context serialization policy metadata with JSON fallback warnings", () => {
-    const parsedPolicy = contextSerializationPolicySchema.parse(contextSerializationPolicyFixture());
+    const parsedPolicy = contextSerializationPolicySchema.parse(
+      contextSerializationPolicyFixture(),
+    );
     const result = createToonPromptPassthrough("```toon\nitems[1]{id}: 1\n```", {
       contextSerializationPolicy: parsedPolicy,
     });

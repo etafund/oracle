@@ -167,9 +167,9 @@ describe("assertNoForbiddenExtensionKeys", () => {
   });
 
   test("throws on raw cookies at the top level", () => {
-    expect(() =>
-      assertNoForbiddenExtensionKeys({ cookies: FAKES[0].value }),
-    ).toThrow(/forbidden extension key/i);
+    expect(() => assertNoForbiddenExtensionKeys({ cookies: FAKES[0].value })).toThrow(
+      /forbidden extension key/i,
+    );
   });
 
   test("throws on nested auth_headers", () => {
@@ -179,9 +179,9 @@ describe("assertNoForbiddenExtensionKeys", () => {
   });
 
   test("throws on screenshot_base64 (audit-finding extension)", () => {
-    expect(() =>
-      assertNoForbiddenExtensionKeys({ screenshot_base64: FAKES[3].value }),
-    ).toThrow(/forbidden extension key/i);
+    expect(() => assertNoForbiddenExtensionKeys({ screenshot_base64: FAKES[3].value })).toThrow(
+      /forbidden extension key/i,
+    );
   });
 
   test("throws on localStorage / sessionStorage (audit-finding extensions)", () => {
@@ -203,52 +203,60 @@ describe("assertNoForbiddenExtensionKeys", () => {
 // ─── End-to-end: sanitised + writeEvidence ──────────────────────────────────
 
 describe("sanitizeBrowserEvidenceForWrite + writeEvidence — round-trip", () => {
-  testNonWindows("policy=off + leaky extensions: sanitised payload writes a clean file", async () => {
-    const leaky = buildEvidenceWithPolicy("off");
-    const sanitised = sanitizeBrowserEvidenceForWrite(leaky);
-    // Re-parse the sanitised payload back through the schema — must succeed.
-    const reparsed = browserEvidenceSchema.parse(sanitised.redacted);
-    expect(reparsed.evidence_id).toBe("evidence-ejv-off");
+  testNonWindows(
+    "policy=off + leaky extensions: sanitised payload writes a clean file",
+    async () => {
+      const leaky = buildEvidenceWithPolicy("off");
+      const sanitised = sanitizeBrowserEvidenceForWrite(leaky);
+      // Re-parse the sanitised payload back through the schema — must succeed.
+      const reparsed = browserEvidenceSchema.parse(sanitised.redacted);
+      expect(reparsed.evidence_id).toBe("evidence-ejv-off");
 
-    const written = await writeEvidence("ejv-session", sanitised.redacted, { homeDir });
-    expect(written.quarantined).toBe(false);
-    expect(written.path).toBe(
-      evidenceFilePath("ejv-session", "evidence-ejv-off", homeDir),
-    );
+      const written = await writeEvidence("ejv-session", sanitised.redacted, { homeDir });
+      expect(written.quarantined).toBe(false);
+      expect(written.path).toBe(evidenceFilePath("ejv-session", "evidence-ejv-off", homeDir));
 
-    const raw = await readFile(written.path, "utf8");
-    // Defense-in-depth: not a single fake value appears in the on-disk
-    // bytes, regardless of the declared redaction_policy.
-    assertNoLeaks(raw, { fakes: FAKES });
-  });
+      const raw = await readFile(written.path, "utf8");
+      // Defense-in-depth: not a single fake value appears in the on-disk
+      // bytes, regardless of the declared redaction_policy.
+      assertNoLeaks(raw, { fakes: FAKES });
+    },
+  );
 
-  testNonWindows("control: same payload via writeEvidence WITHOUT sanitization DOES leak (proves the bug + the fix)", async () => {
-    const leaky = buildEvidenceWithPolicy("off");
-    const written = await writeEvidence("ejv-control", leaky, { homeDir });
-    const raw = await readFile(written.path, "utf8");
-    // This is the audit-finding bug surface: writeEvidence's policy=off
-    // path skips redaction. We assert at least one leak survives so any
-    // future change that accidentally "fixes" the bug at the v18 layer
-    // surfaces here (and the always-on guard becomes belt-and-suspenders).
-    const leaked = FAKES.some((f) => raw.includes(f.value));
-    expect(leaked, "writeEvidence policy=off should leak without sanitization (audit finding)").toBe(
-      true,
-    );
-  });
+  testNonWindows(
+    "control: same payload via writeEvidence WITHOUT sanitization DOES leak (proves the bug + the fix)",
+    async () => {
+      const leaky = buildEvidenceWithPolicy("off");
+      const written = await writeEvidence("ejv-control", leaky, { homeDir });
+      const raw = await readFile(written.path, "utf8");
+      // This is the audit-finding bug surface: writeEvidence's policy=off
+      // path skips redaction. We assert at least one leak survives so any
+      // future change that accidentally "fixes" the bug at the v18 layer
+      // surfaces here (and the always-on guard becomes belt-and-suspenders).
+      const leaked = FAKES.some((f) => raw.includes(f.value));
+      expect(
+        leaked,
+        "writeEvidence policy=off should leak without sanitization (audit finding)",
+      ).toBe(true);
+    },
+  );
 
-  testNonWindows("policy=redacted: v18 redactor catches its own forbidden set; always-on guard catches the rest", async () => {
-    // The v18 redactor in src/oracle/v18/evidence.ts strips cookie /
-    // auth_header / raw_dom / screenshot substrings already, but NOT
-    // localStorage / sessionStorage (audit-finding gap). The always-on
-    // helper catches the extras even when the v18 redactor is already
-    // running.
-    const leaky = buildEvidenceWithPolicy("redacted");
-    const sanitised = sanitizeBrowserEvidenceForWrite(leaky);
-    const written = await writeEvidence("ejv-redacted", sanitised.redacted, { homeDir });
-    const raw = await readFile(written.path, "utf8");
-    // The combined guard removes every fake including the v18 gaps.
-    assertNoLeaks(raw, { fakes: FAKES });
-  });
+  testNonWindows(
+    "policy=redacted: v18 redactor catches its own forbidden set; always-on guard catches the rest",
+    async () => {
+      // The v18 redactor in src/oracle/v18/evidence.ts strips cookie /
+      // auth_header / raw_dom / screenshot substrings already, but NOT
+      // localStorage / sessionStorage (audit-finding gap). The always-on
+      // helper catches the extras even when the v18 redactor is already
+      // running.
+      const leaky = buildEvidenceWithPolicy("redacted");
+      const sanitised = sanitizeBrowserEvidenceForWrite(leaky);
+      const written = await writeEvidence("ejv-redacted", sanitised.redacted, { homeDir });
+      const raw = await readFile(written.path, "utf8");
+      // The combined guard removes every fake including the v18 gaps.
+      assertNoLeaks(raw, { fakes: FAKES });
+    },
+  );
 
   testNonWindows("always-on redactor is idempotent (safe to run twice)", () => {
     const leaky = buildEvidenceWithPolicy("off");

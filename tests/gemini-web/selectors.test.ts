@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { GEMINI_DEEP_THINK_MANIFEST, getManifestSelectors, getManifestSelectorLiteral } from "../../src/gemini-web/selectors/geminiDeepThinkManifest.js";
+import {
+  GEMINI_DEEP_THINK_MANIFEST,
+  getManifestSelectors,
+  getManifestSelectorLiteral,
+} from "../../src/gemini-web/selectors/geminiDeepThinkManifest.js";
 
 describe("Gemini Deep Think Selector Manifest", () => {
   it("has correct provider and purpose", () => {
