@@ -21,6 +21,9 @@ export function parseDuration(input: string, fallback: number): number {
   let lastIndex = 0;
   let match: RegExpExecArray | null = multiDuration.exec(normalized);
   while (match !== null) {
+    if (match.index !== lastIndex) {
+      return fallback;
+    }
     total += convertUnit(Number(match[1]), match[2]);
     lastIndex = multiDuration.lastIndex;
     match = multiDuration.exec(normalized);

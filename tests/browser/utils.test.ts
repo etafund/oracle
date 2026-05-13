@@ -19,6 +19,13 @@ describe("parseDuration", () => {
   test("falls back for invalid input", () => {
     expect(parseDuration("oops", 987)).toBe(987);
   });
+
+  test.each(["1mgarbage2s", "prefix1s", "1s suffix", "1m-2s"])(
+    "falls back when invalid text appears between duration parts: %s",
+    (input) => {
+      expect(parseDuration(input, 987)).toBe(987);
+    },
+  );
 });
 
 describe("estimateTokenCount", () => {
