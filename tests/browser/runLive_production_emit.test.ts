@@ -132,9 +132,27 @@ describe("production browser runner v18 emission", () => {
       const ledger = await readEvidenceLedger(SESSION_ID, { homeDir });
       expect(ledger.chainValid).toBe(true);
       expect(ledger.entries.map((entry) => entry.event.type)).toEqual([
+        "browser_attached",
         "evidence_written",
         "run_completed",
+        "browser_attached",
       ]);
+      expect(ledger.entries[0].event.metadata).toMatchObject({
+        action: "browser_lease_acquired",
+        browser_lease: {
+          schema_version: "browser_lease.v1",
+          provider: "chatgpt",
+          status: "acquired",
+        },
+      });
+      expect(ledger.entries[3].event.metadata).toMatchObject({
+        action: "browser_lease_released",
+        browser_lease: {
+          schema_version: "browser_lease.v1",
+          provider: "chatgpt",
+          status: "released",
+        },
+      });
 
       const providerResult = result.v18Emit!.artifacts!.providerResult.result;
       expect(providerResult.schema_version).toBe("provider_result.v1");
@@ -183,8 +201,10 @@ describe("production browser runner v18 emission", () => {
       const ledger = await readEvidenceLedger(sessionId, { homeDir });
       expect(ledger.chainValid).toBe(true);
       expect(ledger.entries.map((entry) => entry.event.type)).toEqual([
+        "browser_attached",
         "evidence_written",
         "run_failed",
+        "browser_attached",
       ]);
     },
   );

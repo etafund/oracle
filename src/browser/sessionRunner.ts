@@ -1,4 +1,5 @@
 import chalk from "chalk";
+import path from "node:path";
 import type { RunOracleOptions } from "../oracle.js";
 import { formatTokenCount } from "../oracle/runUtils.js";
 import { formatFinishLine } from "../oracle/finishLine.js";
@@ -22,6 +23,8 @@ import {
   wrapBrowserExecutorWithV18Emit,
   type V18EmitOutcome,
 } from "./runLive_emit_artifacts.js";
+import { wrapWithLeaseOrPassthrough } from "./runLive.js";
+import { BROWSER_LEASES_DIRNAME } from "./leases.js";
 
 export interface BrowserExecutionResult {
   usage: {
@@ -59,13 +62,23 @@ export async function runBrowserSessionExecution(
 ): Promise<BrowserExecutionResult> {
   const assemblePrompt = deps.assemblePrompt ?? assembleBrowserPrompt;
   const promptArtifacts = await assemblePrompt(runOptions, { cwd });
-  const executeBrowser = wrapBrowserExecutorWithV18Emit(
-    deps.executeBrowser ?? runBrowserMode,
+  const rawExecuteBrowser = deps.executeBrowser ?? runBrowserMode;
+  const v18ExecuteBrowser = wrapBrowserExecutorWithV18Emit(
+    rawExecuteBrowser,
     buildProductionV18BrowserEmitOptions({
       promptText: promptArtifacts.composerText,
       sourceBaselineSeed: cwd,
       homeDir: deps.v18EmitHomeDir,
     }),
+  );
+  const executeBrowser = wrapWithLeaseOrPassthrough(
+    v18ExecuteBrowser,
+    deps.v18EmitHomeDir
+      ? {
+          leaseDir: path.join(deps.v18EmitHomeDir, BROWSER_LEASES_DIRNAME),
+          evidenceHomeDir: deps.v18EmitHomeDir,
+        }
+      : {},
   );
   if (runOptions.verbose) {
     log(
