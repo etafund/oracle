@@ -6,10 +6,12 @@ import {
 } from "./leases.js";
 import type { BrowserRunOptions, BrowserRunResult } from "./types.js";
 import type { BrowserRuntimeMetadata } from "../sessionStore.js";
+import { appendEvidenceLedgerEvent } from "../oracle/evidence_ledger.js";
 import type {
   BrowserLeaseProvider,
   StoredBrowserLeaseRecord,
 } from "../oracle/v18/browser_lease.js";
+import { redactBrowserLeaseMetadata } from "../oracle/v18/browser_lease.js";
 
 export interface BrowserLeaseExecutionContext {
   schema_version: "browser_lease_execution.v1";
@@ -26,6 +28,7 @@ export interface BrowserLeaseExecutionContext {
 
 export interface BrowserLeaseIntegrationOptions extends BrowserLeaseStoreOptions {
   provider: BrowserLeaseProvider;
+  evidenceHomeDir?: string;
   profileIdHash?: string;
   ttlSeconds?: number;
   holder?: string;
@@ -72,6 +75,19 @@ export async function runBrowserWithLease(
     leaseOptions,
   );
   await notifyLeaseHook(() => leaseOptions.onLeaseAcquired?.(lease));
+  try {
+    await appendBrowserLeaseLedgerEvent(runOptions, lease, "browser_lease_acquired", leaseOptions);
+  } catch (error) {
+    await releaseBrowserLease(
+      {
+        provider: leaseOptions.provider,
+        profileIdHash,
+        leaseId: lease.lease_id,
+      },
+      leaseOptions,
+    ).catch(() => undefined);
+    throw error;
+  }
 
   let result: BrowserRunResult | null = null;
   let runError: unknown = null;
@@ -105,9 +121,26 @@ export async function runBrowserWithLease(
       );
       released = releasedLease;
       await notifyLeaseHook(() => leaseOptions.onLeaseReleased?.(releasedLease));
+      await appendBrowserLeaseLedgerEvent(
+        runOptions,
+        releasedLease,
+        "browser_lease_released",
+        leaseOptions,
+      ).catch((error) => {
+        logLeaseLedgerError(runOptions, "release", error);
+      });
     } catch (error) {
       releaseError = error;
       await notifyLeaseHook(() => leaseOptions.onLeaseReleaseFailed?.(lease, error));
+      await appendBrowserLeaseLedgerEvent(
+        runOptions,
+        lease,
+        "browser_lease_release_failed",
+        leaseOptions,
+        error,
+      ).catch((ledgerError) => {
+        logLeaseLedgerError(runOptions, "release_failed", ledgerError);
+      });
     }
   }
 
@@ -236,6 +269,49 @@ function sha256(value: string): string {
 
 function stringifyError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function appendBrowserLeaseLedgerEvent(
+  runOptions: BrowserRunOptions,
+  record: StoredBrowserLeaseRecord,
+  action:
+    | "browser_lease_acquired"
+    | "browser_lease_released"
+    | "browser_lease_release_failed",
+  leaseOptions: BrowserLeaseIntegrationOptions,
+  releaseError?: unknown,
+): Promise<void> {
+  if (!runOptions.sessionId) {
+    return;
+  }
+  const metadata: Record<string, unknown> = {
+    action,
+    browser_lease: redactBrowserLeaseMetadata(record),
+  };
+  if (releaseError) {
+    metadata.release_error = stringifyError(releaseError);
+  }
+  await appendEvidenceLedgerEvent(
+    runOptions.sessionId,
+    {
+      type: "browser_attached",
+      metadata,
+    },
+    {
+      homeDir: leaseOptions.evidenceHomeDir,
+      now: leaseOptions.now,
+    },
+  );
+}
+
+function logLeaseLedgerError(
+  runOptions: BrowserRunOptions,
+  phase: "release" | "release_failed",
+  error: unknown,
+): void {
+  runOptions.log?.(
+    `[browser] failed to append browser lease ${phase} ledger entry: ${stringifyError(error)}`,
+  );
 }
 
 async function notifyLeaseHook(hook: () => void | Promise<void> | undefined): Promise<void> {
