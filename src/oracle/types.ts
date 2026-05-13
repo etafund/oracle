@@ -160,6 +160,11 @@ export interface RunOracleOptions {
   verbose?: boolean;
   heartbeatIntervalMs?: number;
   /**
+   * Robot/API callers can request machine-readable run_progress.v1 heartbeat
+   * lines instead of the default prose heartbeat while a live API run waits.
+   */
+  runProgress?: boolean;
+  /**
    * Browser-only: controls whether `--file` inputs are pasted inline (never upload),
    * uploaded as attachments (always), or selected automatically based on prompt size.
    */

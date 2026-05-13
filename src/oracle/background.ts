@@ -2,6 +2,7 @@ import { APIConnectionError, APIConnectionTimeoutError } from "openai";
 import chalk from "chalk";
 import { formatElapsed } from "./format.js";
 import { startHeartbeat } from "../heartbeat.js";
+import { buildTimedRunProgressEvent } from "./v18/run_progress.js";
 import {
   OracleResponseError,
   OracleTransportError,
@@ -20,6 +21,8 @@ interface BackgroundExecutionParams {
   log: (message: string) => void;
   wait: (ms: number) => Promise<void>;
   heartbeatIntervalMs?: number;
+  runProgress?: boolean;
+  runId?: string;
   now: () => number;
   maxWaitMs: number;
 }
@@ -27,7 +30,17 @@ interface BackgroundExecutionParams {
 export async function executeBackgroundResponse(
   params: BackgroundExecutionParams,
 ): Promise<OracleResponse> {
-  const { client, requestBody, log, wait, heartbeatIntervalMs, now, maxWaitMs } = params;
+  const {
+    client,
+    requestBody,
+    log,
+    wait,
+    heartbeatIntervalMs,
+    runProgress,
+    runId,
+    now,
+    maxWaitMs,
+  } = params;
   let initialResponse: OracleResponse;
   try {
     initialResponse = await client.responses.create(requestBody);
@@ -52,6 +65,7 @@ export async function executeBackgroundResponse(
   );
   let heartbeatActive = false;
   let stopHeartbeat: (() => void) | null = null;
+  const heartbeatStartMs = now();
   const stopHeartbeatNow = () => {
     if (!heartbeatActive) return;
     heartbeatActive = false;
@@ -64,6 +78,23 @@ export async function executeBackgroundResponse(
       intervalMs: heartbeatIntervalMs,
       log: (message) => log(message),
       isActive: () => heartbeatActive,
+      runProgress: runProgress
+        ? {
+            provider: () =>
+              buildTimedRunProgressEvent({
+                run_id: runId ?? responseId,
+                current_stage: "api_background_poll",
+                elapsed_ms: now() - heartbeatStartMs,
+                timeout_ms: maxWaitMs,
+                user_visible_message: "API background run still in progress.",
+                extras: {
+                  model: requestBody.model,
+                  response_id: responseId,
+                  background: true,
+                },
+              }),
+          }
+        : undefined,
       makeMessage: (elapsedMs) => {
         const elapsedText = formatElapsed(elapsedMs);
         return `API background run still in progress — ${elapsedText} elapsed.`;

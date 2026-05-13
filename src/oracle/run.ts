@@ -30,6 +30,7 @@ import {
 import { createDefaultClientFactory, isCustomBaseUrl } from "./client.js";
 import { formatBaseUrlForLog, maskApiKey } from "./logging.js";
 import { startHeartbeat } from "../heartbeat.js";
+import { buildTimedRunProgressEvent } from "./v18/run_progress.js";
 import { startOscProgress } from "./oscProgress.js";
 import { createFsAdapter } from "./fsAdapter.js";
 import { resolveGeminiModelId } from "./gemini.js";
@@ -60,6 +61,10 @@ const defaultWait = (ms: number): Promise<void> =>
   new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+
+function shouldEmitRunProgress(options: RunOracleOptions): boolean {
+  return options.runProgress === true || process.env.ORACLE_RUN_PROGRESS_JSON === "1";
+}
 
 export async function runOracle(
   options: RunOracleOptions,
@@ -423,6 +428,7 @@ export async function runOracle(
   let elapsedMs = 0;
   let sawTextDelta = false;
   let answerHeaderPrinted = false;
+  const emitRunProgress = shouldEmitRunProgress(options);
   const allowAnswerHeader = options.suppressAnswerHeader !== true;
   const timeoutExceeded = (): boolean => now() - runStart >= timeoutMs;
   const throwIfTimedOut = () => {
@@ -451,6 +457,8 @@ export async function runOracle(
         log,
         wait,
         heartbeatIntervalMs: options.heartbeatIntervalMs,
+        runProgress: emitRunProgress,
+        runId: options.sessionId,
         now,
         maxWaitMs: timeoutMs,
       });
@@ -480,6 +488,22 @@ export async function runOracle(
           intervalMs: options.heartbeatIntervalMs,
           log: (message) => log(message),
           isActive: () => heartbeatActive,
+          runProgress: emitRunProgress
+            ? {
+                provider: () =>
+                  buildTimedRunProgressEvent({
+                    run_id: options.sessionId ?? `api-${requestBody.model}`,
+                    current_stage: "api_stream",
+                    elapsed_ms: now() - runStart,
+                    timeout_ms: timeoutMs,
+                    user_visible_message: "API connection active.",
+                    extras: {
+                      model: requestBody.model,
+                      background: false,
+                    },
+                  }),
+              }
+            : undefined,
           makeMessage: (elapsedMs) => {
             const elapsedText = formatElapsed(elapsedMs);
             const remainingMs = Math.max(timeoutMs - elapsedMs, 0);

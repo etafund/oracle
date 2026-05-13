@@ -21,6 +21,7 @@
 //     that callers wire into `src/heartbeat.ts`.
 
 import {
+  RUN_PROGRESS_STATE_VALUES,
   RUN_PROGRESS_SCHEMA_VERSION,
   V18_BUNDLE_VERSION,
   runProgressSchema,
@@ -29,15 +30,8 @@ import {
 } from "./index.js";
 import { FORBIDDEN_KEY_TEST } from "./index.js";
 
-export type RunProgressState =
-  | "preflight"
-  | "running"
-  | "thinking"
-  | "reconnecting"
-  | "blocked"
-  | "completed"
-  | "retryable_failure"
-  | "non_retryable_failure";
+export const RUN_PROGRESS_STATES = RUN_PROGRESS_STATE_VALUES;
+export type RunProgressState = (typeof RUN_PROGRESS_STATES)[number];
 
 export const TERMINAL_RUN_PROGRESS_STATES: ReadonlySet<RunProgressState> = new Set([
   "completed",
@@ -138,6 +132,8 @@ function defaultRetrySafe(state: RunProgressState): boolean {
 
 function defaultBlockedReason(state: RunProgressState): string | null {
   switch (state) {
+    case "waiting_for_live_provider_approval":
+      return "live_provider_approval_required";
     case "blocked":
       return "live_provider_action_required";
     case "retryable_failure":
@@ -147,6 +143,45 @@ function defaultBlockedReason(state: RunProgressState): string | null {
     default:
       return null;
   }
+}
+
+export interface BuildTimedRunProgressInput {
+  readonly run_id: string;
+  readonly profile?: string;
+  readonly state?: RunProgressState;
+  readonly current_stage: string;
+  readonly elapsed_ms: number;
+  readonly timeout_ms?: number;
+  readonly user_visible_message: string;
+  readonly next_command?: string | null;
+  readonly blocked_reason?: string | null;
+  readonly retry_safe?: boolean;
+  readonly now?: Date;
+  readonly extras?: Record<string, unknown>;
+}
+
+export function progressPercentFromElapsed(elapsedMs: number, timeoutMs?: number): number {
+  if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) return 0;
+  if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs <= 0) return 0;
+  return Math.min(99, Math.max(0, Math.round((elapsedMs / timeoutMs) * 100)));
+}
+
+export function buildTimedRunProgressEvent(input: BuildTimedRunProgressInput): RunProgress {
+  return buildRunProgressEvent({
+    run_id: input.run_id,
+    profile: input.profile ?? "api",
+    state: input.state ?? "running",
+    current_stage: input.current_stage,
+    completed_stages: [],
+    pending_stages: [],
+    progress_percent: progressPercentFromElapsed(input.elapsed_ms, input.timeout_ms),
+    user_visible_message: input.user_visible_message,
+    next_command: input.next_command ?? null,
+    blocked_reason: input.blocked_reason,
+    retry_safe: input.retry_safe,
+    now: input.now,
+    extras: input.extras,
+  });
 }
 
 function clampProgressPercent(state: RunProgressState, percent: number | undefined): number {
@@ -389,6 +424,6 @@ export function runProgressMessageProvider(
   return (_elapsedMs: number) => {
     const event = provider();
     if (event == null) return null;
-    return JSON.stringify(event);
+    return JSON.stringify(runProgressSchema.parse(event));
   };
 }
