@@ -1368,7 +1368,7 @@ function getBrowserConfigFromMetadata(metadata: SessionMetadata): BrowserSession
 }
 
 async function runRootCommand(options: CliOptions): Promise<void> {
-  if (process.env.ORACLE_FORCE_TUI === "1") {
+  if (process.env.ORACLE_FORCE_TUI === "1" && userCliArgs.length === 0) {
     await sessionStore.ensureStorage();
     await launchTui({ version: VERSION, printIntro: false });
     return;
