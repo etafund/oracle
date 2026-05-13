@@ -43,6 +43,7 @@
     "lint": "pnpm run typecheck && oxlint",
     "lint:fix": "oxlint --fix && pnpm run format",
     "test": "vitest run",
+    "test:v18-conformance": "vitest run tests/conformance/v18/",
     "test:mcp": "pnpm run build && pnpm run test:mcp:unit && pnpm run test:mcp:mcporter",
     "test:mcp:unit": "vitest run tests/mcp*.test.ts tests/mcp/**/*.test.ts",
     "test:mcp:mcporter": "pnpm dlx mcporter list oracle-local --schema --config config/mcporter.json && pnpm dlx mcporter call oracle-local.sessions limit:1 --config config/mcporter.json",
