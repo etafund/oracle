@@ -1,5 +1,11 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import {
+  extractGeminiErrorCode,
+  parseGeminiStreamGenerateResponse as parseGeminiStreamGenerateResponseHardened,
+  trimGeminiJsonEnvelope,
+} from "./parse.js";
+import { GeminiStreamCaptureError } from "./streamSafeguards.js";
 
 export type GeminiWebModelId =
   | "gemini-3-pro"
@@ -60,21 +66,6 @@ const GEMINI_UPLOAD_MIME_TYPES: Record<string, string> = {
   ".webp": "image/webp",
 };
 
-function getNestedValue<T>(value: unknown, pathParts: Array<string | number>, fallback: T): T {
-  let current: unknown = value;
-  for (const part of pathParts) {
-    if (current == null) return fallback;
-    if (typeof part === "number") {
-      if (!Array.isArray(current)) return fallback;
-      current = current[part];
-    } else {
-      if (typeof current !== "object") return fallback;
-      current = (current as Record<string, unknown>)[part];
-    }
-  }
-  return (current as T) ?? fallback;
-}
-
 function buildCookieHeader(cookieMap: Record<string, string>): string {
   return Object.entries(cookieMap)
     .filter(([, value]) => typeof value === "string" && value.length > 0)
@@ -107,22 +98,9 @@ export async function fetchGeminiAccessToken(
   );
 }
 
-function trimGeminiJsonEnvelope(text: string): string {
-  const start = text.indexOf("[");
-  const end = text.lastIndexOf("]");
-  if (start === -1 || end === -1 || end <= start) {
-    throw new Error("Gemini response did not contain a JSON payload.");
-  }
-  return text.slice(start, end + 1);
-}
-
-function extractErrorCode(responseJson: unknown): number | undefined {
-  const code = getNestedValue<number>(responseJson, [0, 5, 2, 0, 1, 0], -1);
-  return typeof code === "number" && code >= 0 ? code : undefined;
-}
-
 function extractGgdlUrls(rawText: string): string[] {
-  const matches = rawText.match(/https:\/\/lh3\.googleusercontent\.com\/gg-dl\/[^\s"',\]\\[]+/g) ?? [];
+  const matches =
+    rawText.match(/https:\/\/lh3\.googleusercontent\.com\/gg-dl\/[^\s"',\]\\[]+/g) ?? [];
   const seen = new Set<string>();
   const urls: string[] = [];
   for (const match of matches) {
@@ -242,91 +220,7 @@ export function parseGeminiStreamGenerateResponse(rawText: string): {
   images: GeminiWebCandidateImage[];
   errorCode?: number;
 } {
-  const responseJson = JSON.parse(trimGeminiJsonEnvelope(rawText)) as unknown;
-  const errorCode = extractErrorCode(responseJson);
-
-  const parts = Array.isArray(responseJson) ? responseJson : [];
-  let bodyIndex = 0;
-  let body: unknown = null;
-  for (let i = 0; i < parts.length; i += 1) {
-    const partBody = getNestedValue<string | null>(parts[i], [2], null);
-    if (!partBody) continue;
-    try {
-      const parsed = JSON.parse(partBody) as unknown;
-      const candidateList = getNestedValue<unknown[]>(parsed, [4], []);
-      if (Array.isArray(candidateList) && candidateList.length > 0) {
-        const candidateText = getNestedValue<unknown>(candidateList[0], [1, 0], "");
-        const hasText = typeof candidateText === "string" && candidateText.length > 0;
-        if (body === null) {
-          bodyIndex = i;
-          body = parsed;
-        } else if (hasText) {
-          body = parsed;
-        }
-      }
-    } catch {
-      // ignore
-    }
-  }
-
-  const candidateList = getNestedValue<unknown[]>(body, [4], []);
-  const firstCandidate = candidateList[0];
-  const textRaw = getNestedValue<string>(firstCandidate, [1, 0], "");
-  const cardContent = /^http:\/\/googleusercontent\.com\/card_content\/\d+/.test(textRaw);
-  const text = cardContent
-    ? (getNestedValue<string | null>(firstCandidate, [22, 0], null) ?? textRaw)
-    : textRaw;
-  const thoughts = getNestedValue<string | null>(firstCandidate, [37, 0, 0], null);
-  const metadata = getNestedValue<unknown>(body, [1], []);
-
-  const images: GeminiWebCandidateImage[] = [];
-
-  const webImages = getNestedValue<unknown[]>(firstCandidate, [12, 1], []);
-  for (const webImage of webImages) {
-    const url = getNestedValue<string | null>(webImage, [0, 0, 0], null);
-    if (!url) continue;
-    images.push({
-      kind: "web",
-      url,
-      title: getNestedValue<string | undefined>(webImage, [7, 0], undefined),
-      alt: getNestedValue<string | undefined>(webImage, [0, 4], undefined),
-    });
-  }
-
-  const hasGenerated = Boolean(getNestedValue<unknown>(firstCandidate, [12, 7, 0], null));
-  if (hasGenerated) {
-    let imgBody: unknown = null;
-    for (let i = bodyIndex; i < parts.length; i += 1) {
-      const partBody = getNestedValue<string | null>(parts[i], [2], null);
-      if (!partBody) continue;
-      try {
-        const parsed = JSON.parse(partBody) as unknown;
-        const candidateImages = getNestedValue<unknown | null>(parsed, [4, 0, 12, 7, 0], null);
-        if (candidateImages != null) {
-          imgBody = parsed;
-          break;
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    const imgCandidate = getNestedValue<unknown>(imgBody ?? body, [4, 0], null);
-
-    const generated = getNestedValue<unknown[]>(imgCandidate, [12, 7, 0], []);
-    for (const genImage of generated) {
-      const url = getNestedValue<string | null>(genImage, [0, 3, 3], null);
-      if (!url) continue;
-      images.push({
-        kind: "generated",
-        url,
-        title: "[Generated Image]",
-        alt: "",
-      });
-    }
-  }
-
-  return { metadata, text, thoughts, images, errorCode };
+  return parseGeminiStreamGenerateResponseHardened(rawText);
 }
 
 export function isGeminiModelUnavailable(errorCode: number | undefined): boolean {
@@ -389,13 +283,16 @@ export async function runGeminiWebOnce(input: GeminiWebRunInput): Promise<Gemini
       errorCode: parsed.errorCode,
     };
   } catch (error) {
+    if (error instanceof GeminiStreamCaptureError) {
+      throw error;
+    }
     let responseJson: unknown = null;
     try {
       responseJson = JSON.parse(trimGeminiJsonEnvelope(rawResponseText)) as unknown;
     } catch {
       responseJson = null;
     }
-    const errorCode = extractErrorCode(responseJson);
+    const errorCode = extractGeminiErrorCode(responseJson);
 
     return {
       rawResponseText,

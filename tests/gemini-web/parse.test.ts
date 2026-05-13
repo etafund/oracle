@@ -3,6 +3,8 @@ import {
   parseGeminiStreamGenerateResponse,
   isGeminiModelUnavailable,
 } from "../../src/gemini-web/client.js";
+import { parseGeminiStreamGenerateResponse as parseGeminiStreamGenerateResponseStrict } from "../../src/gemini-web/parse.js";
+import { GeminiStreamCaptureError } from "../../src/gemini-web/streamSafeguards.js";
 
 function makeRawResponseWithBody(body: unknown): string {
   return makeRawResponseWithBodies([body]);
@@ -95,6 +97,30 @@ describe("gemini-web parseGeminiStreamGenerateResponse", () => {
     expect(parsed.text).toBe("partial answer with more final");
   });
 
+  it("continues past placeholder and partial JSON chunks before final text", () => {
+    const placeholder = JSON.stringify(makeBodyWithText("rcid-1", "(no text output)"));
+    const finalBody = JSON.stringify(makeBodyWithText("rcid-1", "final answer"));
+    const split = Math.floor(finalBody.length / 2);
+    const responseJson = [
+      [null, null, placeholder],
+      [null, null, finalBody.slice(0, split)],
+      [null, null, finalBody.slice(split)],
+    ];
+    const raw = `)]}'\n\n${JSON.stringify(responseJson)}`;
+
+    const parsed = parseGeminiStreamGenerateResponse(raw);
+    expect(parsed.text).toBe("final answer");
+  });
+
+  it("strips ANSI escape leakage while preserving markdown structure", () => {
+    const markdown = "\u001b[31m# Report\u001b[0m\n\n- one\n- two\n\n```ts\nconst ok = true;\n```";
+    const parsed = parseGeminiStreamGenerateResponse(
+      makeRawResponseWithBody(makeBodyWithText("rcid-1", markdown)),
+    );
+
+    expect(parsed.text).toBe("# Report\n\n- one\n- two\n\n```ts\nconst ok = true;\n```");
+  });
+
   it("still parses a single coalesced chunk", () => {
     const raw = makeRawResponseWithBody(makeBodyWithText("rcid-1", "single-chunk reply"));
 
@@ -110,6 +136,42 @@ describe("gemini-web parseGeminiStreamGenerateResponse", () => {
 
     const parsed = parseGeminiStreamGenerateResponse(raw);
     expect(parsed.text).toBe("first answer");
+  });
+
+  it("fails loudly with a typed error for all-empty terminal streams", () => {
+    const raw = makeRawResponseWithBodies([
+      makeBodyWithText("rcid-1", ""),
+      makeBodyWithText("rcid-1", "(no text output)"),
+    ]);
+
+    expect(() => parseGeminiStreamGenerateResponse(raw)).toThrow(GeminiStreamCaptureError);
+    try {
+      parseGeminiStreamGenerateResponse(raw);
+    } catch (error) {
+      expect(error).toBeInstanceOf(GeminiStreamCaptureError);
+      expect((error as GeminiStreamCaptureError).code).toBe("output_capture_empty");
+      expect((error as GeminiStreamCaptureError).retry_safe).toBe(true);
+    }
+  });
+
+  it("fails stale output ownership checks with output_capture_unverified", () => {
+    const raw = makeRawResponseWithBody(makeBodyWithText("rcid-stale", "stale answer"));
+
+    expect(() =>
+      parseGeminiStreamGenerateResponseStrict(raw, {
+        expectedResponseCandidateId: "rcid-current",
+        currentSessionId: "session-1",
+      }),
+    ).toThrow(GeminiStreamCaptureError);
+    try {
+      parseGeminiStreamGenerateResponseStrict(raw, {
+        expectedResponseCandidateId: "rcid-current",
+        currentSessionId: "session-1",
+      });
+    } catch (error) {
+      expect((error as GeminiStreamCaptureError).code).toBe("output_capture_unverified");
+      expect((error as GeminiStreamCaptureError).details.current_session_id).toBe("session-1");
+    }
   });
 
   it("extracts model-unavailable error code 1052 from response json", () => {
