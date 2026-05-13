@@ -6,6 +6,11 @@
 
 - CLI: add `oracle remote doctor|status|attach [--json]` to diagnose the configured remote browser endpoint. `doctor` probes TCP + `/health`, `status` snapshots the resolved endpoint config without touching the network, and `attach --host <host:port> --token-env <ENV>` probes a caller-supplied target without ever placing the token on the command line. `oracle bridge doctor --json` emits the same `remote_browser_endpoint.v1`-shaped envelope so scripts can parse a single wire format across all four commands.
 
+### Docs
+
+- README + CLI reference: document the new `oracle remote doctor|status|attach` commands and the `oracle bridge doctor --json` envelope alongside the existing `oracle serve` / session inspection guidance.
+- Manual smokes: add a v18 validation script matrix section (`pnpm test:v18`, `:unit`, `:fixtures`, `:e2e:mock`, `:privacy`, `:live`) pointing at the orchestrator in `scripts/v18-validation.ts` and the `.oracle-v18-validation/` summary packet. Live runs stay opt-in (`--live` + `ORACLE_LIVE_TEST=1`) and explicitly warn against auto-clicking "Answer now" per AGENTS.md.
+
 ### Fixed
 
 - CLI/Browser: reject malformed port and tab-count values with trailing non-numeric text instead of silently truncating them.
