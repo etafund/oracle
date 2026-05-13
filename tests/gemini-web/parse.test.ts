@@ -129,4 +129,9 @@ describe("gemini-web parseGeminiStreamGenerateResponse", () => {
     const raw = `)]}'\n\n${JSON.stringify(responseJson)}`;
     expect(isGeminiModelUnavailable(parseGeminiStreamGenerateResponse(raw).errorCode)).toBe(true);
   });
+
+  it("returns false for isGeminiModelUnavailable when error code is other than 1052", () => {
+    expect(isGeminiModelUnavailable(404)).toBe(false);
+    expect(isGeminiModelUnavailable(undefined)).toBe(false);
+  });
 });
