@@ -19,6 +19,7 @@ import {
   type NormalizerEffortSummary,
 } from "../../oracle/v18/chatgpt_provider_result.js";
 import type { OracleBrowserAccessPath } from "../../oracle/v18/provider_access_policy.js";
+import type { ProviderBoundaryPavMetadata } from "../../oracle/provider_boundaries_pav.js";
 import type { CaptureVerdict } from "../output-capture/captureVerdict.js";
 import type { EffortStrategyResult } from "../selectors/chatgpt/effortStrategy.js";
 
@@ -75,6 +76,7 @@ export interface NormalizeChatGptRunInput {
   readonly effort: EffortStrategyResult;
   readonly promptManifestSha256: `sha256:${string}`;
   readonly sourceBaselineSha256: `sha256:${string}`;
+  readonly providerBoundaryPav?: ProviderBoundaryPavMetadata;
   readonly resultPath?: string;
   readonly model?: string;
   readonly degradationReason?: string;
@@ -93,6 +95,7 @@ export function normalizeChatGptRun(
     effort: effortToSummary(input.effort),
     promptManifestSha256: input.promptManifestSha256,
     sourceBaselineSha256: input.sourceBaselineSha256,
+    providerBoundaryPav: input.providerBoundaryPav,
     resultPath: input.resultPath,
     model: input.model,
     degradationReason: input.degradationReason,

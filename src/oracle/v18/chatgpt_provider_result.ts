@@ -24,6 +24,7 @@ import {
   isProtectedSlot,
   type OracleBrowserAccessPath,
 } from "./provider_access_policy.js";
+import type { ProviderBoundaryPavMetadata } from "../provider_boundaries_pav.js";
 
 // ─── Slot taxonomy ───────────────────────────────────────────────────────────
 
@@ -76,6 +77,8 @@ export interface BuildChatGptProviderResultInput {
   readonly effort: NormalizerEffortSummary;
   readonly promptManifestSha256: `sha256:${string}`;
   readonly sourceBaselineSha256: `sha256:${string}`;
+  /** Optional PAV boundary snapshot metadata. Never contains raw prompt text. */
+  readonly providerBoundaryPav?: ProviderBoundaryPavMetadata;
   /** Optional on-disk path; appears on `result_path`. */
   readonly resultPath?: string;
   /** Model identifier — defaults to "chatgpt-pro-latest". */
@@ -329,6 +332,9 @@ export function buildChatGptProviderResult(
   };
   if (input.resultPath !== undefined) {
     draft.result_path = input.resultPath;
+  }
+  if (input.providerBoundaryPav !== undefined) {
+    draft.provider_boundary_pav = input.providerBoundaryPav;
   }
 
   const parsed = providerResultSchema.parse(draft);

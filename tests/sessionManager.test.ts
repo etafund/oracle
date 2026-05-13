@@ -6,6 +6,7 @@ import path from "node:path";
 import os from "node:os";
 import { createHash } from "node:crypto";
 import { setOracleHomeDirOverrideForTest } from "../src/oracleHome.js";
+import { PROVIDER_BOUNDARY_PAV_SCHEMA_VERSION } from "../src/oracle/provider_boundaries_pav.js";
 
 type SessionModule = typeof import("../src/sessionManager.ts");
 type SessionMetadata = Awaited<ReturnType<SessionModule["initializeSession"]>>;
@@ -129,6 +130,60 @@ describe("session lifecycle", () => {
       { status: "completed", response: { id: "resp-1" } },
     );
     expect(updatedModelMeta.evidence).toEqual(storedMeta.evidence);
+  });
+
+  test("initializeSession can persist optional PAV boundary metadata without raw prompt text", async () => {
+    const prompt = [
+      "unique-session-boundary-prompt",
+      "```toon",
+      "rows[1]{id}: 1",
+      "```",
+      "",
+    ].join("\n");
+    const metadata = await sessionModule.initializeSession(
+      {
+        prompt,
+        model: "gpt-5.2-pro",
+        providerBoundary: {
+          providerFamily: "chatgpt",
+          providerSlot: "chatgpt_pro_first_plan",
+          requestedMode: "browser",
+          accessPath: "oracle_browser_remote",
+        },
+      },
+      "/tmp/cwd",
+    );
+
+    const boundary = metadata.evidence?.provider_boundary_pav;
+    expect(boundary).toMatchObject({
+      schema_version: PROVIDER_BOUNDARY_PAV_SCHEMA_VERSION,
+      provider_family: "chatgpt",
+      provider_slot: "chatgpt_pro_first_plan",
+      requested_mode: "browser",
+      prompt_sha256: metadata.evidence?.prompt_sha256,
+      prompt_semantics: "unchanged",
+      raw_prompt_in_metadata: false,
+      policy_scope: "protected_workflow_slot",
+    });
+    expect(boundary?.protected_slot_metadata).toMatchObject({
+      protected_slot: true,
+      api_substitution_allowed_for_this_slot: false,
+    });
+    expect(boundary?.context_serialization).toMatchObject({
+      provider_payload_format: "text",
+      provider_payload_semantics: "unchanged",
+    });
+    expect(JSON.stringify(boundary)).not.toContain(prompt);
+    expect(JSON.stringify(boundary)).not.toContain("unique-session-boundary-prompt");
+
+    const baseDir = path.join(sessionModule.getSessionsDir(), metadata.id);
+    const storedMeta = JSON.parse(await readFile(path.join(baseDir, "meta.json"), "utf8"));
+    expect(storedMeta.evidence.provider_boundary_pav).toEqual(boundary);
+
+    const modelMeta = JSON.parse(
+      await readFile(path.join(baseDir, "models", "gpt-5.2-pro.json"), "utf8"),
+    );
+    expect(modelMeta.evidence.provider_boundary_pav).toEqual(boundary);
   });
 
   test("initializeSession writes metadata, request, and log files", async () => {

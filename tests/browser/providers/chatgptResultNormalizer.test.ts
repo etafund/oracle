@@ -11,6 +11,10 @@ import { describe, expect, test } from "vitest";
 
 import { browserEvidenceSchema, type BrowserEvidence } from "../../../src/oracle/v18/contracts.js";
 import {
+  PROVIDER_BOUNDARY_PAV_SCHEMA_VERSION,
+  createProviderBoundaryPavSnapshot,
+} from "../../../src/oracle/provider_boundaries_pav.js";
+import {
   captureToSummary,
   effortToSummary,
   normalizeChatGptRun,
@@ -172,6 +176,61 @@ describe("normalizeChatGptRun — happy path matches canonical fixture", () => {
     expect(cfg.selector_manifest_version).toBe("chatgpt-selectors.v1");
     expect(cfg.selected_effort_is_highest_visible).toBe(true);
     expect(cfg.available_effort_labels_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+  });
+
+  test("attaches PAV boundary metadata without leaking raw provider prompt text", async () => {
+    const evidence = await loadChatGptEvidence();
+    const providerPrompt = [
+      "unique-provider-result-boundary-prompt",
+      "```toon",
+      "rows[1]{id}: 1",
+      "```",
+      "",
+    ].join("\n");
+    const boundary = createProviderBoundaryPavSnapshot({
+      providerPrompt,
+      providerFamily: "chatgpt",
+      providerSlot: "chatgpt_pro_first_plan",
+      requestedMode: "browser",
+      accessPath: "oracle_browser_remote",
+    }).metadata;
+    const build = normalizeChatGptRun({
+      slot: "chatgpt_pro_first_plan",
+      providerResultId: "id-pav-boundary",
+      accessPath: "oracle_browser_remote",
+      evidence,
+      capture: capturedVerdict({ outputTextSha256: evidence.output_text_sha256 as `sha256:${string}` }),
+      effort: effortVerified(),
+      promptManifestSha256: boundary.prompt_sha256,
+      sourceBaselineSha256: SOURCE_BASELINE_HASH,
+      providerBoundaryPav: boundary,
+    });
+
+    const attached = (build.result as Record<string, unknown>).provider_boundary_pav as Record<
+      string,
+      unknown
+    >;
+    expect(attached).toMatchObject({
+      schema_version: PROVIDER_BOUNDARY_PAV_SCHEMA_VERSION,
+      provider_family: "chatgpt",
+      provider_slot: "chatgpt_pro_first_plan",
+      requested_mode: "browser",
+      prompt_sha256: boundary.prompt_sha256,
+      prompt_semantics: "unchanged",
+      raw_prompt_in_metadata: false,
+      policy_scope: "protected_workflow_slot",
+      access_path: "oracle_browser_remote",
+    });
+    expect(attached.protected_slot_metadata).toMatchObject({
+      protected_slot: true,
+      api_substitution_allowed_for_this_slot: false,
+    });
+    expect(attached.context_serialization).toMatchObject({
+      provider_payload_format: "text",
+      provider_payload_semantics: "unchanged",
+    });
+    expect(JSON.stringify(attached)).not.toContain(providerPrompt);
+    expect(JSON.stringify(attached)).not.toContain("unique-provider-result-boundary-prompt");
   });
 });
 
