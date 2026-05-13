@@ -77,6 +77,20 @@ describe("sessions MCP tool", () => {
     expect(result.structuredContent.total).toBe(1);
   });
 
+  it("returns a tool error for invalid session listing params", async () => {
+    const result = (await handler?.({
+      hours: -1,
+      limit: 1.5,
+      includeAll: false,
+      unexpected: true,
+    })) as { isError?: boolean; content: Array<{ text: string }> };
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain("unexpected");
+    expect(listSessions).not.toHaveBeenCalled();
+    expect(filterSessions).not.toHaveBeenCalled();
+  });
+
   it("throws when id is missing", async () => {
     readSession.mockResolvedValue(null);
     await expect(handler?.({ id: "missing" })).rejects.toThrow('Session "missing" not found.');

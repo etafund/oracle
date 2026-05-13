@@ -62,13 +62,16 @@ export function registerSessionsTool(server: McpServer): void {
     },
     async (input: unknown) => {
       const textContent = (text: string) => [{ type: "text" as const, text }];
-      const {
-        id,
-        hours = 24,
-        limit = 100,
-        includeAll = false,
-        detail = false,
-      } = sessionsInputSchema.parse(input);
+      let parsedInput;
+      try {
+        parsedInput = sessionsInputSchema.parse(input);
+      } catch (error) {
+        return {
+          isError: true,
+          content: textContent(error instanceof Error ? error.message : String(error)),
+        };
+      }
+      const { id, hours = 24, limit = 100, includeAll = false, detail = false } = parsedInput;
 
       if (id) {
         if (!detail) {
