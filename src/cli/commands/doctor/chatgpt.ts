@@ -1,6 +1,12 @@
 import { Command } from "commander";
 import { createRequire } from "node:module";
 import { sessionStore, type SessionMetadata, type SessionStore } from "../../../sessionStore.js";
+import {
+  createEnvelope,
+  isV18ErrorCode,
+  type JsonEnvelope,
+  type V18ErrorCode,
+} from "../../../oracle/v18/index.js";
 
 export type ProviderDoctorProvider = "chatgpt" | "gemini";
 export type ProviderDoctorStatus = "pass" | "warn" | "fail" | "unknown";
@@ -270,7 +276,69 @@ export function writeProviderDoctorEnvelope(
   io: ProviderDoctorIo,
 ): void {
   const writer = io.stdout ?? ((text: string) => console.log(text));
-  writer(options.json ? JSON.stringify(envelope, null, 2) : formatProviderDoctor(envelope));
+  writer(
+    options.json
+      ? JSON.stringify(buildProviderDoctorJsonEnvelope(envelope), null, 2)
+      : formatProviderDoctor(envelope),
+  );
+}
+
+export function buildProviderDoctorJsonEnvelope(envelope: ProviderDoctorEnvelope): JsonEnvelope {
+  const blockerErrors = envelope.blockers.map((check) => ({
+    error_code: providerDoctorErrorCode(envelope.provider, check),
+    message: check.message,
+    details: {
+      check: check.name,
+      code: check.code,
+      ...(check.details ? { check_details: check.details } : {}),
+    },
+  }));
+  return createEnvelope(
+    {
+      ok: envelope.ok,
+      data: envelope as unknown as Record<string, unknown>,
+      meta: {
+        command: `oracle doctor ${envelope.provider} --json`,
+        generated_at: new Date().toISOString(),
+        schema_version: envelope.schema_version,
+        provider: envelope.provider,
+        status: envelope.status,
+      },
+      blocked_reason: envelope.blockers[0]?.code ?? null,
+      next_command: envelope.next_command,
+      fix_command: envelope.fix_command,
+      retry_safe: envelope.ok ? true : false,
+      errors: blockerErrors,
+      warnings: envelope.warnings.map((check) => `${check.name}:${check.code}`),
+      commands: {
+        doctor: "oracle doctor --json",
+        provider_doctor: `oracle doctor ${envelope.provider} --json`,
+        capabilities: "oracle capabilities --json",
+        remote_doctor: "oracle remote doctor --json",
+      },
+    },
+    {
+      provider: envelope.provider,
+    },
+  );
+}
+
+function providerDoctorErrorCode(
+  provider: ProviderDoctorProvider,
+  check: ProviderDoctorCheck,
+): V18ErrorCode {
+  if (isV18ErrorCode(check.code)) return check.code;
+  if (check.code.includes("ui_drift")) return "ui_drift_suspected";
+  if (check.code === "missing_effort_control") {
+    return provider === "gemini"
+      ? "gemini_deep_think_unverified"
+      : "chatgpt_extended_reasoning_unverified";
+  }
+  if (check.code.includes("remote_browser")) return "remote_browser_unavailable";
+  if (check.code.includes("login") || check.code.includes("auth")) {
+    return "provider_login_required";
+  }
+  return provider === "gemini" ? "gemini_deep_think_unverified" : "chatgpt_pro_unverified";
 }
 
 export function normalizeRemoteBrowser(value: string | undefined): ProviderDoctorRemoteBrowserMode {
