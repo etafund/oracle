@@ -175,6 +175,35 @@ describe("session lifecycle", () => {
     expect(second.id).toBe("alpha-beta-gamma-2");
   });
 
+  test("initializeSession reserves unique ids for concurrent same-slug sessions", async () => {
+    const sessions = await Promise.all(
+      Array.from({ length: 6 }, (_, index) =>
+        sessionModule.initializeSession(
+          {
+            prompt: `Concurrent session ${index}`,
+            model: "gpt-5.2-pro",
+            slug: "shared slug name",
+          },
+          "/tmp/cwd",
+        ),
+      ),
+    );
+    const ids = sessions.map((session) => session.id);
+    const expected = new Set([
+      "shared-slug-name",
+      "shared-slug-name-2",
+      "shared-slug-name-3",
+      "shared-slug-name-4",
+      "shared-slug-name-5",
+      "shared-slug-name-6",
+    ]);
+
+    expect(new Set(ids)).toEqual(expected);
+    for (const id of expected) {
+      await expect(sessionModule.readSessionMetadata(id)).resolves.toMatchObject({ id });
+    }
+  });
+
   test("initializeSession can restart from a base slug override and appends suffix on conflict", async () => {
     const first = await sessionModule.initializeSession(
       { prompt: "Original", model: "gpt-5.2-pro", slug: "alpha beta gamma" },

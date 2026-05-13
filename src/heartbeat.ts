@@ -18,7 +18,14 @@ export function startHeartbeat(config: HeartbeatConfig): () => void {
     if (stopped || pending) {
       return;
     }
-    if (!isActive()) {
+    let active = false;
+    try {
+      active = isActive();
+    } catch {
+      stop();
+      return;
+    }
+    if (!active) {
       stop();
       return;
     }
