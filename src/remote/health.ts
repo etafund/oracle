@@ -6,10 +6,18 @@ export interface RemoteHealthResult {
   ok: boolean;
   statusCode?: number;
   error?: string;
+  busy?: boolean;
   version?: string;
   uptimeSeconds?: number;
   authProfileIdHash?: string;
   providerLocks?: string[];
+}
+
+export interface RemoteRunAvailabilityResult {
+  ok: boolean;
+  statusCode?: number;
+  error?: string;
+  busy?: boolean;
 }
 
 export async function checkTcpConnection(
@@ -79,8 +87,7 @@ export async function checkRemoteHealth({
       const authProfileIdHash = (response.json as { authProfileIdHash?: unknown })
         .authProfileIdHash;
       const providerLocks = (response.json as { providerLocks?: unknown }).providerLocks;
-
-      return {
+      const healthResult: RemoteHealthResult = {
         ok,
         statusCode: response.statusCode,
         version: typeof version === "string" ? version : undefined,
@@ -88,6 +95,28 @@ export async function checkRemoteHealth({
         authProfileIdHash: typeof authProfileIdHash === "string" ? authProfileIdHash : undefined,
         providerLocks: Array.isArray(providerLocks) ? providerLocks : undefined,
       };
+
+      if (!ok) {
+        return healthResult;
+      }
+
+      const runAvailability = await probeRemoteRunAvailability({
+        hostname,
+        port,
+        headers,
+        timeoutMs,
+      });
+      if (!runAvailability.ok) {
+        return {
+          ...healthResult,
+          ok: false,
+          statusCode: runAvailability.statusCode,
+          error: runAvailability.error,
+          busy: runAvailability.busy,
+        };
+      }
+
+      return healthResult;
     }
     if (response.statusCode === 404) {
       return {
@@ -102,6 +131,82 @@ export async function checkRemoteHealth({
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+export async function checkRemoteRunAvailability({
+  host,
+  token,
+  timeoutMs = 5000,
+}: {
+  host: string;
+  token?: string;
+  timeoutMs?: number;
+}): Promise<RemoteRunAvailabilityResult> {
+  const headers: Record<string, string> = { accept: "application/json" };
+  if (token) {
+    headers.authorization = `Bearer ${token}`;
+  }
+  try {
+    const { hostname, port } = parseHostPort(host);
+    return await probeRemoteRunAvailability({ hostname, port, headers, timeoutMs });
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+async function probeRemoteRunAvailability({
+  hostname,
+  port,
+  headers,
+  timeoutMs,
+}: {
+  hostname: string;
+  port: number;
+  headers: Record<string, string>;
+  timeoutMs: number;
+}): Promise<RemoteRunAvailabilityResult> {
+  const body = "{";
+  const response = await requestJson({
+    hostname,
+    port,
+    path: "/runs",
+    method: "POST",
+    headers: {
+      ...headers,
+      "content-type": "application/json",
+      "content-length": String(Buffer.byteLength(body)),
+    },
+    body,
+    timeoutMs,
+  });
+  const error = extractErrorMessage(response.json, response.bodyText);
+
+  if (response.statusCode === 400) {
+    return { ok: true, statusCode: response.statusCode };
+  }
+  if (response.statusCode === 409) {
+    return {
+      ok: false,
+      statusCode: response.statusCode,
+      busy: true,
+      error: error ?? "remote host is busy; /runs is rejecting new work",
+    };
+  }
+  if (response.statusCode === 404) {
+    return {
+      ok: false,
+      statusCode: response.statusCode,
+      error: "remote host does not expose /runs (upgrade oracle on the host and retry)",
+    };
+  }
+  if (response.statusCode === 401 || response.statusCode === 403) {
+    return { ok: false, statusCode: response.statusCode, error: error ?? "unauthorized" };
+  }
+  return {
+    ok: false,
+    statusCode: response.statusCode,
+    error: error ?? `unexpected /runs probe status HTTP ${response.statusCode}`,
+  };
 }
 
 function extractErrorMessage(json: unknown, bodyText: string): string | null {
@@ -119,13 +224,17 @@ async function requestJson({
   hostname,
   port,
   path,
+  method = "GET",
   headers,
+  body,
   timeoutMs,
 }: {
   hostname: string;
   port: number;
   path: string;
+  method?: "GET" | "POST";
   headers: Record<string, string>;
+  body?: string;
   timeoutMs: number;
 }): Promise<{ statusCode: number; json: unknown; bodyText: string }> {
   return await new Promise((resolve, reject) => {
@@ -134,7 +243,7 @@ async function requestJson({
         hostname,
         port,
         path,
-        method: "GET",
+        method,
         headers,
       },
       (res) => {
@@ -159,6 +268,9 @@ async function requestJson({
       req.destroy(new Error(`timeout after ${timeoutMs}ms`));
     });
     req.on("error", reject);
+    if (body !== undefined) {
+      req.write(body);
+    }
     req.end();
   });
 }
