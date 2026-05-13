@@ -51,6 +51,7 @@ export interface CapabilityEntry {
 }
 
 export interface CapabilityReport {
+  readonly [key: string]: unknown;
   readonly schema_version: typeof ORACLE_CAPABILITIES_SCHEMA_VERSION;
   readonly bundle_version: typeof V18_BUNDLE_VERSION;
   readonly generated_at: string;
@@ -99,7 +100,9 @@ function chatgptCapability(env: Readonly<Record<string, string | undefined>>): C
     next_command: remotePreferred
       ? "oracle --engine browser --model gpt-5.5-pro -p '...'"
       : "oracle browser doctor --json",
-    fix_command: remotePreferred ? null : "set ORACLE_REMOTE_HOST and ORACLE_REMOTE_TOKEN to prefer remote browser",
+    fix_command: remotePreferred
+      ? null
+      : "set ORACLE_REMOTE_HOST and ORACLE_REMOTE_TOKEN to prefer remote browser",
     notes: {
       evidence_schema_version: BROWSER_EVIDENCE_SCHEMA_VERSION,
       requires_same_session_evidence: true,
@@ -119,7 +122,9 @@ function geminiCapability(env: Readonly<Record<string, string | undefined>>): Ca
     next_command: remotePreferred
       ? "oracle --engine browser --model gemini-3-pro -p '...'"
       : "oracle browser doctor --json",
-    fix_command: remotePreferred ? null : "set ORACLE_REMOTE_HOST and ORACLE_REMOTE_TOKEN to prefer remote browser",
+    fix_command: remotePreferred
+      ? null
+      : "set ORACLE_REMOTE_HOST and ORACLE_REMOTE_TOKEN to prefer remote browser",
     notes: {
       evidence_schema_version: BROWSER_EVIDENCE_SCHEMA_VERSION,
       strategy: "high_if_exposed",
@@ -129,7 +134,9 @@ function geminiCapability(env: Readonly<Record<string, string | undefined>>): Ca
   };
 }
 
-function remoteBrowserCapability(env: Readonly<Record<string, string | undefined>>): CapabilityEntry {
+function remoteBrowserCapability(
+  env: Readonly<Record<string, string | undefined>>,
+): CapabilityEntry {
   const hostPresent = envPresent(env, REMOTE_HOST_ENV);
   const tokenPresent = envPresent(env, REMOTE_TOKEN_ENV);
   if (hostPresent && tokenPresent) {
@@ -222,7 +229,8 @@ function promptPayloadPassthroughCapability(): CapabilityEntry {
     id: "prompt_payload_format_passthrough",
     supported: true,
     status: "ready",
-    description: "Prompt payload bytes pass through Oracle unchanged with prompt_sha256 provenance.",
+    description:
+      "Prompt payload bytes pass through Oracle unchanged with prompt_sha256 provenance.",
     next_command: null,
     fix_command: null,
     notes: {
@@ -240,7 +248,8 @@ function toonPassthroughCapability(): CapabilityEntry {
     description:
       "TOON-encoded prompt blocks are passed through; canonical storage remains JSON until legal review opts in.",
     next_command: null,
-    fix_command: "context_serialization_policy.policy_status=gated_optional; enable per project after legal review",
+    fix_command:
+      "context_serialization_policy.policy_status=gated_optional; enable per project after legal review",
     notes: {
       context_serialization_policy_schema_version: CONTEXT_SERIALIZATION_POLICY_SCHEMA_VERSION,
       canonical_storage_format: "json",
