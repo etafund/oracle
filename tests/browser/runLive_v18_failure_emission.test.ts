@@ -50,7 +50,10 @@ function chatGptOptions(overrides: Partial<BrowserRunOptions> = {}): BrowserRunO
   } as BrowserRunOptions;
 }
 
-function failureCapture(options: BrowserRunOptions, result: BrowserRunResult): LiveBrowserRunCapture {
+function failureCapture(
+  options: BrowserRunOptions,
+  result: BrowserRunResult,
+): LiveBrowserRunCapture {
   return {
     promptText: options.prompt,
     answerText: result.answerText,

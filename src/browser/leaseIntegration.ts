@@ -274,10 +274,7 @@ function stringifyError(error: unknown): string {
 async function appendBrowserLeaseLedgerEvent(
   runOptions: BrowserRunOptions,
   record: StoredBrowserLeaseRecord,
-  action:
-    | "browser_lease_acquired"
-    | "browser_lease_released"
-    | "browser_lease_release_failed",
+  action: "browser_lease_acquired" | "browser_lease_released" | "browser_lease_release_failed",
   leaseOptions: BrowserLeaseIntegrationOptions,
   releaseError?: unknown,
 ): Promise<void> {
