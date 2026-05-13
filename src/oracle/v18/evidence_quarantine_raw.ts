@@ -76,7 +76,9 @@ export interface RawCaptureFailureEnvelope {
   readonly failure: {
     readonly name: string;
     readonly message: string;
-    readonly zod_issues: readonly { path: readonly (string | number)[]; message: string; code?: string }[] | null;
+    readonly zod_issues:
+      | readonly { path: readonly (string | number)[]; message: string; code?: string }[]
+      | null;
     readonly stack: string | null;
   };
   readonly raw_input: unknown;
@@ -204,4 +206,3 @@ function makeReplacer(): (key: string, value: unknown) => unknown {
     return value;
   };
 }
-

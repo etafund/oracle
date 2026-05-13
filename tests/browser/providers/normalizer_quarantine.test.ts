@@ -26,10 +26,7 @@ import {
   type NormalizeGeminiRunInput,
 } from "../../../src/browser/providers/geminiResultNormalizer.js";
 import { verifyGeminiDeepThinkCandidate } from "../../../src/browser/providers/geminiDeepThink_verification.js";
-import {
-  browserEvidenceSchema,
-  type BrowserEvidence,
-} from "../../../src/oracle/v18/contracts.js";
+import { browserEvidenceSchema, type BrowserEvidence } from "../../../src/oracle/v18/contracts.js";
 import { captured } from "../../../src/browser/output-capture/index.js";
 import type { CaptureVerdict } from "../../../src/browser/output-capture/captureVerdict.js";
 import type { EffortStrategyResult } from "../../../src/browser/selectors/chatgpt/effortStrategy.js";
