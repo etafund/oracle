@@ -469,7 +469,12 @@ function normalizeText(value: string | undefined, fallback: string): string {
 }
 
 function normalizeProviderToken(value: string | undefined): string {
-  return value?.trim().toLowerCase().replace(/[\s_]+/gu, "-") ?? "";
+  return (
+    value
+      ?.trim()
+      .toLowerCase()
+      .replace(/[\s_]+/gu, "-") ?? ""
+  );
 }
 
 function normalizeGeminiDeepThinkProvider(value: string | undefined): string {
