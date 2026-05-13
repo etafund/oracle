@@ -1,4 +1,5 @@
 import os from "node:os";
+import { createHash } from "node:crypto";
 import chalk from "chalk";
 import { getCliVersion } from "../../version.js";
 import { loadUserConfig } from "../../config.js";
@@ -11,11 +12,51 @@ export interface BridgeDoctorCliOptions {
   verbose?: boolean;
 }
 
+type ResolveRemoteServiceConfigInput = Parameters<typeof resolveRemoteServiceConfig>[0];
+type ResolvedRemoteServiceConfig = ReturnType<typeof resolveRemoteServiceConfig>;
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length ? trimmed : undefined;
+}
+
+function resolveRemoteServiceConfigForDoctor(
+  input: ResolveRemoteServiceConfigInput,
+): ResolvedRemoteServiceConfig {
+  try {
+    return resolveRemoteServiceConfig(input);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes("remote_browser_token_missing")) {
+      throw error;
+    }
+
+    const env = input.env ?? process.env;
+    const envHost = normalizeOptionalString(env.ORACLE_REMOTE_HOST);
+    const cliHost = normalizeOptionalString(input.cliHost);
+    const configHost = normalizeOptionalString(input.userConfig?.browser?.remoteHost);
+    const host = envHost ?? cliHost ?? configHost;
+    const source = envHost ? "env" : cliHost ? "cli" : configHost ? "config.browser" : "unset";
+
+    return {
+      host,
+      token: undefined,
+      mode: "preferred",
+      hostHash: host
+        ? createHash("sha256").update(host).digest("hex").slice(0, 12)
+        : undefined,
+      redactedToken: undefined,
+      sources: { host: source, token: "unset", mode: "default" },
+    } as ResolvedRemoteServiceConfig;
+  }
+}
+
 export async function runBridgeDoctor(_options: BridgeDoctorCliOptions): Promise<void> {
   const { config: userConfig, path: configPath, loaded } = await loadUserConfig();
   const version = getCliVersion();
 
-  const resolvedRemote = resolveRemoteServiceConfig({
+  const resolvedRemote = resolveRemoteServiceConfigForDoctor({
     cliHost: undefined,
     cliToken: undefined,
     userConfig,
