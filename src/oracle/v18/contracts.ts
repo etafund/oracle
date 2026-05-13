@@ -317,17 +317,31 @@ export type RobotSurface = z.infer<typeof robotSurfaceSchema>;
 
 export const RUN_PROGRESS_SCHEMA_VERSION = "run_progress.v1" as const;
 
+export const RUN_PROGRESS_STATE_VALUES = [
+  "preflight",
+  "waiting_for_live_provider_approval",
+  "running",
+  "thinking",
+  "reconnecting",
+  "blocked",
+  "completed",
+  "retryable_failure",
+  "non_retryable_failure",
+] as const;
+export const runProgressStateSchema = z.enum(RUN_PROGRESS_STATE_VALUES);
+export type RunProgressStateValue = z.infer<typeof runProgressStateSchema>;
+
 export const runProgressSchema = z
   .object({
     schema_version: z.literal(RUN_PROGRESS_SCHEMA_VERSION),
     bundle_version: bundleVersionSchema,
     run_id: z.string(),
     profile: z.string(),
-    state: z.string(),
+    state: runProgressStateSchema,
     current_stage: z.string(),
     completed_stages: z.array(z.string()),
     pending_stages: z.array(z.string()),
-    progress_percent: z.number(),
+    progress_percent: z.number().finite().int().min(0).max(100),
     user_visible_message: z.string(),
     next_command: z.string().nullable(),
     blocked_reason: z.string().nullable(),

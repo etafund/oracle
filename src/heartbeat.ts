@@ -1,8 +1,28 @@
+import {
+  runProgressMessageProvider,
+  type RunProgressEventProvider,
+} from "./oracle/v18/run_progress.js";
+
+export interface HeartbeatRunProgressConfig {
+  readonly provider: RunProgressEventProvider;
+  /**
+   * Defaults to true when present. Set false to leave the prose heartbeat
+   * untouched while keeping one config object around.
+   */
+  readonly enabled?: boolean;
+}
+
 export interface HeartbeatConfig {
   intervalMs?: number;
   log: (message: string) => void;
   isActive: () => boolean;
   makeMessage: (elapsedMs: number) => Promise<string | null> | string | null;
+  /**
+   * Optional v18 structured progress provider. When enabled and the provider
+   * returns an event, the heartbeat emits that run_progress.v1 JSON line.
+   * If it returns null, the normal prose makeMessage fallback still runs.
+   */
+  runProgress?: HeartbeatRunProgressConfig;
 }
 
 /**
@@ -27,10 +47,17 @@ export function composeHeartbeatMessages(
 }
 
 export function startHeartbeat(config: HeartbeatConfig): () => void {
-  const { intervalMs, log, isActive, makeMessage } = config;
+  const { intervalMs, log, isActive } = config;
   if (!intervalMs || intervalMs <= 0) {
     return () => {};
   }
+  const makeMessage =
+    config.runProgress && config.runProgress.enabled !== false
+      ? composeHeartbeatMessages(
+          runProgressMessageProvider(config.runProgress.provider),
+          config.makeMessage,
+        )
+      : config.makeMessage;
   let stopped = false;
   let pending = false;
   const start = Date.now();
