@@ -14,6 +14,9 @@
 
 ### Fixed
 
+- Browser/v18: drive live Gemini Deep Think runs through the verification state machine and emit a complete v18 audit trail. The DOM provider now refuses to submit a prompt until same-session Deep Think verification has succeeded, and successful or failed runs each write a sanitised `browser_evidence.v1` (provider=`gemini`, slot=`gemini_deep_think`) plus a `provider_result.v1` and the matching `evidence_written` + `run_completed`/`run_failed` ledger pair, so `oracle evidence show|verify` and ledger audits now cover Gemini runs the way they already covered ChatGPT.
+- CLI: `oracle evidence show <session> --json` and `oracle evidence verify <session> --json` now emit a `json_envelope.v1` wrapper (with the typed result in `data`, the v18 recovery contract fields on the failure arm, and granular per-artifact issue codes preserved in `errors[0].details.issue_codes`) so robot consumers see the same envelope shape every other `--json` surface uses. Human (non-`--json`) output is unchanged.
+- CLI: `oracle remote attach --host <h:p>` now always probes the explicit `--host` value even when `ORACLE_REMOTE_HOST` is set to a different (stale) target. Token handling still routes through `--token-env` so the token never appears on the command line.
 - CLI/Browser: reject malformed port and tab-count values with trailing non-numeric text instead of silently truncating them.
 - CLI: reject v18 workflow provider-slot identifiers passed as `--model` / `--models` so protected routes cannot silently become direct API substitutions.
 - CLI: reject malformed `maxFileSizeBytes` values with trailing text or decimals instead of truncating them.
