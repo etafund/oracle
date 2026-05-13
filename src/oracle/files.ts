@@ -259,7 +259,9 @@ async function loadGitignoreSets(cwd: string): Promise<GitignoreSet[]> {
 
 function isGitignored(filePath: string, sets: GitignoreSet[]): boolean {
   for (const { dir, patterns } of sets) {
-    if (!filePath.startsWith(dir)) {
+    // Compare path segments, not raw string prefixes: `/repo/lib` must NOT
+    // be treated as an ancestor of `/repo/library/...`.
+    if (filePath !== dir && !filePath.startsWith(`${dir}${path.sep}`)) {
       continue;
     }
     const relative = path.relative(dir, filePath) || path.basename(filePath);
