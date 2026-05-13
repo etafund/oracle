@@ -17,6 +17,11 @@ import {
   saveBrowserTranscriptArtifact,
   saveDeepResearchReportArtifact,
 } from "./artifacts.js";
+import {
+  buildProductionV18BrowserEmitOptions,
+  wrapBrowserExecutorWithV18Emit,
+  type V18EmitOutcome,
+} from "./runLive_emit_artifacts.js";
 
 export interface BrowserExecutionResult {
   usage: {
@@ -30,6 +35,7 @@ export interface BrowserExecutionResult {
   archive?: BrowserArchiveResult;
   answerText: string;
   artifacts?: SessionArtifact[];
+  v18Emit?: V18EmitOutcome;
 }
 
 interface RunBrowserSessionArgs {
@@ -42,6 +48,8 @@ interface RunBrowserSessionArgs {
 export interface BrowserSessionRunnerDeps {
   assemblePrompt?: typeof assembleBrowserPrompt;
   executeBrowser?: typeof runBrowserMode;
+  /** Test hook: keep v18 browser evidence writes out of the real ~/.oracle home. */
+  v18EmitHomeDir?: string;
   persistRuntimeHint?: (runtime: BrowserRuntimeMetadata) => Promise<void> | void;
 }
 
@@ -50,8 +58,15 @@ export async function runBrowserSessionExecution(
   deps: BrowserSessionRunnerDeps = {},
 ): Promise<BrowserExecutionResult> {
   const assemblePrompt = deps.assemblePrompt ?? assembleBrowserPrompt;
-  const executeBrowser = deps.executeBrowser ?? runBrowserMode;
   const promptArtifacts = await assemblePrompt(runOptions, { cwd });
+  const executeBrowser = wrapBrowserExecutorWithV18Emit(
+    deps.executeBrowser ?? runBrowserMode,
+    buildProductionV18BrowserEmitOptions({
+      promptText: promptArtifacts.composerText,
+      sourceBaselineSeed: cwd,
+      homeDir: deps.v18EmitHomeDir,
+    }),
+  );
   if (runOptions.verbose) {
     log(
       chalk.dim(
@@ -108,7 +123,7 @@ export async function runBrowserSessionExecution(
     log(chalk.dim("Chrome automation does not stream output; this may take a minute..."));
   }
   const persistRuntimeHint = deps.persistRuntimeHint ?? (() => {});
-  let browserResult: BrowserRunResult;
+  let browserResult: BrowserRunResult & { v18Emit?: V18EmitOutcome };
   try {
     browserResult = await executeBrowser({
       prompt: promptArtifacts.composerText,
@@ -206,6 +221,7 @@ export async function runBrowserSessionExecution(
     archive: browserResult.archive,
     answerText,
     artifacts: savedArtifacts,
+    v18Emit: browserResult.v18Emit,
   };
 }
 
