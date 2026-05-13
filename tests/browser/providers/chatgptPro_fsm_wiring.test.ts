@@ -73,11 +73,13 @@ function makeFakeAdapter(options: FakeAdapterOptions = {}): {
   return { adapter, calls };
 }
 
-function makeCtx(overrides: {
-  modelLabel?: string;
-  observedEffortLabels?: readonly string[];
-  liveModelLabel?: string;
-} = {}): ProviderDomFlowContext {
+function makeCtx(
+  overrides: {
+    modelLabel?: string;
+    observedEffortLabels?: readonly string[];
+    liveModelLabel?: string;
+  } = {},
+): ProviderDomFlowContext {
   const modelLabel = overrides.modelLabel ?? "GPT-5.5 Pro";
   const observedEffortLabels = overrides.observedEffortLabels ?? ["Standard", "Heavy"];
   const liveModelLabel = overrides.liveModelLabel ?? modelLabel;

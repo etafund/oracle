@@ -182,7 +182,10 @@ export interface WiredChatGptProAdapter extends ProviderDomAdapter {
 
 export interface WireChatGptProFsmOptions {
   readonly mode?: "remote" | "local";
-  readonly accessPath?: "oracle_browser_remote" | "oracle_browser_local" | "oracle_browser_remote_or_local";
+  readonly accessPath?:
+    | "oracle_browser_remote"
+    | "oracle_browser_local"
+    | "oracle_browser_remote_or_local";
   readonly sessionIdHash?: `sha256:${string}`;
   readonly promptSha256?: (prompt: string) => `sha256:${string}`;
   readonly outputSha256?: (text: string) => `sha256:${string}`;
@@ -473,7 +476,10 @@ export function wireChatGptProFsm(
         if (kind === "login_required") {
           send({ type: "login_required" });
         } else {
-          send({ type: "ui_drift_observed", detail: err instanceof Error ? err.message : String(err) });
+          send({
+            type: "ui_drift_observed",
+            detail: err instanceof Error ? err.message : String(err),
+          });
         }
         throw err;
       }
@@ -490,7 +496,10 @@ export function wireChatGptProFsm(
         if (adapter.selectMode) await adapter.selectMode(ctx);
         lastProbe = await resolveChatGptProProbe(ctx);
       } catch (err) {
-        send({ type: "ui_drift_observed", detail: err instanceof Error ? err.message : String(err) });
+        send({
+          type: "ui_drift_observed",
+          detail: err instanceof Error ? err.message : String(err),
+        });
         throw err;
       }
       send({ type: "pro_candidate_selected", modelLabel: lastProbe.modelLabel });
@@ -547,9 +556,7 @@ export function wireChatGptProFsm(
   };
 }
 
-export const chatgptDomProvider: WiredChatGptProAdapter = wireChatGptProFsm(
-  chatgptDomProviderBase,
-);
+export const chatgptDomProvider: WiredChatGptProAdapter = wireChatGptProFsm(chatgptDomProviderBase);
 
 export function chatgptDomProviderWithFsm(): WiredChatGptProAdapter {
   return wireChatGptProFsm(chatgptDomProviderBase);
