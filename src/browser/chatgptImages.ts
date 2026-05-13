@@ -11,6 +11,10 @@ import { delay } from "./utils.js";
 import { readAssistantSnapshot } from "./pageActions.js";
 import { getOracleHomeDir } from "../oracleHome.js";
 import { resolveSessionArtifactsDir } from "./artifacts.js";
+import {
+  assertTrustedChatGptImageDownloadUrl,
+  downloadChatGptImageWithCookies,
+} from "./providers/chatgpt_image_download.js";
 
 const GENERATED_IMAGE_WAIT_MIN_MS = 15_000;
 const GENERATED_IMAGE_WAIT_MAX_MS = 15 * 60_000;
@@ -234,29 +238,41 @@ export async function saveChatGptGeneratedImages(params: {
   const { Network, images, outputPath, logger } = params;
   if (!images.length) return { saved: false, imageCount: 0, savedImages: [], errors: [] };
 
+  const errors: string[] = [];
+  const trustedImages: Array<{ image: BrowserGeneratedImage; url: URL }> = [];
+  for (const image of images) {
+    try {
+      trustedImages.push({ image, url: assertTrustedChatGptImageDownloadUrl(image.url) });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push(`${image.fileId ?? image.url}: ${message}`);
+      logger?.(`[browser] Skipping generated image download: ${message}`);
+    }
+  }
+
+  if (trustedImages.length === 0) {
+    return { saved: false, imageCount: images.length, savedImages: [], errors };
+  }
+
   const cookieHeader = await buildCookieHeader(Network);
   if (!cookieHeader) {
     return {
       saved: false,
       imageCount: images.length,
       savedImages: [],
-      errors: ["Missing ChatGPT cookies for image download."],
+      errors: [...errors, "Missing ChatGPT cookies for image download."],
     };
   }
 
   const savedImages: SavedBrowserImage[] = [];
-  const errors: string[] = [];
   await fs.mkdir(path.dirname(path.resolve(outputPath)), { recursive: true });
 
-  for (let index = 0; index < images.length; index += 1) {
-    const image = images[index];
+  for (let index = 0; index < trustedImages.length; index += 1) {
+    const { image, url } = trustedImages[index];
     try {
-      const response = await fetch(image.url, {
-        headers: {
-          cookie: cookieHeader,
-          "user-agent": "Mozilla/5.0",
-        },
-        redirect: "follow",
+      const { response, finalUrl } = await downloadChatGptImageWithCookies({
+        url,
+        cookieHeader,
       });
       if (!response.ok) {
         throw new Error(`download failed: ${response.status} ${response.statusText}`);
@@ -274,7 +290,7 @@ export async function saveChatGptGeneratedImages(params: {
         sizeBytes: buffer.length,
         sourceUrl: image.url,
         url: image.url,
-        finalUrl: response.url,
+        finalUrl,
         alt: image.alt,
         width: image.width,
         height: image.height,
