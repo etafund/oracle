@@ -20,6 +20,11 @@ import type {
 import { DEFAULT_MODEL, formatElapsed } from "./oracle.js";
 import { safeModelSlug } from "./oracle/modelResolver.js";
 import { getOracleHomeDir } from "./oracleHome.js";
+import {
+  createProviderBoundaryPavSnapshot,
+  type CreateProviderBoundaryPavSnapshotInput,
+  type ProviderBoundaryPavMetadata,
+} from "./oracle/provider_boundaries_pav.js";
 
 export type SessionMode = "api" | "browser";
 
@@ -142,7 +147,13 @@ export interface SessionEvidenceMetadata {
   prompt_sha256: string;
   prompt_manifest_sha256: string;
   prompt_bytes: number;
+  provider_boundary_pav?: ProviderBoundaryPavMetadata;
 }
+
+export type SessionProviderBoundaryOptions = Omit<
+  CreateProviderBoundaryPavSnapshotInput,
+  "providerPrompt"
+>;
 
 export interface StoredRunOptions {
   prompt?: string;
@@ -189,6 +200,7 @@ export interface StoredRunOptions {
   browserFollowUps?: string[];
   aspectRatio?: string;
   geminiShowThoughts?: boolean;
+  providerBoundary?: SessionProviderBoundaryOptions;
 }
 
 export interface SessionMetadata {
@@ -317,14 +329,25 @@ export function createSessionId(prompt: string, customSlug?: string): string {
   return slugify(prompt);
 }
 
-export function createPromptEvidence(prompt: string | Buffer): SessionEvidenceMetadata {
+export function createPromptEvidence(
+  prompt: string | Buffer,
+  providerBoundary?: SessionProviderBoundaryOptions,
+): SessionEvidenceMetadata {
   const promptBytes = Buffer.isBuffer(prompt) ? prompt : Buffer.from(prompt, "utf8");
   const promptSha256 = `sha256:${createHash("sha256").update(promptBytes).digest("hex")}`;
-  return {
+  const evidence: SessionEvidenceMetadata = {
     prompt_sha256: promptSha256,
     prompt_manifest_sha256: promptSha256,
     prompt_bytes: promptBytes.byteLength,
   };
+  if (providerBoundary) {
+    const providerPrompt = Buffer.isBuffer(prompt) ? prompt.toString("utf8") : prompt;
+    evidence.provider_boundary_pav = createProviderBoundaryPavSnapshot({
+      providerPrompt,
+      ...providerBoundary,
+    }).metadata;
+  }
+  return evidence;
 }
 
 function assertSafeSessionId(id: string): void {
@@ -488,7 +511,7 @@ export async function initializeSession(
   const { sessionId, dir } = await createUniqueSessionDir(baseSlug);
   const mode = options.mode ?? "api";
   const browserConfig = options.browserConfig;
-  const evidence = createPromptEvidence(options.prompt ?? "");
+  const evidence = createPromptEvidence(options.prompt ?? "", options.providerBoundary);
   const modelList: ModelName[] =
     Array.isArray(options.models) && options.models.length > 0
       ? options.models

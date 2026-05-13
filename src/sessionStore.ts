@@ -148,6 +148,7 @@ export type {
   SessionEvidenceMetadata,
   SessionStatus,
   SessionModelRun,
+  SessionProviderBoundaryOptions,
 } from "./sessionManager.js";
 
 export async function pruneOldSessions(
