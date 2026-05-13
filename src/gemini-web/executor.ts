@@ -9,7 +9,7 @@ import { getCookies } from "@steipete/sweet-cookie";
 import { runProviderDomFlow } from "../browser/providerDomFlow.js";
 import { delay } from "../browser/utils.js";
 import { runGeminiWebWithFallback, saveFirstGeminiImageFromOutput } from "./client.js";
-import { geminiDeepThinkDomProvider } from "../browser/providers/index.js";
+import { geminiDeepThinkDomProviderWithFsm } from "../browser/providers/index.js";
 import type { GeminiWebModelId } from "./client.js";
 import type { GeminiWebOptions, GeminiWebResponse } from "./types.js";
 import { openGeminiBrowserSession } from "./browserSessionManager.js";
@@ -228,7 +228,11 @@ async function runGeminiDeepThinkViaBrowser(
     await Page.navigate({ url: "https://gemini.google.com/app" });
     await delay(3_000);
 
-    const domResult = await runProviderDomFlow(geminiDeepThinkDomProvider, {
+    // Production path: wrap through the v18 verification FSM so the
+    // adapter cannot call submitPrompt before Deep Think is verified
+    // in the same browser session (oracle-svt). A fresh wired adapter
+    // is built per run so each browser session owns its own FSM.
+    const domResult = await runProviderDomFlow(geminiDeepThinkDomProviderWithFsm(), {
       prompt,
       evaluate,
       delay,
