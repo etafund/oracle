@@ -20,6 +20,36 @@ and run the live API suite before shipping major transport changes.
 
 - `pnpm test:browser` — launches headful Chrome and checks the DevTools endpoint is reachable. Set `ORACLE_BROWSER_PORT` (or `ORACLE_BROWSER_DEBUG_PORT`) to reuse a fixed port when you’ve already opened a firewall rule.
 
+### Opt-in live browser smoke tests (ChatGPT Pro + Gemini Deep Think)
+
+Run these only when intentionally validating signed-in browser automation. They
+are skipped unless both `ORACLE_LIVE_TEST=1` and `ORACLE_LIVE_BROWSER=1` are set.
+
+Prereqs:
+
+- Chrome is signed in to `chatgpt.com` with ChatGPT Pro access.
+- Chrome is signed in to `gemini.google.com` with Gemini Deep Think access.
+- Optional remote Chrome: set `ORACLE_LIVE_REMOTE_CHROME=host:port`.
+- Optional artifact root: set `ORACLE_LIVE_ARTIFACT_DIR=/tmp/oracle-live-smokes`.
+
+1. ChatGPT Pro exact-token smoke:
+   `ORACLE_LIVE_TEST=1 ORACLE_LIVE_BROWSER=1 pnpm vitest run tests/live/chatgpt-smoke-live.test.ts`
+   - The prompt asks for `CHECK_CHATGPT_PRO_OK`.
+   - The structured log records session id, provider slot, live-test lease id,
+     progress-event counts, reattach command, elapsed time, and transcript
+     artifact verification.
+   - If the run blocks, inspect `oracle session <session-id> --render`; never
+     click ChatGPT’s “Answer now” button while Pro is thinking.
+2. Gemini Deep Think exact-token smoke:
+   `ORACLE_LIVE_TEST=1 ORACLE_LIVE_BROWSER=1 pnpm vitest run tests/live/gemini-smoke-live.test.ts`
+   - The prompt asks for `CHECK_GEMINI_DEEP_THINK_OK`.
+   - The structured log records session id, provider slot, live-test lease id,
+     Deep Think progress counts, reattach guidance, elapsed time, and sanitized
+     smoke-evidence verification.
+3. Default CI/no-live check:
+   `pnpm vitest run tests/live/chatgpt-smoke-live.test.ts tests/live/gemini-smoke-live.test.ts`
+   - Both suites should report skipped tests with no Chrome launch.
+
 ### Gemini browser mode (Gemini web / cookies)
 
 Run this whenever you touch the Gemini web client or the `--generate-image` / `--edit-image` plumbing.
