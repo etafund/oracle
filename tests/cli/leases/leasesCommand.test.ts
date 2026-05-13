@@ -13,6 +13,13 @@ import { createBrowserLease } from "../../../src/browser/leases.js";
 
 const PROFILE_A = `sha256:${"a".repeat(64)}`;
 
+function dataArray<T>(data: unknown, key: string): T[] {
+  expect(data).toEqual(expect.any(Object));
+  const value = (data as Record<string, unknown>)[key];
+  expect(Array.isArray(value)).toBe(true);
+  return value as T[];
+}
+
 async function withLeaseDir<T>(fn: (leaseDir: string) => Promise<T>): Promise<T> {
   const leaseDir = await mkdtemp(path.join(os.tmpdir(), "oracle-cli-leases-"));
   try {
@@ -81,7 +88,7 @@ describe("browser leases command surface", () => {
       );
 
       expect(acquired.ok).toBe(true);
-      const acquiredLease = (acquired.data?.leases as Array<{ lease_id: string }>)[0];
+      const acquiredLease = dataArray<{ lease_id: string }>(acquired.data, "leases")[0];
       expect(acquiredLease.lease_id).toBe("lease-cli-1");
 
       const status = await runBrowserLeasesStatus(
@@ -94,7 +101,7 @@ describe("browser leases command surface", () => {
         },
         { stdout: () => undefined },
       );
-      expect((status.data?.leases as Array<{ state: string }>)[0].state).toBe("active");
+      expect(dataArray<{ state: string }>(status.data, "leases")[0].state).toBe("active");
 
       const released = await runBrowserLeasesRelease(
         {
@@ -109,7 +116,7 @@ describe("browser leases command surface", () => {
       );
 
       expect(released.ok).toBe(true);
-      expect((released.data?.leases as Array<{ status: string }>)[0].status).toBe("released");
+      expect(dataArray<{ status: string }>(released.data, "leases")[0].status).toBe("released");
     });
   });
 
@@ -151,7 +158,10 @@ describe("browser leases command surface", () => {
         },
         { stdout: () => undefined },
       );
-      const lease = (status.data?.leases as Array<{ lease: { lease_id: string } }>)[0].lease;
+      const lease = dataArray<{ lease: { lease_id: string } }>(
+        status.data,
+        "leases",
+      )[0].lease;
       expect(lease.lease_id).toBe("lease-existing");
     });
   });
@@ -179,7 +189,7 @@ describe("browser leases command surface", () => {
         },
         { stdout: () => undefined },
       );
-      expect((status.data?.leases as Array<{ state: string }>)[0].state).toBe("stale");
+      expect(dataArray<{ state: string }>(status.data, "leases")[0].state).toBe("stale");
 
       const recover = await runBrowserLeasesRecover(
         {
@@ -191,7 +201,7 @@ describe("browser leases command surface", () => {
         },
         { stdout: () => undefined },
       );
-      const guidance = (recover.data?.recoveries as Array<Record<string, unknown>>)[0];
+      const guidance = dataArray<Record<string, unknown>>(recover.data, "recoveries")[0];
       expect(guidance.state).toBe("stale");
       expect(guidance.safe_to_auto_recover).toBe(false);
       expect(guidance.suggested_command).toContain("--confirm-lease-id lease-stale");

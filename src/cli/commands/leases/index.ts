@@ -11,7 +11,6 @@ import {
 import {
   assertBrowserLeaseProvider,
   browserLeaseLockName,
-  browserLeaseRecoveryCommand,
   type BrowserLeaseProvider,
 } from "../../../oracle/v18/browser_lease.js";
 import { BROWSER_LEASE_SCHEMA_VERSION, V18_BUNDLE_VERSION } from "../../../oracle/v18/contracts.js";

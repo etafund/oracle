@@ -80,7 +80,6 @@ export function parseGeminiStreamGenerateResponse(
 
   let bodyIndex = 0;
   let body: unknown = null;
-  let latestNonEmpty: ParsedStreamPart | null = null;
   for (const part of parsedParts) {
     const candidateList = getNestedValue<unknown[]>(part.body, [4], []);
     if (!Array.isArray(candidateList) || candidateList.length === 0) continue;
@@ -89,7 +88,6 @@ export function parseGeminiStreamGenerateResponse(
       body = part.body;
     }
     if (part.text.length > 0) {
-      latestNonEmpty = part;
       bodyIndex = part.index;
       body = part.body;
     }
