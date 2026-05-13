@@ -38,6 +38,8 @@
 //     valuable to the user even when the v18 artifact pipeline has
 //     a transient hiccup.
 
+import { createHash } from "node:crypto";
+
 import type { BrowserLogger } from "./types.js";
 import type { BrowserExecutor, LeasedBrowserExecutor } from "./leaseIntegration.js";
 import type { BrowserRunOptions, BrowserRunResult } from "./types.js";
@@ -86,11 +88,9 @@ export interface WrapBrowserExecutorWithV18EmitOptions {
   /**
    * Hook the live executor uses to surface observed effort labels +
    * verification booleans. When omitted, the wrapper builds a
-   * conservative capture summary from the BrowserRunResult alone
-   * (modeVerified=true, verifiedBeforePromptSubmit=true, no observed
-   * effort labels) so the resulting evidence is the SAFEST possible
-   * default but the run will land in chatgpt_extended_reasoning_unverified
-   * unless the executor supplies real observations.
+   * conservative capture summary from the BrowserRunOptions +
+   * BrowserRunResult only. Missing observations are treated as
+   * unverified, never as a successful same-session mode check.
    */
   readonly captureFor?: (
     options: BrowserRunOptions,
@@ -108,6 +108,19 @@ export interface V18EmitOutcome {
 export interface V18EmittedBrowserRunResult extends BrowserRunResult {
   /** Outcome of the v18 emit attempt — present even when skipped. */
   v18Emit?: V18EmitOutcome;
+}
+
+interface BrowserRunResultWithV18Capture extends BrowserRunResult {
+  readonly v18Capture?: Partial<LiveBrowserRunCapture>;
+}
+
+export interface ProductionV18BrowserEmitOptionsInput {
+  /** Final prompt text submitted to the browser composer. */
+  readonly promptText: string;
+  /** Optional source-baseline seed; hashed before persistence. */
+  readonly sourceBaselineSeed?: string;
+  /** Override Oracle home dir for tests; production defaults to ~/.oracle. */
+  readonly homeDir?: string;
 }
 
 function detectProviderSlotFromOptions(options: BrowserRunOptions): ChatGptProSlot | null {
@@ -133,26 +146,63 @@ function defaultArtifactIds(
   };
 }
 
-function safeDefaultCapture(
-  _options: BrowserRunOptions,
+function sha256Text(text: string): `sha256:${string}` {
+  return `sha256:${createHash("sha256").update(text, "utf8").digest("hex")}`;
+}
+
+function stringArray(value: unknown): readonly string[] | null {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string") ? value : null;
+}
+
+function nonNegativeInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+function captureConfidence(value: unknown): LiveBrowserRunCapture["captureConfidence"] | undefined {
+  return value === "high" || value === "medium" || value === "low" ? value : undefined;
+}
+
+export function captureLiveBrowserRunForV18(
+  options: BrowserRunOptions,
   result: BrowserRunResult,
 ): LiveBrowserRunCapture {
+  const observed = (result as BrowserRunResultWithV18Capture).v18Capture;
   const answerText = result.answerMarkdown || result.answerText || "";
+  const baselineTurns = nonNegativeInteger(observed?.baselineTurns) ?? 0;
+  const observedTurnIndex = nonNegativeInteger(observed?.observedTurnIndex) ?? baselineTurns;
+  const modeVerified = observed?.modeVerified === true;
+  const verifiedBeforePromptSubmit =
+    modeVerified === true && observed?.verifiedBeforePromptSubmit === true;
   return {
-    // No prompt visible at this seam — we only see the result. The
-    // caller's captureFor() hook should override with the assembled
-    // prompt text. We pass the conversation URL as a placeholder so
-    // the prompt hash is deterministic across reruns of the same
-    // session id (downstream consistency check still fires when this
-    // is uncalibrated).
-    promptText: result.tabUrl ?? "live-run-without-prompt",
+    promptText: typeof observed?.promptText === "string" ? observed.promptText : options.prompt,
     answerText,
-    observedEffortLabels: [],
-    observedTurnIndex: 0,
-    baselineTurns: 0,
-    modeVerified: true,
-    verifiedBeforePromptSubmit: true,
-    captureConfidence: "medium",
+    observedEffortLabels: stringArray(observed?.observedEffortLabels) ?? [],
+    observedTurnIndex,
+    baselineTurns,
+    modeVerified,
+    verifiedBeforePromptSubmit,
+    captureConfidence:
+      captureConfidence(observed?.captureConfidence) ?? (modeVerified ? "medium" : "low"),
+  };
+}
+
+function safeDefaultCapture(
+  options: BrowserRunOptions,
+  result: BrowserRunResult,
+): LiveBrowserRunCapture {
+  return captureLiveBrowserRunForV18(options, result);
+}
+
+export function buildProductionV18BrowserEmitOptions(
+  input: ProductionV18BrowserEmitOptionsInput,
+): WrapBrowserExecutorWithV18EmitOptions {
+  return {
+    homeDir: input.homeDir,
+    promptManifestSha256: sha256Text(input.promptText),
+    sourceBaselineSha256: sha256Text(
+      input.sourceBaselineSeed ?? "oracle-browser-live-source-baseline:v1",
+    ),
+    captureFor: captureLiveBrowserRunForV18,
   };
 }
 
