@@ -1,9 +1,56 @@
 import { COOKIE_URLS } from "./constants.js";
 import type { BrowserLogger, ChromeClient, CookieParam } from "./types.js";
 import { delay } from "./utils.js";
+import { BrowserAutomationError } from "../oracle/errors.js";
 import { getCookies, type Cookie } from "@steipete/sweet-cookie";
 
 export class ChromeCookieSyncError extends Error {}
+
+// AGENTS.md prescribes this exact command for Node 25 keytar load failures on
+// pnpm dlx installs. Surface it verbatim so users do not have to dig.
+const KEYTAR_REBUILD_COMMAND =
+  "PYTHON=/usr/bin/python3 /Users/steipete/Projects/oracle/runner npx node-gyp rebuild";
+
+function isKeytarLoadError(error: unknown): error is Error {
+  if (!(error instanceof Error)) return false;
+  const message = error.message ?? "";
+  if (!/keytar/i.test(message)) return false;
+  return (
+    message.includes("Cannot find module") ||
+    /MODULE_NOT_FOUND/i.test(message) ||
+    /Failed to load keytar/i.test(message)
+  );
+}
+
+function extractKeytarDirectory(error: Error): string | null {
+  const requireStack = (error as Error & { requireStack?: unknown }).requireStack;
+  if (Array.isArray(requireStack)) {
+    for (const entry of requireStack) {
+      if (typeof entry !== "string") continue;
+      const idx = entry.lastIndexOf("/keytar/");
+      if (idx !== -1) return entry.slice(0, idx + "/keytar".length);
+    }
+  }
+  const match = error.message.match(/([^\s'"`]*\/keytar)(?:[/'"`]|$)/);
+  return match ? match[1] : null;
+}
+
+export function wrapKeytarLoadError(error: unknown): BrowserAutomationError | null {
+  if (!isKeytarLoadError(error)) return null;
+  const dir = extractKeytarDirectory(error);
+  const where = dir ? `in ${dir}` : "in the keytar directory printed in the error above";
+  return new BrowserAutomationError(
+    `Cookie sync failed: keytar native module missing (${error.message}). ` +
+      `Rebuild keytar via: ${KEYTAR_REBUILD_COMMAND} — run this ${where}, ` +
+      `then rerun the oracle command.`,
+    {
+      stage: "keytar-missing",
+      fix_command: `${KEYTAR_REBUILD_COMMAND}${dir ? ` (run in ${dir})` : ""}`,
+      dependency_path: dir,
+    },
+    error,
+  );
+}
 
 export async function syncCookies(
   Network: ChromeClient["Network"],
@@ -52,6 +99,14 @@ export async function syncCookies(
     }
     return applied;
   } catch (error) {
+    const keytarError = wrapKeytarLoadError(error);
+    if (keytarError) {
+      if (allowErrors) {
+        logger(`Cookie sync failed (continuing with override): ${keytarError.message}`);
+        return 0;
+      }
+      throw keytarError;
+    }
     const message = error instanceof Error ? error.message : String(error);
     if (allowErrors) {
       logger(`Cookie sync failed (continuing with override): ${message}`);
