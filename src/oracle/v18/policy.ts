@@ -158,7 +158,7 @@ export function evaluateProviderResultSynthesisEligibility(
   }
   if (result.status !== "success") {
     reasons.push(
-      reason("provider_result.status", `must be \"success\" (was \"${result.status}\")`),
+      reason("provider_result.status", `must be "success" (was "${result.status}")`),
     );
   }
   if (options.evidenceRequired) {
