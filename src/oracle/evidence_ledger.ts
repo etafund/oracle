@@ -28,6 +28,12 @@ import {
 } from "./v18/evidence.js";
 import { serializeEvidenceLedgerAppend } from "./evidence_ledger_concurrency.js";
 import { sanitizeEvidenceLedgerAppendMetadata } from "./evidence_ledger_sanitize_append.js";
+import {
+  getEvidenceLedgerAppendHead,
+  recordEvidenceLedgerAppend,
+  recordEvidenceLedgerHeadCacheFallback,
+  type EvidenceLedgerAppendHeadState,
+} from "./evidence_ledger_cache.js";
 
 export const EVIDENCE_LEDGER_SCHEMA_VERSION = "evidence_ledger.v1" as const;
 export const EVIDENCE_LEDGER_FILENAME = "ledger.jsonl" as const;
@@ -190,12 +196,9 @@ async function appendEvidenceLedgerEventUnlocked(
   event: EvidenceLedgerEvent,
   options: AppendEvidenceLedgerOptions,
 ): Promise<AppendResult> {
-  const prior = await readEvidenceLedgerInternal(filePath, { tolerateMissingFile: true });
-  const sequence = prior.entries.length;
-  const prevHash =
-    prior.entries.length === 0
-      ? EVIDENCE_LEDGER_GENESIS_HASH
-      : prior.entries[prior.entries.length - 1].entry_hash;
+  const prior = await resolveAppendHead(filePath);
+  const sequence = prior.nextSequence;
+  const prevHash = prior.prevHash;
 
   const timestamp =
     event.timestamp ?? (options.now ? options.now() : new Date()).toISOString();
@@ -215,12 +218,33 @@ async function appendEvidenceLedgerEventUnlocked(
   if (process.platform !== "win32") {
     await fs.chmod(filePath, 0o600).catch(() => undefined);
   }
+  await recordEvidenceLedgerAppend(filePath, entry);
 
   return {
     entry,
     filePath,
-    chainExtended: prior.entries.length > 0,
+    chainExtended: prior.chainExtended,
   };
+}
+
+async function resolveAppendHead(filePath: string): Promise<EvidenceLedgerAppendHeadState> {
+  try {
+    return await getEvidenceLedgerAppendHead(filePath, {
+      genesisHash: EVIDENCE_LEDGER_GENESIS_HASH,
+      ledgerSchemaVersion: EVIDENCE_LEDGER_SCHEMA_VERSION,
+    });
+  } catch {
+    recordEvidenceLedgerHeadCacheFallback();
+    const prior = await readEvidenceLedgerInternal(filePath, { tolerateMissingFile: true });
+    const tail = prior.entries[prior.entries.length - 1];
+    return {
+      nextSequence: prior.entries.length,
+      prevHash: tail?.entry_hash ?? EVIDENCE_LEDGER_GENESIS_HASH,
+      chainExtended: prior.entries.length > 0,
+      ledgerSizeBytes: 0,
+      ledgerMtimeMs: null,
+    };
+  }
 }
 
 // ─── Read + verify ───────────────────────────────────────────────────────────
