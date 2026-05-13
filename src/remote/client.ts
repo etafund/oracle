@@ -10,13 +10,34 @@ import { parseHostPort } from "../bridge/connection.js";
 interface RemoteExecutorOptions {
   host: string;
   token?: string;
+  /**
+   * Injectable HTTP request function — defaults to `http.request`.
+   * Tests pass a stub here to avoid mocking the standard library,
+   * which is brittle under ESM (`import http from "node:http"`
+   * resolves to the default export, but `vi.mock` factories that
+   * spread `actual` typically forget the `default` slot, leaving
+   * `http.request` un-mocked at the call site).
+   */
+  requestFn?: typeof http.request;
 }
 
-export function createRemoteBrowserExecutor({ host, token }: RemoteExecutorOptions) {
+export function createRemoteBrowserExecutor({
+  host,
+  token,
+  requestFn = http.request,
+}: RemoteExecutorOptions) {
   // Return a drop-in replacement for runBrowserMode so the browser session runner can stay unchanged.
   return async function remoteBrowserExecutor(
     options: BrowserRunOptions,
   ): Promise<BrowserRunResult> {
+    // Ensure we never serialize remote credentials or local host overrides
+    const safeBrowserConfig = { ...(options.config ?? {}) };
+    // @ts-expect-error Remove any accidentally leaked token
+    delete safeBrowserConfig.remoteToken;
+    delete safeBrowserConfig.remoteChrome;
+    delete safeBrowserConfig.remoteChromeBrowserWSEndpoint;
+    delete safeBrowserConfig.remoteChromeProfileRoot;
+
     const payload: RemoteRunPayload = {
       prompt: options.prompt,
       attachments: await serializeAttachments(options.attachments ?? []),
@@ -26,7 +47,7 @@ export function createRemoteBrowserExecutor({ host, token }: RemoteExecutorOptio
             attachments: await serializeAttachments(options.fallbackSubmission.attachments ?? []),
           }
         : undefined,
-      browserConfig: options.config ?? {},
+      browserConfig: safeBrowserConfig,
       options: {
         heartbeatIntervalMs: options.heartbeatIntervalMs,
         verbose: options.verbose,
@@ -39,7 +60,7 @@ export function createRemoteBrowserExecutor({ host, token }: RemoteExecutorOptio
     const { hostname, port } = parseHost(host);
 
     return new Promise<BrowserRunResult>((resolve, reject) => {
-      const req = http.request(
+      const req = requestFn(
         {
           hostname,
           port,
