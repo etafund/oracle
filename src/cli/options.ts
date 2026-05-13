@@ -269,6 +269,82 @@ export function isChatGptProModelAlias(value: string | undefined): boolean {
   );
 }
 
+export const GEMINI_DEEP_THINK_BROWSER_MODEL = "gemini-3.1-pro-deep-think" as const;
+export const GEMINI_DEEP_THINK_REMOTE_BROWSER_MODES = ["preferred", "required", "off"] as const;
+export const GEMINI_DEEP_THINK_EVIDENCE_MODES = ["redacted"] as const;
+export const GEMINI_DEEP_THINK_FALLBACK_MODES = ["fail"] as const;
+
+export type GeminiDeepThinkBrowserModel = typeof GEMINI_DEEP_THINK_BROWSER_MODEL;
+export type GeminiDeepThinkRemoteBrowserMode =
+  (typeof GEMINI_DEEP_THINK_REMOTE_BROWSER_MODES)[number];
+export type GeminiDeepThinkEvidenceMode = (typeof GEMINI_DEEP_THINK_EVIDENCE_MODES)[number];
+export type GeminiDeepThinkFallbackMode = (typeof GEMINI_DEEP_THINK_FALLBACK_MODES)[number];
+
+export function parseGeminiDeepThinkRemoteBrowserOption(
+  value: string | undefined,
+): GeminiDeepThinkRemoteBrowserMode {
+  const normalized = normalizeChoice(value, "preferred");
+  if (isOneOf(normalized, GEMINI_DEEP_THINK_REMOTE_BROWSER_MODES)) {
+    return normalized;
+  }
+  throw new InvalidArgumentError('Remote browser mode must be "preferred", "required", or "off".');
+}
+
+export function parseGeminiDeepThinkEvidenceOption(
+  value: string | undefined,
+): GeminiDeepThinkEvidenceMode {
+  const normalized = normalizeChoice(value, "redacted");
+  if (isOneOf(normalized, GEMINI_DEEP_THINK_EVIDENCE_MODES)) {
+    return normalized;
+  }
+  throw new InvalidArgumentError(
+    'Gemini Deep Think evidence mode must be "redacted"; raw evidence is not allowed on this protected route.',
+  );
+}
+
+export function parseGeminiDeepThinkFallbackOption(
+  value: string | undefined,
+): GeminiDeepThinkFallbackMode {
+  const normalized = normalizeChoice(value, "fail");
+  if (isOneOf(normalized, GEMINI_DEEP_THINK_FALLBACK_MODES)) {
+    return normalized;
+  }
+  throw new InvalidArgumentError(
+    'Gemini Deep Think fallback must be "fail"; this protected route cannot silently downgrade.',
+  );
+}
+
+export function normalizeGeminiDeepThinkModelOption(
+  value: string | undefined,
+): GeminiDeepThinkBrowserModel {
+  const normalized = normalizeChoice(value, GEMINI_DEEP_THINK_BROWSER_MODEL);
+  if (isGeminiDeepThinkModelAlias(normalized)) {
+    return GEMINI_DEEP_THINK_BROWSER_MODEL;
+  }
+  if (normalized.includes("gemini")) {
+    throw new InvalidArgumentError(
+      `Gemini Deep Think route cannot use API/substitute model ${JSON.stringify(value)}. Use --model ${GEMINI_DEEP_THINK_BROWSER_MODEL}.`,
+    );
+  }
+  throw new InvalidArgumentError(
+    `Gemini Deep Think route requires --model ${GEMINI_DEEP_THINK_BROWSER_MODEL} or a Deep Think browser alias.`,
+  );
+}
+
+export function isGeminiDeepThinkModelAlias(value: string | undefined): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  const collapsed = normalized.replace(/[\s_]+/gu, "-");
+  return (
+    collapsed === GEMINI_DEEP_THINK_BROWSER_MODEL ||
+    collapsed === "gemini-3-pro-deep-think" ||
+    collapsed === "gemini-3-pro-deepthink" ||
+    collapsed === "gemini-3-deep-think" ||
+    collapsed === "gemini-deep-think" ||
+    collapsed === "deep-think"
+  );
+}
+
 function normalizeChoice(value: string | undefined, fallback: string): string {
   const trimmed = value?.trim().toLowerCase();
   return trimmed || fallback;
