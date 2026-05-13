@@ -27,6 +27,7 @@ import {
   sha256OfBytes,
 } from "./v18/evidence.js";
 import { serializeEvidenceLedgerAppend } from "./evidence_ledger_concurrency.js";
+import { sanitizeEvidenceLedgerAppendMetadata } from "./evidence_ledger_sanitize_append.js";
 
 export const EVIDENCE_LEDGER_SCHEMA_VERSION = "evidence_ledger.v1" as const;
 export const EVIDENCE_LEDGER_FILENAME = "ledger.jsonl" as const;
@@ -172,12 +173,15 @@ export async function appendEvidenceLedgerEvent(
   options: AppendEvidenceLedgerOptions = {},
 ): Promise<AppendResult> {
   assertNoForbiddenMetadata(event.metadata, "event.metadata");
+  const eventToAppend = event.metadata
+    ? { ...event, metadata: sanitizeEvidenceLedgerAppendMetadata(event.metadata) }
+    : event;
 
   const filePath = evidenceLedgerPath(sessionId, options.homeDir);
   await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
 
   return serializeEvidenceLedgerAppend(filePath, async () =>
-    appendEvidenceLedgerEventUnlocked(filePath, event, options),
+    appendEvidenceLedgerEventUnlocked(filePath, eventToAppend, options),
   );
 }
 
