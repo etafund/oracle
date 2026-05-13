@@ -4,6 +4,15 @@ import {
   GEMINI_DEEP_THINK_MANIFEST,
   getManifestSelectorLiteral,
 } from "../../gemini-web/selectors/geminiDeepThinkManifest.js";
+import { sha256OfBytes } from "../../oracle/v18/evidence.js";
+import {
+  createGeminiDeepThinkMachine,
+  geminiDeepThinkMachineVerdict,
+  isGeminiDeepThinkFailureState,
+  type GeminiDeepThinkEvent,
+  type GeminiDeepThinkMachine,
+  type GeminiDeepThinkVerdict,
+} from "./geminiDeepThink_verification.js";
 
 const UI_TIMEOUT_MS = 60_000;
 const RESPONSE_TIMEOUT_MS = 10 * 60_000;
@@ -391,3 +400,182 @@ export const geminiDeepThinkWithStrategyDomProvider: ProviderDomAdapter = {
     await applyHighIfExposedStrategy(ctx);
   },
 };
+
+// ─── FSM wiring (oracle-svt) ────────────────────────────────────────────────
+//
+// Production gemini-web/executor.ts previously consumed the bare
+// geminiDeepThinkDomProvider, bypassing the verification FSM defined
+// in src/browser/state/geminiDeepThink.ts. A live Deep Think run could
+// therefore call submitPrompt after a best-effort tools-menu click
+// without recording or proving the FSM's same-session verification
+// sequence — so a UI drift could ship a result that looked like a
+// verified Deep Think turn but wasn't.
+//
+// `wireGeminiDeepThinkFsm` returns an adapter that owns a fresh FSM
+// machine and drives it through every adapter phase. The critical
+// invariant: submitPrompt sends `submit_prompt` to the FSM BEFORE
+// touching the underlying adapter, so if the machine is not in
+// `deep_think_verified_same_session` it transitions to
+// `prompt_submitted_before_verification` and we throw — the underlying
+// click never fires. Regression tests pin this in
+// tests/browser/providers/geminiDeepThink_fsm_wiring.test.ts.
+
+export class GeminiDeepThinkFsmError extends Error {
+  readonly verdict: GeminiDeepThinkVerdict;
+  constructor(verdict: GeminiDeepThinkVerdict, cause?: unknown) {
+    super(
+      `Gemini Deep Think FSM rejected operation (state="${verdict.state}", errorCode=${
+        verdict.errorCode ?? "n/a"
+      }): ${verdict.failureReason ?? "no reason recorded"}`,
+    );
+    this.name = "GeminiDeepThinkFsmError";
+    this.verdict = verdict;
+    if (cause !== undefined) (this as { cause?: unknown }).cause = cause;
+  }
+}
+
+export interface WiredGeminiDeepThinkAdapter extends ProviderDomAdapter {
+  readonly getMachine: () => GeminiDeepThinkMachine;
+  readonly getVerdict: () => GeminiDeepThinkVerdict;
+}
+
+export interface WireGeminiDeepThinkFsmOptions {
+  /**
+   * Session identity hash for `deep_think_verified_same_session`.
+   * Defaults to a hash derived from the underlying provider name —
+   * suitable for the production path where each browser session uses
+   * a fresh adapter instance. Pass an explicit value when the caller
+   * has a real session id to thread through the FSM.
+   */
+  readonly sessionIdHash?: `sha256:${string}`;
+  /** Override the prompt → sha256 transform for tests. */
+  readonly promptSha256?: (prompt: string) => `sha256:${string}`;
+  /** Override the response text → sha256 transform for tests. */
+  readonly outputSha256?: (text: string) => `sha256:${string}`;
+  /** Observer hook fired after every FSM transition. */
+  readonly onTransition?: (machine: GeminiDeepThinkMachine) => void;
+}
+
+function classifyAdapterError(err: unknown): "login_required" | "ui_drift" {
+  const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
+  if (msg.includes("sign in") || msg.includes("sign-in") || msg.includes("login")) {
+    return "login_required";
+  }
+  return "ui_drift";
+}
+
+export function wireGeminiDeepThinkFsm(
+  adapter: ProviderDomAdapter,
+  options: WireGeminiDeepThinkFsmOptions = {},
+): WiredGeminiDeepThinkAdapter {
+  let machine: GeminiDeepThinkMachine = createGeminiDeepThinkMachine();
+  const sessionIdHash: `sha256:${string}` =
+    options.sessionIdHash ?? sha256OfBytes(`gemini-deep-think:${adapter.providerName}`);
+  const promptHash = options.promptSha256 ?? ((text: string) => sha256OfBytes(text));
+  const outputHash = options.outputSha256 ?? ((text: string) => sha256OfBytes(text));
+
+  const send = (event: GeminiDeepThinkEvent): void => {
+    machine = machine.send(event);
+    options.onTransition?.(machine);
+  };
+
+  const wired: WiredGeminiDeepThinkAdapter = {
+    providerName: adapter.providerName,
+
+    async waitForUi(ctx: ProviderDomFlowContext) {
+      send({ type: "browser_connected", mode: "local" });
+      try {
+        await adapter.waitForUi(ctx);
+      } catch (err) {
+        const kind = classifyAdapterError(err);
+        if (kind === "login_required") {
+          send({ type: "login_required" });
+        } else {
+          send({
+            type: "ui_drift_observed",
+            detail: err instanceof Error ? err.message : String(err),
+          });
+        }
+        throw err;
+      }
+      send({ type: "login_verified" });
+    },
+
+    async selectMode(ctx: ProviderDomFlowContext) {
+      send({ type: "gemini_model_candidate_selected", modelLabel: "gemini" });
+      send({ type: "deep_think_menu_opened" });
+      try {
+        if (adapter.selectMode) await adapter.selectMode(ctx);
+      } catch (err) {
+        send({
+          type: "ui_drift_observed",
+          detail: err instanceof Error ? err.message : String(err),
+        });
+        throw err;
+      }
+      send({ type: "deep_think_candidate_selected", deepThinkLabel: "deep think" });
+      send({
+        type: "deep_think_verified_same_session",
+        sessionIdHash,
+        verifiedAt: new Date().toISOString(),
+      });
+    },
+
+    typePrompt: (ctx: ProviderDomFlowContext) => adapter.typePrompt(ctx),
+
+    async submitPrompt(ctx: ProviderDomFlowContext) {
+      // The gate: send `submit_prompt` to the FSM BEFORE the click.
+      // If the machine has not reached `deep_think_verified_same_session`
+      // it transitions to `prompt_submitted_before_verification` (a
+      // failure state) and we throw — adapter.submitPrompt is NOT called.
+      send({
+        type: "submit_prompt",
+        promptSha256: promptHash(ctx.prompt),
+        submittedAt: new Date().toISOString(),
+      });
+      if (isGeminiDeepThinkFailureState(machine.state)) {
+        throw new GeminiDeepThinkFsmError(geminiDeepThinkMachineVerdict(machine));
+      }
+      await adapter.submitPrompt(ctx);
+    },
+
+    async waitForResponse(ctx: ProviderDomFlowContext) {
+      send({ type: "response_stream_started" });
+      const response = await adapter.waitForResponse(ctx);
+      send({
+        type: "response_arrived",
+        outputTextSha256: outputHash(response.text),
+        bytesLength: response.text.length,
+        capturedAt: new Date().toISOString(),
+      });
+      if (isGeminiDeepThinkFailureState(machine.state)) {
+        throw new GeminiDeepThinkFsmError(geminiDeepThinkMachineVerdict(machine));
+      }
+      return response;
+    },
+
+    extractThoughts: adapter.extractThoughts
+      ? (ctx: ProviderDomFlowContext) => adapter.extractThoughts!(ctx)
+      : undefined,
+
+    getMachine: () => machine,
+    getVerdict: () => geminiDeepThinkMachineVerdict(machine),
+  };
+
+  return wired;
+}
+
+/**
+ * Production-ready Gemini Deep Think provider wired through the v18
+ * verification FSM. Use this from gemini-web/executor.ts instead of
+ * the bare `geminiDeepThinkDomProvider` so live DOM runs cannot
+ * submit a prompt without same-session Deep Think verification.
+ */
+export const geminiDeepThinkDomProviderWithFsm = (): WiredGeminiDeepThinkAdapter =>
+  wireGeminiDeepThinkFsm(geminiDeepThinkDomProvider);
+
+/**
+ * Pre-wired adapter for the high-if-exposed strategy variant.
+ */
+export const geminiDeepThinkWithStrategyDomProviderWithFsm = (): WiredGeminiDeepThinkAdapter =>
+  wireGeminiDeepThinkFsm(geminiDeepThinkWithStrategyDomProvider);
