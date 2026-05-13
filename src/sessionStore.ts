@@ -145,6 +145,7 @@ export type {
   BrowserHarvestMetadata,
   SessionTransportMetadata,
   SessionUserErrorMetadata,
+  SessionEvidenceMetadata,
   SessionStatus,
   SessionModelRun,
 } from "./sessionManager.js";
