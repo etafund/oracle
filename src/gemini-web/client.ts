@@ -5,6 +5,10 @@ import {
   parseGeminiStreamGenerateResponse as parseGeminiStreamGenerateResponseHardened,
   trimGeminiJsonEnvelope,
 } from "./parse.js";
+import {
+  downloadGeminiImageWithCookies,
+  isTrustedGeminiImageDownloadUrl,
+} from "./image_download_cookie.js";
 import { GeminiStreamCaptureError } from "./streamSafeguards.js";
 
 export type GeminiWebModelId =
@@ -117,26 +121,6 @@ function ensureFullSizeImageUrl(url: string): string {
   return `${url}=s2048`;
 }
 
-async function fetchWithCookiePreservingRedirects(
-  url: string,
-  init: Omit<RequestInit, "redirect">,
-  signal?: AbortSignal,
-  maxRedirects = 10,
-): Promise<Response> {
-  let current = url;
-  for (let i = 0; i <= maxRedirects; i += 1) {
-    const res = await fetch(current, { ...init, redirect: "manual", signal });
-    if (res.status >= 300 && res.status < 400) {
-      const location = res.headers.get("location");
-      if (!location) return res;
-      current = new URL(location, current).toString();
-      continue;
-    }
-    return res;
-  }
-  throw new Error(`Too many redirects while downloading image (>${maxRedirects}).`);
-}
-
 async function downloadGeminiImage(
   url: string,
   cookieMap: Record<string, string>,
@@ -144,18 +128,14 @@ async function downloadGeminiImage(
   signal?: AbortSignal,
 ): Promise<void> {
   const cookieHeader = buildCookieHeader(cookieMap);
-  const res = await fetchWithCookiePreservingRedirects(
-    ensureFullSizeImageUrl(url),
-    {
-      headers: {
-        cookie: cookieHeader,
-        "user-agent": USER_AGENT,
-      },
-    },
+  const { response: res, finalUrl } = await downloadGeminiImageWithCookies({
+    url: ensureFullSizeImageUrl(url),
+    cookieHeader,
     signal,
-  );
+    userAgent: USER_AGENT,
+  });
   if (!res.ok) {
-    throw new Error(`Failed to download image: ${res.status} ${res.statusText} (${res.url})`);
+    throw new Error(`Failed to download image: ${res.status} ${res.statusText} (${finalUrl})`);
   }
 
   const data = new Uint8Array(await res.arrayBuffer());
@@ -323,13 +303,15 @@ export async function saveFirstGeminiImageFromOutput(
   outputPath: string,
   signal?: AbortSignal,
 ): Promise<{ saved: boolean; imageCount: number }> {
-  const generatedOrWeb = output.images.find((img) => img.kind === "generated") ?? output.images[0];
-  if (generatedOrWeb?.url) {
-    await downloadGeminiImage(generatedOrWeb.url, cookieMap, outputPath, signal);
+  const generated = output.images.find((img) => img.kind === "generated");
+  if (generated?.url) {
+    await downloadGeminiImage(generated.url, cookieMap, outputPath, signal);
     return { saved: true, imageCount: output.images.length };
   }
 
-  const ggdl = extractGgdlUrls(output.rawResponseText);
+  const ggdl = extractGgdlUrls(output.rawResponseText).filter((url) =>
+    isTrustedGeminiImageDownloadUrl(ensureFullSizeImageUrl(url)),
+  );
   if (ggdl[0]) {
     await downloadGeminiImage(ggdl[0], cookieMap, outputPath, signal);
     return { saved: true, imageCount: ggdl.length };
