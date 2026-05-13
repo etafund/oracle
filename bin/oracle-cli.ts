@@ -86,6 +86,7 @@ import { applyBrowserDefaultsFromConfig } from "../src/cli/browserDefaults.js";
 import { shouldBlockDuplicatePrompt } from "../src/cli/duplicatePromptGuard.js";
 import { resolveRemoteServiceConfig } from "../src/remote/remoteServiceConfig.js";
 import { resolveConfiguredMaxFileSizeBytes } from "../src/cli/fileSize.js";
+import { registerEvidenceCommand } from "../src/cli/commands/evidence/index.js";
 
 interface CliOptions extends OptionValues {
   prompt?: string;
@@ -779,6 +780,8 @@ program
       manualLoginProfileDir: commandOptions.manualLoginProfileDir,
     });
   });
+
+registerEvidenceCommand(program);
 
 const projectSourcesCommand = program
   .command("project-sources")
