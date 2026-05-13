@@ -34,6 +34,25 @@ describe("buildPrompt", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  test("preserves prompt text exactly before attached file sections", async () => {
+    const { dir, filePath } = await createTempFile("hello from file");
+    const basePrompt = [
+      "  - keep leading markdown whitespace",
+      "```toon",
+      "items[2]{id,name}:",
+      "  1,Ada",
+      "```",
+      "",
+    ].join("\n");
+    try {
+      const prompt = buildPrompt(basePrompt, [{ path: filePath, content: "hello from file" }], dir);
+      expect(prompt.startsWith(`${basePrompt}\n`)).toBe(true);
+      expect(prompt).toContain("### File 1: sample.txt");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("renderPromptMarkdown", () => {

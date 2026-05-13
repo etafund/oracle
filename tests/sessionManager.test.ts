@@ -4,6 +4,7 @@ import { createServer } from "node:net";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
 import os from "node:os";
+import { createHash } from "node:crypto";
 import { setOracleHomeDirOverrideForTest } from "../src/oracleHome.js";
 
 type SessionModule = typeof import("../src/sessionManager.ts");
@@ -84,6 +85,52 @@ describe("session identifiers", () => {
 });
 
 describe("session lifecycle", () => {
+  test("initializeSession records prompt byte evidence hashes without rewriting prompt text", async () => {
+    const prompt = [
+      "  - keep leading markdown whitespace",
+      "```toon",
+      "items[2]{id,name}:",
+      "  1,Ada",
+      "  2,Linus",
+      "```",
+      "",
+    ].join("\n");
+    const expectedSha = `sha256:${createHash("sha256")
+      .update(Buffer.from(prompt, "utf8"))
+      .digest("hex")}`;
+    const metadata = await sessionModule.initializeSession(
+      {
+        prompt,
+        model: "gpt-5.2-pro",
+      },
+      "/tmp/cwd",
+    );
+
+    expect(metadata.options.prompt).toBe(prompt);
+    expect(metadata.evidence).toEqual({
+      prompt_sha256: expectedSha,
+      prompt_manifest_sha256: expectedSha,
+      prompt_bytes: Buffer.byteLength(prompt, "utf8"),
+    });
+
+    const baseDir = path.join(sessionModule.getSessionsDir(), metadata.id);
+    const storedMeta = JSON.parse(await readFile(path.join(baseDir, "meta.json"), "utf8"));
+    expect(storedMeta.options.prompt).toBe(prompt);
+    expect(storedMeta.evidence.prompt_sha256).toBe(expectedSha);
+
+    const modelMeta = JSON.parse(
+      await readFile(path.join(baseDir, "models", "gpt-5.2-pro.json"), "utf8"),
+    );
+    expect(modelMeta.evidence).toEqual(storedMeta.evidence);
+
+    const updatedModelMeta = await sessionModule.updateModelRunMetadata(
+      metadata.id,
+      "gpt-5.2-pro",
+      { status: "completed", response: { id: "resp-1" } },
+    );
+    expect(updatedModelMeta.evidence).toEqual(storedMeta.evidence);
+  });
+
   test("initializeSession writes metadata, request, and log files", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2025-04-01T00:00:00Z"));

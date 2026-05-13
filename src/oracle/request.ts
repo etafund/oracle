@@ -18,7 +18,11 @@ export function buildPrompt(basePrompt: string, files: FileContent[], cwd = proc
   }
   const sections = createFileSections(files, cwd);
   const sectionText = sections.map((section) => section.sectionText).join("\n\n");
-  return `${basePrompt.trim()}\n\n${sectionText}`;
+  if (!basePrompt) {
+    return sectionText;
+  }
+  const separator = basePrompt.endsWith("\n") ? "\n" : "\n\n";
+  return `${basePrompt}${separator}${sectionText}`;
 }
 
 export function buildRequestBody({

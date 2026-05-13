@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import { createWriteStream } from "node:fs";
 import type { WriteStream } from "node:fs";
 import net from "node:net";
+import { createHash } from "node:crypto";
 import type {
   BrowserArchiveMode,
   BrowserArchiveResult,
@@ -137,6 +138,12 @@ export interface SessionUserErrorMetadata {
   details?: Record<string, unknown>;
 }
 
+export interface SessionEvidenceMetadata {
+  prompt_sha256: string;
+  prompt_manifest_sha256: string;
+  prompt_bytes: number;
+}
+
 export interface StoredRunOptions {
   prompt?: string;
   file?: string[];
@@ -208,6 +215,7 @@ export interface SessionMetadata {
   elapsedMs?: number;
   browser?: BrowserMetadata;
   artifacts?: SessionArtifact[];
+  evidence?: SessionEvidenceMetadata;
   response?: SessionResponseMetadata;
   transport?: SessionTransportMetadata;
   error?: SessionUserErrorMetadata;
@@ -231,6 +239,7 @@ export interface SessionModelRun {
   response?: SessionResponseMetadata;
   transport?: SessionTransportMetadata;
   error?: SessionUserErrorMetadata;
+  evidence?: SessionEvidenceMetadata;
   log?: {
     path: string;
     bytes?: number;
@@ -306,6 +315,16 @@ export function createSessionId(prompt: string, customSlug?: string): string {
     return normalizeCustomSlug(customSlug);
   }
   return slugify(prompt);
+}
+
+export function createPromptEvidence(prompt: string | Buffer): SessionEvidenceMetadata {
+  const promptBytes = Buffer.isBuffer(prompt) ? prompt : Buffer.from(prompt, "utf8");
+  const promptSha256 = `sha256:${createHash("sha256").update(promptBytes).digest("hex")}`;
+  return {
+    prompt_sha256: promptSha256,
+    prompt_manifest_sha256: promptSha256,
+    prompt_bytes: promptBytes.byteLength,
+  };
 }
 
 function assertSafeSessionId(id: string): void {
@@ -469,6 +488,7 @@ export async function initializeSession(
   const { sessionId, dir } = await createUniqueSessionDir(baseSlug);
   const mode = options.mode ?? "api";
   const browserConfig = options.browserConfig;
+  const evidence = createPromptEvidence(options.prompt ?? "");
   const modelList: ModelName[] =
     Array.isArray(options.models) && options.models.length > 0
       ? options.models
@@ -489,6 +509,7 @@ export async function initializeSession(
     cwd,
     mode,
     browser: browserConfig ? { config: browserConfig } : undefined,
+    evidence,
     notifications,
     options: {
       prompt: options.prompt,
@@ -542,6 +563,7 @@ export async function initializeSession(
         const modelRecord: SessionModelRun = {
           model: modelName,
           status: "pending",
+          evidence,
           log: { path: path.relative(sessionDir(sessionId), logFilePath) },
         };
         await fs.writeFile(jsonPath, JSON.stringify(modelRecord, null, 2), "utf8");
