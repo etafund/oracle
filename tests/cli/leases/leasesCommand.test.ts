@@ -257,15 +257,7 @@ async function runRegisteredPlan(
       now: () => new Date("2026-01-01T00:00:00.000Z"),
     });
     await program.parseAsync(
-      [
-        "browser",
-        "leases",
-        "plan",
-        ...providerArgs,
-        "--profile-id-hash",
-        PROFILE_A,
-        "--json",
-      ],
+      ["browser", "leases", "plan", ...providerArgs, "--profile-id-hash", PROFILE_A, "--json"],
       { from: "user" },
     );
   } finally {

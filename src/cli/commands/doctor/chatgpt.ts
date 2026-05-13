@@ -307,7 +307,7 @@ export function buildProviderDoctorJsonEnvelope(envelope: ProviderDoctorEnvelope
       blocked_reason: envelope.blockers[0]?.code ?? null,
       next_command: envelope.next_command,
       fix_command: envelope.fix_command,
-      retry_safe: envelope.ok ? true : false,
+      retry_safe: envelope.ok,
       errors: blockerErrors,
       warnings: envelope.warnings.map((check) => `${check.name}:${check.code}`),
       commands: {
