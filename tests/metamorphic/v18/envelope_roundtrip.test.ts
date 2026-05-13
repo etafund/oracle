@@ -27,7 +27,7 @@ import {
 class Rng {
   private state: number;
   constructor(seed: number) {
-    this.state = (seed | 0) || 1;
+    this.state = seed | 0 || 1;
   }
   // xorshift32 — deterministic, fast, no deps.
   next(): number {
@@ -87,7 +87,11 @@ function arbitraryFailureEnvelope(rng: Rng): JsonEnvelope {
   const codes: V18ErrorCode[] = [];
   const n = rng.int(1, 3);
   for (let i = 0; i < n; i += 1) codes.push(rng.pick(V18_ERROR_CODES));
-  type ErrorEntry = { error_code: V18ErrorCode; message: string; details?: Record<string, unknown> };
+  type ErrorEntry = {
+    error_code: V18ErrorCode;
+    message: string;
+    details?: Record<string, unknown>;
+  };
   const entries: ErrorEntry[] = codes.map((c) => ({
     error_code: c,
     message: `synthetic failure: ${c}`,
@@ -117,7 +121,7 @@ function shuffleKeys(obj: Record<string, unknown>, rng: Rng): Record<string, unk
 }
 
 const ITERATIONS = 200;
-const BASE_SEED = 0xC0FFEE;
+const BASE_SEED = 0xc0ffee;
 
 describe("Metamorphic: json_envelope.v1 round-trip identity", () => {
   it(`success arm: parse(JSON.parse(JSON.stringify(e))) ≅ e (${ITERATIONS} iterations)`, () => {

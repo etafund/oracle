@@ -29,7 +29,7 @@ import { V18_ERROR_CODES } from "../../../src/oracle/v18/index.js";
 class Rng {
   private state: number;
   constructor(seed: number) {
-    this.state = (seed | 0) || 1;
+    this.state = seed | 0 || 1;
   }
   next(): number {
     let x = this.state | 0;
@@ -87,7 +87,7 @@ function arbitraryIssueInput(rng: Rng): IssueArgs {
 }
 
 const ITERATIONS = 200;
-const BASE_SEED = 0x1EA5E;
+const BASE_SEED = 0x1ea5e;
 
 describe("Metamorphic: capability_lease acquire/release identity", () => {
   it(`issue → consume happy path: consumed=true with matching cap+provider (${ITERATIONS} iters)`, () => {
@@ -102,9 +102,10 @@ describe("Metamorphic: capability_lease acquire/release identity", () => {
         { capability: args.capability, provider: args.provider },
         now,
       );
-      expect(result.consumed, `seed=${seed}: matching request rejected\n${JSON.stringify(result.reasons)}`).toBe(
-        true,
-      );
+      expect(
+        result.consumed,
+        `seed=${seed}: matching request rejected\n${JSON.stringify(result.reasons)}`,
+      ).toBe(true);
       expect(result.lease, `seed=${seed}`).not.toBeNull();
       expect(result.lease?.capability, `seed=${seed}`).toBe(args.capability);
       expect(result.lease?.provider, `seed=${seed}`).toBe(args.provider);

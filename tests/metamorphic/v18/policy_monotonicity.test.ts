@@ -35,7 +35,7 @@ import {
 class Rng {
   private state: number;
   constructor(seed: number) {
-    this.state = (seed | 0) || 1;
+    this.state = seed | 0 || 1;
   }
   next(): number {
     let x = this.state | 0;
@@ -56,7 +56,8 @@ class Rng {
   }
 }
 
-const REAL_HASH = (label: string): string => `sha256:${(label.repeat(64) + "0".repeat(64)).slice(0, 64)}`;
+const REAL_HASH = (label: string): string =>
+  `sha256:${(label.repeat(64) + "0".repeat(64)).slice(0, 64)}`;
 
 interface CapInput {
   schema_version: typeof PROVIDER_CAPABILITY_SCHEMA_VERSION;
@@ -97,7 +98,10 @@ function arbitraryCapability(rng: Rng): CapInput {
   };
 }
 
-function arbitraryResult(rng: Rng, opts: { syntheticAccessPath?: "api" | "browser" } = {}): ResultInput {
+function arbitraryResult(
+  rng: Rng,
+  opts: { syntheticAccessPath?: "api" | "browser" } = {},
+): ResultInput {
   const accessPath =
     opts.syntheticAccessPath === "api"
       ? "api_official"
@@ -132,7 +136,7 @@ function withExtensions(obj: Record<string, unknown>, rng: Rng): Record<string, 
 }
 
 const ITERATIONS = 200;
-const BASE_SEED = 0xBEEF;
+const BASE_SEED = 0xbeef;
 
 describe("Metamorphic: policy decision monotonicity (strict-core/permissive-extension)", () => {
   describe("evaluateProviderApiAllowed — tightening api_allowed never expands eligibility", () => {
@@ -140,7 +144,11 @@ describe("Metamorphic: policy decision monotonicity (strict-core/permissive-exte
       for (let i = 0; i < ITERATIONS; i += 1) {
         const seed = BASE_SEED + i;
         const rng = new Rng(seed);
-        const baseline = { ...arbitraryCapability(rng), api_allowed: true, status: "ready" as const };
+        const baseline = {
+          ...arbitraryCapability(rng),
+          api_allowed: true,
+          status: "ready" as const,
+        };
         const allowed = evaluateProviderApiAllowed(baseline);
         if (!allowed.eligible) continue; // not a valid baseline for this property
         const tightened = { ...baseline, api_allowed: false };
@@ -277,9 +285,10 @@ describe("Metamorphic: policy decision monotonicity (strict-core/permissive-exte
         const baselineReasons = evaluateSynthesisGate({ result }).blockedReasons.length;
         const polluted = withExtensions(result as Record<string, unknown>, rng);
         const pollutedReasons = evaluateSynthesisGate({ result: polluted }).blockedReasons.length;
-        expect(pollutedReasons, `seed=${seed}: reasons shrank under extension`).toBeGreaterThanOrEqual(
-          baselineReasons,
-        );
+        expect(
+          pollutedReasons,
+          `seed=${seed}: reasons shrank under extension`,
+        ).toBeGreaterThanOrEqual(baselineReasons);
       }
     });
   });

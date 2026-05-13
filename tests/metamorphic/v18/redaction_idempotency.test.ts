@@ -27,7 +27,7 @@ import { redactEvidencePayload } from "../../../src/oracle/v18/index.js";
 class Rng {
   private state: number;
   constructor(seed: number) {
-    this.state = (seed | 0) || 1;
+    this.state = seed | 0 || 1;
   }
   next(): number {
     let x = this.state | 0;
@@ -150,7 +150,7 @@ function collectKeyPaths(value: unknown, prefix = "", acc: string[] = []): strin
 }
 
 const ITERATIONS = 200;
-const BASE_SEED = 0xDEC0DE;
+const BASE_SEED = 0xdec0de;
 
 describe("Metamorphic: redaction idempotency + key-set monotonicity", () => {
   describe("redactEvidencePayload (v18 layer)", () => {
@@ -183,9 +183,10 @@ describe("Metamorphic: redaction idempotency + key-set monotonicity", () => {
         const outPaths = new Set(collectKeyPaths(redactEvidencePayload(x).redacted));
         const inPaths = new Set(collectKeyPaths(x));
         for (const p of outPaths) {
-          expect(inPaths.has(p), `seed=${seed}: spurious path "${p}" appeared after redaction`).toBe(
-            true,
-          );
+          expect(
+            inPaths.has(p),
+            `seed=${seed}: spurious path "${p}" appeared after redaction`,
+          ).toBe(true);
         }
       }
     });
