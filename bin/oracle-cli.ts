@@ -899,9 +899,47 @@ bridgeCommand
   .command("doctor")
   .description("Diagnose bridge connectivity and browser engine prerequisites.")
   .option("--verbose", "Show extra diagnostics.", false)
+  .option("--json", "Emit a remote_browser_endpoint.v1-compatible JSON envelope.", false)
   .action(async (commandOptions) => {
     const { runBridgeDoctor } = await import("../src/cli/bridge/doctor.js");
     await runBridgeDoctor(commandOptions);
+  });
+
+const remoteCommand = program
+  .command("remote")
+  .description("Diagnose Oracle's remote browser endpoint (doctor/status/attach).");
+
+remoteCommand
+  .command("doctor")
+  .description("Probe the configured remote oracle endpoint (TCP + /health).")
+  .option("--json", "Emit a remote_browser_endpoint.v1-compatible JSON envelope.", false)
+  .option("--verbose", "Show extra diagnostics.", false)
+  .action(async (commandOptions) => {
+    const { runRemoteDoctor } = await import("../src/cli/remote/doctor.js");
+    await runRemoteDoctor(commandOptions);
+  });
+
+remoteCommand
+  .command("status")
+  .description("Print the resolved remote endpoint config without touching the network.")
+  .option("--json", "Emit a remote_browser_endpoint.v1-compatible JSON envelope.", false)
+  .action(async (commandOptions) => {
+    const { runRemoteStatus } = await import("../src/cli/remote/status.js");
+    await runRemoteStatus(commandOptions);
+  });
+
+remoteCommand
+  .command("attach")
+  .description("Probe attach readiness against a caller-supplied remote host.")
+  .requiredOption("--host <host:port>", "Remote oracle host to probe.")
+  .option(
+    "--token-env <ENV>",
+    "Name of the environment variable holding the access token (default: ORACLE_REMOTE_TOKEN).",
+  )
+  .option("--json", "Emit a remote_browser_endpoint.v1-compatible JSON envelope.", false)
+  .action(async (commandOptions) => {
+    const { runRemoteAttach } = await import("../src/cli/remote/attach.js");
+    await runRemoteAttach(commandOptions);
   });
 
 bridgeCommand
