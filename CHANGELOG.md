@@ -2,6 +2,10 @@
 
 ## 0.11.2 — Unreleased
 
+### Added
+
+- Browser/MCP: add opt-in ZIP formatting for bundled browser uploads with `--browser-bundle-format zip` / `browserBundleFormat: "zip"`, preserving individual file names in one ChatGPT attachment.
+
 ### Fixed
 
 - Browser: target ChatGPT's renamed bare Pro picker row for Pro browser runs while keeping older Pro CLI aliases mapped to the current browser target (#190, fixes #182). Thanks @jungdaesuh!
