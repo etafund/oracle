@@ -27,7 +27,7 @@
 - MCP: keep local mcporter smokes from failing when the optional Chrome DevTools browser endpoint env var is unset.
 - Release: write clean checksum files from `scripts/release.sh artifacts` without helper trace lines.
 
-## 0.11.2 — Unreleased
+## 0.12.0 — 2026-05-15
 
 ### Added
 
