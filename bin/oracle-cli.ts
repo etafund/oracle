@@ -199,6 +199,7 @@ interface CliOptions extends OptionValues {
   status?: boolean;
   dryRun?: boolean;
   route?: boolean;
+  preflight?: boolean;
   // tri-state: `true` (forced wait), `false` (forced detach), `undefined` (auto)
   wait?: boolean;
   provider?: ApiProviderMode;
@@ -484,6 +485,7 @@ program
       .default(false),
   )
   .option("--route", "Print API provider route plan and exit.", false)
+  .option("--preflight", "Check API provider readiness for the requested model(s) and exit.", false)
   .addOption(new Option("--exec-session <id>").hideHelp())
   .addOption(new Option("--session <id>").hideHelp())
   .addOption(
@@ -1106,10 +1108,7 @@ const docsCommand = program.command("docs").description("Documentation maintenan
 docsCommand
   .command("check")
   .description("Check documented CLI flags against Commander help metadata.")
-  .option(
-    "--docs-path <file...>",
-    "Markdown files to check (default README.md and docs/cli-reference.md).",
-  )
+  .option("--docs-path <file...>", "Markdown files to check (default core shipped docs).")
   .option("--json", "Print structured JSON.", false)
   .action(async (options: { docsPath?: string[]; json?: boolean }) => {
     const { checkDocsFlags, printDocsCheckResult } = await import("../src/cli/docsCheck.js");
@@ -1785,7 +1784,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   const engineModels = multiModelProvided
     ? Array.from(new Set(options.models!.map((entry) => resolveApiModel(entry))))
     : [resolveApiModel(normalizeModelOption(options.model) || DEFAULT_MODEL)];
-  if (options.route) {
+  if (options.route || options.preflight) {
     const routeAzureEndpoint = firstNonEmpty(
       options.azureEndpoint,
       process.env.AZURE_OPENAI_ENDPOINT,
@@ -1815,7 +1814,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
         env: process.env,
       }),
     );
-    printProviderPlans(plans, { title: "Route plan" });
+    printProviderPlans(plans, { title: options.preflight ? "Provider preflight" : "Route plan" });
     process.exitCode = plans.some((plan) => !plan.ok) ? 1 : 0;
     return;
   }
