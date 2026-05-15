@@ -13,6 +13,7 @@ This is the curated cheatsheet. The authoritative source is always `oracle --hel
 | `oracle status`                | List recent sessions (see [Sessions](sessions.md)).                                                                             |
 | `oracle session <id>`          | Replay or block on a stored session.                                                                                            |
 | `oracle restart <id>`          | Re-run with the same prompt + files.                                                                                            |
+| `oracle docs check`            | Check documented flags against CLI help metadata.                                                                               |
 | `oracle serve`                 | Run the remote browser host (see [Browser Mode](browser-mode.md)).                                                              |
 | `oracle remote doctor`         | Probe the configured remote endpoint (TCP + `/health`). `--json` emits a `remote_browser_endpoint.v1` envelope.                 |
 | `oracle remote status`         | Print the resolved remote endpoint config without touching the network. `--json` for machine-readable output.                   |
@@ -34,7 +35,6 @@ This is the curated cheatsheet. The authoritative source is always `oracle --hel
 | `--slug <name>`                   | Stable session slug.                                                                             |
 | `--render`                        | Print the assembled bundle to stdout.                                                            |
 | `--copy`                          | Copy the bundle to the clipboard.                                                                |
-| `--json`                          | Emit a stable JSON envelope on stdout.                                                           |
 | `--write-output <path>`           | Save the final answer to a file; multi-model runs add per-model files plus `<stem>.oracle.json`. |
 | `--files-report`                  | Print per-file token usage.                                                                      |
 | `--dry-run [summary\|json\|full]` | Preview without sending.                                                                         |
