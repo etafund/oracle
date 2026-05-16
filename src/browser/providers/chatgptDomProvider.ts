@@ -57,6 +57,7 @@ interface ChatgptDomProviderState {
   baselineTurns?: number | null;
   attachmentNames?: string[];
   committedTurns?: number | null;
+  onPromptSubmitted?: () => Promise<void> | void;
 }
 
 interface ChatGptProDomVerificationOverrides {
@@ -110,6 +111,7 @@ async function submitPromptViaAdapter(ctx: ProviderDomFlowContext): Promise<void
       attachmentNames: state.attachmentNames ?? [],
       baselineTurns: state.baselineTurns ?? undefined,
       inputTimeoutMs: state.inputTimeoutMs ?? undefined,
+      onPromptSubmitted: state.onPromptSubmitted,
     },
     ctx.prompt,
     state.logger,

@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Browser: mark Chrome disconnects before a recoverable ChatGPT conversation as errors instead of leaving sessions running for impossible reattach. Thanks @pdurlej!
 - Browser: fail closed when GPT-5.5 Pro Extended effort cannot be confirmed instead of silently submitting with the wrong or default effort. Thanks @pdurlej!
 
 ## 0.11.2 — Unreleased
