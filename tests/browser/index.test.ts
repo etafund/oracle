@@ -216,6 +216,14 @@ describe("ChatGPT UI warning detection", () => {
     ).toBe("rate_limit");
   });
 
+  test("classifies visually mangled request-speed modal text as rate limits", () => {
+    expect(
+      __test__.classifyChatGptUiWarningText(
+        "Too many reque t. You’re making reque t too quickly. We’ve temporarily limited access to your conversations. Please wait a few minutes before trying again.",
+      ),
+    ).toBe("rate_limit");
+  });
+
   test("collects visible warning candidates from the browser DOM", async () => {
     const Runtime = {
       evaluate: vi.fn().mockResolvedValue({

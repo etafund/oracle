@@ -170,10 +170,7 @@ export function classifyPreservedBrowserErrorForTest(
 // defaults to Standard effort. ensureThinkingTime() already handles the
 // "already-selected" case as a no-op, so always attempting it is safe.
 
-type ChatGptUiWarningType =
-  | "rate_limit"
-  | "temporary_unavailable"
-  | "auth_or_challenge";
+type ChatGptUiWarningType = "rate_limit" | "temporary_unavailable" | "auth_or_challenge";
 
 type ChatGptUiWarning = {
   type: ChatGptUiWarningType;
@@ -190,6 +187,8 @@ function classifyChatGptUiWarningText(text: string): ChatGptUiWarningType | null
     /\btoo many requests\b/.test(normalized) ||
     /\bsending too many requests\b/.test(normalized) ||
     /\btoo quickly\b/.test(normalized) ||
+    /\btemporarily limited access\b/.test(normalized) ||
+    /\bplease wait a few minutes\b/.test(normalized) ||
     /\brate limit(?:ed)?\b/.test(normalized) ||
     /\bslow down\b/.test(normalized)
   ) {
@@ -244,7 +243,7 @@ async function collectChatGptUiWarnings(
       awaitPromise: true,
       returnByValue: true,
       expression: `(() => {
-        const warningPattern = /too many requests|sending too many requests|too quickly|rate limit|rate limited|slow down|try again later|temporarily unavailable|something went wrong|failed to generate|verify you are human|unusual activity|cloudflare|challenge|login required|sign in/i;
+        const warningPattern = /too many requests|sending too many requests|too quickly|temporarily limited access|please wait a few minutes|rate limit|rate limited|slow down|try again later|temporarily unavailable|something went wrong|failed to generate|verify you are human|unusual activity|cloudflare|challenge|login required|sign in/i;
         const selectors = [
           '[role="alert"]',
           '[role="status"]',
