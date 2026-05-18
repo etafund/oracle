@@ -2,6 +2,10 @@
 
 ## 0.13.1 — Unreleased
 
+### Changed
+
+- Website: point package/homepage metadata and generated site chrome at `https://askoracle.sh` instead of the GitHub repository.
+
 ## 0.13.0 — 2026-05-22
 
 ### Added
