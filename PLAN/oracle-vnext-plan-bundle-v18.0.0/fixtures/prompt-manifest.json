@@ -1,0 +1,23 @@
+{
+  "bundle_version": "v18.0.0",
+  "canonical_artifact_serialization": "json",
+  "context_serialization": "json",
+  "context_serialization_policy_sha256": "sha256:9c6346e3521945e38bb75cc3cdf1b20847266e1ac25ca518094892185ad428c4",
+  "excluded_sections": ["unsafe_debug_artifacts"],
+  "included_sections": ["objective", "constraints"],
+  "input_hashes": {
+    "brief": "sha256:2a97516c354b68848cdbd8f54a226a0a55b21ed138e207ad6c5cbb9c00aa5aea"
+  },
+  "policy_family": "chatgpt_pro_browser",
+  "policy_version": "2026-05-12",
+  "prompt_id": "prompt-demo",
+  "provider_family": "chatgpt_pro_browser",
+  "provider_prompt_families": ["deepseek_v4_pro_api"],
+  "schema_version": "prompt_manifest.v1",
+  "token_budget": {
+    "max_context_tokens": 120000
+  },
+  "toon_payload_sha256_when_used": null,
+  "toon_requires_format_preamble": true,
+  "toon_rust_legal_gate": "pending_user_approval"
+}

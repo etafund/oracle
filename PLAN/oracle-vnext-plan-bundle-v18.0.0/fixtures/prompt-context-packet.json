@@ -1,0 +1,19 @@
+{
+  "brief_path": "fixtures/brief.md",
+  "brief_sha256": "sha256:56c41ded655930833437501a80d80390fc7c00ee08466fd1db7fc42b713ab0d9",
+  "bundle_version": "v18.0.0",
+  "canonical_artifact_serialization": "json",
+  "context_serialization_fallback": "json",
+  "context_serialization_policy_sha256": "sha256:9c6346e3521945e38bb75cc3cdf1b20847266e1ac25ca518094892185ad428c4",
+  "created_at": "2026-05-12T00:00:00Z",
+  "excluded_sections": ["raw_cookies", "raw_browser_dom", "unsafe_debug_artifacts"],
+  "included_sections": ["objective", "constraints", "acceptance_criteria", "provider_policy"],
+  "preferred_context_serialization": "json",
+  "profile": "balanced",
+  "prompt_policy_sha256": "sha256:3e4357ccfa3e8e4c8e58d847c6b4dbcf13ab496485b71042306efdd071c2e24d",
+  "schema_version": "prompt_context_packet.v1",
+  "source_baseline_sha256": "sha256:b91d369c3f7250980878f782559b0c4ccc00a829603c88cf555c0b23bdd12ee6",
+  "source_trust_sha256": "sha256:f9b236bfce249a1de0902b408d98f4fb503cc3a67ed8b5576b271dd4e8612417",
+  "toon_rust_legal_gate": "pending_user_approval",
+  "toon_rust_optional": true
+}

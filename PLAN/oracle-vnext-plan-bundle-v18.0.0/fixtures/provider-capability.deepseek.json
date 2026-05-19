@@ -1,0 +1,26 @@
+{
+  "blocked_reason": null,
+  "bundle_version": "v18.0.0",
+  "capabilities": {
+    "api_base_url": "https://api.deepseek.com",
+    "api_key_env": "DEEPSEEK_API_KEY",
+    "chat_completion_endpoint": "/chat/completions",
+    "model": "deepseek-v4-pro",
+    "models_endpoint": "/models",
+    "official_api": true,
+    "reasoning_effort": "max",
+    "search_tool_required": true,
+    "thinking": {
+      "type": "enabled"
+    },
+    "tool_calls_supported": true
+  },
+  "checked_at": "2026-05-12T12:00:00Z",
+  "evidence_required": false,
+  "next_command": null,
+  "provider": "deepseek",
+  "provider_slot": "deepseek_v4_pro_reasoning_search",
+  "remote_browser_supported": false,
+  "schema_version": "provider_capability.v1",
+  "status": "ready"
+}

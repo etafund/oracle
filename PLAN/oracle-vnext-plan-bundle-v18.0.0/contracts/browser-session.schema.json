@@ -1,0 +1,35 @@
+{
+  "$id": "https://example.invalid/vibe-planning/contracts/browser-session.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "next_command": {
+      "type": ["string", "null"]
+    },
+    "profile": {
+      "type": "string"
+    },
+    "provider_locks": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "remote_browser": {
+      "type": "object"
+    },
+    "schema_version": {
+      "const": "browser_session.v1"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "status": {
+      "enum": ["ready", "blocked", "recovering", "unknown"]
+    }
+  },
+  "required": ["schema_version", "session_id", "profile", "provider_locks", "remote_browser"],
+  "title": "Browser Session Lease",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

@@ -1,0 +1,15 @@
+{
+  "anti_patterns": [],
+  "bundle_version": "v18.0.0",
+  "canonical_format": "toon",
+  "decision": "INVALID: TOON cannot be canonical or used for evidence/contracts.",
+  "default_mode": "toon",
+  "eligible_artifact_types": ["canonical_contracts", "browser_evidence"],
+  "encoder": "toon_rust",
+  "encoder_binary_candidates": ["toon"],
+  "fallback_on_validation_failure": "json",
+  "forbidden_artifact_types": [],
+  "model_facing_format": "toon",
+  "roundtrip_validation_required": false,
+  "schema_version": "context_format.v1"
+}

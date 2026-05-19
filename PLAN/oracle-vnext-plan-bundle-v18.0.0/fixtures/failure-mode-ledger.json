@@ -1,0 +1,320 @@
+{
+  "bundle_version": "v18.0.0",
+  "failure_modes": [
+    {
+      "acceptance_checks": [
+        "browser evidence has verified_before_prompt_submit=true",
+        "provider result references evidence_id",
+        "APR blocks synthesis when required evidence is missing"
+      ],
+      "early_warning_signals": [
+        "mode label missing from evidence",
+        "selector confidence below threshold",
+        "output from stale conversation",
+        "evidence created after prompt submission"
+      ],
+      "false_assumption": "A successful browser answer implies ChatGPT Pro Extended Reasoning or Gemini Deep Think was actually active.",
+      "id": "FM-001",
+      "impact": "critical",
+      "likelihood": "high",
+      "mitigations": [
+        "same-session highest-mode verification before prompt submission",
+        "redacted evidence ledger",
+        "synthesis eligibility checks in APR",
+        "browser lease coordinator prevents cross-run tab contamination"
+      ],
+      "owner": "oracle",
+      "title": "Browser automation succeeds in the wrong mode",
+      "user_harm": "The user trusts a polished plan that did not use the required premium reasoning path."
+    },
+    {
+      "acceptance_checks": [
+        "remote doctor returns ready with heartbeat",
+        "leases include expires_at and owner_run_id",
+        "recover command is included in failure envelopes"
+      ],
+      "early_warning_signals": [
+        "leases expire mid-run",
+        "heartbeat gaps",
+        "stale CDP target",
+        "remote token rotation failures",
+        "run retries collide in one profile"
+      ],
+      "false_assumption": "Remote browser behaves like a stateless API endpoint.",
+      "id": "FM-002",
+      "impact": "critical",
+      "likelihood": "high",
+      "mitigations": [
+        "lease heartbeat and expiry",
+        "remote-browser smoke tests before live fanout",
+        "typed recovery commands",
+        "single shared logical profile with provider-scoped locks"
+      ],
+      "owner": "oracle",
+      "title": "Remote browser is unreliable under real load",
+      "user_harm": "Users wait for expensive runs that hang, duplicate prompts, or corrupt sessions."
+    },
+    {
+      "acceptance_checks": [
+        "dry-run shows cost/latency risk",
+        "run progress is machine-readable",
+        "balanced requires quorum but not every optional reviewer"
+      ],
+      "early_warning_signals": [
+        "users cancel during fanout",
+        "timeouts during optional reviews",
+        "budget warnings ignored",
+        "cost estimate absent"
+      ],
+      "false_assumption": "Users will tolerate long/high-cost runs because quality is higher.",
+      "id": "FM-003",
+      "impact": "high",
+      "likelihood": "medium",
+      "mitigations": [
+        "budget preview before live calls",
+        "progress milestones",
+        "optional reviewer quorum instead of all-reviewer blocking",
+        "fast profile clearly marked exploratory"
+      ],
+      "owner": "vibe-planning",
+      "title": "Highest reasoning makes the system too slow or expensive",
+      "user_harm": "The tool feels impressive but unusable."
+    },
+    {
+      "acceptance_checks": [
+        "live-cutover-checklist passes",
+        "contract fixtures match across bundles",
+        "each live route has doctor and one smoke fixture"
+      ],
+      "early_warning_signals": [
+        "mock-only commands never replaced",
+        "no live smoke gate",
+        "fixtures lack negative cases",
+        "contract hash drift across bundles"
+      ],
+      "false_assumption": "Matching local schemas is enough to integrate independent agents.",
+      "id": "FM-004",
+      "impact": "critical",
+      "likelihood": "high",
+      "mitigations": [
+        "live cutover checklist",
+        "provider replay harness",
+        "contract hash comparison",
+        "mandatory integration rehearsal before release"
+      ],
+      "owner": "integration",
+      "title": "Mocks pass but live cutover fails",
+      "user_harm": "Three impressive components cannot run together."
+    },
+    {
+      "acceptance_checks": [
+        "spec identifies non-goals",
+        "first useful slice can run with mocks and one live browser provider",
+        "validators check required but not speculative features"
+      ],
+      "early_warning_signals": [
+        "agents edit schemas before code",
+        "conflicting docs",
+        "no MVP slice",
+        "implementers build generalized infrastructure instead of narrow primitives"
+      ],
+      "false_assumption": "More contracts always reduce ambiguity.",
+      "id": "FM-005",
+      "impact": "high",
+      "likelihood": "high",
+      "mitigations": [
+        "what-not-to-build sections",
+        "MVP cut lines",
+        "thin vertical-slice order",
+        "single owner per boundary"
+      ],
+      "owner": "all",
+      "title": "The plan becomes too hard for coding agents to implement",
+      "user_harm": "Development stalls or produces overbuilt, fragile architecture."
+    },
+    {
+      "acceptance_checks": [
+        "run-progress fixture exists",
+        "human review packet has executive summary and required decisions",
+        "robot JSON includes next_command/fix_command"
+      ],
+      "early_warning_signals": [
+        "users ask whether it is stuck",
+        "review packet too long",
+        "no short summary",
+        "unclear next decision"
+      ],
+      "false_assumption": "A comprehensive plan report is always better.",
+      "id": "FM-006",
+      "impact": "high",
+      "likelihood": "medium",
+      "mitigations": [
+        "progress events",
+        "human review packet with summary/decisions/blockers",
+        "separate detailed provenance appendix",
+        "next-command fields in every failure"
+      ],
+      "owner": "vibe-planning",
+      "title": "Users hate opaque waiting and giant reports",
+      "user_harm": "Users abandon the workflow or distrust it."
+    },
+    {
+      "acceptance_checks": [
+        "docs snapshot must be fresh before live calls",
+        "unknown effort is not eligible",
+        "capability lease records observed model"
+      ],
+      "early_warning_signals": [
+        "provider-doc snapshot expired",
+        "capability probes differ from fixture",
+        "model alias not found",
+        "UI effort labels changed"
+      ],
+      "false_assumption": "A model matrix remains valid for months.",
+      "id": "FM-007",
+      "impact": "high",
+      "likelihood": "high",
+      "mitigations": [
+        "provider docs snapshot expiration",
+        "capability leases",
+        "runtime model alias resolution",
+        "max_browser_available instead of literal browser labels"
+      ],
+      "owner": "apr",
+      "title": "Provider docs and model names drift faster than the bundle",
+      "user_harm": "Runs fail or use lower-quality models than promised."
+    },
+    {
+      "acceptance_checks": [
+        "deepseek result has search_trace_sha256",
+        "prompt compiler keeps search results in data context",
+        "traceability distinguishes source evidence from model opinion"
+      ],
+      "early_warning_signals": [
+        "uncited search claims",
+        "untrusted source text enters instructions",
+        "search trace missing",
+        "DeepSeek overweights recent but irrelevant results"
+      ],
+      "false_assumption": "Search improves plan quality without increasing prompt-injection risk.",
+      "id": "FM-008",
+      "impact": "medium",
+      "likelihood": "medium",
+      "mitigations": [
+        "source-trust quarantine",
+        "search trace hashes",
+        "citation requirements",
+        "search-derived claims marked as advisory unless verified"
+      ],
+      "owner": "apr",
+      "title": "DeepSeek search introduces untrusted web noise",
+      "user_harm": "The synthesized plan imports bad or adversarial web assumptions."
+    },
+    {
+      "acceptance_checks": [
+        "evidence fixture has redaction_policy=redacted",
+        "unsafe_artifacts_quarantined=true",
+        "validators reject account identifiers/cookies/raw DOM"
+      ],
+      "early_warning_signals": [
+        "raw screenshots in artifacts",
+        "DOM dumps in normal report",
+        "account email visible",
+        "prompt text stored in evidence"
+      ],
+      "false_assumption": "Redaction will happen naturally in implementation.",
+      "id": "FM-009",
+      "impact": "critical",
+      "likelihood": "medium",
+      "mitigations": [
+        "redacted evidence as default",
+        "unsafe artifacts quarantined and excluded from normal manifest",
+        "hash-only prompt/output references",
+        "tests for forbidden fields"
+      ],
+      "owner": "oracle",
+      "title": "Evidence ledger leaks sensitive browser/account data",
+      "user_harm": "Privacy/security incident."
+    },
+    {
+      "acceptance_checks": [
+        "fallback waiver fixture exists",
+        "APR blocks non-waivable route downgrade",
+        "human review packet shows waivers prominently"
+      ],
+      "early_warning_signals": [
+        "waivers generated automatically",
+        "required provider waived without reason",
+        "waiver never expires",
+        "handoff hides degraded status"
+      ],
+      "false_assumption": "A waiver mechanism will only be used carefully.",
+      "id": "FM-010",
+      "impact": "high",
+      "likelihood": "medium",
+      "mitigations": [
+        "waiver ledger with scope/expiry/user acknowledgement",
+        "non-waivable routes for balanced/audit formal first plan and synthesis",
+        "review packet surfaces degraded claims"
+      ],
+      "owner": "apr",
+      "title": "Waivers become silent downgrade loopholes",
+      "user_harm": "The product silently violates its own quality promises."
+    },
+    {
+      "acceptance_checks": [
+        "shared contract hashes compare equal",
+        "contract changes update all three bundles",
+        "unknown fields cannot govern eligibility"
+      ],
+      "early_warning_signals": [
+        "same schema has different hash across bundles",
+        "fixtures pass locally but fail end-to-end",
+        "one package adds fields that another treats as authoritative"
+      ],
+      "false_assumption": "Copying contracts once is enough.",
+      "id": "FM-011",
+      "impact": "high",
+      "likelihood": "medium",
+      "mitigations": [
+        "contract change policy",
+        "cross-bundle hash manifest",
+        "integration pass is mandatory",
+        "strict-core/permissive-extension rule"
+      ],
+      "owner": "integration",
+      "title": "Independent coding agents diverge on shared contracts",
+      "user_harm": "Late integration failures."
+    },
+    {
+      "acceptance_checks": [
+        "prompt manifest records included/excluded sections",
+        "token budget warnings exist",
+        "provider-specific prompt policy is validated"
+      ],
+      "early_warning_signals": [
+        "provider prompts exceed budget",
+        "models miss instructions",
+        "source baseline dumps too much",
+        "search results swamp requirements"
+      ],
+      "false_assumption": "More context is always better.",
+      "id": "FM-012",
+      "impact": "medium",
+      "likelihood": "medium",
+      "mitigations": [
+        "prompt context packet budgets",
+        "provider-specific prompt compiler",
+        "source compaction with traceability",
+        "brief lint for missing priorities"
+      ],
+      "owner": "apr",
+      "title": "Prompt artifacts become too large and unfocused",
+      "user_harm": "High-effort models spend reasoning on irrelevant context and produce worse plans."
+    }
+  ],
+  "ledger_id": "premortem-2026-05-v17",
+  "schema_version": "failure_mode_ledger.v1",
+  "subset_focus": "Oracle",
+  "summary": "Premortem ledger for the v18 hardening pass: assume the workflow failed after six months and encode controls for the most likely causes."
+}

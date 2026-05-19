@@ -1,0 +1,11 @@
+{
+  "access_path": "codex_cli_subscription",
+  "api_used": false,
+  "bundle_version": "v18.0.0",
+  "eligible_for_synthesis": false,
+  "formal_first_plan": false,
+  "oracle_used": false,
+  "schema_version": "interactive_intake.v1",
+  "source": "codex_cli_subscription:gpt-5.5:xhigh_or_extra_high",
+  "summary_path": ".vibe-planning/intake/intake-summary.json"
+}

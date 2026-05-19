@@ -1,0 +1,32 @@
+{
+  "$id": "https://example.invalid/vibe-planning/contracts/execution-profile.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "optional_slots": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "profile": {
+      "enum": ["fast", "balanced", "audit", "offline"]
+    },
+    "required_slots": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "execution_profile.v1"
+    },
+    "source_policy": {
+      "enum": ["off", "baseline", "strict"]
+    }
+  },
+  "required": ["schema_version", "profile", "source_policy", "required_slots"],
+  "title": "Execution Profile",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

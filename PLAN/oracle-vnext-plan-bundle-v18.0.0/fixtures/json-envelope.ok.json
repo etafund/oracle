@@ -1,0 +1,19 @@
+{
+  "blocked_reason": null,
+  "commands": {
+    "next": "tool doctor --json"
+  },
+  "data": {
+    "message": "ok"
+  },
+  "errors": [],
+  "fix_command": null,
+  "meta": {
+    "bundle_version": "v18.0.0"
+  },
+  "next_command": null,
+  "ok": true,
+  "retry_safe": null,
+  "schema_version": "json_envelope.v1",
+  "warnings": []
+}

@@ -1,0 +1,23 @@
+{
+  "bundle_version": "v18.0.0",
+  "next_command": null,
+  "profile": "shared-remote-profile",
+  "provider_locks": [
+    {
+      "lock": "browser:shared-profile:chatgpt",
+      "provider": "chatgpt"
+    },
+    {
+      "lock": "browser:shared-profile:gemini",
+      "provider": "gemini"
+    }
+  ],
+  "remote_browser": {
+    "host_env": "ORACLE_REMOTE_HOST",
+    "preferred": true,
+    "token_env": "ORACLE_REMOTE_TOKEN"
+  },
+  "schema_version": "browser_session.v1",
+  "session_id": "browser-session-demo",
+  "status": "ready"
+}

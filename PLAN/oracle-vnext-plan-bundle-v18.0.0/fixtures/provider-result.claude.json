@@ -1,0 +1,40 @@
+{
+  "access_path": "claude_code_subscription_cli",
+  "api_allowed": false,
+  "bundle_version": "v18.0.0",
+  "claude_code_keyword": "ultrathink",
+  "degradation_reason": null,
+  "error": null,
+  "evidence": null,
+  "evidence_id": null,
+  "model": "claude-opus-4-7",
+  "official_api": false,
+  "prompt_manifest_sha256": "sha256:e63184173482109f1f7b52930af6a439b8cd925708b5c2dc546d10d375059ffd",
+  "provider_family": "claude",
+  "provider_result_id": "provider-result-demo-claude-code-opus",
+  "provider_slot": "claude_code_opus",
+  "reasoning_config": {
+    "alwaysThinkingEnabled": true,
+    "cli_controls": [
+      "claude --model claude-opus-4-7 --effort max",
+      "CLAUDE_CODE_EFFORT_LEVEL=max",
+      "prompt includes ultrathink"
+    ],
+    "effort": "max",
+    "provider_nomenclature": "Claude Code --effort max plus ultrathink in-context request",
+    "thinking": {
+      "type": "adaptive"
+    }
+  },
+  "reasoning_effort": "max",
+  "reasoning_effort_verified": true,
+  "result_path": ".apr/runs/demo/plans/claude_code_opus/output.md",
+  "result_text_sha256": "sha256:73a6016c01988111fccc027645cc0f16eaff32ee2a0ef908405cb03876f4aab3",
+  "schema_version": "provider_result.v1",
+  "source_baseline_sha256": "sha256:7ff44955c047fe9c0b1eea6733a0cdced8b46a728b92709e31d9cd32489791d3",
+  "status": "success",
+  "synthesis_eligible": true,
+  "thinking": {
+    "type": "adaptive"
+  }
+}

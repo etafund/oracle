@@ -1,0 +1,42 @@
+{
+  "$id": "https://example.invalid/v18/contracts/model-reasoning-policy.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "api_allowed_routes": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "bundle_version": {
+      "const": "v18.0.0"
+    },
+    "live_provider_effort_defaults": {
+      "type": "object"
+    },
+    "no_unknown_effort_eligibility": {
+      "const": true
+    },
+    "protected_slots": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "model_reasoning_policy.v1"
+    }
+  },
+  "required": [
+    "schema_version",
+    "bundle_version",
+    "live_provider_effort_defaults",
+    "protected_slots",
+    "api_allowed_routes",
+    "no_unknown_effort_eligibility"
+  ],
+  "title": "Model Reasoning Policy",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

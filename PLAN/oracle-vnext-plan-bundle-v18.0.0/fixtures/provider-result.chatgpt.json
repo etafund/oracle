@@ -1,0 +1,35 @@
+{
+  "access_path": "oracle_browser_remote",
+  "bundle_version": "v18.0.0",
+  "degradation_reason": null,
+  "error": null,
+  "evidence": {
+    "evidence_id": "evidence-demo-chatgpt_pro_first_plan",
+    "mode_verified": true,
+    "path": ".apr/runs/demo/evidence/chatgpt_pro_first_plan/evidence.json",
+    "verified_before_prompt_submit": true
+  },
+  "evidence_id": "evidence-demo-chatgpt_pro_first_plan",
+  "model": "chatgpt-pro-latest",
+  "prompt_manifest_sha256": "sha256:69223c8fae80b46ec663079168f541e9308eb835d7720212f8222bf1f239cb18",
+  "provider_family": "chatgpt",
+  "provider_result_id": "provider-result-demo-chatgpt_pro_first_plan",
+  "provider_slot": "chatgpt_pro_first_plan",
+  "reasoning_config": {
+    "effort_rank": "highest_visible",
+    "model_selector": "Pro",
+    "normalized_effort": "max_browser_available",
+    "observed_reasoning_effort_label": "Heavy",
+    "provider_nomenclature": "ChatGPT browser model-picker highest visible thinking effort",
+    "requested_reasoning_effort": "max_browser_available",
+    "selected_effort_is_highest_visible": true
+  },
+  "reasoning_effort": "max_browser_available",
+  "reasoning_effort_verified": true,
+  "result_path": ".apr/runs/demo/plans/chatgpt_pro_first_plan/output.md",
+  "result_text_sha256": "sha256:1a8f9f53b1c104b8e875b567fa926c96106866aa67b84ceb0ae9b79cc2b6f069",
+  "schema_version": "provider_result.v1",
+  "source_baseline_sha256": "sha256:b91d369c3f7250980878f782559b0c4ccc00a829603c88cf555c0b23bdd12ee6",
+  "status": "success",
+  "synthesis_eligible": true
+}

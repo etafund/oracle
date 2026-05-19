@@ -1,0 +1,45 @@
+{
+  "$id": "https://example.invalid/v18/contracts/provider-access-policy.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "allowed_api_routes": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "bundle_version": {
+      "const": "v18.0.0"
+    },
+    "forbidden_live_substitutions": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "live_routes": {
+      "type": "object"
+    },
+    "runtime_invariants": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "provider_access_policy.v1"
+    }
+  },
+  "required": [
+    "schema_version",
+    "bundle_version",
+    "live_routes",
+    "forbidden_live_substitutions",
+    "allowed_api_routes",
+    "runtime_invariants"
+  ],
+  "title": "Provider Access Policy",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

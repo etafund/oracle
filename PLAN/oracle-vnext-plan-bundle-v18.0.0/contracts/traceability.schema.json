@@ -1,0 +1,32 @@
+{
+  "$id": "https://example.invalid/vibe-planning/contracts/traceability.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "requirements": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "risks": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "traceability_matrix.v1"
+    },
+    "tests": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": ["schema_version", "requirements"],
+  "title": "Traceability Matrix",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

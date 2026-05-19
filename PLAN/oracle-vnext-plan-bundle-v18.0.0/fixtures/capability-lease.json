@@ -1,0 +1,12 @@
+{
+  "bundle_version": "v18.0.0",
+  "capability": "pro_extended_reasoning",
+  "expires_at": "2026-05-12T00:30:00Z",
+  "issued_at": "2026-05-12T00:00:00Z",
+  "lease_id": "lease-demo",
+  "provider": "chatgpt",
+  "same_session_required": true,
+  "schema_version": "capability_lease.v1",
+  "status": "active",
+  "verification_method": "oracle-browser-doctor"
+}

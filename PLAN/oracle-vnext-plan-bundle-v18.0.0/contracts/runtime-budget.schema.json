@@ -1,0 +1,32 @@
+{
+  "$id": "https://example.invalid/vibe-planning/contracts/runtime-budget.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "max_cost_usd": {
+      "type": "number"
+    },
+    "max_wall_minutes": {
+      "type": "number"
+    },
+    "profile": {
+      "type": "string"
+    },
+    "required_approvals": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "retry_policy": {
+      "type": "object"
+    },
+    "schema_version": {
+      "const": "runtime_budget.v1"
+    }
+  },
+  "required": ["schema_version", "profile", "max_cost_usd", "max_wall_minutes"],
+  "title": "Runtime Budget",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

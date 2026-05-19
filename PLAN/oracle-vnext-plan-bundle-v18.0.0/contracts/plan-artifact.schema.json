@@ -1,0 +1,41 @@
+{
+  "$id": "https://example.invalid/vibe-planning/contracts/plan-artifact.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "acceptance_criteria": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "plan_id": {
+      "type": "string"
+    },
+    "risks": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "plan_artifact.v1"
+    },
+    "sections": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "source_provider_slot": {
+      "type": "string"
+    },
+    "stage": {
+      "enum": ["raw_provider_output", "minimal_plan_ir", "full_plan_ir", "bead_export_ready"]
+    }
+  },
+  "required": ["schema_version", "plan_id", "stage", "sections"],
+  "title": "Plan IR Artifact",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

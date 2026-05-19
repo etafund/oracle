@@ -1,0 +1,135 @@
+{
+  "$id": "https://example.invalid/v18/contracts/route-readiness.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "blocked": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "blocked_on_missing_effort_verification_for": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "browser_evidence_required_for": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "bundle_version": {
+      "const": "v18.0.0"
+    },
+    "degraded": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "final_handoff_blocked_until_evidence_for": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "highest_reasoning_required_for": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "mock_mode": {
+      "type": "boolean"
+    },
+    "model_reasoning_policy": {
+      "type": "string"
+    },
+    "optional_slots": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "pending_browser_evidence_for": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "preflight_ready": {
+      "type": "boolean"
+    },
+    "profile": {
+      "enum": ["fast", "balanced", "audit", "offline"]
+    },
+    "ready": {
+      "type": "boolean"
+    },
+    "ready_scope": {
+      "enum": ["preflight", "synthesis", "handoff"]
+    },
+    "required_slots": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "review_quorum": {
+      "type": "object"
+    },
+    "review_quorum_policy": {
+      "type": "string"
+    },
+    "review_quorum_ready": {
+      "type": "boolean"
+    },
+    "schema_version": {
+      "const": "route_readiness.v1"
+    },
+    "stage_readiness": {
+      "type": "object"
+    },
+    "synthesis_prompt_blocked_until_evidence_for": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "synthesis_prompt_ready": {
+      "type": "boolean"
+    },
+    "synthesis_ready": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schema_version",
+    "bundle_version",
+    "profile",
+    "required_slots",
+    "optional_slots",
+    "ready",
+    "blocked",
+    "degraded",
+    "mock_mode",
+    "browser_evidence_required_for",
+    "ready_scope",
+    "preflight_ready",
+    "synthesis_ready",
+    "pending_browser_evidence_for",
+    "stage_readiness",
+    "synthesis_prompt_ready",
+    "synthesis_prompt_blocked_until_evidence_for",
+    "final_handoff_blocked_until_evidence_for",
+    "review_quorum_policy",
+    "review_quorum_ready",
+    "review_quorum"
+  ],
+  "title": "Route Readiness",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

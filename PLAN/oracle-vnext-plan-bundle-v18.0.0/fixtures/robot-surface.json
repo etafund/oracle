@@ -1,0 +1,19 @@
+{
+  "bundle_version": "v18.0.0",
+  "commands": [
+    {
+      "mock_command": "python3 scripts/validate-subset.py --json",
+      "name": "doctor",
+      "paid_calls": false
+    },
+    {
+      "mock_command": "python3 scripts/validate-subset.py --json",
+      "name": "robot-plan",
+      "paid_calls": false
+    }
+  ],
+  "error_fields_required": ["blocked_reason", "next_command", "fix_command", "retry_safe"],
+  "json_envelope_required": true,
+  "schema_version": "robot_surface.v1",
+  "tool": "vibe-plan-run"
+}

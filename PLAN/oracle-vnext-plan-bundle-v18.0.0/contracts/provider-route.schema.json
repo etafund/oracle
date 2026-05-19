@@ -1,0 +1,68 @@
+{
+  "$id": "https://example.invalid/vibe-planning/contracts/provider-route.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "fallback_policy": {
+      "type": "object"
+    },
+    "optional_slots": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "profile": {
+      "enum": ["fast", "balanced", "audit", "offline"]
+    },
+    "required_slots": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "resource_locks": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "review_quorum": {
+      "type": "object"
+    },
+    "review_quorum_policy": {
+      "type": "string"
+    },
+    "routes": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "provider_route.v1"
+    },
+    "stage_optional_slots": {
+      "type": "object"
+    },
+    "stage_order": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "stage_required_slots": {
+      "type": "object"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": ["schema_version", "profile", "routes"],
+  "title": "Provider Route Plan",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

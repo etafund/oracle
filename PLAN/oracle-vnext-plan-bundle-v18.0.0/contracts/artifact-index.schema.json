@@ -1,0 +1,20 @@
+{
+  "$id": "https://example.invalid/vibe-planning/contracts/artifact-index.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "artifacts": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "artifact_index.v1"
+    }
+  },
+  "required": ["schema_version", "artifacts"],
+  "title": "Artifact Index",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

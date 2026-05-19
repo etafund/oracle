@@ -1,0 +1,65 @@
+{
+  "$id": "https://example.invalid/v18/contracts/remote-browser-endpoint.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "auth_profile_id_hash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "bundle_version": {
+      "const": "v18.0.0"
+    },
+    "endpoint_id": {
+      "type": "string"
+    },
+    "host_env": {
+      "type": "string"
+    },
+    "host_hash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "mode": {
+      "enum": ["preferred", "required", "off"]
+    },
+    "no_plaintext_secrets": {
+      "type": "boolean"
+    },
+    "provider_locks": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "remote_browser_endpoint.v1"
+    },
+    "shared_profile_policy": {
+      "type": "string"
+    },
+    "status": {
+      "enum": ["ready", "blocked", "unknown", "degraded"]
+    },
+    "token_env": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "bundle_version",
+    "endpoint_id",
+    "mode",
+    "status",
+    "host_env",
+    "token_env",
+    "host_hash",
+    "auth_profile_id_hash",
+    "no_plaintext_secrets",
+    "shared_profile_policy",
+    "provider_locks"
+  ],
+  "title": "Remote Browser Endpoint",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

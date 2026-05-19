@@ -1,0 +1,25 @@
+{
+  "api_base_url": "https://api.deepseek.com",
+  "api_format": "openai_compatible_chat_completions",
+  "bundle_version": "v18.0.0",
+  "max_queries": 5,
+  "max_results_per_query": 5,
+  "model": "deepseek-v4-pro",
+  "provider_family": "deepseek",
+  "provider_slot": "deepseek_v4_pro_reasoning_search",
+  "reasoning_content_persisted": "hash_only",
+  "reasoning_content_policy": "transient_tool_replay_hash_only_persisted",
+  "reasoning_content_transient_replay_allowed": true,
+  "reasoning_effort": "max",
+  "requires_citations": true,
+  "schema_version": "deepseek_search_tool.v1",
+  "search_enabled": true,
+  "search_mode": "tool_call_web_search",
+  "search_trace_storage": "redacted_hash_and_sanitized_results_only",
+  "thinking": {
+    "type": "enabled"
+  },
+  "timeout_seconds": 45,
+  "tool_choice": "required_for_current_external_facts",
+  "tool_name": "apr_web_search"
+}

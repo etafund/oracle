@@ -1,0 +1,162 @@
+{
+  "$id": "https://example.invalid/v18/contracts/browser-evidence.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "available_effort_labels_hash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "browser_effort_strategy": {
+      "type": "string"
+    },
+    "bundle_version": {
+      "const": "v18.0.0"
+    },
+    "capture_confidence": {
+      "enum": ["high", "medium", "low"]
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "effort_rank": {
+      "type": "string"
+    },
+    "evidence_id": {
+      "type": "string"
+    },
+    "evidence_privacy": {
+      "type": "object"
+    },
+    "failure_code": {
+      "type": ["string", "null"]
+    },
+    "fix_command": {
+      "type": ["string", "null"]
+    },
+    "mode_verified": {
+      "type": "boolean"
+    },
+    "next_command": {
+      "type": ["string", "null"]
+    },
+    "observed_mode_label_hash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "observed_reasoning_effort_label": {
+      "type": "string"
+    },
+    "output_text_sha256": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "prompt_sha256": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "prompt_submitted_at": {
+      "type": "string"
+    },
+    "provider": {
+      "enum": ["chatgpt", "gemini"]
+    },
+    "provider_result_id": {
+      "type": "string"
+    },
+    "provider_slot": {
+      "type": "string"
+    },
+    "reasoning_effort_verification_method": {
+      "type": "string"
+    },
+    "reasoning_effort_verified": {
+      "type": "boolean"
+    },
+    "redaction_policy": {
+      "enum": ["redacted", "off", "unsafe_debug"]
+    },
+    "requested_mode": {
+      "type": "string"
+    },
+    "requested_reasoning_effort": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "browser_evidence.v1"
+    },
+    "selected_effort_is_highest_visible": {
+      "type": "boolean"
+    },
+    "selector_manifest_version": {
+      "type": "string"
+    },
+    "session_id_hash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "thinking_level_if_exposed": {
+      "type": "string"
+    },
+    "thinking_level_verified": {
+      "type": "boolean"
+    },
+    "transition_log_sha256": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "unsafe_artifacts_quarantined": {
+      "type": "boolean"
+    },
+    "verification_method": {
+      "enum": ["same_session_ui_observation", "same_session_ui_observation_plus_selector_trace"]
+    },
+    "verification_scope": {
+      "type": "string"
+    },
+    "verified_at": {
+      "type": "string"
+    },
+    "verified_before_prompt_submit": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schema_version",
+    "bundle_version",
+    "evidence_id",
+    "provider_slot",
+    "provider",
+    "requested_mode",
+    "mode_verified",
+    "verified_before_prompt_submit",
+    "verified_at",
+    "prompt_submitted_at",
+    "verification_method",
+    "capture_confidence",
+    "redaction_policy",
+    "session_id_hash",
+    "selector_manifest_version",
+    "transition_log_sha256",
+    "prompt_sha256",
+    "output_text_sha256",
+    "unsafe_artifacts_quarantined",
+    "created_at",
+    "run_id",
+    "provider_result_id",
+    "verification_scope",
+    "requested_reasoning_effort",
+    "observed_reasoning_effort_label",
+    "reasoning_effort_verified",
+    "effort_rank",
+    "selected_effort_is_highest_visible",
+    "available_effort_labels_hash",
+    "browser_effort_strategy"
+  ],
+  "title": "Redacted Browser Evidence",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

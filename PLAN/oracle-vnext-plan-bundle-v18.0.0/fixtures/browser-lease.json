@@ -1,0 +1,29 @@
+{
+  "blocked_reason": null,
+  "bundle_version": "v18.0.0",
+  "expires_at": "2026-05-12T00:30:00Z",
+  "fix_command": null,
+  "holder": null,
+  "issued_at": "2026-05-12T00:00:00Z",
+  "lease_id": "lease-demo-chatgpt",
+  "lock_name": "browser:shared-profile:chatgpt",
+  "next_command": null,
+  "profile_id_hash": "sha256:aacd890f85040adcbc768935a0daa1d3971eeac950425288dcabc2fd0ee02a84",
+  "profile_scope": "shared_logical_remote_browser_profile_with_provider_locks",
+  "provider": "chatgpt",
+  "remote_browser": {
+    "endpoint_id": "remote-browser-demo",
+    "host_env": "ORACLE_REMOTE_HOST",
+    "host_hash": "sha256:efa0848e6fd55eec6a3d6e2e171a9b8025950871925586a2154448b5bb58502c",
+    "mode": "preferred",
+    "no_plaintext_secrets": true,
+    "profile_policy": "shared_logical_profile",
+    "status": "ready",
+    "token_env": "ORACLE_REMOTE_TOKEN"
+  },
+  "renewable": true,
+  "schema_version": "browser_lease.v1",
+  "shared_profile_policy": "one_user_auth_context_per_remote_browser_host; provider-specific technical profiles are allowed only if Oracle requires them internally",
+  "status": "available",
+  "ttl_seconds": 1800
+}

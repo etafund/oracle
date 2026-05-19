@@ -1,0 +1,62 @@
+{
+  "$id": "https://example.invalid/vibe-planning/contracts/json-envelope.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "blocked_reason": {
+      "type": ["string", "null"]
+    },
+    "commands": {
+      "type": "object"
+    },
+    "data": {
+      "type": ["object", "array", "string", "null"]
+    },
+    "errors": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "fix_command": {
+      "type": ["string", "null"]
+    },
+    "meta": {
+      "type": "object"
+    },
+    "next_command": {
+      "type": ["string", "null"]
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "retry_safe": {
+      "type": ["boolean", "null"]
+    },
+    "schema_version": {
+      "type": "string"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "ok",
+    "schema_version",
+    "data",
+    "meta",
+    "blocked_reason",
+    "next_command",
+    "fix_command",
+    "retry_safe",
+    "errors",
+    "warnings",
+    "commands"
+  ],
+  "title": "JSON Envelope",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

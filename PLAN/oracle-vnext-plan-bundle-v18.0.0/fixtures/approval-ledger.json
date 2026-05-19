@@ -1,0 +1,11 @@
+{
+  "approvals": [],
+  "bundle_version": "v18.0.0",
+  "gates": [
+    {
+      "stage": "live_fanout",
+      "status": "pending"
+    }
+  ],
+  "schema_version": "approval_ledger.v1"
+}

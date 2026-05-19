@@ -3,8 +3,8 @@
 This note maps the current Oracle codebase to the v18 browser/provider reliability
 responsibilities. It is intentionally an implementation guide, not a new product
 spec. The v18 planning bundle observed during this pass lives at
-`PLAN/oracle-vnext-plan-bundle-v18.0.0/`, but that directory is an untracked
-planning input and should be treated as read-only unless a later bead claims it.
+`PLAN/oracle-vnext-plan-bundle-v18.0.0/`; it is checked in as the read-only
+fixture/spec input for the local v18 conformance tests.
 
 ## Current Code Paths
 

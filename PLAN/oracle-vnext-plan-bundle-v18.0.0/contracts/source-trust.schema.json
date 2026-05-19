@@ -1,0 +1,26 @@
+{
+  "$id": "https://example.invalid/vibe-planning/contracts/source-trust.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "quarantined_instructions": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "source_trust.v1"
+    },
+    "sources": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": ["schema_version", "sources"],
+  "title": "Source Trust",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

@@ -1,0 +1,141 @@
+{
+  "$id": "https://example.invalid/v18/contracts/provider-result.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "access_path": {
+      "type": "string"
+    },
+    "api_base_url": {
+      "type": "string"
+    },
+    "api_key_env": {
+      "type": "string"
+    },
+    "bundle_version": {
+      "const": "v18.0.0"
+    },
+    "claude_code_keyword": {
+      "type": "string"
+    },
+    "degradation_reason": {
+      "type": ["string", "null"]
+    },
+    "error": {
+      "type": ["object", "null"]
+    },
+    "evidence": {
+      "type": ["object", "null"]
+    },
+    "evidence_id": {
+      "type": ["string", "null"]
+    },
+    "model": {
+      "type": "string"
+    },
+    "official_api": {
+      "type": "boolean"
+    },
+    "prompt_manifest_sha256": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "provider_family": {
+      "type": "string"
+    },
+    "provider_result_id": {
+      "type": "string"
+    },
+    "provider_result_stage": {
+      "type": "string"
+    },
+    "provider_slot": {
+      "type": "string"
+    },
+    "quorum_eligible": {
+      "type": "boolean"
+    },
+    "reasoning_config": {
+      "type": "object"
+    },
+    "reasoning_content_policy": {
+      "type": "string"
+    },
+    "reasoning_content_sha256": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": ["string", "null"]
+    },
+    "reasoning_content_stored": {
+      "type": "boolean"
+    },
+    "reasoning_content_transient_replay": {
+      "type": "boolean"
+    },
+    "reasoning_effort": {
+      "type": "string"
+    },
+    "reasoning_effort_verified": {
+      "type": "boolean"
+    },
+    "result_path": {
+      "type": ["string", "null"]
+    },
+    "result_text_sha256": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "provider_result.v1"
+    },
+    "search_enabled": {
+      "type": "boolean"
+    },
+    "search_mode": {
+      "type": "string"
+    },
+    "search_tool_name": {
+      "type": "string"
+    },
+    "search_trace_sha256": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": ["string", "null"]
+    },
+    "source_baseline_sha256": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "status": {
+      "enum": ["success", "failed", "degraded", "skipped", "manual_import", "cached"]
+    },
+    "synthesis_eligible": {
+      "type": "boolean"
+    },
+    "thinking": {
+      "type": "object"
+    },
+    "thinking_enabled": {
+      "type": "boolean"
+    },
+    "tool_call_replay_policy": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "bundle_version",
+    "provider_slot",
+    "provider_family",
+    "access_path",
+    "status",
+    "synthesis_eligible",
+    "evidence",
+    "evidence_id",
+    "prompt_manifest_sha256",
+    "source_baseline_sha256",
+    "provider_result_id",
+    "result_text_sha256"
+  ],
+  "title": "Provider Result",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

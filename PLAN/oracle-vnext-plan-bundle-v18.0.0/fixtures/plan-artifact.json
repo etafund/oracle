@@ -1,0 +1,23 @@
+{
+  "acceptance_criteria": [
+    "All required provider routes produce synthesis-eligible artifacts or typed failures."
+  ],
+  "bundle_version": "v18.0.0",
+  "plan_id": "plan-demo",
+  "risks": [
+    {
+      "id": "risk-browser-ui-drift",
+      "summary": "Browser UI can drift."
+    }
+  ],
+  "schema_version": "plan_artifact.v1",
+  "sections": [
+    {
+      "content": "Implement vNext planning workflow.",
+      "id": "objective",
+      "title": "Objective"
+    }
+  ],
+  "source_provider_slot": "chatgpt_pro_first_plan",
+  "stage": "minimal_plan_ir"
+}

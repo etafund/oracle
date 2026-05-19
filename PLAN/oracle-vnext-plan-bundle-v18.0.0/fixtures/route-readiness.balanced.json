@@ -1,0 +1,99 @@
+{
+  "active_failure_modes": ["FM-001", "FM-002", "FM-003", "FM-004", "FM-006", "FM-010"],
+  "api_key_required_for": ["deepseek_v4_pro_reasoning_search"],
+  "blocked": [],
+  "browser_evidence_required_for": [
+    "chatgpt_pro_first_plan",
+    "gemini_deep_think",
+    "chatgpt_pro_synthesis"
+  ],
+  "bundle_version": "v18.0.0",
+  "degraded": [],
+  "final_handoff_blocked_until_evidence_for": [
+    "chatgpt_pro_first_plan",
+    "gemini_deep_think",
+    "chatgpt_pro_synthesis"
+  ],
+  "highest_reasoning_required_for": [
+    "chatgpt_pro_first_plan",
+    "gemini_deep_think",
+    "chatgpt_pro_synthesis",
+    "claude_code_opus",
+    "xai_grok_reasoning",
+    "deepseek_v4_pro_reasoning_search"
+  ],
+  "human_visible_status_required": true,
+  "live_cutover_checklist": "fixtures/live-cutover-checklist.json",
+  "live_cutover_required_before_release": true,
+  "mock_mode": true,
+  "model_reasoning_policy": "fixtures/model-reasoning-policy.json",
+  "next_command": "apr plan fanout --run latest --profile balanced --json",
+  "optional_slots": ["claude_code_opus", "xai_grok_reasoning", "deepseek_v4_pro_reasoning_search"],
+  "pending_browser_evidence_for": ["chatgpt_pro_first_plan", "gemini_deep_think"],
+  "preflight_ready": true,
+  "profile": "balanced",
+  "ready": true,
+  "ready_scope": "preflight",
+  "required_slots": ["chatgpt_pro_first_plan", "gemini_deep_think", "chatgpt_pro_synthesis"],
+  "review_quorum": {
+    "optional_candidates": [
+      "claude_code_opus",
+      "xai_grok_reasoning",
+      "deepseek_v4_pro_reasoning_search"
+    ],
+    "optional_successes_observed": 0,
+    "optional_successes_required": 1,
+    "required_independent_reviewers": ["gemini_deep_think"],
+    "required_independent_reviewers_satisfied": false,
+    "waiver_required_if_not_met": true
+  },
+  "review_quorum_policy": "fixtures/review-quorum.balanced.json",
+  "review_quorum_ready": false,
+  "run_progress": "fixtures/run-progress.json",
+  "schema_version": "route_readiness.v1",
+  "search_tool_required_for": ["deepseek_v4_pro_reasoning_search"],
+  "stage_readiness": {
+    "compare": {
+      "blocked_until": ["normalized_provider_results", "review_quorum_met_or_waived"],
+      "ready": false
+    },
+    "final_handoff": {
+      "blocked_until": [
+        "verified_chatgpt_pro_synthesis_evidence",
+        "human_review_packet",
+        "approval_ledger_final_handoff"
+      ],
+      "ready": false
+    },
+    "first_plan_prompt_submission": {
+      "pending_evidence_after_execution_for": ["chatgpt_pro_first_plan"],
+      "ready": true,
+      "required_slots": ["chatgpt_pro_first_plan"]
+    },
+    "independent_review_prompt_submission": {
+      "optional_slots": [
+        "claude_code_opus",
+        "xai_grok_reasoning",
+        "deepseek_v4_pro_reasoning_search"
+      ],
+      "pending_evidence_after_execution_for": ["gemini_deep_think"],
+      "ready": true,
+      "required_slots": ["gemini_deep_think"]
+    },
+    "synthesis_prompt_submission": {
+      "blocked_until": [
+        "normalized_provider_results",
+        "compare_result",
+        "review_quorum_met_or_waived",
+        "verified_chatgpt_pro_first_plan_evidence",
+        "verified_gemini_deep_think_evidence"
+      ],
+      "ready": false,
+      "required_slots": ["chatgpt_pro_synthesis"]
+    }
+  },
+  "synthesis_prompt_blocked_until_evidence_for": ["chatgpt_pro_first_plan", "gemini_deep_think"],
+  "synthesis_prompt_ready": false,
+  "synthesis_ready": false,
+  "waiver_policy": "fixtures/fallback-waiver.json"
+}

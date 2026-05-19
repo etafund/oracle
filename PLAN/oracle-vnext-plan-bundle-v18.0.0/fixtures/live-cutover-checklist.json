@@ -1,0 +1,112 @@
+{
+  "bundle_version": "v18.0.0",
+  "checklist_id": "v17-live-cutover",
+  "minimum_release_gate": "phase_5_balanced_live_dress_rehearsal",
+  "phases": [
+    {
+      "commands": [
+        "python3 scripts/validate-subset.py --json",
+        "python3 scripts/contract-fixture-smoke.py --json"
+      ],
+      "failure_modes_addressed": ["FM-004", "FM-011"],
+      "name": "Contract and fixture validation",
+      "owner": "all",
+      "pass_criteria": [
+        "all active JSON parses",
+        "schemas and fixtures validate",
+        "no stale active version markers"
+      ],
+      "phase_id": "phase_0_contracts",
+      "required_before": "any development PR merge"
+    },
+    {
+      "commands": [
+        "bash scripts/vibe-plan-run.sh --brief fixtures/brief.md --profile balanced --robot-plan --dry-run --json"
+      ],
+      "failure_modes_addressed": ["FM-005", "FM-006"],
+      "name": "Mock route rehearsal",
+      "owner": "vibe-planning",
+      "pass_criteria": [
+        "dry-run shows no paid calls",
+        "all provider routes visible",
+        "review quorum visible",
+        "next commands are actionable"
+      ],
+      "phase_id": "phase_1_mocks",
+      "required_before": "parallel package development"
+    },
+    {
+      "commands": [
+        "oracle remote doctor --json",
+        "oracle browser leases plan --providers chatgpt,gemini --remote-browser preferred --json",
+        "oracle chatgpt doctor --pro --extended-reasoning --thinking-effort highest-visible --json",
+        "oracle gemini doctor --deep-think --thinking-level high-if-exposed --json"
+      ],
+      "failure_modes_addressed": ["FM-001", "FM-002", "FM-009"],
+      "name": "Oracle remote browser smoke",
+      "owner": "oracle",
+      "pass_criteria": [
+        "remote endpoint healthy",
+        "lease heartbeat observed",
+        "required modes verified before prompt submission",
+        "redacted evidence emitted"
+      ],
+      "phase_id": "phase_2_oracle_remote_smoke",
+      "required_before": "ChatGPT/Gemini live route enablement"
+    },
+    {
+      "commands": [
+        "apr providers readiness --run latest --json",
+        "apr plan normalize --run latest --json",
+        "apr reviews quorum --run latest --policy fixtures/review-quorum.balanced.json --json"
+      ],
+      "failure_modes_addressed": ["FM-004", "FM-010", "FM-012"],
+      "name": "APR replay and normalization rehearsal",
+      "owner": "apr",
+      "pass_criteria": [
+        "fixture provider results normalize",
+        "quorum policy blocks too-weak runs",
+        "waivers cannot bypass non-waivable routes"
+      ],
+      "phase_id": "phase_3_apr_replay",
+      "required_before": "live fanout"
+    },
+    {
+      "commands": [
+        "oracle chatgpt run --pro --extended-reasoning --thinking-effort highest-visible --prompt-file fixtures/brief.md --json"
+      ],
+      "failure_modes_addressed": ["FM-001", "FM-002", "FM-009"],
+      "name": "Single-provider live smoke",
+      "owner": "integration",
+      "pass_criteria": [
+        "one live ChatGPT Pro browser result captured",
+        "evidence ledger linked to provider result",
+        "no secrets in artifacts"
+      ],
+      "phase_id": "phase_4_one_provider_live",
+      "required_before": "full balanced run"
+    },
+    {
+      "commands": [
+        "bash scripts/vibe-plan-run.sh --brief fixtures/brief.md --profile balanced --robot-plan --dry-run --json",
+        "apr plan fanout --run latest --stages first_plan,independent_review --json",
+        "apr reviews quorum --run latest --json",
+        "apr plan synthesize --run latest --require-review-quorum --json"
+      ],
+      "failure_modes_addressed": ["FM-001", "FM-003", "FM-004", "FM-006", "FM-010", "FM-011"],
+      "name": "Balanced live dress rehearsal",
+      "owner": "integration",
+      "pass_criteria": [
+        "formal first plan through ChatGPT Pro browser",
+        "Gemini Deep Think evidence present",
+        "at least one optional reviewer succeeds or an explicit valid waiver exists",
+        "human review packet clearly marks waivers/blockers"
+      ],
+      "phase_id": "phase_5_balanced_live_dress_rehearsal",
+      "required_before": "user-facing release"
+    }
+  ],
+  "purpose": "Prevent mock-only success from being mistaken for integrated readiness.",
+  "schema_version": "live_cutover_checklist.v1",
+  "subset_focus": "Oracle"
+}

@@ -1,0 +1,106 @@
+{
+  "$id": "https://example.invalid/v18/contracts/deepseek-search-tool.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "api_base_url": {
+      "const": "https://api.deepseek.com"
+    },
+    "api_format": {
+      "enum": ["openai_compatible_chat_completions"]
+    },
+    "bundle_version": {
+      "const": "v18.0.0"
+    },
+    "max_queries": {
+      "maximum": 10,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "max_results_per_query": {
+      "maximum": 10,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "model": {
+      "const": "deepseek-v4-pro"
+    },
+    "provider_family": {
+      "const": "deepseek"
+    },
+    "provider_slot": {
+      "const": "deepseek_v4_pro_reasoning_search"
+    },
+    "reasoning_content_persisted": {
+      "enum": ["hash_only", "none"]
+    },
+    "reasoning_content_policy": {
+      "enum": ["transient_tool_replay_hash_only_persisted"]
+    },
+    "reasoning_content_transient_replay_allowed": {
+      "type": "boolean"
+    },
+    "reasoning_effort": {
+      "const": "max"
+    },
+    "requires_citations": {
+      "type": "boolean"
+    },
+    "schema_version": {
+      "const": "deepseek_search_tool.v1"
+    },
+    "search_enabled": {
+      "const": true
+    },
+    "search_mode": {
+      "enum": ["tool_call_web_search"]
+    },
+    "thinking": {
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "const": "enabled"
+        }
+      },
+      "required": ["type"],
+      "type": "object"
+    },
+    "timeout_seconds": {
+      "maximum": 120,
+      "minimum": 5,
+      "type": "integer"
+    },
+    "tool_choice": {
+      "enum": ["auto", "required_for_current_external_facts"]
+    },
+    "tool_name": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "bundle_version",
+    "provider_slot",
+    "provider_family",
+    "api_base_url",
+    "model",
+    "api_format",
+    "thinking",
+    "reasoning_effort",
+    "search_enabled",
+    "search_mode",
+    "tool_name",
+    "tool_choice",
+    "max_queries",
+    "max_results_per_query",
+    "timeout_seconds",
+    "requires_citations",
+    "reasoning_content_policy",
+    "reasoning_content_transient_replay_allowed",
+    "reasoning_content_persisted"
+  ],
+  "title": "DeepSeek Search Tool Contract",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

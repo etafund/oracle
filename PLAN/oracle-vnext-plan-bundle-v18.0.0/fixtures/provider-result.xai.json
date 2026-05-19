@@ -1,0 +1,27 @@
+{
+  "access_path": "xai_api",
+  "api_base_url": "https://api.x.ai/v1",
+  "bundle_version": "v18.0.0",
+  "degradation_reason": null,
+  "error": null,
+  "evidence": null,
+  "evidence_id": null,
+  "model": "grok-4.3",
+  "official_api": true,
+  "prompt_manifest_sha256": "sha256:4099090c0e54a49993a8a1c710334d9269b15713e45a6983e4e4b1e79cef182e",
+  "provider_family": "xai_grok",
+  "provider_result_id": "provider-result-demo-xai-grok-reasoning",
+  "provider_slot": "xai_grok_reasoning",
+  "reasoning_config": {
+    "provider_nomenclature": "xAI Chat Completions reasoning_effort",
+    "reasoning_effort": "high"
+  },
+  "reasoning_effort": "high",
+  "reasoning_effort_verified": true,
+  "result_path": ".apr/runs/demo/plans/xai_grok_reasoning/output.md",
+  "result_text_sha256": "sha256:24b2ed17e96cef26aea6d658ac8aee0b1763b79149639be51765345535c644d9",
+  "schema_version": "provider_result.v1",
+  "source_baseline_sha256": "sha256:7d0f8940a9b976d7166fd7b5899e0a2df118065cfb410947c5d7d8d7a7312c2d",
+  "status": "success",
+  "synthesis_eligible": true
+}
