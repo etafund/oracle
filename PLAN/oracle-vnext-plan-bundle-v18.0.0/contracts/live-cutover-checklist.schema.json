@@ -1,0 +1,44 @@
+{
+  "$id": "https://example.invalid/v18/contracts/live-cutover-checklist.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "bundle_version": {
+      "const": "v18.0.0"
+    },
+    "checklist_id": {
+      "type": "string"
+    },
+    "minimum_release_gate": {
+      "type": "string"
+    },
+    "phases": {
+      "items": {
+        "required": [
+          "phase_id",
+          "name",
+          "owner",
+          "required_before",
+          "commands",
+          "pass_criteria",
+          "failure_modes_addressed"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "live_cutover_checklist.v1"
+    }
+  },
+  "required": [
+    "schema_version",
+    "bundle_version",
+    "checklist_id",
+    "minimum_release_gate",
+    "phases"
+  ],
+  "title": "Live Cutover Checklist",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

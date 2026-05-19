@@ -1,0 +1,16 @@
+{
+  "auth_profile_id_hash": "sha256:5145a2449252f93357efa5387da50412bfab629736717a22f2b5dcdcd3ca01e1",
+  "bundle_version": "v18.0.0",
+  "doctor_command": "oracle remote doctor --json",
+  "endpoint_id": "remote-browser-demo",
+  "host_env": "ORACLE_REMOTE_HOST",
+  "host_hash": "sha256:0f86cdc5e6e9b6bfa21071a192fa7cc721a4aafcb26dfa92065f38bab5a4cef7",
+  "mode": "preferred",
+  "no_plaintext_secrets": true,
+  "provider_locks": ["browser:shared-profile:chatgpt", "browser:shared-profile:gemini"],
+  "recover_command": "oracle browser leases recover --provider PROVIDER --json",
+  "schema_version": "remote_browser_endpoint.v1",
+  "shared_profile_policy": "one_user_auth_context_per_remote_browser_host",
+  "status": "ready",
+  "token_env": "ORACLE_REMOTE_TOKEN"
+}

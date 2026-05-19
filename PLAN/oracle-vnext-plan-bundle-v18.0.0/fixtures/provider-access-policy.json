@@ -1,0 +1,156 @@
+{
+  "allowed_api_routes": ["xai_grok_reasoning", "deepseek_v4_pro_reasoning_search"],
+  "bundle_version": "v18.0.0",
+  "forbidden_live_substitutions": [
+    "OpenAI API must not satisfy codex_intake, chatgpt_pro_first_plan, or chatgpt_pro_synthesis in this workflow.",
+    "Gemini API must not satisfy gemini_deep_think in this workflow.",
+    "Anthropic API must not satisfy claude_code_opus in this workflow.",
+    "Oracle browser output without redacted evidence must not satisfy critical browser slots.",
+    "Do not satisfy DeepSeek search-enabled review with DeepSeek web UI, unofficial proxies, or undocumented API search flags; use official DeepSeek API plus APR search tool calls."
+  ],
+  "live_routes": {
+    "chatgpt_pro_first_plan": {
+      "access_path": "oracle_browser_remote_or_local",
+      "api_allowed": false,
+      "browser_effort_strategy": "select_highest_visible",
+      "effort_rank_required": "highest_visible",
+      "eligible_for_synthesis": true,
+      "evidence_required": true,
+      "model": "chatgpt-pro-latest",
+      "model_selector": "Pro",
+      "normalized_effort": "max_browser_available",
+      "oracle_allowed": true,
+      "preferred_observed_effort_labels": ["Heavy"],
+      "provider_family": "chatgpt",
+      "purpose": "formal_first_plan_balanced_audit",
+      "requested_reasoning_effort": "max_browser_available",
+      "selection_rule": "Select ChatGPT Pro and the highest visible thinking-effort option. Do not hard-code a browser label; record observed label/rank evidence before prompt submission."
+    },
+    "chatgpt_pro_synthesis": {
+      "access_path": "oracle_browser_remote_or_local",
+      "api_allowed": false,
+      "browser_effort_strategy": "select_highest_visible",
+      "effort_rank_required": "highest_visible",
+      "eligible_for_synthesis": true,
+      "evidence_required": true,
+      "model": "chatgpt-pro-latest",
+      "model_selector": "Pro",
+      "normalized_effort": "max_browser_available",
+      "oracle_allowed": true,
+      "preferred_observed_effort_labels": ["Heavy"],
+      "provider_family": "chatgpt",
+      "purpose": "synthesis_and_revision",
+      "requested_reasoning_effort": "max_browser_available",
+      "selection_rule": "Select ChatGPT Pro and the highest visible thinking-effort option. Do not hard-code a browser label; record observed label/rank evidence before prompt submission."
+    },
+    "claude_code_opus": {
+      "access_path": "claude_code_subscription_cli",
+      "api_allowed": false,
+      "claude_code_keyword": "ultrathink",
+      "cli_controls": [
+        "claude --model claude-opus-4-7 --effort max",
+        "CLAUDE_CODE_EFFORT_LEVEL=max",
+        "prompt includes ultrathink"
+      ],
+      "effort": "max",
+      "eligible_for_synthesis": true,
+      "model": "claude-opus-4-7",
+      "oracle_allowed": false,
+      "provider_family": "claude",
+      "purpose": "independent_review",
+      "selection_rule": "Use Claude Code subscription CLI with --model claude-opus-4-7 and --effort max, or CLAUDE_CODE_EFFORT_LEVEL=max. Include ultrathink as additional one-off request language only.",
+      "settings": ["alwaysThinkingEnabled=true"],
+      "thinking": {
+        "type": "adaptive"
+      }
+    },
+    "codex_intake": {
+      "access_path": "codex_cli_subscription",
+      "api_allowed": false,
+      "capability_probe_required": true,
+      "configuration_keys": ["model_reasoning_effort=xhigh", "plan_mode_reasoning_effort=xhigh"],
+      "eligible_for_synthesis": false,
+      "model": "gpt-5.5",
+      "oracle_allowed": false,
+      "provider_family": "openai_codex",
+      "purpose": "intake_context_only",
+      "reasoning_effort": "xhigh",
+      "source": "OpenAI Codex config docs list model_reasoning_effort and plan_mode_reasoning_effort values including xhigh."
+    },
+    "codex_thinking_fast_draft": {
+      "access_path": "codex_cli_subscription",
+      "api_allowed": false,
+      "capability_probe_required": true,
+      "configuration_keys": ["model_reasoning_effort=xhigh", "plan_mode_reasoning_effort=xhigh"],
+      "eligible_for_synthesis": false,
+      "model": "gpt-5.5",
+      "oracle_allowed": false,
+      "provider_family": "openai_codex",
+      "purpose": "fast_exploratory_draft_only",
+      "reasoning_effort": "xhigh",
+      "source": "Fast mode may use Codex CLI as exploratory context only; highest effort is still required."
+    },
+    "deepseek_v4_pro_reasoning_search": {
+      "access_path": "deepseek_official_api",
+      "api_allowed": true,
+      "eligible_for_synthesis": true,
+      "model": "deepseek-v4-pro",
+      "official_api": true,
+      "oracle_allowed": false,
+      "provider_family": "deepseek",
+      "purpose": "independent_review",
+      "reasoning_content_policy": "transient_tool_replay_hash_only_persisted",
+      "reasoning_effort": "max",
+      "search_enabled": true,
+      "search_mode": "tool_call_web_search",
+      "search_tool": "apr_web_search",
+      "selection_rule": "Use official DeepSeek API with thinking enabled and reasoning_effort=max. If tool calls occur, preserve reasoning_content transiently only as needed for DeepSeek's required tool-call replay, then discard raw content and persist at most a hash.",
+      "thinking": {
+        "type": "enabled"
+      }
+    },
+    "gemini_deep_think": {
+      "access_path": "oracle_browser_remote_or_local",
+      "api_allowed": false,
+      "api_equivalent_thinking_level": "high",
+      "browser_effort_strategy": "select_deep_think_and_highest_thinking_level_if_exposed",
+      "browser_mode": "Deep Think",
+      "effort_rank_required": "deep_think_selected_and_highest_visible",
+      "eligible_for_synthesis": true,
+      "evidence_required": true,
+      "model": "gemini-3.1-pro-deep-think",
+      "oracle_allowed": true,
+      "provider_family": "gemini",
+      "purpose": "independent_review",
+      "requested_reasoning_effort": "deep_think_highest_available",
+      "selection_rule": "Select Deep Think and, if exposed, the high thinking level in the Gemini web UI; evidence must record both browser mode and effort/rank observations.",
+      "thinking_level_if_exposed": "high"
+    },
+    "xai_grok_reasoning": {
+      "access_path": "xai_api",
+      "api_allowed": true,
+      "eligible_for_synthesis": true,
+      "model": "grok-4.3",
+      "oracle_allowed": false,
+      "provider_family": "xai_grok",
+      "purpose": "independent_review",
+      "reasoning_effort": "high",
+      "selection_rule": "For Grok 4.3, official xAI docs list none/low/medium/high; high is the maximum single-model reasoning depth. Do not use xhigh for Grok 4.3. If using grok-4.20-multi-agent, xhigh controls agent count rather than single-model reasoning depth and must be a separately named route."
+    }
+  },
+  "model_reasoning_policy": "fixtures/model-reasoning-policy.json",
+  "runtime_invariants": [
+    "balanced and audit require chatgpt_pro_first_plan and chatgpt_pro_synthesis through Oracle browser automation.",
+    "balanced and audit require gemini_deep_think unless a recorded waiver explicitly downgrades the run before live fanout.",
+    "fast may use codex_thinking_fast_draft but remains exploratory until promoted or waived.",
+    "all critical browser slots require same-session verified-before-submit evidence.",
+    "DeepSeek official API is allowed only for deepseek_v4_pro_reasoning_search; it must use deepseek-v4-pro with thinking enabled, reasoning_effort=max, and APR-provided search tooling.",
+    "All live model calls must request the provider-specific highest documented reasoning effort from fixtures/model-reasoning-policy.json.",
+    "Unknown, default, missing, or lower reasoning effort makes balanced/audit provider results synthesis-ineligible unless a pre-call waiver is recorded.",
+    "DeepSeek reasoning_content may be replayed transiently inside the adapter for tool-call continuity but must not be persisted except as a redacted hash.",
+    "Browser effort labels are evidence observations, not stable contract literals.",
+    "Route readiness is stage-scoped; preflight readiness does not imply synthesis eligibility.",
+    "Provider docs snapshots must be refreshed before audit runs."
+  ],
+  "schema_version": "provider_access_policy.v1"
+}

@@ -1,0 +1,26 @@
+{
+  "$id": "https://example.invalid/vibe-planning/contracts/approval-ledger.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "approvals": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "gates": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "approval_ledger.v1"
+    }
+  },
+  "required": ["schema_version", "approvals"],
+  "title": "Approval Ledger",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

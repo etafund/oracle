@@ -1,0 +1,81 @@
+{
+  "$id": "https://example.invalid/v18/contracts/browser-lease.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "blocked_reason": {
+      "type": ["string", "null"]
+    },
+    "bundle_version": {
+      "const": "v18.0.0"
+    },
+    "expires_at": {
+      "type": "string"
+    },
+    "fix_command": {
+      "type": ["string", "null"]
+    },
+    "holder": {
+      "type": ["string", "null"]
+    },
+    "issued_at": {
+      "type": "string"
+    },
+    "lease_id": {
+      "type": "string"
+    },
+    "lock_name": {
+      "type": "string"
+    },
+    "next_command": {
+      "type": ["string", "null"]
+    },
+    "profile_id_hash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "profile_scope": {
+      "type": "string"
+    },
+    "provider": {
+      "enum": ["chatgpt", "gemini"]
+    },
+    "remote_browser": {
+      "type": "object"
+    },
+    "renewable": {
+      "type": "boolean"
+    },
+    "schema_version": {
+      "const": "browser_lease.v1"
+    },
+    "shared_profile_policy": {
+      "type": "string"
+    },
+    "status": {
+      "enum": ["available", "acquired", "blocked", "expired", "released"]
+    },
+    "ttl_seconds": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "bundle_version",
+    "lease_id",
+    "provider",
+    "profile_id_hash",
+    "remote_browser",
+    "lock_name",
+    "status",
+    "ttl_seconds",
+    "issued_at",
+    "expires_at",
+    "renewable",
+    "profile_scope",
+    "shared_profile_policy"
+  ],
+  "title": "Browser Lease",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

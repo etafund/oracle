@@ -1,0 +1,18 @@
+{
+  "access_path": "xai_api",
+  "api_allowed": true,
+  "bundle_version": "v18.0.0",
+  "capabilities": {
+    "reasoning_effort": "high"
+  },
+  "checked_at": "2026-05-12T00:00:00Z",
+  "highest_reasoning_verified": false,
+  "model": "grok-4.3",
+  "provider": "xai_grok",
+  "provider_family": "xai_grok",
+  "provider_slot": "xai_grok_reasoning",
+  "reasoning_effort": "high",
+  "required_env": ["XAI_API_KEY"],
+  "schema_version": "provider_capability.v1",
+  "status": "ready"
+}

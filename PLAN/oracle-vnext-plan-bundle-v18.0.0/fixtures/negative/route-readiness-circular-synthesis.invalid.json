@@ -1,0 +1,36 @@
+{
+  "blocked": [],
+  "browser_evidence_required_for": [
+    "chatgpt_pro_first_plan",
+    "gemini_deep_think",
+    "chatgpt_pro_synthesis"
+  ],
+  "bundle_version": "v18.0.0",
+  "degraded": [],
+  "mock_mode": true,
+  "optional_slots": ["claude_code_opus", "xai_grok_reasoning", "deepseek_v4_pro_reasoning_search"],
+  "pending_browser_evidence_for": [
+    "chatgpt_pro_first_plan",
+    "gemini_deep_think",
+    "chatgpt_pro_synthesis"
+  ],
+  "preflight_ready": true,
+  "profile": "balanced",
+  "ready": true,
+  "ready_scope": "preflight",
+  "required_slots": ["chatgpt_pro_first_plan", "gemini_deep_think", "chatgpt_pro_synthesis"],
+  "schema_version": "route_readiness.v1",
+  "stage_readiness": {
+    "synthesis": {
+      "blocked_until": ["verified_chatgpt_pro_synthesis_evidence"],
+      "ready": false
+    }
+  },
+  "synthesis_blocked_until_evidence_for": [
+    "chatgpt_pro_first_plan",
+    "gemini_deep_think",
+    "chatgpt_pro_synthesis"
+  ],
+  "synthesis_ready": false,
+  "why_invalid": "This is circular: ChatGPT synthesis evidence cannot exist until the synthesis prompt has been submitted and completed."
+}

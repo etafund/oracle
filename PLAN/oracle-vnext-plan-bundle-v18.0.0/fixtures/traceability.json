@@ -1,0 +1,24 @@
+{
+  "bundle_version": "v18.0.0",
+  "requirements": [
+    {
+      "id": "REQ-CHATGPT-PRO-FIRST-PLAN",
+      "plan_sections": ["provider-routing"],
+      "source": "user",
+      "tests": ["test_chatgpt_pro_first_plan_required"]
+    }
+  ],
+  "risks": [
+    {
+      "id": "RISK-UI-DRIFT",
+      "mitigation": "browser evidence and selector fixtures"
+    }
+  ],
+  "schema_version": "traceability_matrix.v1",
+  "tests": [
+    {
+      "id": "test_chatgpt_pro_first_plan_required",
+      "type": "contract"
+    }
+  ]
+}

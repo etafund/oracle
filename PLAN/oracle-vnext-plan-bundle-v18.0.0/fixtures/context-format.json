@@ -1,0 +1,49 @@
+{
+  "anti_patterns": [
+    "Do not make TOON the canonical persistence format.",
+    "Do not send TOON to a provider unless the prompt explains the format and includes schema hints.",
+    "Do not use TOON for evidence, contracts, manifests, or other artifacts that validators must parse as JSON.",
+    "Do not assume the installed binary name; probe toon first, then tru, and report the exact path."
+  ],
+  "bundle_version": "v18.0.0",
+  "canonical_format": "json",
+  "canonical_payload_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "decision": "Use TOON only as optional model-facing structured context compression when round-trip validation succeeds; canonical storage remains JSON.",
+  "decoder_roundtrip_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "default_mode": "auto",
+  "eligible_artifact_types": [
+    "prompt_context_packet",
+    "prompt_manifest_structured_context",
+    "provider_route_summary",
+    "route_readiness_summary",
+    "review_quorum_summary",
+    "source_baseline_summary",
+    "source_trust_summary"
+  ],
+  "encoded_payload_sha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "encoder": "toon_rust",
+  "encoder_binary_candidates": ["toon", "tru"],
+  "fallback_on_validation_failure": "json",
+  "forbidden_artifact_types": [
+    "canonical_contracts",
+    "browser_evidence",
+    "browser_lease",
+    "provider_result",
+    "plan_ir",
+    "approval_ledger",
+    "traceability_matrix",
+    "bundle_manifest",
+    "raw_private_prompt",
+    "raw_model_output"
+  ],
+  "minimum_estimated_token_savings_percent": 15,
+  "model_facing_format": "auto",
+  "roundtrip_validation_required": true,
+  "schema_version": "context_format.v1",
+  "token_estimate": {
+    "estimated_savings_percent": 38.1,
+    "estimator": "repo-readme-style-heuristic",
+    "json_tokens": 4200,
+    "toon_tokens": 2600
+  }
+}

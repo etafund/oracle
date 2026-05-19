@@ -1,0 +1,38 @@
+{
+  "$id": "https://example.invalid/vibe-planning/contracts/source-baseline.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "artifact_name": {
+      "const": "source-lock.json"
+    },
+    "bundle_version": {
+      "const": "v18.0.0"
+    },
+    "gaps": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "mode": {
+      "enum": ["off", "baseline", "strict"]
+    },
+    "policy": {
+      "enum": ["off", "baseline", "strict"]
+    },
+    "schema_version": {
+      "const": "source_baseline.v1"
+    },
+    "sources": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": ["schema_version", "policy", "sources", "bundle_version"],
+  "title": "Source Baseline / Source Lock",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

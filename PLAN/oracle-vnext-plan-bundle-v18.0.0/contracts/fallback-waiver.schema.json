@@ -1,0 +1,75 @@
+{
+  "$id": "https://example.invalid/v18/contracts/fallback-waiver.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "allowed_degradation": {
+      "type": "string"
+    },
+    "bundle_version": {
+      "const": "v18.0.0"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "created_by": {
+      "type": "string"
+    },
+    "expires_at": {
+      "type": "string"
+    },
+    "must_surface_in_handoff": {
+      "type": "boolean"
+    },
+    "non_waivable_slots": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "profile": {
+      "type": "string"
+    },
+    "provider_slot": {
+      "type": "string"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "fallback_waiver.v1"
+    },
+    "scope": {
+      "type": "string"
+    },
+    "synthesis_eligible_after_waiver": {
+      "type": "boolean"
+    },
+    "user_acknowledged": {
+      "type": "boolean"
+    },
+    "waiver_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "bundle_version",
+    "waiver_id",
+    "profile",
+    "scope",
+    "provider_slot",
+    "allowed_degradation",
+    "non_waivable_slots",
+    "reason",
+    "created_by",
+    "created_at",
+    "expires_at",
+    "user_acknowledged",
+    "must_surface_in_handoff",
+    "synthesis_eligible_after_waiver"
+  ],
+  "title": "Fallback Waiver",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

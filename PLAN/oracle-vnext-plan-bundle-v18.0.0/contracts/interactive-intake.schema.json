@@ -1,0 +1,46 @@
+{
+  "$id": "https://example.invalid/vibe-planning/contracts/interactive-intake.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "access_path": {
+      "const": "codex_cli_subscription"
+    },
+    "api_used": {
+      "const": false
+    },
+    "bundle_version": {
+      "const": "v18.0.0"
+    },
+    "eligible_for_synthesis": {
+      "const": false
+    },
+    "formal_first_plan": {
+      "const": false
+    },
+    "oracle_used": {
+      "const": false
+    },
+    "schema_version": {
+      "const": "interactive_intake.v1"
+    },
+    "source": {
+      "type": "string"
+    },
+    "summary_path": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "access_path",
+    "api_used",
+    "eligible_for_synthesis",
+    "formal_first_plan",
+    "oracle_used",
+    "schema_version",
+    "source"
+  ],
+  "title": "Interactive Intake",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

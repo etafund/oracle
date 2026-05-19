@@ -1,0 +1,20 @@
+{
+  "bundle_version": "v18.0.0",
+  "eligible_statuses": ["success", "cached"],
+  "first_plan_slot": "chatgpt_pro_first_plan",
+  "independent_review_min_total": 2,
+  "independent_review_optional_slots": [
+    "claude_code_opus",
+    "xai_grok_reasoning",
+    "deepseek_v4_pro_reasoning_search"
+  ],
+  "independent_review_required_slots": ["gemini_deep_think"],
+  "ineligible_statuses": ["failed", "degraded", "skipped", "manual_import"],
+  "manual_import_counts_only_with_approval": true,
+  "optional_review_min_successes": 1,
+  "profile": "balanced",
+  "schema_version": "review_quorum.v1",
+  "synthesis_slot": "chatgpt_pro_synthesis",
+  "waiver_required_if_not_met": true,
+  "why": "Balanced should be a true multi-model comparison: Gemini Deep Think is required, and at least one additional independent reviewer should succeed before synthesis unless the user records an explicit waiver."
+}

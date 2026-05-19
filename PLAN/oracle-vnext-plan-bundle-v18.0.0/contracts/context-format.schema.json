@@ -1,0 +1,95 @@
+{
+  "$id": "https://example.invalid/v18/contracts/context-format.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "anti_patterns": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "bundle_version": {
+      "const": "v18.0.0"
+    },
+    "canonical_format": {
+      "const": "json"
+    },
+    "canonical_payload_sha256": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "decision": {
+      "type": "string"
+    },
+    "decoder_roundtrip_sha256": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "default_mode": {
+      "enum": ["json", "toon", "auto"]
+    },
+    "eligible_artifact_types": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "encoded_payload_sha256": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "encoder": {
+      "enum": ["none", "toon_rust"]
+    },
+    "encoder_binary_candidates": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "fallback_on_validation_failure": {
+      "enum": ["json", "block"]
+    },
+    "forbidden_artifact_types": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "minimum_estimated_token_savings_percent": {
+      "type": "number"
+    },
+    "model_facing_format": {
+      "enum": ["json", "toon", "auto"]
+    },
+    "roundtrip_validation_required": {
+      "type": "boolean"
+    },
+    "schema_version": {
+      "const": "context_format.v1"
+    },
+    "token_estimate": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "bundle_version",
+    "canonical_format",
+    "model_facing_format",
+    "default_mode",
+    "encoder",
+    "encoder_binary_candidates",
+    "roundtrip_validation_required",
+    "fallback_on_validation_failure",
+    "eligible_artifact_types",
+    "forbidden_artifact_types",
+    "anti_patterns",
+    "decision"
+  ],
+  "title": "Context Format Policy",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

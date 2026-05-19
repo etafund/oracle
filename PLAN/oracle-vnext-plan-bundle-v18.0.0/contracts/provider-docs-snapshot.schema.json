@@ -1,0 +1,52 @@
+{
+  "$id": "https://example.invalid/v18/contracts/provider-docs-snapshot.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "bundle_version": {
+      "const": "v18.0.0"
+    },
+    "checked_at": {
+      "type": "string"
+    },
+    "expiration_policy": {
+      "type": "string"
+    },
+    "expires_at": {
+      "type": "string"
+    },
+    "implementation_rule": {
+      "type": "string"
+    },
+    "max_age_days": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "refresh_required_before_live_provider_calls": {
+      "type": "boolean"
+    },
+    "schema_version": {
+      "const": "provider_docs_snapshot.v1"
+    },
+    "sources": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "bundle_version",
+    "checked_at",
+    "expiration_policy",
+    "sources",
+    "implementation_rule",
+    "expires_at",
+    "max_age_days",
+    "refresh_required_before_live_provider_calls"
+  ],
+  "title": "Provider Docs Snapshot",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

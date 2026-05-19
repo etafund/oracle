@@ -1,0 +1,64 @@
+{
+  "$id": "https://example.invalid/v18/contracts/codex-intake.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "access_path": {
+      "const": "codex_cli_subscription"
+    },
+    "bundle_version": {
+      "const": "v18.0.0"
+    },
+    "capability_probe_required": {
+      "type": "boolean"
+    },
+    "eligible_for_synthesis": {
+      "type": "boolean"
+    },
+    "formal_first_plan": {
+      "type": "boolean"
+    },
+    "model": {
+      "type": "string"
+    },
+    "model_family": {
+      "type": "string"
+    },
+    "model_reasoning_effort": {
+      "const": "xhigh"
+    },
+    "plan_mode_reasoning_effort": {
+      "const": "xhigh"
+    },
+    "reasoning_effort": {
+      "type": "string"
+    },
+    "reasoning_effort_verified": {
+      "type": "boolean"
+    },
+    "schema_version": {
+      "const": "codex_intake.v1"
+    },
+    "subscription_route": {
+      "const": true
+    },
+    "transcript_sha256": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "access_path",
+    "model_family",
+    "reasoning_effort",
+    "subscription_route",
+    "formal_first_plan",
+    "eligible_for_synthesis",
+    "transcript_sha256",
+    "bundle_version"
+  ],
+  "title": "Codex CLI Intake",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

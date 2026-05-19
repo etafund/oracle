@@ -1,0 +1,73 @@
+{
+  "$id": "https://example.invalid/v18/contracts/run-progress.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "blocked_reason": {
+      "type": ["string", "null"]
+    },
+    "bundle_version": {
+      "const": "v18.0.0"
+    },
+    "completed_stages": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "current_stage": {
+      "type": "string"
+    },
+    "last_event_at": {
+      "type": "string"
+    },
+    "next_command": {
+      "type": ["string", "null"]
+    },
+    "pending_stages": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "profile": {
+      "type": "string"
+    },
+    "progress_percent": {
+      "type": "number"
+    },
+    "retry_safe": {
+      "type": "boolean"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "run_progress.v1"
+    },
+    "state": {
+      "type": "string"
+    },
+    "user_visible_message": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "bundle_version",
+    "run_id",
+    "profile",
+    "state",
+    "current_stage",
+    "completed_stages",
+    "pending_stages",
+    "progress_percent",
+    "user_visible_message",
+    "next_command",
+    "blocked_reason",
+    "retry_safe"
+  ],
+  "title": "Run Progress",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

@@ -1,0 +1,82 @@
+{
+  "$id": "https://example.invalid/v18/contracts/prompt-context-packet.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "brief_path": {
+      "type": "string"
+    },
+    "brief_sha256": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "bundle_version": {
+      "const": "v18.0.0"
+    },
+    "canonical_artifact_serialization": {
+      "const": "json"
+    },
+    "context_serialization_fallback": {
+      "const": "json"
+    },
+    "context_serialization_policy_sha256": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "excluded_sections": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "included_sections": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "preferred_context_serialization": {
+      "enum": ["auto", "toon", "json"]
+    },
+    "profile": {
+      "enum": ["fast", "balanced", "audit", "offline"]
+    },
+    "prompt_policy_sha256": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "prompt_context_packet.v1"
+    },
+    "source_baseline_sha256": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "source_trust_sha256": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "toon_rust_optional": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schema_version",
+    "bundle_version",
+    "profile",
+    "brief_path",
+    "brief_sha256",
+    "source_baseline_sha256",
+    "source_trust_sha256",
+    "prompt_policy_sha256",
+    "included_sections",
+    "excluded_sections",
+    "created_at"
+  ],
+  "title": "Prompt Context Packet",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

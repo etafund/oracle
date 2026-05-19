@@ -1,0 +1,51 @@
+{
+  "$id": "https://example.invalid/vibe-planning/contracts/prompt-manifest.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "excluded_sections": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "included_sections": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "input_hashes": {
+      "type": "object"
+    },
+    "policy_family": {
+      "type": "string"
+    },
+    "policy_version": {
+      "type": "string"
+    },
+    "prompt_id": {
+      "type": "string"
+    },
+    "provider_family": {
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "prompt_manifest.v1"
+    },
+    "token_budget": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "prompt_id",
+    "provider_family",
+    "policy_family",
+    "policy_version",
+    "input_hashes"
+  ],
+  "title": "Prompt Manifest",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

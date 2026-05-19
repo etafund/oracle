@@ -1,0 +1,626 @@
+{
+  "bundle_version": "v18.0.0",
+  "file_count": 124,
+  "files": [
+    {
+      "path": "BUNDLE_VERSION.md",
+      "sha256": "sha256:bcc4c2f199200cd5c6a5fec8f7bd878b53606e7970251d120373fdb0042646e9",
+      "size_bytes": 26
+    },
+    {
+      "path": "CHANGELOG.md",
+      "sha256": "sha256:2df0d1fd13e7f1b61102cb963e88c2705ab70c2fc600c01a0b8f6adc6d3cf2e2",
+      "size_bytes": 3557
+    },
+    {
+      "path": "README.md",
+      "sha256": "sha256:7cc07c97f70696d662248143b63bc4088ce29edfbe93ccd8a2028506a9b6582f",
+      "size_bytes": 5191
+    },
+    {
+      "path": "ROBOTS.md",
+      "sha256": "sha256:3812d02a0049f4e3a26d4b96410276113a51129aec5a2a7f7d1231ba71326a81",
+      "size_bytes": 5809
+    },
+    {
+      "path": "VERSION",
+      "sha256": "sha256:142903036cbe048d759ce762e0139d3e149c6b49b487a0ec6f9b898470cd7cfc",
+      "size_bytes": 8
+    },
+    {
+      "path": "contracts/approval-ledger.schema.json",
+      "sha256": "sha256:8ad951d743e81ece8c78e9573147e7e69713c5c2d9ac6408e7fe6155b4e86d64",
+      "size_bytes": 609
+    },
+    {
+      "path": "contracts/artifact-index.schema.json",
+      "sha256": "sha256:c7994882a389fd753a45d052b029427beee12048c841ae5451f9fc338d04502c",
+      "size_bytes": 511
+    },
+    {
+      "path": "contracts/browser-evidence.schema.json",
+      "sha256": "sha256:313160c31ba381a4c4d330a87a5dfca4afbcdcd87b52fedc5a4522b276f010b2",
+      "size_bytes": 3946
+    },
+    {
+      "path": "contracts/browser-lease.schema.json",
+      "sha256": "sha256:2c44983418943577654857e7fb9ccb3c85dcdf0446b780d7a02387bc36a78496",
+      "size_bytes": 1821
+    },
+    {
+      "path": "contracts/browser-session.schema.json",
+      "sha256": "sha256:f845d6119642dea74451f33817a412b9ab7306b70def5a8b4bcc25d705b7ac9f",
+      "size_bytes": 945
+    },
+    {
+      "path": "contracts/capability-lease.schema.json",
+      "sha256": "sha256:a15143e234cb8c0e39112f883cc2085df928166bacb1f8c4f9bb3ff92b4793af",
+      "size_bytes": 986
+    },
+    {
+      "path": "contracts/codex-intake.schema.json",
+      "sha256": "sha256:29fb5e884a96ffd1df8a4148eb12572a70b57fa37f8d4858b7259f8bafe98d06",
+      "size_bytes": 1386
+    },
+    {
+      "path": "contracts/context-serialization-policy.schema.json",
+      "sha256": "sha256:0ea0f22ba5b9392e9be8acd23cbe1c1940ec3e71b56981d8a446a82f83b09519",
+      "size_bytes": 2854
+    },
+    {
+      "path": "contracts/deepseek-search-tool.schema.json",
+      "sha256": "sha256:931a2058b20926e4b1cab8495e6dcae91b8eecccaeb9928a477b9892ecf3b953",
+      "size_bytes": 2522
+    },
+    {
+      "path": "contracts/execution-profile.schema.json",
+      "sha256": "sha256:5729f01fb70e6ee2a09de00a208ff08303999860b195753cd5b36bd882eadb93",
+      "size_bytes": 895
+    },
+    {
+      "path": "contracts/failure-mode-ledger.schema.json",
+      "sha256": "sha256:cb904c408050e55dbe6e407121747a81794b724a57cb1aabbd382b9d0ab5cafb",
+      "size_bytes": 1004
+    },
+    {
+      "path": "contracts/fallback-waiver.schema.json",
+      "sha256": "sha256:3e07c92e5aebad2d363a5a04a77f606c7c40662ee7277148aa151c3a75031f8f",
+      "size_bytes": 1499
+    },
+    {
+      "path": "contracts/interactive-intake.schema.json",
+      "sha256": "sha256:a39e301374ba463217cf1c06902c6c7ed5e897e9e456c5a07be827635ff1a227",
+      "size_bytes": 962
+    },
+    {
+      "path": "contracts/json-envelope.schema.json",
+      "sha256": "sha256:080dc8f346952a7fcf903a3b3fbe2f986af2e296cb648cb743c5e727ed8deead",
+      "size_bytes": 1326
+    },
+    {
+      "path": "contracts/live-cutover-checklist.schema.json",
+      "sha256": "sha256:416a247c235ed98c2745c9725daacb5859ecd90ff0346d83bc0cc035b646172f",
+      "size_bytes": 963
+    },
+    {
+      "path": "contracts/model-reasoning-policy.schema.json",
+      "sha256": "sha256:aa69e101933a9768ffedc9e0b10e0d8d77fab3d219b361c87540b87c184f7c3b",
+      "size_bytes": 958
+    },
+    {
+      "path": "contracts/plan-artifact.schema.json",
+      "sha256": "sha256:56560c5cba7f44a1b887219e46144eb33b75e881a90e64dc7f19c92b35cb4c20",
+      "size_bytes": 1004
+    },
+    {
+      "path": "contracts/prompt-context-packet.schema.json",
+      "sha256": "sha256:1d31501dabbf7b31fc7489888b1b3587e377e8c0128335e711bfa1365460277a",
+      "size_bytes": 1959
+    },
+    {
+      "path": "contracts/prompt-manifest.schema.json",
+      "sha256": "sha256:ebcf95f72175be459daa34367a80898ba985f05b4038d14e0bce845ce4cb684a",
+      "size_bytes": 1030
+    },
+    {
+      "path": "contracts/prompt-policy.schema.json",
+      "sha256": "sha256:1dbc06e71781cec3d8326010263a9ad56ae773556977590bad996298bea79119",
+      "size_bytes": 468
+    },
+    {
+      "path": "contracts/provider-access-policy.schema.json",
+      "sha256": "sha256:161c7f485cedaf47e26321fd9aaab23674a4d88f4194012ffab4f6ab864c08f4",
+      "size_bytes": 979
+    },
+    {
+      "path": "contracts/provider-capability.schema.json",
+      "sha256": "sha256:66aee0aaa385aaa106cc091074eebccdae614288a17ac2adc1cc6dfd7a9df835",
+      "size_bytes": 1041
+    },
+    {
+      "path": "contracts/provider-docs-snapshot.schema.json",
+      "sha256": "sha256:066f3e1fafd83fe66cf43473001c9361e3223ff3266f374a589acc367e719a2b",
+      "size_bytes": 1131
+    },
+    {
+      "path": "contracts/provider-result.schema.json",
+      "sha256": "sha256:a2072b42c5d3986be49a71b1af6dc8c185fdf665257d9153b73d58357674ded8",
+      "size_bytes": 3252
+    },
+    {
+      "path": "contracts/provider-route.schema.json",
+      "sha256": "sha256:4441844ab71d626fd55bf24a066ee2a00e9525675024906880156e69141c31e4",
+      "size_bytes": 1443
+    },
+    {
+      "path": "contracts/remote-browser-endpoint.schema.json",
+      "sha256": "sha256:191aed636edeee26933b8986b93bc38719c6617d411bb65b622c6adfcc311961",
+      "size_bytes": 1480
+    },
+    {
+      "path": "contracts/review-quorum.schema.json",
+      "sha256": "sha256:ca5776f27f1fa360cc2b64820f7a9cada784fe8fdaa9c4cc93d5adbe8e20a993",
+      "size_bytes": 1874
+    },
+    {
+      "path": "contracts/robot-surface.schema.json",
+      "sha256": "sha256:17bc8a7ca0baa261b113863e7df586fde344cd3cd7652c195f0f8066a55687df",
+      "size_bytes": 745
+    },
+    {
+      "path": "contracts/route-readiness.schema.json",
+      "sha256": "sha256:da656b50da4ba082042c4798c8d2a351f611ab2d0db55c5b8325a7305ba4287a",
+      "size_bytes": 2899
+    },
+    {
+      "path": "contracts/run-progress.schema.json",
+      "sha256": "sha256:1638f54f2d1f775c38e7baa6c25549ac155b94b380b4433a2680126418845a64",
+      "size_bytes": 1473
+    },
+    {
+      "path": "contracts/runtime-budget.schema.json",
+      "sha256": "sha256:62ce6761302ca0e18c0f4bfbabd40cdf05b70583fe2a65b3e9b87d91b694b360",
+      "size_bytes": 769
+    },
+    {
+      "path": "contracts/source-baseline.schema.json",
+      "sha256": "sha256:d461cbae1981e61590aac524983ee9e0a613b74eab283362c0ced99463392cfd",
+      "size_bytes": 970
+    },
+    {
+      "path": "contracts/source-trust.schema.json",
+      "sha256": "sha256:effbc1be3e3c02fcc581544156d6ab0956691c4a2fb550fb6103b97ae1a93194",
+      "size_bytes": 615
+    },
+    {
+      "path": "contracts/traceability.schema.json",
+      "sha256": "sha256:807978d45841eb1f4f01a62fead3b0b17fb457b0e4feb82a42751d77cdd1edef",
+      "size_bytes": 715
+    },
+    {
+      "path": "docs/answered-clarifications.md",
+      "sha256": "sha256:dc42ac7710dc6bee2f06d1b29f356c766a8e1e14f649c9122c1a558bf2448a46",
+      "size_bytes": 8938
+    },
+    {
+      "path": "docs/browser-effort-selection-policy.md",
+      "sha256": "sha256:4b3fd3e8514549afcc60d6b0f0c260d9f381c6a83e0c72b1799dc050b2dba93b",
+      "size_bytes": 1789
+    },
+    {
+      "path": "docs/browser-lease-and-evidence.md",
+      "sha256": "sha256:230e43b6de74f723b22bb0a9a810db9adbcdeb0667d137eb27636ec1dbdd6435",
+      "size_bytes": 1640
+    },
+    {
+      "path": "docs/codex-cli-intake-policy.md",
+      "sha256": "sha256:b88b81c5d58788cdf0c9693c65ac76ac1c39b0442346959cfcf0fa01520424c0",
+      "size_bytes": 1679
+    },
+    {
+      "path": "docs/contract-core-extension-policy.md",
+      "sha256": "sha256:d9f3b1397391ab9158b9526c3e9da338362c150d9bac0a73caf4bb4368b9477c",
+      "size_bytes": 1914
+    },
+    {
+      "path": "docs/deepseek-v4-pro-reasoning-search.md",
+      "sha256": "sha256:fed85a852af9094aaa94c4abe468abe6aa88d67860e923c4c19eb2142dfdc61e",
+      "size_bytes": 4327
+    },
+    {
+      "path": "docs/degradation-waiver-policy.md",
+      "sha256": "sha256:5c4530bede12e936f66237a05128dbd9dbe4ab52e08f2c30347b8c8668bec952",
+      "size_bytes": 777
+    },
+    {
+      "path": "docs/evidence-attestation-policy.md",
+      "sha256": "sha256:50eebeea027b34dae83e91c061adfb84dba1f39ef641c88e15091924f0b2420b",
+      "size_bytes": 689
+    },
+    {
+      "path": "docs/highest-reasoning-policy.md",
+      "sha256": "sha256:ef987946125bb2c73e9e46e9324854ea9e6fc100cfbe8d56b4cac07bcf353a9c",
+      "size_bytes": 2939
+    },
+    {
+      "path": "docs/integration-pass-policy.md",
+      "sha256": "sha256:22cb808b9c882b52a14314eb2c77b7b2512aafc878b6694186e7e43fa88be24f",
+      "size_bytes": 663
+    },
+    {
+      "path": "docs/mock-to-live-cutover-policy.md",
+      "sha256": "sha256:19607915f4c9ca6571135146e08b2f825ccf5e8c4acc38dc6b389aa60c5558ab",
+      "size_bytes": 934
+    },
+    {
+      "path": "docs/oracle-general-purpose-boundary.md",
+      "sha256": "sha256:4e8716ddcaf9f51c091575928cac70902d100e87c640bf602f52eae83edf09ec",
+      "size_bytes": 1492
+    },
+    {
+      "path": "docs/premortem-failure-mode-hardening.md",
+      "sha256": "sha256:c41e94631cef78a59992a7bc4fdf93c740af194f21ae88cf2826aa1f38846f1e",
+      "size_bytes": 1813
+    },
+    {
+      "path": "docs/provider-access-policy.md",
+      "sha256": "sha256:c1a1827390a065a2d970d0073295b5bb99928d23e1f6359348927c454d75be24",
+      "size_bytes": 2717
+    },
+    {
+      "path": "docs/provider-docs-freshness-policy.md",
+      "sha256": "sha256:90da98dff39f60e89156eb1b279e1b24e15c6cd128c7bda838827ee4548f7d54",
+      "size_bytes": 931
+    },
+    {
+      "path": "docs/provider-result-consistency-policy.md",
+      "sha256": "sha256:4eb1718ca1c3efb484b95296ebf016a169405023d26ec278f30408f3ac1d297f",
+      "size_bytes": 836
+    },
+    {
+      "path": "docs/remote-browser-profile-policy.md",
+      "sha256": "sha256:1b6c029bb1564efe9e65c23682f0b570ce558a478772522e2ada1a7212dfb3d9",
+      "size_bytes": 2626
+    },
+    {
+      "path": "docs/review-quorum-policy.md",
+      "sha256": "sha256:ac1a2e1dc96089e1e1d722f55193f2c756f2dbc82e1e4d830de84e0235bb39c4",
+      "size_bytes": 1594
+    },
+    {
+      "path": "docs/route-readiness-and-stage-gates.md",
+      "sha256": "sha256:f6f6c8b80294d06eb5e21f33803235ca00bc81babec14aa979bab0422d44526b",
+      "size_bytes": 1557
+    },
+    {
+      "path": "docs/shared-contract-policy.md",
+      "sha256": "sha256:80ee8008b12d39aaa53fe1bbdc5b5d072c797108223e64cf4f71ae9899781fc8",
+      "size_bytes": 1513
+    },
+    {
+      "path": "docs/synthesis-stage-gating-policy.md",
+      "sha256": "sha256:fb239e46d816ecf2344ec857c7ed816d8048b6bc4553538024c559c3b796538e",
+      "size_bytes": 1122
+    },
+    {
+      "path": "docs/toon-rust-context-compression-policy.md",
+      "sha256": "sha256:626262fc0e26fc724331dd4fdc621d724377e869abbd25cd8d67ddb84a590c91",
+      "size_bytes": 7046
+    },
+    {
+      "path": "docs/user-experience-failure-policy.md",
+      "sha256": "sha256:259c4cdebda3a90582780ad52a69956911e18facc8a71a1ec9e43926d20a6bec",
+      "size_bytes": 615
+    },
+    {
+      "path": "docs/v18-bundle-audit-findings.md",
+      "sha256": "sha256:785c5bd72e5e12237e1e742a80a5fb30aff187f3ba910842551d610c444010bc",
+      "size_bytes": 1261
+    },
+    {
+      "path": "fixtures/approval-ledger.json",
+      "sha256": "sha256:bf039ec6d5fc491e064c79c13efcc95714e9cbe425cd498132ed6f9c0540ac36",
+      "size_bytes": 181
+    },
+    {
+      "path": "fixtures/artifact-index.json",
+      "sha256": "sha256:159a150c66313fc6b4a317551013304a8920fecd1b38e0d88e5e5f83650e26f8",
+      "size_bytes": 1620
+    },
+    {
+      "path": "fixtures/brief.md",
+      "sha256": "sha256:f8d2fde2a026d16b25f2ae142ce00d1b1c98c1baa86431146eb0b326f6a9805e",
+      "size_bytes": 1978
+    },
+    {
+      "path": "fixtures/browser-lease.json",
+      "sha256": "sha256:7aed1893b24664085fb999abc4ef2242601e70298f868918c3629ac12dcdbd9c",
+      "size_bytes": 1133
+    },
+    {
+      "path": "fixtures/browser-session.json",
+      "sha256": "sha256:5b9221341db435fdfc77ff73d163836859b4c3bfc406778c1d740dbf98d85067",
+      "size_bytes": 528
+    },
+    {
+      "path": "fixtures/capability-lease.json",
+      "sha256": "sha256:93c15c5f17d02752ff0d09f88cdecfa42afaa2f360a40bf981614d3eab4d1869",
+      "size_bytes": 356
+    },
+    {
+      "path": "fixtures/chatgpt-pro-evidence.json",
+      "sha256": "sha256:bafa56a83021e180b7ad21b57c9dcf83b10ff536549eaf9b41fe901833e5effb",
+      "size_bytes": 2022
+    },
+    {
+      "path": "fixtures/codex-intake.json",
+      "sha256": "sha256:bd82bc781e2a1c7fba4baa96d82f802e47cfa5ee3814c24626f54cbf5241d013",
+      "size_bytes": 611
+    },
+    {
+      "path": "fixtures/context-serialization-policy.json",
+      "sha256": "sha256:7cef1001ee71eeb50e327247c0ee2b2a4b72c787858afc20a59b0f1ca804a93a",
+      "size_bytes": 1819
+    },
+    {
+      "path": "fixtures/deepseek-search-tool.json",
+      "sha256": "sha256:52fd76675598a8bff7aa6c4e60fea9d2dedfee35cfd4d0f3ce7076618b52d58d",
+      "size_bytes": 877
+    },
+    {
+      "path": "fixtures/execution-profile.balanced.json",
+      "sha256": "sha256:396a1c56875aa6a32a7712851523f2090594414b1709283b20027e85e7cc2f1a",
+      "size_bytes": 360
+    },
+    {
+      "path": "fixtures/execution-profile.fast.json",
+      "sha256": "sha256:0461687c673e034e9eb411ac9aced193851f722bb6f78b7017a3a0360ae9cccc",
+      "size_bytes": 245
+    },
+    {
+      "path": "fixtures/failure-mode-ledger.json",
+      "sha256": "sha256:5660b399d7072d1a24f6345b1ff88a3d875d33ae775c882d1e565977ca15ada1",
+      "size_bytes": 11919
+    },
+    {
+      "path": "fixtures/fallback-waiver.json",
+      "sha256": "sha256:c0f5ff353181de08c6c3910721b4b922b6c44673538ae867b3573afb235c0411",
+      "size_bytes": 821
+    },
+    {
+      "path": "fixtures/gemini-deep-think-evidence.json",
+      "sha256": "sha256:a560d9778257e23185cc06827e3c5aef4f7ff10c4b02f7e4e3bec6348f5ac1a7",
+      "size_bytes": 2161
+    },
+    {
+      "path": "fixtures/intake-transcript.md",
+      "sha256": "sha256:252a720d62ef748b2dd6a9c973f7a1e6f0f03e89b49a0997a45059c0e2f64b70",
+      "size_bytes": 268
+    },
+    {
+      "path": "fixtures/interactive-intake.json",
+      "sha256": "sha256:b0d0e6367425384fcfcf8f1900c6be16b2184af79546208576cd87991708d56a",
+      "size_bytes": 361
+    },
+    {
+      "path": "fixtures/json-envelope.ok.json",
+      "sha256": "sha256:679f6dca39f06dd311fb0bee4d72bfbe1b850a98f9597e98bb31a2ecd1035ca6",
+      "size_bytes": 326
+    },
+    {
+      "path": "fixtures/live-cutover-checklist.json",
+      "sha256": "sha256:12225c92234d579729bc87db053ff0050316e7127a04791004340c7824540c06",
+      "size_bytes": 4566
+    },
+    {
+      "path": "fixtures/model-reasoning-policy.json",
+      "sha256": "sha256:2a74795fb3eb7dbf5031762a85bff8af6987792259cb4726353c44b82929c921",
+      "size_bytes": 7752
+    },
+    {
+      "path": "fixtures/negative/api-substitution-provider-result.invalid.json",
+      "sha256": "sha256:ae97ca080e9f5c8c35ddd0e01e8e564bbc8327412c5d9345fa59b26b51811deb",
+      "size_bytes": 535
+    },
+    {
+      "path": "fixtures/negative/codex-formal-first-plan.invalid.json",
+      "sha256": "sha256:7c3bab2493ab27d70ab161b809fc1d1468a50876bb1950730638880e694ff80e",
+      "size_bytes": 367
+    },
+    {
+      "path": "fixtures/negative/deepseek-search-disabled.invalid.json",
+      "sha256": "sha256:1791d260a2bf350abe211a5d4f02a03ddf55842902ba28bf5671180c8b76661f",
+      "size_bytes": 1367
+    },
+    {
+      "path": "fixtures/negative/route-readiness-circular-synthesis.invalid.json",
+      "sha256": "sha256:44a79553ef01f4a64fe5e1b14cc86171f8aab79127e3bccf3cf877ce1bb62d1d",
+      "size_bytes": 1163
+    },
+    {
+      "path": "fixtures/negative/unverified-browser-evidence.invalid.json",
+      "sha256": "sha256:15c99b6d647613ec98d346e221bee3875cf923a6298ff13f2d1b8451f0e149ae",
+      "size_bytes": 1059
+    },
+    {
+      "path": "fixtures/plan-artifact.json",
+      "sha256": "sha256:53d960bf33eab034c236a77fded81e86d2bed3a27620eff756c40ad5437aa172",
+      "size_bytes": 553
+    },
+    {
+      "path": "fixtures/prompt-context-packet.json",
+      "sha256": "sha256:2d1da7661d20c82e2c3d75f9171d395fcb3aed98b7f02abb639ae2d8e12bb9bf",
+      "size_bytes": 1129
+    },
+    {
+      "path": "fixtures/prompt-manifest.json",
+      "sha256": "sha256:0ee0455b0b4b13fbf94f9f758d4269532863288381ed31992a47ebd3d7754e95",
+      "size_bytes": 913
+    },
+    {
+      "path": "fixtures/prompting-policy.json",
+      "sha256": "sha256:7c8b3ca55ae7721c32915f72d52f482e7604c2c3999a53b82ec039792d2c6eba",
+      "size_bytes": 4519
+    },
+    {
+      "path": "fixtures/provider-access-policy.json",
+      "sha256": "sha256:676d87fee41211c2b857dab14047be8aa5707a0f28570892ef359b275adbdb52",
+      "size_bytes": 8330
+    },
+    {
+      "path": "fixtures/provider-capability.claude.json",
+      "sha256": "sha256:b5e63d528a5756a3e4742e3dfe62d8db12ceb82ba511a292f64cc669759a6f1c",
+      "size_bytes": 597
+    },
+    {
+      "path": "fixtures/provider-capability.deepseek.json",
+      "sha256": "sha256:6bba243f1bd58c71590eb22140744b628caf9f8218d90f3b41f2227703e5b0a0",
+      "size_bytes": 743
+    },
+    {
+      "path": "fixtures/provider-capability.xai.json",
+      "sha256": "sha256:d2573a23b6647c19a6cebf53298d4097414edc49f7638ba0cac0d2df45fc88f2",
+      "size_bytes": 483
+    },
+    {
+      "path": "fixtures/provider-docs-snapshot.json",
+      "sha256": "sha256:d7371180c096c1fa3be6f80f004da3f94aee512717afa286a76b6848b8b6b758",
+      "size_bytes": 2305
+    },
+    {
+      "path": "fixtures/provider-result.chatgpt-synthesis.json",
+      "sha256": "sha256:8b3a6e5992f12cbf7774c18ec5aff0bc1de692c732ab329ebc39ca877f6b54cf",
+      "size_bytes": 1531
+    },
+    {
+      "path": "fixtures/provider-result.chatgpt.json",
+      "sha256": "sha256:5f1331f1971adcc73a90602a68e93551f4163e4165538cdce30ee11e5ecc73ae",
+      "size_bytes": 1537
+    },
+    {
+      "path": "fixtures/provider-result.claude.json",
+      "sha256": "sha256:99c189f3244c79c3ef4da1fa0293d4c0f04ed859347aacabbe24aa0d990db822",
+      "size_bytes": 1385
+    },
+    {
+      "path": "fixtures/provider-result.deepseek.json",
+      "sha256": "sha256:aa2c314b5f1172783d8e034e6f091b0f4977fec8c41da352dab05d515bcd1f47",
+      "size_bytes": 1730
+    },
+    {
+      "path": "fixtures/provider-result.gemini.json",
+      "sha256": "sha256:f0b24f65c750853fc2b96ba314a3607d8f893ec712c93c0c74bfbe6797efbc81",
+      "size_bytes": 1599
+    },
+    {
+      "path": "fixtures/provider-result.xai.json",
+      "sha256": "sha256:d1781544af26be553c86e8c5a27463fee5dfda4b76f12ebf21805fd1dadc6edc",
+      "size_bytes": 1048
+    },
+    {
+      "path": "fixtures/provider-route.balanced.json",
+      "sha256": "sha256:55f7c47e3b74ab11daceddf5e99e70289e6b652a361c837c461bc4fb98c7e911",
+      "size_bytes": 5127
+    },
+    {
+      "path": "fixtures/remote-browser-endpoint.json",
+      "sha256": "sha256:9e1d2f61d14e2e3abaabcafa55d6767c652e6db15d75435008620534281608ea",
+      "size_bytes": 774
+    },
+    {
+      "path": "fixtures/review-quorum.balanced.json",
+      "sha256": "sha256:d3d3cef2c5d5e47adbdb62475df46fe317827fb5305b3804098383b99a08c9cc",
+      "size_bytes": 933
+    },
+    {
+      "path": "fixtures/robot-surface.json",
+      "sha256": "sha256:ac19099d23c9547cf795295ddae956aa88a3c5f497b1ae64aea1d0f2c57de6e6",
+      "size_bytes": 531
+    },
+    {
+      "path": "fixtures/route-readiness.balanced.json",
+      "sha256": "sha256:44c240434aaf029da8974027169a4859735eb59c6cc4dfd0132c5f105d49e512",
+      "size_bytes": 3703
+    },
+    {
+      "path": "fixtures/run-progress.json",
+      "sha256": "sha256:5d46d6b01d9fbc0edbbbf483195515935a1eaa1aacd7f054e32c0b80d37562d7",
+      "size_bytes": 773
+    },
+    {
+      "path": "fixtures/runtime-budget.json",
+      "sha256": "sha256:d30b5aad36be4dd7443aa628812a1b2d1317e2e4b1c9743df692f0583e7e0a3e",
+      "size_bytes": 1083
+    },
+    {
+      "path": "fixtures/source-baseline.json",
+      "sha256": "sha256:0f130c5821589731c69ef6713893c36f9b319e014fda7151724e77b6d4b9cf50",
+      "size_bytes": 502
+    },
+    {
+      "path": "fixtures/source-trust.json",
+      "sha256": "sha256:ae61b119c9c8e4eeb14f80a92d8181ab212dbbf43695878f58c93966c09c56ae",
+      "size_bytes": 294
+    },
+    {
+      "path": "fixtures/traceability.json",
+      "sha256": "sha256:a7a287348f536119a878561da07b2877c5106124f976a6cd613222e210fe9de9",
+      "size_bytes": 543
+    },
+    {
+      "path": "references/agent-cli-ergonomics.md",
+      "sha256": "sha256:06ec6f94c8964580febfb45ca84ce9cc7a0beb255ffe84e0e6c826582d197ec9",
+      "size_bytes": 1748
+    },
+    {
+      "path": "references/agent-flywheel-planning-shape.md",
+      "sha256": "sha256:3792bd749011bfc461a9a0da6726e858d725a0ffd0699003a2a3278fdc24fd62",
+      "size_bytes": 2944
+    },
+    {
+      "path": "references/common-objections.md",
+      "sha256": "sha256:6a6e285d0cb71b41fe73b1e18e53af1fefc4aa55c448cf2bc48dab880e6aff1d",
+      "size_bytes": 2292
+    },
+    {
+      "path": "references/provider-specific-prompting.md",
+      "sha256": "sha256:b3e3c6c7d3b76424f56cddf485bfc4df345c316f2100cd5831badabcbdd6d6df",
+      "size_bytes": 4732
+    },
+    {
+      "path": "robots.json",
+      "sha256": "sha256:562f942240b51d1e83f6dc6b72a2b7c302e0c6f696302276eb8e2b4d63de6ed3",
+      "size_bytes": 2562
+    },
+    {
+      "path": "scripts/contract-fixture-smoke.py",
+      "sha256": "sha256:4cc28fcbba75404cc6637ba7644f41dc6453b3bdefccb52530b254cd197e1579",
+      "size_bytes": 18729
+    },
+    {
+      "path": "scripts/oracle-mock.py",
+      "sha256": "sha256:c46d202b4fe787f39705043dca2cdad1787ee89673f0ea609d50632596f6d0f9",
+      "size_bytes": 4467
+    },
+    {
+      "path": "scripts/premortem-check.py",
+      "sha256": "sha256:3c4ab88ad6c70146d013bf758c9adbc9f70f03da688e523457a0b7c49850e8a7",
+      "size_bytes": 3229
+    },
+    {
+      "path": "scripts/validate-subset.py",
+      "sha256": "sha256:d88bfaa97de5a8221b4b11db456d2d684364825d1a0552347df7bd84641a2d95",
+      "size_bytes": 4821
+    },
+    {
+      "path": "spec.md",
+      "sha256": "sha256:a985f916bd50917bc3cb135f72de2c109ea4fb44d599a6e097d1d137143b7646",
+      "size_bytes": 42316
+    },
+    {
+      "path": "tests/README.md",
+      "sha256": "sha256:bb91dfa4bb159d596190349ee5fdc0d0b30d13f54537a3679e6e8b363a70c873",
+      "size_bytes": 129
+    }
+  ]
+}

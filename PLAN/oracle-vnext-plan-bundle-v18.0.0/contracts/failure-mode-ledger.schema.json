@@ -1,0 +1,41 @@
+{
+  "$id": "https://example.invalid/v18/contracts/failure-mode-ledger.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "bundle_version": {
+      "const": "v18.0.0"
+    },
+    "failure_modes": {
+      "items": {
+        "required": [
+          "id",
+          "title",
+          "owner",
+          "likelihood",
+          "impact",
+          "false_assumption",
+          "early_warning_signals",
+          "user_harm",
+          "mitigations",
+          "acceptance_checks"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "ledger_id": {
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "failure_mode_ledger.v1"
+    },
+    "summary": {
+      "type": "string"
+    }
+  },
+  "required": ["schema_version", "bundle_version", "ledger_id", "summary", "failure_modes"],
+  "title": "Failure Mode Ledger",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

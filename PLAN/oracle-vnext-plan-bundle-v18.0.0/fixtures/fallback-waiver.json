@@ -1,0 +1,18 @@
+{
+  "allowed_degradation": "skip_optional_reviewer_after_quorum_satisfied",
+  "bundle_version": "v18.0.0",
+  "created_at": "2026-05-12T00:00:00Z",
+  "created_by": "human_orchestrator",
+  "expires_at": "2026-05-13T00:00:00Z",
+  "must_surface_in_handoff": true,
+  "non_waivable_slots": ["chatgpt_pro_first_plan", "chatgpt_pro_synthesis", "gemini_deep_think"],
+  "profile": "balanced",
+  "provider_slot": "xai_grok_reasoning",
+  "reason": "Example only: optional reviewer unavailable after route quorum is already satisfied by Gemini Deep Think plus DeepSeek.",
+  "schema_version": "fallback_waiver.v1",
+  "scope": "optional_independent_reviewer",
+  "subset_focus": "Oracle",
+  "synthesis_eligible_after_waiver": true,
+  "user_acknowledged": true,
+  "waiver_id": "waiver-example-optional-reviewer-timeout"
+}

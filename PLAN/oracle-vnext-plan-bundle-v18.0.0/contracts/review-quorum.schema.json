@@ -1,0 +1,81 @@
+{
+  "$id": "https://example.invalid/v18/contracts/review-quorum.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "bundle_version": {
+      "const": "v18.0.0"
+    },
+    "eligible_statuses": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "first_plan_slot": {
+      "type": "string"
+    },
+    "independent_review_min_total": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "independent_review_optional_slots": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "independent_review_required_slots": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "ineligible_statuses": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "manual_import_counts_only_with_approval": {
+      "type": "boolean"
+    },
+    "optional_review_min_successes": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "profile": {
+      "enum": ["fast", "balanced", "audit", "offline"]
+    },
+    "schema_version": {
+      "const": "review_quorum.v1"
+    },
+    "synthesis_slot": {
+      "type": "string"
+    },
+    "waiver_required_if_not_met": {
+      "type": "boolean"
+    },
+    "why": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "bundle_version",
+    "profile",
+    "first_plan_slot",
+    "synthesis_slot",
+    "independent_review_required_slots",
+    "independent_review_optional_slots",
+    "optional_review_min_successes",
+    "independent_review_min_total",
+    "eligible_statuses",
+    "ineligible_statuses",
+    "manual_import_counts_only_with_approval",
+    "waiver_required_if_not_met"
+  ],
+  "title": "Review Quorum Policy",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

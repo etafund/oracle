@@ -1,0 +1,39 @@
+{
+  "api_provider_budgets": {
+    "deepseek_v4_pro_reasoning_search": {
+      "max_cost_usd": 10.0,
+      "max_output_tokens": 32000,
+      "max_reasoning_effort": "max",
+      "model": "deepseek-v4-pro",
+      "reasoning_content_policy": "transient_tool_replay_hash_only_persisted",
+      "streaming_preferred": true,
+      "thinking": {
+        "type": "enabled"
+      }
+    },
+    "xai_grok_reasoning": {
+      "max_cost_usd": 10.0,
+      "max_reasoning_effort": "high",
+      "model": "grok-4.3",
+      "timeout_seconds": 3600
+    }
+  },
+  "bundle_version": "v18.0.0",
+  "max_cost_usd": 50.0,
+  "max_wall_minutes": 180,
+  "model_reasoning_policy": "fixtures/model-reasoning-policy.json",
+  "no_effort_downgrade_without_waiver": true,
+  "profile": "balanced",
+  "required_approvals": ["live_fanout"],
+  "retry_policy": {
+    "required_browser_modes": "fail_closed"
+  },
+  "schema_version": "runtime_budget.v1",
+  "search_budget": {
+    "deepseek_v4_pro_reasoning_search": {
+      "max_queries": 5,
+      "max_results_per_query": 5,
+      "timeout_seconds": 45
+    }
+  }
+}

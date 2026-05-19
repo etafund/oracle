@@ -1,0 +1,69 @@
+{
+  "bundle_version": "v18.0.0",
+  "commands": [
+    {
+      "command": "oracle capabilities --json",
+      "mock_command": "python3 scripts/oracle-mock.py capabilities --json",
+      "name": "capabilities",
+      "paid_calls": false
+    },
+    {
+      "command": "oracle doctor --json",
+      "mock_command": "python3 scripts/oracle-mock.py doctor --json",
+      "name": "doctor",
+      "paid_calls": false
+    },
+    {
+      "command": "oracle browser leases plan --providers chatgpt,gemini --json",
+      "mock_command": "python3 scripts/oracle-mock.py browser-leases-plan --json",
+      "name": "browser-leases-plan",
+      "paid_calls": false
+    },
+    {
+      "command": "oracle robot-docs --json",
+      "mock_command": "python3 scripts/oracle-mock.py robot-docs --json",
+      "name": "robot-docs",
+      "paid_calls": false
+    },
+    {
+      "command": "python3 scripts/premortem-check.py --json",
+      "mock_command": "python3 scripts/premortem-check.py --json",
+      "name": "premortem-check",
+      "paid_calls": false
+    },
+    {
+      "command": "cat fixtures/live-cutover-checklist.json",
+      "mock_command": "cat fixtures/live-cutover-checklist.json",
+      "name": "live-cutover-checklist",
+      "paid_calls": false
+    },
+    {
+      "command": "python3 scripts/oracle-mock.py capabilities --json",
+      "mock_command": "python3 scripts/oracle-mock.py capabilities --json",
+      "name": "toon-policy",
+      "paid_calls": false
+    }
+  ],
+  "context_serialization_policy": "fixtures/context-serialization-policy.json",
+  "development_and_runtime": true,
+  "error_fields_required": ["blocked_reason", "next_command", "fix_command", "retry_safe"],
+  "first_try_principle": "The first command a coding agent guesses should work or redirect with a precise next command.",
+  "json_envelope_required": true,
+  "live_cutover_checklist": "fixtures/live-cutover-checklist.json",
+  "notes": "Oracle does not own the DeepSeek official API adapter for this workflow; APR does. Oracle continues to own browser routes and evidence.",
+  "optional_toon_rust": "prompt-context compression only; canonical artifacts stay JSON/Markdown",
+  "premortem_hardening": "fixtures/failure-mode-ledger.json",
+  "robot_recovery_fields": {
+    "runtime_and_development": [
+      "blocked_reason",
+      "next_command",
+      "fix_command",
+      "retry_safe",
+      "required_env",
+      "docs_url_or_path"
+    ]
+  },
+  "run_progress_contract": "contracts/run-progress.schema.json",
+  "schema_version": "robot_surface.v1",
+  "tool": "oracle"
+}

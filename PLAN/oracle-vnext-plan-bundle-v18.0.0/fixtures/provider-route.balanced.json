@@ -1,0 +1,146 @@
+{
+  "bundle_version": "v18.0.0",
+  "fallback_policy": {
+    "fail_closed_for_required_browser_modes": true,
+    "prompt_pack_for_optional": true
+  },
+  "model_reasoning_policy": "fixtures/model-reasoning-policy.json",
+  "optional_slots": ["claude_code_opus", "xai_grok_reasoning", "deepseek_v4_pro_reasoning_search"],
+  "premortem_controls": {
+    "failure_mode_ledger": "fixtures/failure-mode-ledger.json",
+    "live_cutover_checklist": "fixtures/live-cutover-checklist.json",
+    "run_progress": "fixtures/run-progress.json",
+    "waiver_policy": "fixtures/fallback-waiver.json"
+  },
+  "profile": "balanced",
+  "required_slots": ["chatgpt_pro_first_plan", "gemini_deep_think", "chatgpt_pro_synthesis"],
+  "resource_locks": ["browser:shared-profile:chatgpt", "browser:shared-profile:gemini"],
+  "review_quorum": {
+    "independent_review_min_total": 2,
+    "independent_review_optional_slots": [
+      "claude_code_opus",
+      "xai_grok_reasoning",
+      "deepseek_v4_pro_reasoning_search"
+    ],
+    "independent_review_required_slots": ["gemini_deep_think"],
+    "optional_review_min_successes": 1
+  },
+  "review_quorum_policy": "fixtures/review-quorum.balanced.json",
+  "routes": [
+    {
+      "access_path": "oracle_browser_remote",
+      "browser_effort_strategy": "select_highest_visible",
+      "effort_rank_required": "highest_visible",
+      "highest_reasoning_required": true,
+      "model": "chatgpt-pro-latest",
+      "model_selector": "Pro",
+      "normalized_effort": "max_browser_available",
+      "preferred_observed_effort_labels": ["Heavy"],
+      "requested_reasoning_effort": "max_browser_available",
+      "required": true,
+      "slot": "chatgpt_pro_first_plan",
+      "stage": "first_plan"
+    },
+    {
+      "access_path": "oracle_browser_remote",
+      "api_equivalent_thinking_level": "high",
+      "browser_effort_strategy": "select_deep_think_and_highest_thinking_level_if_exposed",
+      "browser_mode": "Deep Think",
+      "effort_rank_required": "deep_think_selected_and_highest_visible",
+      "highest_reasoning_required": true,
+      "model": "gemini-3.1-pro-deep-think",
+      "quorum_candidate": true,
+      "requested_reasoning_effort": "deep_think_highest_available",
+      "required": true,
+      "slot": "gemini_deep_think",
+      "stage": "independent_review",
+      "thinking_level_if_exposed": "high"
+    },
+    {
+      "access_path": "claude_code_cli",
+      "claude_code_keyword": "ultrathink",
+      "cli_controls": [
+        "claude --model claude-opus-4-7 --effort max",
+        "CLAUDE_CODE_EFFORT_LEVEL=max",
+        "prompt includes ultrathink"
+      ],
+      "effort": "max",
+      "highest_reasoning_required": true,
+      "model": "claude-opus-4-7",
+      "quorum_candidate": true,
+      "required": false,
+      "settings": ["alwaysThinkingEnabled=true"],
+      "slot": "claude_code_opus",
+      "stage": "independent_review",
+      "thinking": {
+        "type": "adaptive"
+      }
+    },
+    {
+      "access_path": "xai_api",
+      "highest_reasoning_required": true,
+      "model": "grok-4.3",
+      "quorum_candidate": true,
+      "reasoning_effort": "high",
+      "required": false,
+      "slot": "xai_grok_reasoning",
+      "stage": "independent_review"
+    },
+    {
+      "access_path": "deepseek_official_api",
+      "highest_reasoning_required": true,
+      "model": "deepseek-v4-pro",
+      "quorum_candidate": true,
+      "reasoning_content_policy": "transient_tool_replay_hash_only_persisted",
+      "reasoning_effort": "max",
+      "required": false,
+      "search_enabled": true,
+      "search_mode": "tool_call_web_search",
+      "slot": "deepseek_v4_pro_reasoning_search",
+      "stage": "independent_review",
+      "thinking": {
+        "type": "enabled"
+      }
+    },
+    {
+      "access_path": "oracle_browser_remote",
+      "browser_effort_strategy": "select_highest_visible",
+      "effort_rank_required": "highest_visible",
+      "highest_reasoning_required": true,
+      "invoke_after": "compare_and_review_quorum",
+      "model": "chatgpt-pro-latest",
+      "model_selector": "Pro",
+      "normalized_effort": "max_browser_available",
+      "preferred_observed_effort_labels": ["Heavy"],
+      "requested_reasoning_effort": "max_browser_available",
+      "required": true,
+      "slot": "chatgpt_pro_synthesis",
+      "stage": "synthesis"
+    }
+  ],
+  "schema_version": "provider_route.v1",
+  "stage_optional_slots": {
+    "independent_review": [
+      "claude_code_opus",
+      "xai_grok_reasoning",
+      "deepseek_v4_pro_reasoning_search"
+    ]
+  },
+  "stage_order": [
+    "intake",
+    "first_plan",
+    "independent_review",
+    "compare",
+    "synthesis",
+    "human_review",
+    "handoff"
+  ],
+  "stage_required_slots": {
+    "first_plan": ["chatgpt_pro_first_plan"],
+    "independent_review": ["gemini_deep_think"],
+    "synthesis": ["chatgpt_pro_synthesis"]
+  },
+  "warnings": [
+    "v17: local mock route readiness is not live-provider readiness; run live-cutover checklist before release"
+  ]
+}

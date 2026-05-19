@@ -1,0 +1,76 @@
+{
+  "bundle_version": "v18.0.0",
+  "codex_intake_policy": {
+    "access_path": "codex_cli_subscription",
+    "forbidden": ["Oracle for intake", "OpenAI API for intake"],
+    "model": "gpt-5.5",
+    "model_reasoning_effort": "xhigh",
+    "plan_mode_reasoning_effort": "xhigh",
+    "recommended": [
+      "Use Codex CLI with user subscription",
+      "Verify installed CLI model/reasoning selector",
+      "Capture transcript as context only"
+    ]
+  },
+  "model_reasoning_policy": "fixtures/model-reasoning-policy.json",
+  "policies": {
+    "chatgpt_pro_browser": {
+      "forbidden": [
+        "Direct OpenAI API substitution inside $vibe-planning except test fixtures and non-live mocks."
+      ],
+      "rules": [
+        "Select ChatGPT Pro and the highest visible thinking-effort control; record Heavy only if it is the observed highest label, otherwise record the actual highest ordered effort option in evidence.",
+        "Use ChatGPT Pro / latest Pro model through Oracle browser automation for formal first plan and synthesis.",
+        "Put task, success criteria, and output shape up front; use clear delimiters around source context.",
+        "Ask for implementation-ready output and explicit assumptions; do not ask for hidden chain of thought.",
+        "Use iterative refinement: compare, revise, and preserve deltas rather than treating first output as final."
+      ],
+      "source": "OpenAI ChatGPT help and prompt engineering best practices"
+    },
+    "claude_code": {
+      "forbidden": ["Anthropic API substitution for live $vibe-planning reviewer calls."],
+      "rules": [
+        "Use Claude Opus 4.7 with max effort where the Claude Code surface exposes effort; otherwise include ultrathink and enable alwaysThinkingEnabled where available.",
+        "Use Claude Code CLI/subscription path, not Anthropic API, for live $vibe-planning reviewer calls.",
+        "Define success criteria and eval rubric before asking Claude to review or improve a plan.",
+        "Use XML-style or clearly delimited sections for context, task, constraints, and output schema."
+      ],
+      "source": "Anthropic Claude Code and Claude prompting best practices"
+    },
+    "deepseek_v4_pro_api": {
+      "forbidden": [
+        "Undocumented search:true or web_search:true API parameters unless current official docs verify them.",
+        "Storing raw reasoning_content in user-facing artifacts."
+      ],
+      "rules": [
+        "Set thinking.type=enabled and reasoning_effort=max; preserve reasoning_content only transiently for required tool-call replay and persist at most a hash.",
+        "Use official DeepSeek API base_url https://api.deepseek.com and model deepseek-v4-pro.",
+        "Set thinking.type=enabled and reasoning_effort=max for this reviewer.",
+        "Provide APR web-search as a tool call and require citations for search-derived claims.",
+        "Preserve DeepSeek reasoning_content only transiently when required for tool-call replay; persist only hashes and use final answer content for Plan IR."
+      ],
+      "source": "DeepSeek API docs for models, thinking mode, reasoning_effort, tool calls, and Deep Code webSearchTool configuration."
+    },
+    "gemini_deep_think_browser": {
+      "forbidden": ["Gemini API substitution for live $vibe-planning reviewer calls."],
+      "rules": [
+        "Select Deep Think; if a separate Gemini thinking-level control is exposed, set it to high.",
+        "Use concise direct instructions; place the decisive request after long context.",
+        "Request Deep Think through Oracle browser automation and verify same-session mode before prompt submission.",
+        "Control verbosity explicitly and ask for structured plan sections."
+      ],
+      "source": "Google Gemini prompt design strategies and Gemini thinking guidance"
+    },
+    "xai_grok_api": {
+      "forbidden": [],
+      "rules": [
+        "Use grok-4.3 with reasoning_effort=high for the single-model reasoning route; do not use xhigh for grok-4.3 because official xAI docs list high as its maximum.",
+        "Use xAI API for Grok routes; resolve current recommended reasoning model at runtime.",
+        "Prefer structured outputs where possible and set reasoning effort high for complex plan review.",
+        "Treat legacy Grok Heavy as a workflow alias, not a hard-coded model ID."
+      ],
+      "source": "xAI Grok model, reasoning, and structured output docs"
+    }
+  },
+  "schema_version": "prompt_policy.v1"
+}

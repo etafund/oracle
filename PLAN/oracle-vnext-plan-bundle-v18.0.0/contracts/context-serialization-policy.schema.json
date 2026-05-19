@@ -1,0 +1,128 @@
+{
+  "$id": "https://example.invalid/v18/contracts/context-serialization-policy.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "activation_requirements": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "anti_patterns": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "bundle_version": {
+      "const": "v18.0.0"
+    },
+    "canonical_storage_format": {
+      "const": "json"
+    },
+    "default_effective_format": {
+      "const": "json"
+    },
+    "fallback_format": {
+      "const": "json"
+    },
+    "hash_requirements": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "legal_review_required": {
+      "type": "boolean"
+    },
+    "policy_status": {
+      "enum": ["gated_optional", "enabled_optional", "disabled"]
+    },
+    "prompt_context_preference": {
+      "enum": ["json", "auto", "toon"]
+    },
+    "schema_version": {
+      "const": "context_serialization_policy.v1"
+    },
+    "toon_rust": {
+      "properties": {
+        "cli_candidates": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "enabled_by_default": {
+          "type": "boolean"
+        },
+        "key_folding": {
+          "type": "string"
+        },
+        "library_name": {
+          "type": "string"
+        },
+        "library_package": {
+          "type": "string"
+        },
+        "license_note": {
+          "type": "string"
+        },
+        "license_review_required": {
+          "type": "boolean"
+        },
+        "minimum_version": {
+          "type": "string"
+        },
+        "prefer_cli": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "source_repo": {
+          "type": "string"
+        },
+        "strict_decode": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "enabled",
+        "required",
+        "cli_candidates",
+        "prefer_cli",
+        "strict_decode",
+        "source_repo"
+      ],
+      "type": "object"
+    },
+    "usage_patterns": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "bundle_version",
+    "canonical_storage_format",
+    "prompt_context_preference",
+    "fallback_format",
+    "toon_rust",
+    "usage_patterns",
+    "anti_patterns",
+    "hash_requirements",
+    "policy_status",
+    "legal_review_required",
+    "default_effective_format",
+    "activation_requirements"
+  ],
+  "title": "Context Serialization Policy",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

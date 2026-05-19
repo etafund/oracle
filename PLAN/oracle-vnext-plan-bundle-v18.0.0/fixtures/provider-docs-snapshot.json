@@ -1,0 +1,44 @@
+{
+  "bundle_version": "v18.0.0",
+  "checked_at": "2026-05-12T00:00:00Z",
+  "expiration_policy": "Re-check before implementation and before any live audit run; these docs are current-planning inputs, not permanent truths.",
+  "expires_at": "2026-06-11T00:00:00Z",
+  "failure_modes_addressed": ["FM-007"],
+  "implementation_rule": "Bundle contracts must encode current highest-effort defaults, but runtime providers must capability-probe and record observed provider labels/levels before treating a result as synthesis-eligible.",
+  "max_age_days": 30,
+  "premortem_refresh_required": true,
+  "refresh_required_before_live_provider_calls": true,
+  "schema_version": "provider_docs_snapshot.v1",
+  "sources": [
+    {
+      "provider": "openai_codex",
+      "relevant_claim": "model_reasoning_effort and plan_mode_reasoning_effort support xhigh where model-dependent.",
+      "url": "https://developers.openai.com/codex/config-reference"
+    },
+    {
+      "provider": "chatgpt",
+      "relevant_claim": "Thinking and Pro models expose thinking-effort controls in the ChatGPT model picker; browser labels may drift and must be observed live.",
+      "url": "https://help.openai.com/en/articles/6825453-chatgpt-release-notes"
+    },
+    {
+      "provider": "gemini",
+      "relevant_claim": "Gemini thinking controls expose high as the highest documented thinking level in API surfaces; browser Deep Think must still be verified in the UI.",
+      "url": "https://ai.google.dev/gemini-api/docs/thinking"
+    },
+    {
+      "provider": "claude_code",
+      "relevant_claim": "Claude Code Opus 4.7 supports effort levels low/medium/high/xhigh/max; max is current-session deepest effort and ultrathink is an in-context one-off deep reasoning request.",
+      "url": "https://code.claude.com/docs/en/model-config"
+    },
+    {
+      "provider": "xai",
+      "relevant_claim": "Grok 4.3 supports reasoning_effort none/low/medium/high; high is the maximum single-model setting.",
+      "url": "https://docs.x.ai/developers/model-capabilities/text/reasoning"
+    },
+    {
+      "provider": "deepseek",
+      "relevant_claim": "DeepSeek V4 supports thinking enabled and reasoning_effort high/max; max is the highest effort.",
+      "url": "https://api-docs.deepseek.com/api/create-chat-completion"
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "$id": "https://example.invalid/vibe-planning/contracts/capability-lease.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "capability": {
+      "type": "string"
+    },
+    "expires_at": {
+      "type": "string"
+    },
+    "issued_at": {
+      "type": "string"
+    },
+    "lease_id": {
+      "type": "string"
+    },
+    "provider": {
+      "type": "string"
+    },
+    "same_session_required": {
+      "type": "boolean"
+    },
+    "schema_version": {
+      "const": "capability_lease.v1"
+    },
+    "status": {
+      "enum": ["active", "expired", "revoked", "failed"]
+    },
+    "verification_method": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "lease_id",
+    "provider",
+    "capability",
+    "issued_at",
+    "expires_at",
+    "status"
+  ],
+  "title": "Capability Lease",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

@@ -1,0 +1,38 @@
+{
+  "$id": "https://example.invalid/vibe-planning/contracts/provider-capability.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "blocked_reason": {
+      "type": ["string", "null"]
+    },
+    "capabilities": {
+      "type": "object"
+    },
+    "checked_at": {
+      "type": "string"
+    },
+    "evidence_required": {
+      "type": "boolean"
+    },
+    "next_command": {
+      "type": ["string", "null"]
+    },
+    "provider": {
+      "type": "string"
+    },
+    "remote_browser_supported": {
+      "type": "boolean"
+    },
+    "schema_version": {
+      "const": "provider_capability.v1"
+    },
+    "status": {
+      "enum": ["ready", "blocked", "degraded", "unknown"]
+    }
+  },
+  "required": ["schema_version", "provider", "capabilities", "checked_at"],
+  "title": "Provider Capability Snapshot",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

@@ -1,0 +1,17 @@
+{
+  "access_path": "codex_cli_subscription",
+  "bundle_version": "v18.0.0",
+  "capability_probe_required": true,
+  "eligible_for_synthesis": false,
+  "formal_first_plan": false,
+  "model": "gpt-5.5",
+  "model_family": "gpt-5.5",
+  "model_reasoning_effort": "xhigh",
+  "plan_mode_reasoning_effort": "xhigh",
+  "profile_use": "intake_context_and_fast_exploratory_draft_only",
+  "reasoning_effort": "xhigh",
+  "reasoning_effort_verified": false,
+  "schema_version": "codex_intake.v1",
+  "subscription_route": true,
+  "transcript_sha256": "sha256:f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d"
+}

@@ -1,0 +1,17 @@
+{
+  "$id": "https://example.invalid/vibe-planning/contracts/prompt-policy.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "policies": {
+      "type": "object"
+    },
+    "schema_version": {
+      "const": "prompt_policy.v1"
+    }
+  },
+  "required": ["schema_version", "policies"],
+  "title": "Provider Prompting Policy",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

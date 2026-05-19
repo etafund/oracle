@@ -1,0 +1,22 @@
+{
+  "bundle_version": "v18.0.0",
+  "capture_confidence": "low",
+  "created_at": "2026-05-12T00:00:10Z",
+  "evidence_id": "evidence-bad-unverified",
+  "mode_verified": false,
+  "output_text_sha256": "sha256:9926ef12429996834fe8dc3d906eafa6d6744c9470dac8bc7e02d9cca2993339",
+  "prompt_sha256": "sha256:286eb0a04011550f20db1bfc167db3d0fedd2e9aa4685acf22511e80f87953fe",
+  "prompt_submitted_at": "2026-05-12T00:00:05Z",
+  "provider": "gemini",
+  "provider_slot": "gemini_deep_think",
+  "redaction_policy": "redacted",
+  "requested_mode": "gemini_3_1_pro_deep_think",
+  "schema_version": "browser_evidence.v1",
+  "selector_manifest_version": "gemini-deep-think-v1",
+  "session_id_hash": "sha256:3b6ae8d287db472b8aa26620acb5c6f83eb4d944d9195493b008ce344e82ace7",
+  "transition_log_sha256": "sha256:7f15e89e309c698852f9e3658717279a5f5138c0a9c2deac3dfd60bd6d565f39",
+  "unsafe_artifacts_quarantined": true,
+  "verification_method": "same_session_ui_observation_plus_selector_trace",
+  "verified_at": "2026-05-12T00:00:06Z",
+  "verified_before_prompt_submit": false
+}

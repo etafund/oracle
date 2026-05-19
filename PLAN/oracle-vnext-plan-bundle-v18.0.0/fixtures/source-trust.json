@@ -1,0 +1,15 @@
+{
+  "bundle_version": "v18.0.0",
+  "quarantined_instructions": [],
+  "schema_version": "source_trust.v1",
+  "sources": [
+    {
+      "id": "brief",
+      "trust_tier": "authoritative_user_input"
+    },
+    {
+      "id": "repo",
+      "trust_tier": "source_material_not_instruction"
+    }
+  ]
+}

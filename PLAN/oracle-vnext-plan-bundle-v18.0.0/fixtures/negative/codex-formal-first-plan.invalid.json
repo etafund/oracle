@@ -1,0 +1,11 @@
+{
+  "access_path": "codex_cli_subscription",
+  "bundle_version": "v18.0.0",
+  "eligible_for_synthesis": true,
+  "formal_first_plan": true,
+  "model_family": "gpt-5.5",
+  "reasoning_effort": "xhigh",
+  "schema_version": "codex_intake.v1",
+  "subscription_route": true,
+  "transcript_sha256": "sha256:9b71912fae208114718ce3449502809b7ba056e1cb9fc4407bff51b2f903e8f8"
+}

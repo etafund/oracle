@@ -1,0 +1,36 @@
+{
+  "access_path": "oracle_browser_remote",
+  "bundle_version": "v18.0.0",
+  "degradation_reason": null,
+  "error": null,
+  "evidence": {
+    "evidence_id": "evidence-demo-gemini_deep_think",
+    "mode_verified": true,
+    "path": ".apr/runs/demo/evidence/gemini_deep_think/evidence.json",
+    "verified_before_prompt_submit": true
+  },
+  "evidence_id": "evidence-demo-gemini_deep_think",
+  "model": "gemini-3.1-pro-deep-think",
+  "prompt_manifest_sha256": "sha256:69223c8fae80b46ec663079168f541e9308eb835d7720212f8222bf1f239cb18",
+  "provider_family": "gemini",
+  "provider_result_id": "provider-result-demo-gemini_deep_think",
+  "provider_slot": "gemini_deep_think",
+  "reasoning_config": {
+    "api_equivalent_thinking_level": "high",
+    "browser_mode": "Deep Think",
+    "effort_rank": "deep_think_selected_and_highest_visible",
+    "observed_reasoning_effort_label": "Deep Think",
+    "provider_nomenclature": "Gemini browser Deep Think plus highest thinking level if exposed",
+    "requested_reasoning_effort": "deep_think_highest_available",
+    "selected_effort_is_highest_visible": true
+  },
+  "reasoning_effort": "deep_think_highest_available",
+  "reasoning_effort_verified": true,
+  "result_path": ".apr/runs/demo/plans/gemini_deep_think/output.md",
+  "result_text_sha256": "sha256:1a8f9f53b1c104b8e875b567fa926c96106866aa67b84ceb0ae9b79cc2b6f069",
+  "schema_version": "provider_result.v1",
+  "source_baseline_sha256": "sha256:b91d369c3f7250980878f782559b0c4ccc00a829603c88cf555c0b23bdd12ee6",
+  "status": "success",
+  "synthesis_eligible": true,
+  "thinking_level_if_exposed": "high"
+}

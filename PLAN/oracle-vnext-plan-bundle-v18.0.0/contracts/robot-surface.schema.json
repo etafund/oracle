@@ -1,0 +1,32 @@
+{
+  "$id": "https://example.invalid/vibe-planning/contracts/robot-surface.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "properties": {
+    "commands": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "error_fields_required": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "json_envelope_required": {
+      "type": "boolean"
+    },
+    "schema_version": {
+      "const": "robot_surface.v1"
+    },
+    "tool": {
+      "type": "string"
+    }
+  },
+  "required": ["schema_version", "tool", "commands"],
+  "title": "Robot Surface Contract",
+  "type": "object",
+  "x-bundle-version": "v18.0.0"
+}

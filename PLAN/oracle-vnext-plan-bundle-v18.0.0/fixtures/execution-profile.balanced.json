@@ -1,0 +1,8 @@
+{
+  "bundle_version": "v18.0.0",
+  "optional_slots": ["claude_code_opus", "xai_grok_reasoning", "deepseek_v4_pro_reasoning_search"],
+  "profile": "balanced",
+  "required_slots": ["chatgpt_pro_first_plan", "gemini_deep_think", "chatgpt_pro_synthesis"],
+  "schema_version": "execution_profile.v1",
+  "source_policy": "baseline"
+}

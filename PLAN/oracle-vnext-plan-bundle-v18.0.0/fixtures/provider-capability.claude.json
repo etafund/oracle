@@ -1,0 +1,23 @@
+{
+  "access_path": "claude_code_subscription_cli",
+  "api_allowed": false,
+  "bundle_version": "v18.0.0",
+  "capabilities": {
+    "claude_code_keyword": "ultrathink",
+    "effort": "max"
+  },
+  "checked_at": "2026-05-12T00:00:00Z",
+  "claude_code_keyword": "ultrathink",
+  "effort": "max",
+  "highest_reasoning_verified": false,
+  "model": "claude-opus-4-7",
+  "provider": "claude",
+  "provider_family": "claude",
+  "provider_slot": "claude_code_opus",
+  "required_command": "claude",
+  "schema_version": "provider_capability.v1",
+  "status": "ready",
+  "thinking": {
+    "type": "adaptive"
+  }
+}

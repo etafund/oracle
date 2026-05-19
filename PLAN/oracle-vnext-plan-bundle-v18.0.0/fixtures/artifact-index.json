@@ -1,0 +1,45 @@
+{
+  "artifacts": [
+    {
+      "artifact_id": "evidence-demo-chatgpt_pro_first_plan",
+      "kind": "browser_evidence",
+      "path": "fixtures/chatgpt-pro-evidence.json",
+      "sha256": "sha256:75a5e2a7f82a9c9f4d46ea7fd5bffd2c05a214e897817813724ccc221a78a3bd"
+    },
+    {
+      "artifact_id": "provider-result-demo-xai-grok-reasoning",
+      "kind": "provider_result",
+      "path": "fixtures/provider-result.xai.json",
+      "sha256": "sha256:5a36128980dd8294ac35c9910b2020afda86518438ff906eb276b2986848e11b"
+    },
+    {
+      "artifact_id": "review-quorum-balanced",
+      "kind": "review_quorum",
+      "path": "fixtures/review-quorum.balanced.json",
+      "sha256": "sha256:548c73923b422f0e328c280bb0a0b4812a3948faa61e406daa9bb100b39d2dfa"
+    },
+    {
+      "kind": "v17_premortem_control",
+      "path": "fixtures/failure-mode-ledger.json",
+      "sha256": "sha256:53bd804323f3384ecabb2327b109185f3fdc00fca8a993d3a2f42476c1d7e3f6"
+    },
+    {
+      "kind": "v17_premortem_control",
+      "path": "fixtures/live-cutover-checklist.json",
+      "sha256": "sha256:9e54989ba83580cb779a3e0811f3c4516e6ddbcd63436b9a9ffb0cfff099d7a0"
+    },
+    {
+      "kind": "v17_premortem_control",
+      "path": "fixtures/fallback-waiver.json",
+      "sha256": "sha256:3ca7e769a8bcb16c2f30f34c04e7315ee32185b0593b35df0843af8d0a4e83fa"
+    },
+    {
+      "kind": "v17_premortem_control",
+      "path": "fixtures/run-progress.json",
+      "sha256": "sha256:cd8c2b36d4f3c86650f309b6dc2f291797122f4bff9c68f15169ab9e460bff5a"
+    }
+  ],
+  "bundle_version": "v18.0.0",
+  "run_id": "run-demo",
+  "schema_version": "artifact_index.v1"
+}

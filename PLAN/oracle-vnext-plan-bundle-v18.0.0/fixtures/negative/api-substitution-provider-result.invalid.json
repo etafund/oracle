@@ -1,0 +1,14 @@
+{
+  "access_path": "openai_api",
+  "bundle_version": "v18.0.0",
+  "evidence": {},
+  "evidence_id": null,
+  "prompt_manifest_sha256": "sha256:286eb0a04011550f20db1bfc167db3d0fedd2e9aa4685acf22511e80f87953fe",
+  "provider_family": "chatgpt",
+  "provider_result_id": "provider-result-bad-api",
+  "provider_slot": "chatgpt_pro_first_plan",
+  "schema_version": "provider_result.v1",
+  "source_baseline_sha256": "sha256:238d13f8dac89b8f35866179005cb07e4fe66be0ead4590c30a17a6793395ff2",
+  "status": "success",
+  "synthesis_eligible": true
+}

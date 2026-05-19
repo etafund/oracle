@@ -1,0 +1,22 @@
+{
+  "artifact_name": "source-lock.json",
+  "bundle_version": "v18.0.0",
+  "gaps": [
+    {
+      "id": "oracle-docs",
+      "kind": "remote_web",
+      "status": "live_verification_required"
+    }
+  ],
+  "mode": "baseline",
+  "policy": "baseline",
+  "schema_version": "source_baseline.v1",
+  "sources": [
+    {
+      "id": "brief",
+      "kind": "local_file",
+      "path": ".vibe-planning/brief.md",
+      "sha256": "sha256:2a97516c354b68848cdbd8f54a226a0a55b21ed138e207ad6c5cbb9c00aa5aea"
+    }
+  ]
+}

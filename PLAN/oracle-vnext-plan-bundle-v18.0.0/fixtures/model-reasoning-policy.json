@@ -1,0 +1,134 @@
+{
+  "api_allowed_routes": ["xai_grok_reasoning", "deepseek_v4_pro_reasoning_search"],
+  "bundle_version": "v18.0.0",
+  "default_invariant": "All live model calls in this workflow must request the highest documented or highest visible provider-specific reasoning effort available. Browser providers must use ranked same-session UI evidence rather than relying on a hard-coded label. Unknown/default effort is not synthesis-eligible for balanced/audit unless a waiver is recorded before the call.",
+  "docs_snapshot": "fixtures/provider-docs-snapshot.json",
+  "live_provider_effort_defaults": {
+    "chatgpt_pro_first_plan": {
+      "access_path": "oracle_browser_remote_or_local",
+      "browser_effort_strategy": "select_highest_visible",
+      "effort_rank_required": "highest_visible",
+      "eligible_for_synthesis": true,
+      "evidence_fields_required": [
+        "observed_reasoning_effort_label",
+        "effort_rank",
+        "available_effort_labels_hash",
+        "selected_effort_is_highest_visible"
+      ],
+      "evidence_required": true,
+      "model": "chatgpt-pro-latest",
+      "model_selector": "Pro",
+      "normalized_effort": "max_browser_available",
+      "preferred_observed_effort_labels": ["Heavy"],
+      "provider_family": "chatgpt",
+      "requested_reasoning_effort": "max_browser_available",
+      "selection_rule": "Select ChatGPT Pro and the highest visible thinking-effort option. Do not hard-code a browser label as the contract; record the observed label, available-labels hash, selector manifest version, and effort_rank=highest_visible in redacted evidence."
+    },
+    "chatgpt_pro_synthesis": {
+      "access_path": "oracle_browser_remote_or_local",
+      "browser_effort_strategy": "select_highest_visible",
+      "effort_rank_required": "highest_visible",
+      "eligible_for_synthesis": true,
+      "evidence_fields_required": [
+        "observed_reasoning_effort_label",
+        "effort_rank",
+        "available_effort_labels_hash",
+        "selected_effort_is_highest_visible"
+      ],
+      "evidence_required": true,
+      "model": "chatgpt-pro-latest",
+      "model_selector": "Pro",
+      "normalized_effort": "max_browser_available",
+      "preferred_observed_effort_labels": ["Heavy"],
+      "provider_family": "chatgpt",
+      "requested_reasoning_effort": "max_browser_available",
+      "selection_rule": "Select ChatGPT Pro and the highest visible thinking-effort option. Do not hard-code a browser label as the contract; record the observed label, available-labels hash, selector manifest version, and effort_rank=highest_visible in redacted evidence."
+    },
+    "claude_code_opus": {
+      "access_path": "claude_code_subscription_cli",
+      "claude_code_keyword": "ultrathink",
+      "cli_controls": [
+        "claude --model claude-opus-4-7 --effort max",
+        "CLAUDE_CODE_EFFORT_LEVEL=max",
+        "prompt includes ultrathink"
+      ],
+      "effort": "max",
+      "effort_verification": "cli_status_or_command_echo_required",
+      "eligible_for_synthesis": true,
+      "model": "claude-opus-4-7",
+      "provider_family": "claude",
+      "selection_rule": "Use Claude Code subscription CLI with Opus 4.7 and --effort max or CLAUDE_CODE_EFFORT_LEVEL=max. Include ultrathink as a one-off deep-reasoning request, but do not treat ultrathink as a substitute for setting effort=max.",
+      "settings": ["alwaysThinkingEnabled=true"],
+      "thinking": {
+        "type": "adaptive"
+      }
+    },
+    "codex_intake": {
+      "access_path": "codex_cli_subscription",
+      "capability_probe_required": true,
+      "configuration_keys": ["model_reasoning_effort=xhigh", "plan_mode_reasoning_effort=xhigh"],
+      "eligible_for_synthesis": false,
+      "model": "gpt-5.5",
+      "provider_family": "openai_codex",
+      "reasoning_effort": "xhigh",
+      "source": "OpenAI Codex config docs list model_reasoning_effort and plan_mode_reasoning_effort values including xhigh."
+    },
+    "codex_thinking_fast_draft": {
+      "access_path": "codex_cli_subscription",
+      "capability_probe_required": true,
+      "configuration_keys": ["model_reasoning_effort=xhigh", "plan_mode_reasoning_effort=xhigh"],
+      "eligible_for_synthesis": false,
+      "model": "gpt-5.5",
+      "provider_family": "openai_codex",
+      "reasoning_effort": "xhigh",
+      "source": "Fast mode may use Codex CLI as exploratory context only; highest effort is still required."
+    },
+    "deepseek_v4_pro_reasoning_search": {
+      "access_path": "deepseek_official_api",
+      "eligible_for_synthesis": true,
+      "model": "deepseek-v4-pro",
+      "provider_family": "deepseek",
+      "reasoning_content_policy": "transient_tool_replay_hash_only_persisted",
+      "reasoning_effort": "max",
+      "search_enabled": true,
+      "selection_rule": "Use official DeepSeek API with thinking enabled and reasoning_effort=max. If tool calls occur, preserve reasoning_content transiently only as needed for DeepSeek's required tool-call replay, then discard raw content and persist at most a hash.",
+      "thinking": {
+        "type": "enabled"
+      }
+    },
+    "gemini_deep_think": {
+      "access_path": "oracle_browser_remote_or_local",
+      "api_equivalent_thinking_level": "high",
+      "browser_effort_strategy": "select_deep_think_and_highest_thinking_level_if_exposed",
+      "browser_mode": "Deep Think",
+      "effort_rank_required": "deep_think_selected_and_highest_visible",
+      "eligible_for_synthesis": true,
+      "evidence_required": true,
+      "model": "gemini-3.1-pro-deep-think",
+      "provider_family": "gemini",
+      "requested_reasoning_effort": "deep_think_highest_available",
+      "selection_rule": "Select Deep Think in the Gemini web UI. If a separate Gemini thinking-level control is exposed, set it to high. Record the observed Deep Think label, thinking-level label if present, available-labels hash, selector manifest version, and rank evidence.",
+      "thinking_level_if_exposed": "high"
+    },
+    "xai_grok_reasoning": {
+      "access_path": "xai_api",
+      "eligible_for_synthesis": true,
+      "model": "grok-4.3",
+      "provider_family": "xai_grok",
+      "reasoning_effort": "high",
+      "selection_rule": "For Grok 4.3, official xAI docs list none/low/medium/high; high is the maximum single-model reasoning depth. Do not use xhigh for Grok 4.3. If using grok-4.20-multi-agent, xhigh controls agent count rather than single-model reasoning depth and must be a separately named route."
+    }
+  },
+  "no_unknown_effort_eligibility": true,
+  "protected_slots": ["chatgpt_pro_first_plan", "chatgpt_pro_synthesis", "gemini_deep_think"],
+  "references": [
+    "OpenAI Codex config: model_reasoning_effort and plan_mode_reasoning_effort include xhigh.",
+    "OpenAI ChatGPT help/release notes: Thinking/Pro model-picker thinking effort controls; browser labels must be observed live rather than hard-coded.",
+    "Google Gemini 3 docs: thinking_level high is the maximum supported level for Gemini 3.1 Pro API; Gemini Apps Deep Think is the highest advanced reasoning mode.",
+    "Anthropic Claude docs: Opus 4.7 uses adaptive thinking with effort; max is absolute maximum capability, and Claude Code supports ultrathink for one-off deep reasoning.",
+    "xAI reasoning docs: Grok 4.3 reasoning_effort values are none/low/medium/high; high is maximum for the single model.",
+    "DeepSeek API docs: deepseek-v4-pro supports thinking enabled and reasoning_effort high/max; max is the highest effort.",
+    "Browser labels are not stable contracts; evidence must record observed labels and rank."
+  ],
+  "schema_version": "model_reasoning_policy.v1"
+}

@@ -1,0 +1,25 @@
+{
+  "blocked_reason": "live_provider_approval_required",
+  "bundle_version": "v18.0.0",
+  "completed_stages": ["brief_lint", "source_baseline", "route_plan"],
+  "current_stage": "preflight",
+  "last_event_at": "2026-05-12T00:00:00Z",
+  "next_command": "oracle remote doctor --json",
+  "pending_stages": [
+    "oracle_remote_smoke",
+    "first_plan",
+    "independent_review",
+    "quorum",
+    "compare",
+    "synthesis",
+    "handoff"
+  ],
+  "profile": "balanced",
+  "progress_percent": 18,
+  "retry_safe": true,
+  "run_id": "run_demo_v17",
+  "schema_version": "run_progress.v1",
+  "state": "waiting_for_live_provider_approval",
+  "subset_focus": "Oracle",
+  "user_visible_message": "Preflight is complete. Live browser/provider calls have not started."
+}
