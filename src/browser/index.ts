@@ -1112,7 +1112,8 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         const perFileTimeout = 20_000;
         const waitBudget =
           Math.max(baseTimeout, 45_000) + (submissionAttachments.length - 1) * perFileTimeout;
-        await waitForAttachmentCompletion(Runtime, waitBudget, attachmentNames, logger);
+        const attachmentWaitBudget = Math.max(config.attachmentTimeoutMs ?? 0, waitBudget);
+        await waitForAttachmentCompletion(Runtime, attachmentWaitBudget, attachmentNames, logger);
         logger("All attachments uploaded");
       }
       let baselineTurns = await readConversationTurnCount(Runtime, logger);
@@ -1123,6 +1124,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         logger,
         timeoutMs: config.timeoutMs,
         inputTimeoutMs: config.inputTimeoutMs ?? undefined,
+        attachmentTimeoutMs: config.attachmentTimeoutMs ?? undefined,
         baselineTurns: baselineTurns ?? undefined,
         attachmentNames,
         onPromptSubmitted: markPromptSubmitted,
@@ -2477,7 +2479,8 @@ async function runRemoteBrowserMode(
         const perFileTimeout = 15_000;
         const waitBudget =
           Math.max(baseTimeout, 30_000) + (submissionAttachments.length - 1) * perFileTimeout;
-        await waitForAttachmentCompletion(Runtime, waitBudget, attachmentNames, logger);
+        const attachmentWaitBudget = Math.max(config.attachmentTimeoutMs ?? 0, waitBudget);
+        await waitForAttachmentCompletion(Runtime, attachmentWaitBudget, attachmentNames, logger);
         logger("All attachments uploaded");
       }
       let baselineTurns = await readConversationTurnCount(Runtime, logger);
@@ -2487,6 +2490,7 @@ async function runRemoteBrowserMode(
         logger,
         timeoutMs: config.timeoutMs,
         inputTimeoutMs: config.inputTimeoutMs ?? undefined,
+        attachmentTimeoutMs: config.attachmentTimeoutMs ?? undefined,
         baselineTurns: baselineTurns ?? undefined,
         attachmentNames,
         onPromptSubmitted: markPromptSubmitted,

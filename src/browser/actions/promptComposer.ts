@@ -28,6 +28,7 @@ export async function submitPrompt(
     attachmentNames?: string[];
     baselineTurns?: number | null;
     inputTimeoutMs?: number | null;
+    attachmentTimeoutMs?: number | null;
     onPromptSubmitted?: () => Promise<void> | void;
   },
   prompt: string,
@@ -202,7 +203,12 @@ export async function submitPrompt(
     );
   }
 
-  const clicked = await attemptSendButton(runtime, logger, deps?.attachmentNames);
+  const clicked = await attemptSendButton(
+    runtime,
+    logger,
+    deps?.attachmentNames,
+    deps?.attachmentTimeoutMs,
+  );
   if (!clicked) {
     await input.dispatchKeyEvent({
       type: "keyDown",
@@ -586,6 +592,7 @@ async function attemptSendButton(
   Runtime: ChromeClient["Runtime"],
   _logger?: BrowserLogger,
   attachmentNames?: string[],
+  attachmentTimeoutMs?: number | null,
 ): Promise<boolean> {
   const needAttachment = Array.isArray(attachmentNames) && attachmentNames.length > 0;
   const script = `(() => {
@@ -624,7 +631,8 @@ async function attemptSendButton(
   // Give attachment-bearing submissions more headroom. ChatGPT's chip render can
   // settle slowly for multi-file uploads, but plain text sends should keep the
   // shorter historical deadline.
-  const deadline = Date.now() + sendButtonTimeoutMs(attachmentNames);
+  const timeoutMs = sendButtonTimeoutMs(attachmentNames, attachmentTimeoutMs);
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (needAttachment) {
       const ready = await Runtime.evaluate({
@@ -647,19 +655,30 @@ async function attemptSendButton(
   }
   if (Array.isArray(attachmentNames) && attachmentNames.length > 0) {
     throw new BrowserAutomationError(
-      "Attachments never reached a clickable send button before timeout.",
+      `Attachments never reached a clickable send button after ${Math.ceil(
+        timeoutMs / 1000,
+      )}s; tune --browser-attachment-timeout.`,
       {
         stage: "submit-prompt",
         code: "attachment-send-not-ready",
         attachmentNames,
+        timeoutMs,
       },
     );
   }
   return false;
 }
 
-function sendButtonTimeoutMs(attachmentNames?: string[]): number {
-  return Array.isArray(attachmentNames) && attachmentNames.length > 0 ? 45_000 : 20_000;
+function sendButtonTimeoutMs(
+  attachmentNames?: string[],
+  attachmentTimeoutMs?: number | null,
+): number {
+  if (!Array.isArray(attachmentNames) || attachmentNames.length === 0) {
+    return 20_000;
+  }
+  return typeof attachmentTimeoutMs === "number" && Number.isFinite(attachmentTimeoutMs)
+    ? Math.max(1_000, attachmentTimeoutMs)
+    : 45_000;
 }
 
 async function verifyPromptCommitted(

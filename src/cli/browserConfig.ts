@@ -20,6 +20,7 @@ import { getOracleHomeDir } from "../oracleHome.js";
 
 const DEFAULT_BROWSER_TIMEOUT_MS = 1_200_000;
 const DEFAULT_BROWSER_INPUT_TIMEOUT_MS = 60_000;
+const DEFAULT_BROWSER_ATTACHMENT_TIMEOUT_MS = 45_000;
 const DEFAULT_BROWSER_RECHECK_TIMEOUT_MS = 120_000;
 const DEFAULT_BROWSER_AUTO_REATTACH_TIMEOUT_MS = 120_000;
 const DEFAULT_CHROME_PROFILE = "Default";
@@ -55,6 +56,7 @@ export interface BrowserFlagOptions {
   browserUrl?: string;
   browserTimeout?: string;
   browserInputTimeout?: string;
+  browserAttachmentTimeout?: string;
   browserRecheckDelay?: string;
   browserRecheckTimeout?: string;
   browserReuseWait?: string;
@@ -180,6 +182,9 @@ export async function buildBrowserConfig(
       : undefined,
     inputTimeoutMs: options.browserInputTimeout
       ? parseDuration(options.browserInputTimeout, DEFAULT_BROWSER_INPUT_TIMEOUT_MS)
+      : undefined,
+    attachmentTimeoutMs: options.browserAttachmentTimeout
+      ? parseDuration(options.browserAttachmentTimeout, DEFAULT_BROWSER_ATTACHMENT_TIMEOUT_MS)
       : undefined,
     assistantRecheckDelayMs: options.browserRecheckDelay
       ? parseDuration(options.browserRecheckDelay, 0)
