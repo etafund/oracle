@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, test } from "vitest";
 import { mkdtemp, writeFile, readdir, readFile, rm, mkdir } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { pathToFileURL } from "node:url";
 import {
   type ChildProcessByStdio,
   execFile,
@@ -13,7 +14,9 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const CLI_ENTRY = path.join(process.cwd(), "bin", "oracle-cli.ts");
-const TSX_LOADER = path.join(process.cwd(), "node_modules", "tsx", "dist", "loader.mjs");
+const TSX_LOADER = pathToFileURL(
+  path.join(process.cwd(), "node_modules", "tsx", "dist", "loader.mjs"),
+).href;
 const CLIENT_FACTORY = path.join(process.cwd(), "tests", "fixtures", "mockClientFactory.cjs");
 const INTEGRATION_TIMEOUT = 60000;
 const AZURE_ENV_KEYS = [
