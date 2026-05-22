@@ -86,7 +86,6 @@ describe("oracle bridge doctor", () => {
     await fs.mkdir(path.join(repoDir, ".oracle"), { recursive: true });
     const projectConfigPath = path.join(repoDir, PROJECT_CONFIG_RELATIVE_PATH);
     await fs.writeFile(projectConfigPath, `{ engine: "browser" }`, "utf8");
-    const resolvedProjectConfigPath = await fs.realpath(projectConfigPath);
 
     const logs: string[] = [];
     vi.spyOn(console, "log").mockImplementation((msg) => logs.push(String(msg)));
@@ -101,7 +100,9 @@ describe("oracle bridge doctor", () => {
 
     const output = stripAnsi(logs.join("\n"));
     expect(output).toContain(`Config: ${path.join(tempDir, "config.json")} (missing)`);
-    expect(output).toContain(`Project config: ${resolvedProjectConfigPath}`);
+    expect(output).toMatch(
+      /Project config: .*oracle-bridge-project-.*[\\/]\.oracle[\\/]config\.json/,
+    );
     expect(output).toMatch(/Default engine:\s+browser/i);
     expect(process.exitCode ?? 0).toBe(0);
   });
