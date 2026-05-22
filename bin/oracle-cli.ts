@@ -147,6 +147,7 @@ interface CliOptions extends OptionValues {
   browserUrl?: string;
   browserTimeout?: string;
   browserInputTimeout?: string;
+  browserAttachmentTimeout?: string;
   browserProfileLockTimeout?: string;
   browserMaxConcurrentTabs?: string;
   browserCookieWait?: string;
@@ -567,6 +568,12 @@ program
     new Option(
       "--browser-input-timeout <ms|s|m>",
       "Maximum time to wait for the prompt textarea (default 60s).",
+    ).hideHelp(),
+  )
+  .addOption(
+    new Option(
+      "--browser-attachment-timeout <ms|s|m>",
+      "Maximum time to wait for attachment upload/readiness before clicking send (default 45s).",
     ).hideHelp(),
   )
   .addOption(
@@ -1851,6 +1858,14 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   const getSource = (key: keyof CliOptions) =>
     program.getOptionValueSource?.(key as string) ?? undefined;
   applyBrowserDefaultsFromConfig(options, userConfig, getSource);
+  const attachmentTimeoutEnv = process.env.ORACLE_BROWSER_ATTACHMENT_TIMEOUT?.trim();
+  if (
+    attachmentTimeoutEnv &&
+    (getSource("browserAttachmentTimeout") === undefined ||
+      getSource("browserAttachmentTimeout") === "default")
+  ) {
+    options.browserAttachmentTimeout = attachmentTimeoutEnv;
+  }
 
   const sessionMode: SessionMode = engine === "browser" ? "browser" : "api";
   const browserModelLabelOverride =
