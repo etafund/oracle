@@ -4,6 +4,7 @@
 
 ### Added
 
+- Browser: add `--browser-attachment-timeout`, `ORACLE_BROWSER_ATTACHMENT_TIMEOUT`, and `browser.attachmentTimeoutMs` so slow ChatGPT attachment uploads can extend the pre-send readiness gate and failures report the timeout budget. Fixes #214. Thanks @enieuwy!
 - Browser: target ChatGPT's GPT-5.5 "Instant" picker row when `--model gpt-5.5-instant` (or label aliases like `"ChatGPT 5.5 Instant"` / `"5.5 fast"`) is requested, with dedicated picker testids so the selection no longer falls through to the bare 5.5 "Thinking" row. Browser-only; the API catalog is not modified. Thanks @LoukikNaik!
 
 ### Changed

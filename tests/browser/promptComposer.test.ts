@@ -111,8 +111,7 @@ describe("promptComposer", () => {
         (() => undefined) as never,
         ["oracle-attach-verify.txt"],
       );
-      const assertion = expect(promise).rejects.toThrow(/clickable send button/i);
-      // Deadline is 45_000ms; advance a bit past it so the timeout fires.
+      const assertion = expect(promise).rejects.toThrow(/after 45s/i);
       await vi.advanceTimersByTimeAsync(46_000);
       await assertion;
     } finally {
@@ -124,6 +123,7 @@ describe("promptComposer", () => {
     expect(promptComposer.sendButtonTimeoutMs()).toBe(20_000);
     expect(promptComposer.sendButtonTimeoutMs([])).toBe(20_000);
     expect(promptComposer.sendButtonTimeoutMs(["oracle-attach-verify.txt"])).toBe(45_000);
+    expect(promptComposer.sendButtonTimeoutMs(["oracle-attach-verify.txt"], 120_000)).toBe(120_000);
   });
 
   test("marks prompt submitted before commit verification finishes", async () => {
