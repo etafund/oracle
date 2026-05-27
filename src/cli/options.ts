@@ -169,9 +169,9 @@ export function parseTimeoutOption(value: string | undefined): number | "auto" |
   if (value == null) return undefined;
   const normalized = value.trim().toLowerCase();
   if (normalized === "auto") return "auto";
-  if (/^[0-9]+(?:\.[0-9]+)?$/.test(normalized)) {
+  if (/^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:e[+-]?\d+)?$/u.test(normalized)) {
     const parsed = Number.parseFloat(normalized);
-    if (parsed > 0) {
+    if (Number.isFinite(parsed) && parsed > 0) {
       return parsed;
     }
   }

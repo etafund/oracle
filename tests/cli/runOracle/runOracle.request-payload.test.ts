@@ -294,6 +294,31 @@ describe("runOracle request payload", () => {
     );
   });
 
+  test("logs explicit key source for forced OpenAI custom model ids", async () => {
+    const stream = new MockStream([], buildResponse());
+    const client = new MockClient(stream);
+    const logs: string[] = [];
+
+    await runOracle(
+      {
+        prompt: "Forced OpenAI custom model",
+        model: "o3-mini",
+        provider: "openai",
+        background: false,
+      },
+      {
+        apiKey: "sk-test",
+        client,
+        log: (message: string) => logs.push(message),
+        write: () => true,
+      },
+    );
+
+    expect(logs.join("\n")).toContain(
+      "Provider: OpenAI | base: api.openai.com | key: apiKey option",
+    );
+  });
+
   test("routes provider-qualified model ids through OpenRouter even when native keys exist", async () => {
     const stream = new MockStream([], buildResponse());
     const client = new MockClient(stream);
@@ -456,6 +481,31 @@ describe("runOracle request payload", () => {
     ]);
     expect(logs.join("\n")).toContain(
       "Provider: OpenAI-compatible | base: litellm.test/v1 | key: OPENROUTER_API_KEY",
+    );
+  });
+
+  test("logs explicit key source for provider-qualified custom proxy routes", async () => {
+    const stream = new MockStream([], buildResponse());
+    const client = new MockClient(stream);
+    const logs: string[] = [];
+
+    await runOracle(
+      {
+        prompt: "Provider qualified proxy route",
+        model: "anthropic/claude-sonnet-4.5",
+        baseUrl: "https://litellm.test/v1",
+        background: false,
+      },
+      {
+        apiKey: "proxy-test-key",
+        client,
+        log: (message: string) => logs.push(message),
+        write: () => true,
+      },
+    );
+
+    expect(logs.join("\n")).toContain(
+      "Provider: OpenAI-compatible | base: litellm.test/v1 | key: apiKey option",
     );
   });
 

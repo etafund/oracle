@@ -483,7 +483,12 @@ program
       "Execution engine (api | browser). Browser engine: GPT models automate ChatGPT; Gemini models use a cookie-based client for gemini.google.com. If omitted, oracle picks api when OPENAI_API_KEY is set, otherwise browser.",
     ).choices(["api", "browser"]),
   )
-  .addOption(new Option("--provider <provider>", "Protected browser provider route."))
+  .addOption(
+    new Option(
+      "--provider <provider>",
+      "Provider selection. Accepts API routing (auto, openai, azure) and protected browser routes (gemini-deep-think).",
+    ).default("auto"),
+  )
   .addOption(
     new Option("--gemini-deep-think", "Use the protected Gemini Deep Think browser route.").default(
       false,
@@ -636,14 +641,6 @@ program
   .option(
     "--base-url <url>",
     "Override the OpenAI-compatible base URL for API runs (e.g. LiteLLM proxy endpoint).",
-  )
-  .addOption(
-    new Option(
-      "--provider <provider>",
-      "Choose API provider routing: auto, openai, or azure. Use openai to ignore Azure env/config.",
-    )
-      .choices(["auto", "openai", "azure"])
-      .default("auto"),
   )
   .option("--no-azure", "Disable Azure OpenAI routing for this run (same as --provider openai).")
   .option(
@@ -1205,27 +1202,13 @@ program
     await launchTui({ version: VERSION, printIntro: false });
   });
 
-program
-  .command("doctor")
-  .description("Diagnose Oracle API provider readiness and routing.")
-  .option("--providers", "Inspect API provider keys and route choices.", false)
-  .option("--models <models>", "Comma-separated API model list to inspect.")
-  .option("-m, --model <model>", "Single API model to inspect.")
-  .addOption(
-    new Option("--provider <provider>", "Choose API provider routing: auto, openai, or azure.")
-      .choices(["auto", "openai", "azure"])
-      .default("auto"),
-  )
-  .option("--no-azure", "Disable Azure OpenAI routing for this inspection.")
-  .option("--azure-endpoint <url>", "Azure OpenAI Endpoint.")
-  .option("--azure-deployment <name>", "Azure OpenAI Deployment Name.")
-  .option("--azure-api-version <version>", "Azure OpenAI API Version.")
-  .option("--base-url <url>", "Override OpenAI-compatible base URL.")
-  .option("--json", "Print structured JSON.", false)
-  .action(async function (this: Command) {
-    const { runProviderDoctor } = await import("../src/cli/providerDoctor.js");
-    await runProviderDoctor(this.optsWithGlobals());
-  });
+// NOTE(etafund-sync): upstream 3ae0df0d added a `program.command("doctor")` here
+// for an API-provider readiness probe (--providers, --models). Our fork registers
+// `oracle doctor` via registerDoctorCommand(program, ...) in src/cli/index.ts with
+// a different surface (provider_docs/browser_leases/evidence schemas). The upstream
+// provider-readiness functionality lives in src/cli/providerDoctor.ts and can be
+// composed into our doctor command in a follow-up rather than registered as a
+// duplicate root command.
 
 const docsCommand = program.command("docs").description("Documentation maintenance utilities.");
 
@@ -1914,9 +1897,19 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   applyGeminiDeepThinkRootDefaults(options, optionUsesDefault);
 
   const providerMode = resolveApiProviderMode(options);
+  // applyGeminiDeepThinkRootDefaults already coerces engine to "browser" when a
+  // deep-think alias is requested, so by the time we reach this resolveApiModel
+  // call the only deep-think models we will see are ones the user explicitly
+  // pinned with --engine browser. Route those through inferModelFromLabel so we
+  // preserve the protected-browser passthrough; everything else still gets the
+  // strict API-mode resolver.
+  const resolveModelForEngine = (entry: string): ModelName =>
+    options.engine === "browser"
+      ? (inferModelFromLabel(entry) as ModelName)
+      : resolveApiModel(entry);
   const engineModels = multiModelProvided
-    ? Array.from(new Set(options.models!.map((entry) => resolveApiModel(entry))))
-    : [resolveApiModel(normalizeModelOption(options.model) || DEFAULT_MODEL)];
+    ? Array.from(new Set(options.models!.map(resolveModelForEngine)))
+    : [resolveModelForEngine(normalizeModelOption(options.model) || DEFAULT_MODEL)];
   if (options.route || options.preflight) {
     const routeAzureEndpoint = firstNonEmpty(
       options.azureEndpoint,
@@ -1997,21 +1990,24 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     engineModels.some((model) => isAzureOpenAICandidateModel(model));
   const explicitApiProviderRequested =
     providerMode !== "auto" || hasExplicitAzureOption(optionUsesDefault);
-  const preferredEngine =
-    options.engine ?? (explicitApiProviderRequested ? undefined : userConfig.engine);
+  const envEnginePreference = (process.env.ORACLE_ENGINE ?? "").trim().toLowerCase();
+  const explicitApiEngineRequested =
+    options.engine === "api" || (!options.engine && envEnginePreference === "api");
+  const configBrowserEngineRequested =
+    userConfig.engine === "browser" && !explicitApiEngineRequested && !explicitApiProviderRequested;
   let engine: EngineMode = resolveEngine({
-    engine: preferredEngine,
+    engine: options.engine,
+    configEngine: userConfig.engine,
     browserFlag: options.browser,
     apiProviderRequested: explicitApiProviderRequested,
     env: process.env,
   });
-  const envEnginePreference = (process.env.ORACLE_ENGINE ?? "").trim().toLowerCase();
   const browserEngineRequested =
     options.browser ||
     options.engine === "browser" ||
     Boolean(remoteHost) ||
-    (!explicitApiProviderRequested &&
-      (userConfig.engine === "browser" || envEnginePreference === "browser"));
+    configBrowserEngineRequested ||
+    (!options.engine && !explicitApiProviderRequested && envEnginePreference === "browser");
   if (azureAutoApiRequested && engine === "browser" && !browserEngineRequested) {
     engine = "api";
   }
@@ -2079,7 +2075,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   const includesGeminiApiOnly = (
     normalizedMultiModels.length > 0 ? normalizedMultiModels : [resolvedModel]
   ).some((model) => model === "gemini-3.1-pro");
-  if ((userForcedBrowser || userConfig.engine === "browser") && includesGeminiApiOnly) {
+  if (browserExplicitlyRequested && includesGeminiApiOnly) {
     throw new Error(
       "gemini-3.1-pro is API-only today. Use --engine api or switch to gemini-3-pro for Gemini web.",
     );
