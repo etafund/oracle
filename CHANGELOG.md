@@ -1,6 +1,12 @@
 # Changelog
 
-## 0.12.2 — Unreleased
+## 0.13.1 — Unreleased
+
+### Changed
+
+- Website: point package/homepage metadata and generated site chrome at `https://askoracle.sh` instead of the GitHub repository.
+
+## 0.13.0 — 2026-05-22
 
 ### Added
 
@@ -18,7 +24,7 @@
 - Browser: scope ChatGPT model picker scans to the real picker menu while preserving text-only fallback rows, so sidebar/search Radix menus do not block model selection. Thanks @orbitingflea!
 - Browser: tolerate duplicate-renamed or ellipsized ChatGPT attachment chip names during pre-send readiness checks. Thanks @pdurlej!
 
-## 0.12.1 — Unreleased
+## 0.12.1 — 2026-05-17
 
 ### Fixed
 
@@ -27,7 +33,7 @@
 - MCP: keep local mcporter smokes from failing when the optional Chrome DevTools browser endpoint env var is unset.
 - Release: write clean checksum files from `scripts/release.sh artifacts` without helper trace lines.
 
-## 0.11.2 — Unreleased
+## 0.12.0 — 2026-05-15
 
 ### Added
 
