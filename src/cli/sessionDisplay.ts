@@ -13,6 +13,7 @@ import { sessionStore, wait } from "../sessionStore.js";
 import { formatTokenCount, formatTokenValue } from "../oracle/runUtils.js";
 import type { BrowserLogger } from "../browser/types.js";
 import { resumeBrowserSession } from "../browser/reattach.js";
+import { hasRecoverableChatGptConversation } from "../browser/reattachability.js";
 import {
   appendArtifacts,
   saveBrowserTranscriptArtifact,
@@ -29,6 +30,7 @@ import {
   buildResponseOwnerIndex,
   resolveSessionLineage,
 } from "./sessionLineage.js";
+import { formatSessionExecutionLabel } from "./sessionLifecycle.js";
 
 const isTty = (): boolean => Boolean(process.stdout.isTTY);
 const dim = (text: string): string => (isTty() ? kleur.dim(text) : text);
@@ -261,10 +263,19 @@ export async function attachSession(
     );
   const completedDeepResearchPlaceholder =
     metadata.status === "completed" && deepResearchPlaceholderCapture;
+  const hasRecoverableConversation = hasRecoverableChatGptConversation(runtime);
+  const hasLiveChromeFallback = Boolean(
+    (metadata.status === "running" || hasIncompleteCapture || completedDeepResearchPlaceholder) &&
+    (runtime?.chromePort || runtime?.chromeBrowserWSEndpoint || runtime?.chromeProfileRoot),
+  );
   const canReattach =
     (statusAllowsReattach || completedDeepResearchPlaceholder) &&
     metadata.mode === "browser" &&
     hasFallbackSessionInfo &&
+    (hasRecoverableConversation ||
+      runtime?.promptSubmitted ||
+      hasLiveChromeFallback ||
+      completedDeepResearchPlaceholder) &&
     (hasChromeDisconnect ||
       hasIncompleteCapture ||
       completedDeepResearchPlaceholder ||
@@ -325,6 +336,8 @@ export async function attachSession(
         browser: {
           config: metadata.browser?.config,
           runtime,
+          modelSelection: metadata.browser?.modelSelection,
+          warnings: metadata.browser?.warnings,
         },
         artifacts,
         response: { status: "completed" },
@@ -371,6 +384,11 @@ export async function attachSession(
     }
     console.log(`Created: ${metadata.createdAt}`);
     console.log(`Status: ${metadata.status}`);
+    if (metadata.lifecycle) {
+      const attached = metadata.lifecycle.attached ? "attached" : "detached";
+      console.log(`Execution: ${formatSessionExecutionLabel(metadata)} (${attached})`);
+      console.log(`Reattach: ${metadata.lifecycle.reattachCommand}`);
+    }
     if (metadata.models && metadata.models.length > 0) {
       console.log("Models:");
       for (const run of metadata.models) {
@@ -381,6 +399,13 @@ export async function attachSession(
       }
     } else if (metadata.model) {
       console.log(`Model: ${metadata.model}`);
+    }
+    const browserEvidence = formatBrowserEvidence(metadata);
+    if (browserEvidence) {
+      console.log("Browser evidence:");
+      for (const line of browserEvidence) {
+        console.log(dim(`- ${line}`));
+      }
     }
     if (metadata.artifacts && metadata.artifacts.length > 0) {
       console.log("Artifacts:");
@@ -404,7 +429,8 @@ export async function attachSession(
     }
   }
 
-  const shouldTrimIntro = initialStatus === "completed" || initialStatus === "error";
+  const shouldTrimIntro =
+    initialStatus === "completed" || initialStatus === "partial" || initialStatus === "error";
   if (options?.renderPrompt !== false) {
     const prompt = await readStoredPrompt(sessionId);
     if (prompt) {
@@ -539,7 +565,7 @@ export async function attachSession(
     if (!latest) {
       break;
     }
-    if (latest.status === "completed" || latest.status === "error") {
+    if (latest.status === "completed" || latest.status === "partial" || latest.status === "error") {
       await printNew();
       flushRemainder();
       if (!options?.suppressMetadata) {
@@ -547,10 +573,11 @@ export async function attachSession(
           console.log("\nResult:");
           console.log(`Session failed: ${latest.errorMessage}`);
         }
-        if (latest.status === "completed" && latest.usage) {
+        if ((latest.status === "completed" || latest.status === "partial") && latest.usage) {
           const summary = formatCompletionSummary(latest, { includeSlug: true });
           if (summary) {
-            console.log(`\n${chalk.green.bold(summary)}`);
+            const color = latest.status === "partial" ? chalk.yellow.bold : chalk.green.bold;
+            console.log(`\n${color(summary)}`);
           } else {
             const usage = latest.usage;
             console.log(
@@ -615,6 +642,28 @@ export function formatUserErrorMetadata(metadata?: SessionUserErrorMetadata): st
     parts.push(`details=${JSON.stringify(metadata.details)}`);
   }
   return parts.length > 0 ? parts.join(" | ") : null;
+}
+
+export function formatBrowserEvidence(metadata: SessionMetadata): string[] | null {
+  const browser = metadata.browser;
+  if (!browser?.modelSelection && (!browser?.warnings || browser.warnings.length === 0)) {
+    return null;
+  }
+  const lines: string[] = [];
+  const evidence = browser.modelSelection;
+  if (evidence) {
+    const requested = evidence.requestedModel ?? "(none)";
+    const resolved = evidence.resolvedLabel ?? "(unavailable)";
+    const strategy = evidence.strategy ?? "(default)";
+    const verified = evidence.verified ? "yes" : "no";
+    lines.push(
+      `model requested=${requested}; resolved=${resolved}; status=${evidence.status}; strategy=${strategy}; verified=${verified}`,
+    );
+  }
+  for (const warning of browser.warnings ?? []) {
+    lines.push(`warning ${warning.code}: ${warning.message}`);
+  }
+  return lines.length > 0 ? lines : null;
 }
 
 export function buildReattachLine(metadata: SessionMetadata): string | null {

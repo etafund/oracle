@@ -34,11 +34,16 @@ export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 
 export type ThinkingTimeLevel = "light" | "standard" | "extended" | "heavy";
 
+export type BrowserBundleFormat = "text" | "zip";
+
 export interface AzureOptions {
   endpoint?: string;
   apiVersion?: string;
   deployment?: string;
 }
+
+export type ApiProviderMode = "auto" | "openai" | "azure";
+export type PartialMode = "fail" | "ok";
 
 export type ClientFactory = (
   apiKey: string,
@@ -153,6 +158,7 @@ export interface RunOracleOptions {
   preview?: boolean | string;
   previewMode?: PreviewMode;
   apiKey?: string;
+  provider?: ApiProviderMode;
   baseUrl?: string;
   azure?: AzureOptions;
   sessionId?: string;
@@ -171,6 +177,7 @@ export interface RunOracleOptions {
   browserAttachments?: "auto" | "never" | "always";
   browserInlineFiles?: boolean;
   browserBundleFiles?: boolean;
+  browserBundleFormat?: BrowserBundleFormat;
   /** Browser image generation output path. */
   generateImage?: string;
   /** Optional output path used by browser image operations. */
@@ -183,6 +190,8 @@ export interface RunOracleOptions {
   background?: boolean;
   /** Optional absolute path to save only the assistant's final text output. */
   writeOutputPath?: string;
+  /** Multi-model failure policy: fail the command or accept partial success. */
+  partialMode?: PartialMode;
   /** Number of seconds to wait before timing out, or 'auto' to use model defaults. */
   timeoutSeconds?: number | "auto";
   /** Override HTTP client timeout (milliseconds). */

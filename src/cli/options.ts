@@ -1,9 +1,9 @@
 import { InvalidArgumentError, type Command } from "commander";
-import { parseDuration } from "../browserMode.js";
+import { parseDuration } from "../duration.js";
 import path from "node:path";
 import fg from "fast-glob";
 import type { ModelName, PreviewMode } from "../oracle.js";
-import { DEFAULT_MODEL, MODEL_CONFIGS } from "../oracle.js";
+import { DEFAULT_MODEL, MODEL_CONFIGS } from "../oracle/config.js";
 
 export function collectPaths(
   value: string | string[] | undefined,
@@ -169,11 +169,19 @@ export function parseTimeoutOption(value: string | undefined): number | "auto" |
   if (value == null) return undefined;
   const normalized = value.trim().toLowerCase();
   if (normalized === "auto") return "auto";
-  const parsed = parseStrictNumber(normalized);
-  if (parsed === undefined || parsed <= 0) {
-    throw new InvalidArgumentError('Timeout must be a positive number of seconds or "auto".');
+  if (/^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:e[+-]?\d+)?$/u.test(normalized)) {
+    const parsed = Number.parseFloat(normalized);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
   }
-  return parsed;
+  const parsedMs = parseDuration(normalized, Number.NaN);
+  if (!Number.isFinite(parsedMs) || parsedMs <= 0) {
+    throw new InvalidArgumentError(
+      'Timeout must be a positive number of seconds, a duration like "10m", or "auto".',
+    );
+  }
+  return parsedMs / 1000;
 }
 
 export function parseToonPassthroughOption(value: string | undefined): boolean {
@@ -506,6 +514,12 @@ export function inferModelFromLabel(modelValue: string): ModelName {
   }
   if ((normalized.includes("5.5") || normalized.includes("5_5")) && normalized.includes("pro")) {
     return "gpt-5.5-pro";
+  }
+  if (
+    (normalized.includes("5.5") || normalized.includes("5_5")) &&
+    (normalized.includes("instant") || normalized.includes("fast"))
+  ) {
+    return "gpt-5.5-instant";
   }
   if (normalized.includes("5.5") || normalized.includes("5_5")) {
     return "gpt-5.5";

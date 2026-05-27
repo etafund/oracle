@@ -1,6 +1,7 @@
-import { normalizeChatgptUrl, CHATGPT_URL } from "../browserMode.js";
+import { CHATGPT_URL } from "../browser/constants.js";
+import { normalizeChatgptUrl } from "../browser/utils.js";
 import type { UserConfig } from "../config.js";
-import type { ThinkingTimeLevel } from "../oracle.js";
+import type { ThinkingTimeLevel } from "../oracle/types.js";
 import type {
   BrowserArchiveMode,
   BrowserModelStrategy,
@@ -16,6 +17,7 @@ export interface BrowserDefaultsOptions {
   browserAttachRunning?: boolean;
   browserTimeout?: string | number;
   browserInputTimeout?: string | number;
+  browserAttachmentTimeout?: string | number;
   browserRecheckDelay?: string | number;
   browserRecheckTimeout?: string | number;
   browserReuseWait?: string | number;
@@ -92,6 +94,9 @@ export function applyBrowserDefaultsFromConfig(
   }
   if (isUnset("browserInputTimeout") && typeof browser.inputTimeoutMs === "number") {
     options.browserInputTimeout = String(browser.inputTimeoutMs);
+  }
+  if (isUnset("browserAttachmentTimeout") && typeof browser.attachmentTimeoutMs === "number") {
+    options.browserAttachmentTimeout = String(browser.attachmentTimeoutMs);
   }
   if (isUnset("browserRecheckDelay") && typeof browser.assistantRecheckDelayMs === "number") {
     options.browserRecheckDelay = String(browser.assistantRecheckDelayMs);

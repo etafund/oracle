@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import JSON5 from "json5";
@@ -36,6 +37,8 @@ export interface BrowserConfigDefaults {
   timeoutMs?: number;
   debugPort?: number | null;
   inputTimeoutMs?: number;
+  /** Time budget for attachment upload/readiness before clicking send. */
+  attachmentTimeoutMs?: number;
   /** Delay before rechecking the conversation after an assistant timeout. */
   assistantRecheckDelayMs?: number;
   /** Time budget for the delayed recheck attempt. */
@@ -99,39 +102,42 @@ export interface UserConfig {
   sessionRetentionHours?: number;
 }
 
-function resolveConfigPath(): string {
+export const PROJECT_CONFIG_RELATIVE_PATH = path.join(".oracle", "config.json");
+
+function resolveUserConfigPath(): string {
   return path.join(getOracleHomeDir(), "config.json");
 }
 
 export interface LoadConfigResult {
   config: UserConfig;
+  /** The user config path; `loaded` refers to this path only. */
   path: string;
+  /** All config files that were actually loaded, including project configs. */
+  paths: string[];
   loaded: boolean;
 }
 
 export interface LoadUserConfigOptions {
+  cwd?: string;
+  includeProject?: boolean;
   env?: NodeJS.ProcessEnv;
 }
 
-function normalizeString(value: unknown): string | undefined {
+interface ReadConfigResult {
+  config: UserConfig;
+  path: string;
+  loaded: boolean;
+}
+
+function normalizeOptionalString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
 function normalizeEngine(value: unknown): EnginePreference | undefined {
-  const normalized = normalizeString(value)?.toLowerCase();
+  const normalized = normalizeOptionalString(value)?.toLowerCase();
   return normalized === "api" || normalized === "browser" ? normalized : undefined;
-}
-
-function normalizeConfigRecord(value: unknown, configPath: string): UserConfig {
-  if (value == null) {
-    return {};
-  }
-  if (typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`Expected ${configPath} to contain a JSON object.`);
-  }
-  return value as UserConfig;
 }
 
 export function applyEnvConfigOverrides(
@@ -144,8 +150,8 @@ export function applyEnvConfigOverrides(
     next.engine = envEngine;
   }
 
-  const remoteHost = normalizeString(env.ORACLE_REMOTE_HOST);
-  const remoteToken = normalizeString(env.ORACLE_REMOTE_TOKEN);
+  const remoteHost = normalizeOptionalString(env.ORACLE_REMOTE_HOST);
+  const remoteToken = normalizeOptionalString(env.ORACLE_REMOTE_TOKEN);
   if (remoteHost || remoteToken) {
     next.browser = { ...(next.browser ?? {}) };
     if (remoteHost) {
@@ -161,45 +167,214 @@ export function applyEnvConfigOverrides(
 export async function loadUserConfig(
   options: LoadUserConfigOptions = {},
 ): Promise<LoadConfigResult> {
-  const CONFIG_PATH = resolveConfigPath();
+  const userConfigPath = resolveUserConfigPath();
+  const userConfig = await readConfigFile(userConfigPath);
+  const projectConfigPaths =
+    options.includeProject === false
+      ? []
+      : await discoverProjectConfigPaths({
+          cwd: options.cwd ?? process.cwd(),
+          userConfigPath,
+        });
+
+  const loadedConfigs: ReadConfigResult[] = [];
+  if (userConfig.loaded) {
+    loadedConfigs.push(userConfig);
+  }
+
+  let merged = userConfig.loaded ? userConfig.config : {};
+  for (const projectConfigPath of projectConfigPaths) {
+    const projectConfig = await readConfigFile(projectConfigPath);
+    if (!projectConfig.loaded) continue;
+    loadedConfigs.push(projectConfig);
+    merged = mergeUserConfig(merged, sanitizeProjectConfig(projectConfig.config));
+  }
+
   const env = options.env ?? process.env;
+  merged = applyEnvConfigOverrides(merged, env);
+
+  const loadedPaths = loadedConfigs.map((entry) => entry.path);
+  return {
+    config: merged,
+    path: userConfigPath,
+    paths: loadedPaths,
+    loaded: userConfig.loaded,
+  };
+}
+
+async function readConfigFile(configPath: string): Promise<ReadConfigResult> {
   try {
-    const raw = await fs.readFile(CONFIG_PATH, "utf8");
-    const parsed = normalizeConfigRecord(JSON5.parse(raw), CONFIG_PATH);
-    return {
-      config: applyEnvConfigOverrides(parsed, env),
-      path: CONFIG_PATH,
-      loaded: true,
-    };
+    const raw = await fs.readFile(configPath, "utf8");
+    const parsed = JSON5.parse(raw);
+    if (parsed != null && (typeof parsed !== "object" || Array.isArray(parsed))) {
+      console.warn(`Expected ${configPath} to contain a JSON object; using defaults`);
+      return { config: {}, path: configPath, loaded: false };
+    }
+    return { config: (parsed ?? {}) as UserConfig, path: configPath, loaded: true };
   } catch (error) {
     const code = (error as { code?: string }).code;
     if (code === "ENOENT") {
-      return {
-        config: applyEnvConfigOverrides({}, env),
-        path: CONFIG_PATH,
-        loaded: false,
-      };
+      return { config: {}, path: configPath, loaded: false };
     }
     const message = error instanceof Error ? error.message : String(error);
-    console.warn(`Config file at ${CONFIG_PATH} had a parse error: ${message}; using defaults`);
-    return {
-      config: applyEnvConfigOverrides({}, env),
-      path: CONFIG_PATH,
-      loaded: false,
-    };
+    console.warn(`Config file at ${configPath} had a parse error: ${message}; using defaults`);
+    return { config: {}, path: configPath, loaded: false };
   }
 }
+
 export function configPath(): string {
-  return resolveConfigPath();
+  return resolveUserConfigPath();
+}
+
+async function discoverProjectConfigPaths({
+  cwd,
+  userConfigPath,
+}: {
+  cwd: string;
+  userConfigPath: string;
+}): Promise<string[]> {
+  const start = path.resolve(cwd);
+  const home = os.homedir();
+  const candidates: string[] = [];
+  const seen = new Set<string>([path.resolve(userConfigPath)]);
+  let current = start;
+
+  while (true) {
+    if (current === home) {
+      break;
+    }
+
+    const candidate = path.join(current, PROJECT_CONFIG_RELATIVE_PATH);
+    const resolved = path.resolve(candidate);
+    if (!seen.has(resolved)) {
+      try {
+        const stat = await fs.stat(resolved);
+        if (stat.isFile()) {
+          candidates.unshift(resolved);
+          seen.add(resolved);
+        }
+      } catch (error) {
+        if ((error as { code?: string }).code !== "ENOENT") {
+          console.warn(
+            `Failed to inspect ${resolved}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+    }
+
+    const parent = path.dirname(current);
+    if (parent === current) {
+      break;
+    }
+    current = parent;
+  }
+
+  return candidates;
+}
+
+function mergeUserConfig(base: UserConfig, override: UserConfig): UserConfig {
+  return deepMerge(base, override) as UserConfig;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function deepMerge(base: unknown, override: unknown): unknown {
+  if (!isRecord(base) || !isRecord(override)) {
+    return override;
+  }
+
+  const result: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(override)) {
+    const existing = result[key];
+    result[key] = isRecord(existing) && isRecord(value) ? deepMerge(existing, value) : value;
+  }
+  return result;
+}
+
+function sanitizeProjectConfig(config: UserConfig): UserConfig {
+  const sanitized: UserConfig = {};
+
+  if (config.engine !== undefined) sanitized.engine = config.engine;
+  if (config.model !== undefined) sanitized.model = config.model;
+  if (config.search !== undefined) sanitized.search = config.search;
+  if (config.maxFileSizeBytes !== undefined) sanitized.maxFileSizeBytes = config.maxFileSizeBytes;
+  if (config.notify !== undefined) sanitized.notify = config.notify;
+  if (config.heartbeatSeconds !== undefined) sanitized.heartbeatSeconds = config.heartbeatSeconds;
+  if (config.filesReport !== undefined) sanitized.filesReport = config.filesReport;
+  if (config.background !== undefined) sanitized.background = config.background;
+  if (config.promptSuffix !== undefined) sanitized.promptSuffix = config.promptSuffix;
+
+  if (config.browser) {
+    sanitized.browser = {};
+    const browser = config.browser;
+    const allowedBrowserKeys: Array<keyof BrowserConfigDefaults> = [
+      "attachRunning",
+      "timeoutMs",
+      "inputTimeoutMs",
+      "assistantRecheckDelayMs",
+      "assistantRecheckTimeoutMs",
+      "reuseChromeWaitMs",
+      "profileLockTimeoutMs",
+      "maxConcurrentTabs",
+      "autoReattachDelayMs",
+      "autoReattachIntervalMs",
+      "autoReattachTimeoutMs",
+      "cookieSyncWaitMs",
+      "hideWindow",
+      "keepBrowser",
+      "modelStrategy",
+      "thinkingTime",
+      "researchMode",
+      "archiveConversations",
+      "manualLogin",
+    ];
+
+    for (const key of allowedBrowserKeys) {
+      if (browser[key] !== undefined) {
+        sanitized.browser[key] = browser[key] as never;
+      }
+    }
+
+    const chatgptUrl = browser.chatgptUrl ?? browser.url;
+    if (
+      chatgptUrl === null ||
+      (chatgptUrl !== undefined && isTrustedProjectChatgptUrl(chatgptUrl))
+    ) {
+      sanitized.browser.chatgptUrl = chatgptUrl;
+      sanitized.browser.url = chatgptUrl;
+    }
+  }
+
+  return sanitized;
+}
+
+function isTrustedProjectChatgptUrl(rawUrl: string): boolean {
+  if (!rawUrl) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== "https:") {
+      return false;
+    }
+    return parsed.hostname === "chatgpt.com" || parsed.hostname === "chat.openai.com";
+  } catch {
+    return false;
+  }
 }
 
 export async function writeUserConfig(
   config: UserConfig,
-  targetPath: string = resolveConfigPath(),
+  targetPath: string = resolveUserConfigPath(),
 ): Promise<void> {
   const resolvedTarget = path.resolve(targetPath);
   const dir = path.dirname(resolvedTarget);
-  if (resolvedTarget === resolveConfigPath()) {
+  if (resolvedTarget === resolveUserConfigPath()) {
     await ensureOracleHomeDir();
   } else {
     await fs.mkdir(dir, { recursive: true, mode: 0o700 });

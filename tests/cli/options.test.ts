@@ -11,6 +11,7 @@ import {
   inferModelFromLabel,
   normalizeModelOption,
   parseHeartbeatOption,
+  parseTimeoutOption,
   mergePathLikeOptions,
   dedupePathInputs,
 } from "../../src/cli/options.ts";
@@ -158,6 +159,25 @@ describe("parseHeartbeatOption", () => {
   });
 });
 
+describe("parseTimeoutOption", () => {
+  test("keeps bare numbers as seconds", () => {
+    expect(parseTimeoutOption("10")).toBe(10);
+    expect(parseTimeoutOption("1.5")).toBe(1.5);
+  });
+
+  test("accepts duration units", () => {
+    expect(parseTimeoutOption("10m")).toBe(600);
+    expect(parseTimeoutOption("2h")).toBe(7200);
+    expect(parseTimeoutOption("90s")).toBe(90);
+  });
+
+  test("accepts auto and rejects invalid values", () => {
+    expect(parseTimeoutOption("auto")).toBe("auto");
+    expect(() => parseTimeoutOption("nope")).toThrow(InvalidArgumentError);
+    expect(() => parseTimeoutOption("0")).toThrow(InvalidArgumentError);
+  });
+});
+
 describe("parseSearchOption", () => {
   test("accepts on/off variants", () => {
     expect(parseSearchOption("on")).toBe(true);
@@ -246,6 +266,8 @@ describe("inferModelFromLabel", () => {
 
   test("infers 5.5 variants", () => {
     expect(inferModelFromLabel("ChatGPT 5.5")).toBe("gpt-5.5");
+    expect(inferModelFromLabel("ChatGPT 5.5 Instant")).toBe("gpt-5.5-instant");
+    expect(inferModelFromLabel("5.5 FAST")).toBe("gpt-5.5-instant");
     expect(inferModelFromLabel("GPT-5.5 Pro")).toBe("gpt-5.5-pro");
     expect(inferModelFromLabel("Pro Extended")).toBe("gpt-5.5-pro");
     // New ChatGPT UI (2026-05): bare "Pro" label maps to default (gpt-5.5-pro)

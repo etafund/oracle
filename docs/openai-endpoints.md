@@ -10,7 +10,7 @@ Oracle uses the official OpenAI Node.js SDK, which allows it to connect to any A
 ## Azure OpenAI
 
 Oracle uses Azure's v1 Responses endpoint when `--azure-endpoint` (or `azure.endpoint`) is set.
-Pass your resource endpoint, Azure key, and optionally a deployment name when it differs from Oracle's CLI model alias:
+Pass your resource endpoint, Azure key, and deployment name:
 
 ```bash
 export AZURE_OPENAI_ENDPOINT="https://your-resource-name.openai.azure.com/"
@@ -24,12 +24,33 @@ Key lookup for GPT-family models when an Azure endpoint is set:
 - Falls back to `OPENAI_API_KEY` if the Azure key is missing.
 
 Without an Azure endpoint, Oracle keeps using `OPENAI_API_KEY` as before.
+If Azure env/config is present but you want first-party OpenAI for one run, pass `--provider openai` or `--no-azure`.
 
 Notes:
 
 - Oracle calls Azure at `https://<resource>.openai.azure.com/openai/v1`.
-- For Responses API runs, Azure expects `model` to be your deployment name. Use `--azure-deployment` or `azure.deployment` when the deployment name does not exactly match the CLI model alias.
+- For Responses API runs, Azure expects `model` to be your deployment name. Oracle fails early when an Azure endpoint is active without a deployment, except for `gpt-5.5-pro` where the CLI model id is used as the implicit deployment.
+- API runs print the selected route without secrets, for example `Provider: Azure OpenAI | endpoint: your-resource.openai.azure.com | deployment: my-deployment | key: AZURE_OPENAI_API_KEY|OPENAI_API_KEY`.
 - `AZURE_OPENAI_API_VERSION` is still accepted for back-compat, but Azure's v1 Responses endpoint does not require it.
+
+## Provider diagnostics
+
+Check provider readiness before an API run:
+
+```bash
+oracle doctor --providers --models gpt-5.4,claude-4.6-sonnet,gemini-3-pro
+oracle --preflight --models gpt-5.4,gemini-3-pro
+oracle --route --model gpt-5.4
+```
+
+The output is redacted and local: provider, base host, key source, Azure status, and missing-route errors. These commands exit before sending a prompt or creating a session.
+
+When Azure env/config is present, GPT-family API models route through Azure unless you force first-party OpenAI:
+
+```bash
+oracle --provider openai --route --model gpt-5.4
+oracle --no-azure --route --model gpt-5.4
+```
 
 ### CLI Configuration
 
@@ -37,6 +58,13 @@ You can also pass the Azure settings via CLI flags (env for the key is still rec
 
 ```bash
 oracle --azure-endpoint https://... --azure-deployment my-deployment-name
+```
+
+Force first-party OpenAI when Azure env vars are exported:
+
+```bash
+oracle --provider openai --engine api --model gpt-5.5-pro -p "Review this"
+oracle --no-azure --engine api --model gpt-5.5-pro -p "Review this"
 ```
 
 ## Custom Base URLs (LiteLLM, Localhost)

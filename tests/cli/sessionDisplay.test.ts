@@ -3,6 +3,7 @@ import type { SessionMetadata } from "../../src/sessionManager.ts";
 import {
   buildReattachLine,
   formatResponseMetadata,
+  formatBrowserEvidence,
   formatTransportMetadata,
   formatUserErrorMetadata,
   trimBeforeFirstAnswer,
@@ -50,6 +51,7 @@ const originalChalkLevel = chalk.level;
 
 beforeEach(() => {
   vi.useFakeTimers();
+  waitMock.mockClear();
   Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
   chalk.level = 1;
   vi.spyOn(process.stdout, "write").mockImplementation(() => true);
@@ -108,6 +110,40 @@ describe("formatUserErrorMetadata", () => {
         details: { path: "foo.txt" },
       }),
     ).toBe('file-validation | message=Too big | details={"path":"foo.txt"}');
+  });
+});
+
+describe("formatBrowserEvidence", () => {
+  test("formats model selection and warning metadata", () => {
+    const metadata: SessionMetadata = {
+      id: "sess",
+      createdAt: new Date().toISOString(),
+      status: "completed",
+      options: {},
+      browser: {
+        modelSelection: {
+          requestedModel: "GPT-5.5 Pro",
+          resolvedLabel: "Pro",
+          strategy: "select",
+          status: "already-selected",
+          verified: true,
+          source: "chatgpt-model-picker",
+          capturedAt: "2026-05-13T00:00:00.000Z",
+        },
+        warnings: [
+          {
+            code: "browser-pro-fast-large-run",
+            severity: "warning",
+            message: "Large browser Pro run completed quickly.",
+          },
+        ],
+      },
+    };
+
+    expect(formatBrowserEvidence(metadata)).toEqual([
+      "model requested=GPT-5.5 Pro; resolved=Pro; status=already-selected; strategy=select; verified=yes",
+      "warning browser-pro-fast-large-run: Large browser Pro run completed quickly.",
+    ]);
   });
 });
 
@@ -172,6 +208,29 @@ describe("attachSession rendering", () => {
   beforeEach(() => {
     renderMarkdownMock?.mockClear?.();
     readSessionRequestMock.mockReset();
+  });
+
+  test("prints persisted lifecycle metadata", async () => {
+    const lifecycleMeta: SessionMetadata = {
+      ...baseMeta,
+      status: "completed",
+      lifecycle: {
+        engine: "api",
+        execution: "background",
+        attached: false,
+        detached: true,
+        reattachCommand: "oracle session sess",
+      },
+    } as SessionMetadata;
+    readSessionMetadataMock.mockResolvedValue(lifecycleMeta);
+    readSessionLogMock.mockResolvedValue("");
+    readSessionRequestMock.mockResolvedValue({ prompt: "Prompt here" });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await attachSession("sess", { renderMarkdown: false });
+
+    expect(logSpy).toHaveBeenCalledWith("Execution: api/bg (detached)");
+    expect(logSpy).toHaveBeenCalledWith("Reattach: oracle session sess");
   });
 
   test("prints chain metadata for follow-up sessions", async () => {
@@ -380,6 +439,29 @@ describe("attachSession rendering", () => {
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Δ"));
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("$1.23"));
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("slug=sess"));
+  });
+
+  test("treats partial sessions as terminal", async () => {
+    const partialMeta: SessionMetadata = {
+      ...baseMeta,
+      status: "partial",
+      model: "gpt-5.1",
+      mode: "api",
+      elapsedMs: 1234,
+      usage: { inputTokens: 10, outputTokens: 20, reasoningTokens: 0, totalTokens: 30 },
+    } as SessionMetadata;
+    readSessionMetadataMock.mockResolvedValue(partialMeta);
+    sessionStoreMock.readSession.mockResolvedValue(partialMeta);
+    readSessionLogMock.mockResolvedValue("Answer:\npartial result");
+    readSessionRequestMock.mockResolvedValue({ prompt: "Prompt here" });
+    const writeSpy = vi.spyOn(process.stdout, "write");
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await attachSession("sess", { renderMarkdown: false });
+
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("Answer:\npartial result"));
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("↑"));
+    expect(waitMock).not.toHaveBeenCalled();
   });
 
   test("falls back to metadata prompt when request is missing", async () => {

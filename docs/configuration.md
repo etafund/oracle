@@ -1,6 +1,9 @@
 # Local configuration (JSON5)
 
-Oracle reads an optional per-user config from `~/.oracle/config.json`. The file uses JSON5 parsing, so trailing commas and comments are allowed.
+Oracle reads an optional per-user config from `~/.oracle/config.json`, then layers
+project configs from `.oracle/config.json` files discovered from your working
+directory upward, stopping before your home directory. All config files use
+JSON5 parsing, so trailing commas and comments are allowed.
 
 ## Example (`~/.oracle/config.json`)
 
@@ -30,6 +33,7 @@ Oracle reads an optional per-user config from `~/.oracle/config.json`. The file 
     debugPort: null, // fixed DevTools port (env: ORACLE_BROWSER_PORT / ORACLE_BROWSER_DEBUG_PORT)
     timeoutMs: 1200000,
     inputTimeoutMs: 30000,
+    attachmentTimeoutMs: 90000, // wait for file upload/readiness before clicking Send (default: 45s)
     cookieSyncWaitMs: 0, // wait (ms) before retrying cookie sync when Chrome cookies are empty/locked
     assistantRecheckDelayMs: 0, // wait this long after timeout, then retry capture (0 = disabled)
     assistantRecheckTimeoutMs: 120000, // time budget for the recheck attempt (default: 2m)
@@ -67,11 +71,41 @@ Oracle reads an optional per-user config from `~/.oracle/config.json`. The file 
 }
 ```
 
+## Project configs
+
+Put a project-level config at `.oracle/config.json` inside any project folder:
+
+```json5
+{
+  engine: "browser",
+  model: "gpt-5.5-pro",
+  browser: {
+    chatgptUrl: "https://chatgpt.com/g/g-p-example/project",
+    modelStrategy: "current",
+    archiveConversations: "never",
+  },
+}
+```
+
+Oracle discovers every `.oracle/config.json` from the current directory upward
+until your home directory, then applies them from parent to child after the user
+config. Nested objects are merged, while scalars and arrays replace earlier
+values. This lets a parent folder set broad defaults and override a specific
+ChatGPT Project URL in a package subdirectory.
+
+Project configs intentionally support only workflow defaults. They cannot set
+provider routing or secret/executable fields such as `apiBaseUrl`, `azure`,
+`browser.remoteHost`, `browser.remoteToken`, `browser.chromePath`, or
+`browser.chromeCookiePath`. Keep tokens and machine-local executable/profile
+paths in `~/.oracle/config.json`, environment variables, or explicit CLI flags.
+
 ## Precedence
 
-CLI flags → `config.json` → environment → built-in defaults.
+CLI flags and explicit override environment variables → effective config (project `.oracle/config.json` files over `~/.oracle/config.json`) → auto-detected environment → built-in defaults.
 
-- `engine`, `model`, `search`, `filesReport`, `heartbeatSeconds`, `maxFileSizeBytes`, and `apiBaseUrl` in `config.json` override the auto-detected values unless explicitly set on the CLI.
+- The effective config starts with `~/.oracle/config.json`, then layers project `.oracle/config.json` files from parent to child. `engine`, `model`, `search`, `filesReport`, `heartbeatSeconds`, `maxFileSizeBytes`, and `apiBaseUrl` in the effective config override auto-detected values unless explicitly set on the CLI or through a supported override environment variable.
+- Project `.oracle/config.json` files can override safe workflow defaults such as `engine`, `model`, `search`, `filesReport`, `heartbeatSeconds`, `maxFileSizeBytes`, `promptSuffix`, and allowed `browser.*` workflow settings.
+- Provider routing and machine-local fields (`apiBaseUrl`, `azure`, remote browser host/token defaults, Chrome binary/profile paths, cookie DB paths, and session retention cleanup) are ignored in project configs and are read only from the user config, environment variables, or explicit CLI flags.
 - `ORACLE_ENGINE=api|browser` is a global override for engine selection (useful for MCP/Codex setups); it wins over `config.json`.
 - If `azure.endpoint` (or `--azure-endpoint`) is set, Oracle reads `AZURE_OPENAI_API_KEY` first and falls back to `OPENAI_API_KEY` for GPT models.
 - Remote browser defaults follow the same order: `--remote-host/--remote-token` win, then `browser.remoteHost` / `browser.remoteToken` in the config, then `ORACLE_REMOTE_HOST` / `ORACLE_REMOTE_TOKEN` if still unset.
@@ -128,3 +162,13 @@ oracle \
 
 - `--zombie-timeout <ms|s|m|h>` overrides the stale-session cutoff used by `oracle status`.
 - `--zombie-last-activity` uses last log activity instead of start time to detect stale sessions.
+
+## Performance traces
+
+- `--perf-trace` writes a JSON timing trace with startup, first output, root command, and exit marks.
+- `--perf-trace-path /tmp/oracle.json` or `--perf-trace=/tmp/oracle.json` writes to an explicit path.
+- `ORACLE_PERF_TRACE=1` writes `.oracle-perf-<timestamp>-<pid>.json` in the current directory.
+- `ORACLE_PERF_TRACE=/tmp/oracle.json` writes to an explicit path.
+- Trace args are secret-safe: prompt text, tokens, cookie payloads, inline cookies, and API key-like values are redacted.
+- Detached API runs write a session-suffixed child trace beside the requested trace path so startup and background execution can be inspected separately.
+- Useful events: `cli-module-ready`, `pre-action`, `root-command-start`, `first-output`, `command-action-complete`, and `exit`.
