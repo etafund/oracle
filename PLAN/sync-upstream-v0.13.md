@@ -38,3 +38,39 @@ Skipped 7 commits:
 - `aef77fe5`: upstream-only `askoracle.sh` homepage/social metadata.
 
 Final state: manifest written, APPLY commits cherry-picked, no upstream package version bump adopted.
+
+## Deferred upstream commits (require follow-up PR)
+
+The following upstream commits were not applied in this sync because they
+collectively rewrite `src/oracle/run.ts` from our fork's inline
+`{provider, source}` resolver into a helper-based `runtimeKeySource` /
+`buildProviderRoutePlan` layer. Landing them piecemeal would leave the CLI
+calling functions that do not exist; landing the refactor wholesale
+requires re-authoring on top of our v18 evidence / `json_envelope.v1`
+plumbing.
+
+| SHA | Subject | Reason for defer |
+|---|---|---|
+| 20166468 | refactor(api): share provider route resolution | Introduces `providerRoutePlan.ts` + helper layer; our `run.ts` has structurally different surroundings. |
+| 504f70a3 | fix(api): report explicit proxy key source | Targets the `runtimeKeySource` helper introduced by 20166468. |
+| decff455 | fix(api): report explicit forced-openai key source | Same dependency chain as 504f70a3. |
+| 3ae0df0d | feat(config): layer project config defaults (#218) | 10-file coordinated rewrite of `loadUserConfig`, `resolveEngine`, and `bin/oracle-cli.ts` that imports the deferred `providerRoutePlan.js`. |
+
+Suggested follow-up: port the upstream provider-route refactor onto our
+inline resolver as a single coordinated commit, then re-land 504f70a3,
+decff455, and 3ae0df0d on top. The full conflict analysis from the apisc
+pane is preserved in the git history at branch `sync/apisc-v0.13` →
+`CONFLICT_REPORT.md`.
+
+## Tests batch — also-deferred upstream commits
+
+The tests pane (sync/tests-v0.13) cherry-picked 3 of 6 commits. The
+other 3 depend on infrastructure introduced by the deferred apisc commits:
+
+| SHA | Subject | Reason for defer |
+|---|---|---|
+| f8727d0f | test(cli): stabilize windows signal and loader tests | Depends on `feat(config): layer project config defaults` shapes. |
+| fde1bae6 | style: format audit patches | Reformats files modified by the deferred apisc refactor. |
+| 1bd574ad | test: fix Windows project config smokes | Tests the deferred `loadUserConfig` rewrite. |
+
+These should land alongside the apisc refactor in the follow-up PR.
