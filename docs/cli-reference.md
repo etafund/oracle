@@ -13,6 +13,7 @@ This is the curated cheatsheet. The authoritative source is always `oracle --hel
 | `oracle status`                | List recent sessions (see [Sessions](sessions.md)).                                                                             |
 | `oracle session <id>`          | Replay or block on a stored session.                                                                                            |
 | `oracle restart <id>`          | Re-run with the same prompt + files.                                                                                            |
+| `oracle docs check`            | Check documented flags against CLI help metadata.                                                                               |
 | `oracle serve`                 | Run the remote browser host (see [Browser Mode](browser-mode.md)).                                                              |
 | `oracle remote doctor`         | Probe the configured remote endpoint (TCP + `/health`). `--json` emits a `remote_browser_endpoint.v1` envelope.                 |
 | `oracle remote status`         | Print the resolved remote endpoint config without touching the network. `--json` for machine-readable output.                   |
@@ -24,20 +25,19 @@ This is the curated cheatsheet. The authoritative source is always `oracle --hel
 
 ## Core consult flags
 
-| Flag                              | Purpose                                                          |
-| --------------------------------- | ---------------------------------------------------------------- |
-| `-p, --prompt <text>`             | Required prompt.                                                 |
-| `-f, --file <paths...>`           | Files / dirs / globs. Repeatable. `!` prefix = exclude.          |
-| `-e, --engine <api\|browser>`     | Force engine. Default: auto-pick.                                |
-| `-m, --model <name>`              | Single model. See [Mythical Pro Agents](mythical-pro-agents.md). |
-| `--models <list>`                 | Comma-separated multi-model run (API only).                      |
-| `--slug <name>`                   | Stable session slug.                                             |
-| `--render`                        | Print the assembled bundle to stdout.                            |
-| `--copy`                          | Copy the bundle to the clipboard.                                |
-| `--json`                          | Emit a stable JSON envelope on stdout.                           |
-| `--write-output <path>`           | Save the final answer to a file.                                 |
-| `--files-report`                  | Print per-file token usage.                                      |
-| `--dry-run [summary\|json\|full]` | Preview without sending.                                         |
+| Flag                              | Purpose                                                                                          |
+| --------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `-p, --prompt <text>`             | Required prompt.                                                                                 |
+| `-f, --file <paths...>`           | Files / dirs / globs. Repeatable. `!` prefix = exclude.                                          |
+| `-e, --engine <api\|browser>`     | Force engine. Default: auto-pick.                                                                |
+| `-m, --model <name>`              | Single model. See [Mythical Pro Agents](mythical-pro-agents.md).                                 |
+| `--models <list>`                 | Comma-separated multi-model run (API only).                                                      |
+| `--slug <name>`                   | Stable session slug.                                                                             |
+| `--render`                        | Print the assembled bundle to stdout.                                                            |
+| `--copy`                          | Copy the bundle to the clipboard.                                                                |
+| `--write-output <path>`           | Save the final answer to a file; multi-model runs add per-model files plus `<stem>.oracle.json`. |
+| `--files-report`                  | Print per-file token usage.                                                                      |
+| `--dry-run [summary\|json\|full]` | Preview without sending.                                                                         |
 
 ## Followup / lineage
 
@@ -48,13 +48,16 @@ This is the curated cheatsheet. The authoritative source is always `oracle --hel
 
 ## Run control
 
-| Flag                              | Purpose                                                                   |
-| --------------------------------- | ------------------------------------------------------------------------- |
-| `--wait`                          | Block on background API runs.                                             |
-| `--timeout <seconds\|auto>`       | Overall API deadline. `auto` = 60m for Pro, 120s otherwise.               |
-| `--background`, `--no-background` | Force Responses API background mode on/off.                               |
-| `--http-timeout <ms\|s\|m\|h>`    | HTTP client timeout (default 20m).                                        |
-| `--heartbeat <seconds>`           | Emit progress heartbeats; browser mode reports thinking-sidecar liveness. |
+| Flag                                       | Purpose                                                                                |
+| ------------------------------------------ | -------------------------------------------------------------------------------------- |
+| `--wait`                                   | Block on background API runs.                                                          |
+| `--timeout <seconds\|duration\|auto>`      | Overall API deadline. `auto` = 60m for Pro, 120s otherwise; accepts values like `10m`. |
+| `--background`, `--no-background`          | Force Responses API background mode on/off.                                            |
+| `--http-timeout <ms\|s\|m\|h>`             | Override the HTTP client timeout; explicit `--timeout` values are reused when omitted. |
+| `--allow-partial`, `--partial <mode>`      | Accept partial multi-model success when mode is `ok`; default mode is `fail`.          |
+| `--preflight`                              | Check redacted provider readiness for requested API model(s), then exit.               |
+| `--perf-trace`, `--perf-trace-path <path>` | Write CLI startup / first-output timing trace JSON.                                    |
+| `--heartbeat <seconds>`                    | Emit progress heartbeats; browser mode reports thinking-sidecar liveness.              |
 
 Notes:
 
@@ -65,12 +68,15 @@ Notes:
 
 ## API endpoints
 
-| Flag                  | Purpose                               |
-| --------------------- | ------------------------------------- |
-| `--base-url <url>`    | LiteLLM / Azure / OpenRouter / proxy. |
-| `--azure-endpoint`    | Azure OpenAI endpoint.                |
-| `--azure-deployment`  | Azure deployment name.                |
-| `--azure-api-version` | Azure API version.                    |
+| Flag                  | Purpose                                   |
+| --------------------- | ----------------------------------------- |
+| `--base-url <url>`    | LiteLLM / Azure / OpenRouter / proxy.     |
+| `--provider <mode>`   | API route: `auto`, `openai`, or `azure`.  |
+| `--no-azure`          | Ignore Azure env/config for this run.     |
+| `--route`             | Print redacted API route plan, then exit. |
+| `--azure-endpoint`    | Azure OpenAI endpoint.                    |
+| `--azure-deployment`  | Azure deployment name.                    |
+| `--azure-api-version` | Azure API version.                        |
 
 See [OpenAI / Azure / OpenRouter](openai-endpoints.md) and [OpenRouter](openrouter.md).
 

@@ -13,11 +13,14 @@ import type {
 } from "./browser/types.js";
 import type {
   TransportFailureReason,
+  ApiProviderMode,
   AzureOptions,
   ModelName,
+  PartialMode,
   ThinkingTimeLevel,
 } from "./oracle.js";
-import { DEFAULT_MODEL, formatElapsed } from "./oracle.js";
+import { DEFAULT_MODEL } from "./oracle/config.js";
+import { formatElapsed } from "./oracle/format.js";
 import { safeModelSlug } from "./oracle/modelResolver.js";
 import { getOracleHomeDir } from "./oracleHome.js";
 import {
@@ -182,11 +185,13 @@ export interface StoredRunOptions {
   browserBundleFiles?: boolean;
   background?: boolean;
   search?: boolean;
+  provider?: ApiProviderMode;
   baseUrl?: string;
   azure?: AzureOptions;
   effectiveModelId?: string;
   renderPlain?: boolean;
   writeOutputPath?: string;
+  partialMode?: PartialMode;
   timeoutSeconds?: number | "auto";
   httpTimeoutMs?: number;
   zombieTimeoutMs?: number;
@@ -231,9 +236,18 @@ export interface SessionMetadata {
   response?: SessionResponseMetadata;
   transport?: SessionTransportMetadata;
   error?: SessionUserErrorMetadata;
+  lifecycle?: SessionLifecycleMetadata;
 }
 
-export type SessionStatus = "pending" | "running" | "completed" | "error" | "cancelled";
+export type SessionStatus = "pending" | "running" | "completed" | "partial" | "error" | "cancelled";
+
+export interface SessionLifecycleMetadata {
+  engine: "api" | "browser";
+  execution: "foreground" | "background";
+  attached: boolean;
+  detached: boolean;
+  reattachCommand: string;
+}
 
 export interface SessionModelRun {
   model: string;
@@ -559,6 +573,7 @@ export async function initializeSession(
       browserBundleFiles: options.browserBundleFiles,
       background: options.background,
       search: options.search,
+      provider: options.provider,
       baseUrl: options.baseUrl,
       azure: options.azure,
       timeoutSeconds: options.timeoutSeconds,
@@ -566,6 +581,7 @@ export async function initializeSession(
       zombieTimeoutMs: options.zombieTimeoutMs,
       zombieUseLastActivity: options.zombieUseLastActivity,
       writeOutputPath: options.writeOutputPath,
+      partialMode: options.partialMode,
       waitPreference: options.waitPreference,
       youtube: options.youtube,
       generateImage: options.generateImage,

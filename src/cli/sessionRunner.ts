@@ -7,8 +7,9 @@ import type {
   BrowserSessionConfig,
   BrowserRuntimeMetadata,
   SessionArtifact,
+  SessionModelRun,
 } from "../sessionStore.js";
-import type { RunOracleOptions, UsageSummary } from "../oracle.js";
+import type { ProviderFailureContext, RunOracleOptions, UsageSummary } from "../oracle.js";
 import {
   runOracle,
   OracleResponseError,
@@ -16,6 +17,7 @@ import {
   extractResponseMetadata,
   asOracleUserError,
   extractTextOutput,
+  classifyProviderFailure,
 } from "../oracle.js";
 import {
   ensureSessionArtifacts,
@@ -32,7 +34,7 @@ import {
 } from "./notifier.js";
 import { sessionStore } from "../sessionStore.js";
 import { wait } from "../sessionManager.js";
-import { runMultiModelApiSession } from "../oracle/multiModelRunner.js";
+import { runMultiModelApiSession, type MultiModelRunSummary } from "../oracle/multiModelRunner.js";
 import { MODEL_CONFIGS, DEFAULT_SYSTEM_PROMPT } from "../oracle/config.js";
 import { isKnownModel } from "../oracle/modelResolver.js";
 import { resolveModelConfig } from "../oracle/modelResolver.js";
@@ -335,8 +337,17 @@ export async function performSessionRun({
       log(statusColor(line1));
 
       const hasFailure = summary.rejected.length > 0;
+      const allowPartial = runOptions.partialMode === "ok" && summary.fulfilled.length > 0;
+      if (hasFailure) {
+        const resultLabel = summary.fulfilled.length > 0 ? "partial success" : "failed";
+        log(
+          statusColor(
+            `Multi-model result: ${resultLabel}, ${summary.fulfilled.length}/${multiModels.length} succeeded`,
+          ),
+        );
+      }
       await sessionStore.updateSession(sessionMeta.id, {
-        status: hasFailure ? "error" : "completed",
+        status: hasFailure ? (allowPartial ? "partial" : "error") : "completed",
         completedAt: new Date().toISOString(),
         usage: aggregateUsage,
         elapsedMs: summary.elapsedMs,
@@ -370,15 +381,59 @@ export async function performSessionRun({
             savedOutputs.push({ model: entry.model, path: savedPath });
           }
         }
+        const sessionWithRuns = (await readSessionForManifest(sessionMeta.id)) ?? {
+          ...sessionMeta,
+          models: sessionMeta.models,
+        };
+        const runLogs = await collectMultiModelRunLogs(
+          sessionMeta.id,
+          sessionWithRuns.models,
+          summary,
+        );
+        const manifestPath = await writeMultiModelOutputManifest({
+          baseOutputPath: runOptions.writeOutputPath,
+          sessionId: sessionMeta.id,
+          status: hasFailure ? (allowPartial ? "partial" : "error") : "completed",
+          summary,
+          savedOutputs,
+          modelRuns: sessionWithRuns.models,
+          runLogs,
+          runOptions,
+          log,
+        });
         if (savedOutputs.length > 0) {
           log(dim("Saved outputs:"));
           for (const item of savedOutputs) {
             log(dim(`- ${item.model} -> ${item.path}`));
           }
         }
+        if (manifestPath) {
+          log(dim(`Output manifest: ${manifestPath}`));
+        }
+        if (runLogs.length > 0) {
+          log(dim(""));
+          log(dim("Run logs:"));
+          for (const item of runLogs) {
+            log(dim(`- ${item.model} -> ${item.path}`));
+          }
+        }
       }
       if (hasFailure) {
-        throw summary.rejected[0].reason;
+        log(dim("Failures:"));
+        for (const item of summary.rejected) {
+          const providerContext = providerFailureContextForModel(item.model, runOptions);
+          log(dim(`- ${item.model}: ${formatMultiModelFailure(item.reason, providerContext)}`));
+          for (const line of formatMultiModelFailureDetails(item.reason, providerContext)) {
+            log(dim(line));
+          }
+        }
+      }
+      if (hasFailure && !allowPartial) {
+        const firstFailure = summary.rejected[0];
+        throw sanitizeMultiModelFailureForThrow(
+          firstFailure.reason,
+          providerFailureContextForModel(firstFailure.model, runOptions),
+        );
       }
       return;
     }
@@ -595,6 +650,289 @@ function mergeArtifacts(
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function providerFailureContextForModel(
+  model: string,
+  runOptions: RunOracleOptions,
+): ProviderFailureContext {
+  return {
+    model,
+    providerMode: runOptions.provider,
+    azure: runOptions.azure,
+    baseUrl: runOptions.baseUrl,
+    apiKey: runOptions.apiKey,
+  };
+}
+
+function formatMultiModelFailure(
+  error: unknown,
+  context?: string | ProviderFailureContext,
+): string {
+  const userError = asOracleUserError(error);
+  if (userError) {
+    return `${userError.category}, ${userError.message}`;
+  }
+  const providerFailure = classifyProviderFailure(error, context);
+  if (providerFailure) {
+    return providerFailure.label;
+  }
+  if (error instanceof OracleTransportError) {
+    return `${error.reason}, ${error.message}`;
+  }
+  if (error instanceof OracleResponseError) {
+    return error.message;
+  }
+  return formatError(error);
+}
+
+function formatMultiModelFailureDetails(
+  error: unknown,
+  context?: string | ProviderFailureContext,
+): string[] {
+  const providerFailure = classifyProviderFailure(error, context);
+  if (!providerFailure) {
+    return [];
+  }
+  const lines: string[] = [];
+  if (providerFailure.keyEnv) {
+    lines.push(`  key: ${providerFailure.keyEnv}`);
+  }
+  lines.push(`  provider said: ${providerFailure.providerMessage}`);
+  lines.push(`  fix: ${providerFailure.fix}`);
+  return lines;
+}
+
+function sanitizeMultiModelFailureForThrow(
+  error: unknown,
+  context?: string | ProviderFailureContext,
+): unknown {
+  const providerFailure = classifyProviderFailure(error, context);
+  if (!providerFailure) {
+    return error;
+  }
+  const modelPrefix = typeof context === "object" && context?.model ? `${context.model}: ` : "";
+  const message = `${modelPrefix}${providerFailure.label}: ${providerFailure.providerMessage}`;
+  if (!(error instanceof Error)) {
+    return new Error(message);
+  }
+  let sanitized: Error;
+  if (error instanceof OracleTransportError) {
+    sanitized = new OracleTransportError(error.reason, message);
+  } else if (error instanceof OracleResponseError) {
+    sanitized = new OracleResponseError(message, error.response);
+  } else {
+    sanitized = new Error(message);
+    sanitized.name = error.name;
+  }
+  if (error.stack) {
+    const [, ...rest] = error.stack.split("\n");
+    sanitized.stack = [sanitized.name ? `${sanitized.name}: ${message}` : message, ...rest].join(
+      "\n",
+    );
+  }
+  return sanitized;
+}
+
+interface MultiModelManifestRunLog {
+  model: string;
+  path: string;
+}
+
+interface MultiModelOutputManifest {
+  version: 1;
+  sessionId: string;
+  status: "completed" | "partial" | "error";
+  outputBasePath: string;
+  createdAt: string;
+  models: Array<{
+    model: string;
+    status: string;
+    outputPath?: string;
+    logPath?: string;
+    errorCategory?: string;
+    errorMessage?: string;
+    elapsedMs?: number;
+    usage?: UsageSummary;
+  }>;
+}
+
+export function deriveOutputManifestPath(basePath: string): string {
+  const ext = path.extname(basePath);
+  const stem = path.basename(basePath, ext);
+  const dir = path.dirname(basePath);
+  return path.join(dir, `${stem}.oracle.json`);
+}
+
+async function collectMultiModelRunLogs(
+  sessionId: string,
+  modelRuns: SessionModelRun[] | undefined,
+  summary: MultiModelRunSummary,
+): Promise<MultiModelManifestRunLog[]> {
+  const sessionDir = await resolveSessionDir(sessionId);
+  const logsByModel = new Map<string, string>();
+  for (const run of modelRuns ?? []) {
+    if (run.log?.path) {
+      logsByModel.set(run.model, resolveSessionPath(sessionDir, run.log.path));
+    }
+  }
+  for (const entry of summary.fulfilled) {
+    if (!logsByModel.has(entry.model)) {
+      logsByModel.set(entry.model, entry.logPath);
+    }
+  }
+  return [...logsByModel.entries()].map(([model, logPath]) => ({ model, path: logPath }));
+}
+
+async function writeMultiModelOutputManifest({
+  baseOutputPath,
+  sessionId,
+  status,
+  summary,
+  savedOutputs,
+  modelRuns,
+  runLogs,
+  runOptions,
+  log,
+}: {
+  baseOutputPath: string;
+  sessionId: string;
+  status: "completed" | "partial" | "error";
+  summary: MultiModelRunSummary;
+  savedOutputs: Array<{ model: string; path: string }>;
+  modelRuns?: SessionModelRun[];
+  runLogs: MultiModelManifestRunLog[];
+  runOptions: RunOracleOptions;
+  log: (message: string) => void;
+}): Promise<string | undefined> {
+  const manifestPath = deriveOutputManifestPath(baseOutputPath);
+  const normalizedTarget = path.resolve(manifestPath);
+  const normalizedSessionsDir = path.resolve(sessionStore.sessionsDir());
+  if (
+    normalizedTarget === normalizedSessionsDir ||
+    normalizedTarget.startsWith(`${normalizedSessionsDir}${path.sep}`)
+  ) {
+    log(
+      dim(
+        `output manifest skipped: refusing to write inside session storage (${normalizedSessionsDir}).`,
+      ),
+    );
+    return undefined;
+  }
+  const manifest = buildMultiModelOutputManifest({
+    baseOutputPath,
+    sessionId,
+    status,
+    summary,
+    savedOutputs,
+    modelRuns,
+    runLogs,
+    runOptions,
+  });
+  try {
+    await fs.mkdir(path.dirname(normalizedTarget), { recursive: true });
+    await fs.writeFile(normalizedTarget, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    return normalizedTarget;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    log(dim(`output manifest failed (${reason}); session completed anyway.`));
+    return undefined;
+  }
+}
+
+function buildMultiModelOutputManifest({
+  baseOutputPath,
+  sessionId,
+  status,
+  summary,
+  savedOutputs,
+  modelRuns,
+  runLogs,
+  runOptions,
+}: {
+  baseOutputPath: string;
+  sessionId: string;
+  status: "completed" | "partial" | "error";
+  summary: MultiModelRunSummary;
+  savedOutputs: Array<{ model: string; path: string }>;
+  modelRuns?: SessionModelRun[];
+  runLogs: MultiModelManifestRunLog[];
+  runOptions: RunOracleOptions;
+}): MultiModelOutputManifest {
+  const outputByModel = new Map(savedOutputs.map((entry) => [entry.model, entry.path]));
+  const logsByModel = new Map(runLogs.map((entry) => [entry.model, entry.path]));
+  const runsByModel = new Map((modelRuns ?? []).map((run) => [run.model, run]));
+  const fulfilledByModel = new Map(summary.fulfilled.map((entry) => [entry.model, entry]));
+  const rejectedByModel = new Map(summary.rejected.map((entry) => [entry.model, entry.reason]));
+  const orderedModels = [
+    ...summary.fulfilled.map((entry) => entry.model),
+    ...summary.rejected.map((entry) => entry.model),
+  ];
+  return {
+    version: 1,
+    sessionId,
+    status,
+    outputBasePath: path.resolve(baseOutputPath),
+    createdAt: new Date().toISOString(),
+    models: orderedModels.map((model) => {
+      const run = runsByModel.get(model);
+      const fulfilled = fulfilledByModel.get(model);
+      const reason = rejectedByModel.get(model);
+      const userError = reason ? asOracleUserError(reason) : undefined;
+      const providerFailure = reason
+        ? classifyProviderFailure(reason, providerFailureContextForModel(model, runOptions))
+        : undefined;
+      return {
+        model,
+        status: fulfilled ? "completed" : reason ? "error" : (run?.status ?? "error"),
+        outputPath: outputByModel.get(model),
+        logPath: logsByModel.get(model),
+        errorCategory: run?.error?.category ?? userError?.category ?? providerFailure?.category,
+        errorMessage:
+          run?.error?.message ??
+          userError?.message ??
+          providerFailure?.label ??
+          (reason ? formatError(reason) : undefined),
+        elapsedMs: calculateModelElapsedMs(run),
+        usage: run?.usage ?? fulfilled?.usage,
+      };
+    }),
+  };
+}
+
+function calculateModelElapsedMs(run?: SessionModelRun): number | undefined {
+  if (!run?.startedAt || !run.completedAt) {
+    return undefined;
+  }
+  const startedMs = Date.parse(run.startedAt);
+  const completedMs = Date.parse(run.completedAt);
+  if (!Number.isFinite(startedMs) || !Number.isFinite(completedMs) || completedMs < startedMs) {
+    return undefined;
+  }
+  return completedMs - startedMs;
+}
+
+async function readSessionForManifest(sessionId: string): Promise<SessionMetadata | null> {
+  try {
+    return (await sessionStore.readSession(sessionId)) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveSessionDir(sessionId: string): Promise<string | null> {
+  try {
+    return (await sessionStore.getPaths(sessionId)).dir;
+  } catch {
+    return null;
+  }
+}
+
+function resolveSessionPath(sessionDir: string | null, targetPath: string): string {
+  if (path.isAbsolute(targetPath) || !sessionDir) {
+    return targetPath;
+  }
+  return path.join(sessionDir, targetPath);
 }
 
 async function writeAssistantOutput(
