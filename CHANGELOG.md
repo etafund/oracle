@@ -21,6 +21,14 @@
 
 ### Added
 
+- CLI: add `--perf-trace` / `--perf-trace-path` / `ORACLE_PERF_TRACE` startup timing traces and lazy-load heavy browser/provider/runtime modules to reduce time-to-first-output.
+- API: add `--allow-partial` / `--partial ok` for multi-model runs so advisory panels can exit 0 when at least one model succeeds, while still listing saved outputs and a JSON output manifest before failures.
+- API: classify common provider failures in multi-model summaries and metadata, including auth, expired keys, quota, rate limits, and unavailable models, with secret-safe recovery hints.
+- API: add root `--preflight` provider readiness checks and packed CLI help smoke coverage so stale installed help is caught before release.
+- Sessions: print and persist a compact lifecycle block showing foreground/background execution, detach state, model count, and reattach command.
+- Docs: add `oracle docs check` / `pnpm docs:check` to catch documented flags that are missing from Commander help metadata.
+- API: add `--provider openai` / `--no-azure` to force first-party OpenAI when Azure env/config is present, add `oracle doctor --providers` and `--route` redacted route diagnostics, keep provider-qualified model IDs on OpenRouter/proxy routes instead of accidental Azure/native routes, and fail early when Azure routing lacks a deployment.
+- Browser/MCP: add opt-in ZIP formatting for bundled browser uploads with `--browser-bundle-format zip` / `browserBundleFormat: "zip"`, preserving individual file names in one ChatGPT attachment.
 - CLI: add `oracle remote doctor|status|attach [--json]` to diagnose the configured remote browser endpoint. `doctor` probes TCP + `/health`, `status` snapshots the resolved endpoint config without touching the network, and `attach --host <host:port> --token-env <ENV>` probes a caller-supplied target without ever placing the token on the command line. `oracle bridge doctor --json` emits the same `remote_browser_endpoint.v1`-shaped envelope so scripts can parse a single wire format across all four commands.
 - Browser/v18: add the protected browser-route support package for ChatGPT Pro and Gemini Deep Think workflows, including `oracle leases plan|status|acquire|release|recover`, automatic browser-run lease acquire/release, aggregate and provider-specific doctor/readiness surfaces, same-session UI verification gates for protected ChatGPT Pro planning/synthesis and Gemini Deep Think runs, run-progress-compatible blocker reporting, and evidence ledger show/verify/export flows with redacted browser evidence plus provider-result artifacts linked by hashes. The new surfaces expose local verification, artifact, and blocker state for users and automation; they do not claim hidden provider backend attestation.
 
@@ -31,6 +39,12 @@
 
 ### Fixed
 
+- CLI: make missing-prompt help exit nonzero, reject `--dry-run --render` like `--dry-run --render-markdown`, and terminate promptly with code 130 on SIGINT.
+- API: parse duration-style `--timeout` values such as `10m`, derive the HTTP transport timeout and stale-session cutoff from explicit overall timeouts, and warn when an explicit shorter `--http-timeout` can fail first.
+- Browser: select thinking effort from the currently checked ChatGPT model row so Pro Extended runs do not fall back to the Thinking row's effort control.
+- Browser: record ChatGPT model-selection evidence in session metadata and CLI output so Pro browser runs show the selected model proof (#195). Thanks @pdurlej!
+- Browser: target ChatGPT's renamed bare Pro picker row for Pro browser runs while keeping older Pro CLI aliases mapped to the current browser target (#190, fixes #182). Thanks @jungdaesuh!
+- Browser: recognize current ChatGPT attachment chips without treating stale page-level chips as ready, and keep the longer send-button wait scoped to attachment uploads (#192). Thanks @li-aolong!
 - Browser/v18: drive live Gemini Deep Think runs through the verification state machine and emit a complete v18 audit trail. The DOM provider now refuses to submit a prompt until same-session Deep Think verification has succeeded, and successful or failed runs each write a sanitised `browser_evidence.v1` (provider=`gemini`, slot=`gemini_deep_think`) plus a `provider_result.v1` and the matching `evidence_written` + `run_completed`/`run_failed` ledger pair, so `oracle evidence show|verify` and ledger audits now cover Gemini runs the way they already covered ChatGPT.
 - CLI: `oracle evidence show <session> --json` and `oracle evidence verify <session> --json` now emit a `json_envelope.v1` wrapper (with the typed result in `data`, the v18 recovery contract fields on the failure arm, and granular per-artifact issue codes preserved in `errors[0].details.issue_codes`) so robot consumers see the same envelope shape every other `--json` surface uses. Human (non-`--json`) output is unchanged.
 - CLI: `oracle remote attach --host <h:p>` now always probes the explicit `--host` value even when `ORACLE_REMOTE_HOST` is set to a different (stale) target. Token handling still routes through `--token-env` so the token never appears on the command line.

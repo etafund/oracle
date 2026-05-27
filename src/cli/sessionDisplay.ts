@@ -29,6 +29,7 @@ import {
   buildResponseOwnerIndex,
   resolveSessionLineage,
 } from "./sessionLineage.js";
+import { formatSessionExecutionLabel } from "./sessionLifecycle.js";
 
 const isTty = (): boolean => Boolean(process.stdout.isTTY);
 const dim = (text: string): string => (isTty() ? kleur.dim(text) : text);
@@ -371,6 +372,11 @@ export async function attachSession(
     }
     console.log(`Created: ${metadata.createdAt}`);
     console.log(`Status: ${metadata.status}`);
+    if (metadata.lifecycle) {
+      const attached = metadata.lifecycle.attached ? "attached" : "detached";
+      console.log(`Execution: ${formatSessionExecutionLabel(metadata)} (${attached})`);
+      console.log(`Reattach: ${metadata.lifecycle.reattachCommand}`);
+    }
     if (metadata.models && metadata.models.length > 0) {
       console.log("Models:");
       for (const run of metadata.models) {
@@ -404,7 +410,8 @@ export async function attachSession(
     }
   }
 
-  const shouldTrimIntro = initialStatus === "completed" || initialStatus === "error";
+  const shouldTrimIntro =
+    initialStatus === "completed" || initialStatus === "partial" || initialStatus === "error";
   if (options?.renderPrompt !== false) {
     const prompt = await readStoredPrompt(sessionId);
     if (prompt) {
@@ -539,7 +546,7 @@ export async function attachSession(
     if (!latest) {
       break;
     }
-    if (latest.status === "completed" || latest.status === "error") {
+    if (latest.status === "completed" || latest.status === "partial" || latest.status === "error") {
       await printNew();
       flushRemainder();
       if (!options?.suppressMetadata) {
@@ -547,10 +554,11 @@ export async function attachSession(
           console.log("\nResult:");
           console.log(`Session failed: ${latest.errorMessage}`);
         }
-        if (latest.status === "completed" && latest.usage) {
+        if ((latest.status === "completed" || latest.status === "partial") && latest.usage) {
           const summary = formatCompletionSummary(latest, { includeSlug: true });
           if (summary) {
-            console.log(`\n${chalk.green.bold(summary)}`);
+            const color = latest.status === "partial" ? chalk.yellow.bold : chalk.green.bold;
+            console.log(`\n${color(summary)}`);
           } else {
             const usage = latest.usage;
             console.log(
