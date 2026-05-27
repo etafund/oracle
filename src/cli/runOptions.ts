@@ -57,7 +57,13 @@ export function resolveRunOptionsFromConfig({
     .filter(Boolean);
 
   const cliModelArg = normalizeModelOption(model ?? userConfig?.model) || DEFAULT_MODEL;
-  const apiModel = resolveApiModel(cliModelArg);
+  // For browser-engine requests we accept the fork's Gemini Deep Think alias as a
+  // passthrough model; resolveApiModel itself still rejects the alias for pure
+  // API contexts so users hit a clear "browser-only today" error if they forget
+  // --engine browser.
+  const apiModel = browserEngineRequested
+    ? (inferModelFromLabel(cliModelArg) as ModelName)
+    : resolveApiModel(cliModelArg);
   const browserModel = normalizeChatGptModelForBrowser(inferModelFromLabel(cliModelArg));
   const isCodex = apiModel.startsWith("gpt-5.1-codex");
   const isClaude = apiModel.startsWith("claude");

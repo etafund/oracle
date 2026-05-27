@@ -101,7 +101,27 @@ export function registerDoctorCommand(program: Command, deps: DoctorCommandDeps 
     .command("doctor")
     .description("Run Oracle preflight diagnostics without submitting prompts.")
     .option("--json", "Print structured JSON.", false)
-    .action(async (options: AggregateDoctorOptions) => {
+    .option("--providers", "Inspect API provider keys and route choices.", false)
+    .option("--models <models>", "Comma-separated API model list to inspect.")
+    .option("-m, --model <model>", "Single API model to inspect.")
+    .option("--provider <provider>", "Provider routing override (auto, openai, azure).")
+    .option("--no-azure", "Disable Azure OpenAI routing for this inspection.")
+    .option("--azure-endpoint <url>", "Azure OpenAI Endpoint.")
+    .option("--azure-deployment <name>", "Azure OpenAI Deployment Name.")
+    .option("--azure-api-version <version>", "Azure OpenAI API Version.")
+    .option("--base-url <url>", "Override OpenAI-compatible base URL.")
+    .action(async function (
+      this: Command,
+      options: AggregateDoctorOptions & { providers?: boolean },
+    ) {
+      // Upstream synced 86ccc0db / b36a3dce / 3ae0df0d added an API-provider
+      // readiness probe; route there when --providers is set, otherwise run
+      // the fork's aggregate v18 doctor.
+      if (options.providers) {
+        const { runProviderDoctor } = await import("../../providerDoctor.js");
+        await runProviderDoctor(this.optsWithGlobals());
+        return;
+      }
       const envelope = await runAggregateDoctor({ ...aggregateDeps, ...options });
       if (!envelope.ok) {
         process.exitCode = 1;

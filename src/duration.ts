@@ -18,14 +18,17 @@ export function parseDuration(input: string, fallback: number): number {
   }
   const multiDuration = /([0-9]+)(ms|h|m|s)/g;
   let total = 0;
-  let lastIndex = 0;
+  let cursor = 0;
   let match: RegExpExecArray | null = multiDuration.exec(normalized);
   while (match !== null) {
+    if (match.index !== cursor) {
+      return fallback;
+    }
     total += convertUnit(Number(match[1]), match[2]);
-    lastIndex = multiDuration.lastIndex;
+    cursor = multiDuration.lastIndex;
     match = multiDuration.exec(normalized);
   }
-  if (total > 0 && lastIndex === normalized.length) {
+  if (total > 0 && cursor === normalized.length) {
     return total;
   }
   return fallback;
