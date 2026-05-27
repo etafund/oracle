@@ -5,6 +5,7 @@ const { loadUserConfig } = vi.hoisted(() => ({
   loadUserConfig: vi.fn(async () => ({
     config: {},
     path: "/mock/config.json",
+    paths: ["/mock/config.json"],
     loaded: true,
   })),
 }));
