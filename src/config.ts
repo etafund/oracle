@@ -120,12 +120,48 @@ export interface LoadConfigResult {
 export interface LoadUserConfigOptions {
   cwd?: string;
   includeProject?: boolean;
+  env?: NodeJS.ProcessEnv;
 }
 
 interface ReadConfigResult {
   config: UserConfig;
   path: string;
   loaded: boolean;
+}
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeEngine(value: unknown): EnginePreference | undefined {
+  const normalized = normalizeOptionalString(value)?.toLowerCase();
+  return normalized === "api" || normalized === "browser" ? normalized : undefined;
+}
+
+export function applyEnvConfigOverrides(
+  config: UserConfig,
+  env: NodeJS.ProcessEnv = process.env,
+): UserConfig {
+  const next: UserConfig = { ...config };
+  const envEngine = normalizeEngine(env.ORACLE_ENGINE);
+  if (envEngine) {
+    next.engine = envEngine;
+  }
+
+  const remoteHost = normalizeOptionalString(env.ORACLE_REMOTE_HOST);
+  const remoteToken = normalizeOptionalString(env.ORACLE_REMOTE_TOKEN);
+  if (remoteHost || remoteToken) {
+    next.browser = { ...(next.browser ?? {}) };
+    if (remoteHost) {
+      next.browser.remoteHost = remoteHost;
+    }
+    if (remoteToken) {
+      next.browser.remoteToken = remoteToken;
+    }
+  }
+  return next;
 }
 
 export async function loadUserConfig(
@@ -154,6 +190,9 @@ export async function loadUserConfig(
     merged = mergeUserConfig(merged, sanitizeProjectConfig(projectConfig.config));
   }
 
+  const env = options.env ?? process.env;
+  merged = applyEnvConfigOverrides(merged, env);
+
   const loadedPaths = loadedConfigs.map((entry) => entry.path);
   return {
     config: merged,
@@ -166,16 +205,19 @@ export async function loadUserConfig(
 async function readConfigFile(configPath: string): Promise<ReadConfigResult> {
   try {
     const raw = await fs.readFile(configPath, "utf8");
-    const parsed = JSON5.parse(raw) as UserConfig;
-    return { config: parsed ?? {}, path: configPath, loaded: true };
+    const parsed = JSON5.parse(raw);
+    if (parsed != null && (typeof parsed !== "object" || Array.isArray(parsed))) {
+      console.warn(`Expected ${configPath} to contain a JSON object; using defaults`);
+      return { config: {}, path: configPath, loaded: false };
+    }
+    return { config: (parsed ?? {}) as UserConfig, path: configPath, loaded: true };
   } catch (error) {
     const code = (error as { code?: string }).code;
     if (code === "ENOENT") {
       return { config: {}, path: configPath, loaded: false };
     }
-    console.warn(
-      `Failed to read ${configPath}: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`Config file at ${configPath} had a parse error: ${message}; using defaults`);
     return { config: {}, path: configPath, loaded: false };
   }
 }
