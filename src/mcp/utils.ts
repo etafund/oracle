@@ -15,6 +15,8 @@ export function mapConsultToRunOptions({
   browserBundleFiles,
   browserBundleFormat,
   browserFollowUps,
+  generateImage,
+  outputPath,
   userConfig,
   env = process.env,
 }: {
@@ -28,6 +30,8 @@ export function mapConsultToRunOptions({
   browserBundleFiles?: boolean;
   browserBundleFormat?: "text" | "zip";
   browserFollowUps?: string[];
+  generateImage?: string;
+  outputPath?: string;
   userConfig?: UserConfig;
   env?: NodeJS.ProcessEnv;
 }): { runOptions: RunOracleOptions; resolvedEngine: EngineMode } {
@@ -62,6 +66,14 @@ export function mapConsultToRunOptions({
     result.runOptions.browserFollowUps = browserFollowUps
       .map((entry) => entry.trim())
       .filter(Boolean);
+  }
+  const imageOutputPath = generateImage?.trim();
+  if (imageOutputPath) {
+    result.runOptions.generateImage = imageOutputPath;
+  }
+  const secondaryOutputPath = outputPath?.trim();
+  if (secondaryOutputPath) {
+    result.runOptions.outputPath = secondaryOutputPath;
   }
   return result;
 }

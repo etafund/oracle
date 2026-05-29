@@ -35,4 +35,22 @@ describe("mapConsultToRunOptions", () => {
       "final concise decision",
     ]);
   });
+
+  test("maps ChatGPT image output paths into browser run options", () => {
+    const env: NodeJS.ProcessEnv = {};
+    const { runOptions, resolvedEngine } = mapConsultToRunOptions({
+      prompt: "generate a product mockup",
+      files: [],
+      model: "gpt-5.5-pro",
+      engine: "browser",
+      generateImage: " /tmp/mockup.png ",
+      outputPath: " /tmp/fallback.png ",
+      userConfig: undefined,
+      env,
+    });
+
+    expect(resolvedEngine).toBe("browser");
+    expect(runOptions.generateImage).toBe("/tmp/mockup.png");
+    expect(runOptions.outputPath).toBe("/tmp/fallback.png");
+  });
 });

@@ -5,6 +5,7 @@
 ### Added
 
 - Browser: `oracle session <id> --harvest` and `--live` now auto-recover when the original Chrome has been closed by relaunching the manual-login profile and reopening the saved conversation URL, then retrying the harvest against the recovered tab. Resolves the failure mode where a long GPT-5 Pro Extended response completed in the background after the CLI's 20-minute wall expired and the conversation was archived. Recovery URL selection prefers `browser.harvest.url` over `browser.runtime.tabUrl` and is gated by a shared ChatGPT-conversation-URL check (rejects home, project shell, and external URLs so the persistent profile can't be navigated to the wrong page from stale metadata). Opt out with `--no-recover` on the `session` subcommand.
+- MCP: add a dedicated `chatgpt_image` tool plus `generateImage` / `outputPath` support in `consult` so agent callers can trigger the ChatGPT image-aware wait/download path used by CLI `--generate-image`; saved image artifacts now come back in `structuredContent.images`.
 
 ## 0.13.0 — 2026-05-22
 

@@ -238,6 +238,8 @@ oracle --engine browser \
 
 If ChatGPT returns multiple images, the first image saves to the requested path and the rest save as numbered siblings. Without `--generate-image`, Oracle writes images to the session `artifacts/` directory.
 
+MCP agents should prefer the `chatgpt_image` tool. It wraps the same behavior with a smaller input shape, uploads reference files by default, and returns saved files in `structuredContent.images`. Advanced callers can still pass `generateImage` to `consult` directly.
+
 ### Manual login mode (persistent profile, no cookie copy)
 
 Use `--browser-manual-login` when cookie decrypt is blocked (e.g., Windows app-bound cookies) or you prefer to sign in explicitly. You can also make it the default via `browser.manualLogin` in `~/.oracle/config.json`.

@@ -20,6 +20,8 @@ export const consultInputSchema = z
     browserArchive: z.enum(["auto", "always", "never"]).optional(),
     browserFollowUps: z.array(z.string()).optional(),
     browserKeepBrowser: z.boolean().optional(),
+    generateImage: z.string().optional(),
+    outputPath: z.string().optional(),
     dryRun: z.boolean().optional(),
     search: z.boolean().optional(),
     slug: z.string().optional(),

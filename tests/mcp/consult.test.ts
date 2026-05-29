@@ -6,6 +6,8 @@ import {
   buildConsultDryRunResolved,
   formatConsultDryRunResolved,
   registerConsultTool,
+  summarizeArtifactsForConsult,
+  summarizeImageArtifactsForConsult,
   summarizeModelRunsForConsult,
 } from "../../src/mcp/tools/consult.ts";
 
@@ -76,6 +78,54 @@ describe("summarizeModelRunsForConsult", () => {
   test("returns undefined for empty lists", () => {
     expect(summarizeModelRunsForConsult([])).toBeUndefined();
     expect(summarizeModelRunsForConsult(undefined)).toBeUndefined();
+  });
+
+  test("surfaces saved image artifacts for agent callers", () => {
+    const artifacts = [
+      {
+        kind: "image",
+        path: "/tmp/mockup.png",
+        label: "Generated image",
+        mimeType: "image/png",
+        sizeBytes: 1234,
+        sourceUrl: "https://chatgpt.com/backend-api/estuary/content?id=file_abc",
+        url: "https://chatgpt.com/backend-api/estuary/content?id=file_abc",
+        finalUrl: "https://files.local/mockup.png",
+        alt: "generated image",
+        width: 1024,
+        height: 1024,
+        fileId: "file_abc",
+      },
+      {
+        kind: "transcript",
+        path: "/tmp/transcript.md",
+        label: "Browser transcript",
+      },
+    ];
+
+    const sessionArtifacts = artifacts as Parameters<typeof summarizeArtifactsForConsult>[0];
+
+    expect(summarizeArtifactsForConsult(sessionArtifacts)).toEqual([
+      expect.objectContaining({
+        kind: "image",
+        path: "/tmp/mockup.png",
+        mimeType: "image/png",
+      }),
+      expect.objectContaining({
+        kind: "transcript",
+        path: "/tmp/transcript.md",
+      }),
+    ]);
+    expect(summarizeImageArtifactsForConsult(sessionArtifacts)).toEqual([
+      expect.objectContaining({
+        kind: "image",
+        path: "/tmp/mockup.png",
+        url: "https://chatgpt.com/backend-api/estuary/content?id=file_abc",
+        width: 1024,
+        height: 1024,
+        fileId: "file_abc",
+      }),
+    ]);
   });
 
   test("merges browser defaults from config for consult runs", () => {
@@ -171,6 +221,7 @@ describe("summarizeModelRunsForConsult", () => {
         browserBundleFiles: true,
         browserBundleFormat: "zip",
         browserFollowUps: ["challenge", "final"],
+        generateImage: "/tmp/oracle-image.png",
       },
       browserConfig: {
         desiredModel: "GPT-5.5 Pro",
@@ -196,16 +247,21 @@ describe("summarizeModelRunsForConsult", () => {
         bundleFiles: true,
         bundleFormat: "zip",
         profileDir: "/tmp/oracle-profile",
+        imageOutputPath: "/tmp/oracle-image.png",
       },
     });
     expect(resolved.guidance.join("\n")).toContain("signed-in ChatGPT profile");
     expect(resolved.guidance.join("\n")).toContain("private Chrome profile");
     expect(resolved.guidance.join("\n")).toContain("--browser-keep-browser");
+    expect(resolved.guidance.join("\n")).toContain("image-aware wait/download");
     expect(formatConsultDryRunResolved(resolved).join("\n")).toContain(
       "browser thinking time: extended",
     );
     expect(formatConsultDryRunResolved(resolved).join("\n")).toContain(
       "browser bundle format: zip",
+    );
+    expect(formatConsultDryRunResolved(resolved).join("\n")).toContain(
+      "image output: /tmp/oracle-image.png",
     );
   });
 
@@ -230,6 +286,7 @@ describe("summarizeModelRunsForConsult", () => {
       files: [],
       browserThinkingTime: "extended",
       browserModelStrategy: "select",
+      generateImage: "/tmp/from-mcp.png",
     })) as {
       content: Array<{ type: "text"; text: string }>;
       structuredContent: {
@@ -249,6 +306,7 @@ describe("summarizeModelRunsForConsult", () => {
           desiredModel: "Pro",
           thinkingTime: "extended",
           modelStrategy: "select",
+          imageOutputPath: "/tmp/from-mcp.png",
         }),
       },
     });
