@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import type { RunOracleOptions } from "../oracle.js";
 import type { EngineMode } from "../cli/engine.js";
@@ -18,11 +19,48 @@ export function isExternalMcpOutputAllowed(env: NodeJS.ProcessEnv = process.env)
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }
 
+function realpathOrSelf(target: string): string {
+  try {
+    return fs.realpathSync(target);
+  } catch {
+    return path.resolve(target);
+  }
+}
+
+/**
+ * Resolve `target` through symlinks for the portion that exists on disk, then
+ * re-append the not-yet-created remainder. A lexical `path.resolve` is not
+ * enough: a symlinked parent under the Oracle home (e.g. `~/.oracle/generated`
+ * -> `/tmp/evil`) would pass a string-prefix check while the actual write lands
+ * outside the boundary. realpath-ing the deepest existing ancestor closes that.
+ */
+function resolveThroughSymlinks(target: string): string {
+  const resolved = path.resolve(target);
+  let current = resolved;
+  const tail: string[] = [];
+  // Bounded by the number of path segments; dirname() converges to the root.
+  for (;;) {
+    try {
+      const real = fs.realpathSync(current);
+      return tail.length ? path.join(real, ...tail.toReversed()) : real;
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) {
+        return resolved;
+      }
+      tail.push(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
 /**
  * Constrain an MCP-supplied output path to the Oracle home directory and return
- * its resolved absolute form. `path.resolve` collapses `..`, so traversal
- * escapes are rejected by the prefix check. Set ORACLE_MCP_ALLOW_EXTERNAL_OUTPUT
- * to opt into writing outside the Oracle home as an explicit decision.
+ * its resolved absolute form. `path.resolve` collapses `..` (traversal escapes
+ * are rejected) and the boundary check is performed after resolving symlinks in
+ * the existing path prefix, so a symlinked parent cannot smuggle a write
+ * outside the home. Set ORACLE_MCP_ALLOW_EXTERNAL_OUTPUT to opt into writing
+ * outside the Oracle home as an explicit decision.
  */
 export function resolveMcpOutputPath(
   requestedPath: string,
@@ -33,12 +71,13 @@ export function resolveMcpOutputPath(
   if (isExternalMcpOutputAllowed(env)) {
     return resolved;
   }
-  const root = path.resolve(getOracleHomeDir());
-  if (resolved === root || resolved.startsWith(`${root}${path.sep}`)) {
+  const root = realpathOrSelf(getOracleHomeDir());
+  const realTarget = resolveThroughSymlinks(resolved);
+  if (realTarget === root || realTarget.startsWith(`${root}${path.sep}`)) {
     return resolved;
   }
   throw new Error(
-    `MCP "${field}" must resolve under the Oracle home directory (${root}); got "${resolved}". ` +
+    `MCP "${field}" must resolve under the Oracle home directory (${root}); got "${realTarget}". ` +
       `Use a path under that directory, or set ${ALLOW_EXTERNAL_OUTPUT_ENV}=1 to allow external output paths.`,
   );
 }

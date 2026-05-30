@@ -13,7 +13,7 @@ Claude Code can call `oracle-mcp` and ask a subscription-backed ChatGPT browser 
 - Inputs: `prompt` (required), `files?: string[]` for reference images/assets, `outputPath?: string`, `aspectRatio?: string`, `model?: string`, plus browser controls such as `browserThinkingTime`, `browserModelLabel`, `browserModelStrategy`, `browserArchive`, `browserKeepBrowser`, and `dryRun`.
 - Behavior: convenience wrapper for ChatGPT browser image generation. It forces `engine:"browser"`, sets `generateImage` for the existing image-aware wait/download path, and defaults `browserAttachments:"always"` when files are provided so reference images are uploaded instead of pasted.
 - Output: returns the normal session metadata plus `requestedOutputPath` and `structuredContent.images[]` with saved image paths and ChatGPT file metadata when available. If `outputPath` is omitted, Oracle picks a unique file under `ORACLE_HOME_DIR/generated/`.
-- Output path safety: agent-supplied `outputPath` must resolve under `ORACLE_HOME_DIR` by default; paths outside it (and `..` traversal) are rejected. Set `ORACLE_MCP_ALLOW_EXTERNAL_OUTPUT=1` to allow writing elsewhere as an explicit decision. Omit `outputPath` to use the safe default.
+- Output path safety: agent-supplied `outputPath` must resolve under `ORACLE_HOME_DIR` by default; paths outside it (`..` traversal, and symlinked parents that escape the home — resolved via `realpath`) are rejected. Set `ORACLE_MCP_ALLOW_EXTERNAL_OUTPUT=1` to allow writing elsewhere as an explicit decision. Omit `outputPath` to use the safe default.
 
 ```json
 {

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -119,6 +119,103 @@ describe("mapConsultToRunOptions", () => {
       expect(runOptions.generateImage).toBe(target);
     } finally {
       rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects a symlinked parent that escapes the Oracle home (generateImage)", () => {
+    const home = mkdtempSync(path.join(tmpdir(), "oracle-home-"));
+    const outside = mkdtempSync(path.join(tmpdir(), "oracle-outside-"));
+    setOracleHomeDirOverrideForTest(home);
+    try {
+      // ORACLE_HOME/escape -> /outside (a symlinked dir leaving the boundary).
+      // The target is lexically under home but really writes into `outside`.
+      symlinkSync(outside, path.join(home, "escape"));
+      const target = path.join(home, "escape", "img.png");
+      expect(() =>
+        mapConsultToRunOptions({
+          prompt: "x",
+          files: [],
+          model: "gpt-5.5-pro",
+          engine: "browser",
+          generateImage: target,
+          userConfig: undefined,
+          env: {},
+        }),
+      ).toThrow(/Oracle home directory/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects a symlinked parent that escapes the Oracle home (outputPath)", () => {
+    const home = mkdtempSync(path.join(tmpdir(), "oracle-home-"));
+    const outside = mkdtempSync(path.join(tmpdir(), "oracle-outside-"));
+    setOracleHomeDirOverrideForTest(home);
+    try {
+      symlinkSync(outside, path.join(home, "escape"));
+      const target = path.join(home, "escape", "answer.md");
+      expect(() =>
+        mapConsultToRunOptions({
+          prompt: "x",
+          files: [],
+          model: "gpt-5.5-pro",
+          engine: "browser",
+          outputPath: target,
+          userConfig: undefined,
+          env: {},
+        }),
+      ).toThrow(/Oracle home directory/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  test("allows a symlinked parent that stays within the Oracle home", () => {
+    const home = mkdtempSync(path.join(tmpdir(), "oracle-home-"));
+    setOracleHomeDirOverrideForTest(home);
+    try {
+      // ORACLE_HOME/real exists; ORACLE_HOME/link -> ORACLE_HOME/real (still inside).
+      const realDir = path.join(home, "real");
+      mkdirSync(realDir);
+      symlinkSync(realDir, path.join(home, "link"));
+      const target = path.join(home, "link", "img.png");
+      const { runOptions } = mapConsultToRunOptions({
+        prompt: "x",
+        files: [],
+        model: "gpt-5.5-pro",
+        engine: "browser",
+        generateImage: target,
+        userConfig: undefined,
+        env: {},
+      });
+      expect(runOptions.generateImage).toBe(target);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("allows a symlink escape when external output is explicitly enabled", () => {
+    const home = mkdtempSync(path.join(tmpdir(), "oracle-home-"));
+    const outside = mkdtempSync(path.join(tmpdir(), "oracle-outside-"));
+    setOracleHomeDirOverrideForTest(home);
+    try {
+      symlinkSync(outside, path.join(home, "escape"));
+      const target = path.join(home, "escape", "img.png");
+      const { runOptions } = mapConsultToRunOptions({
+        prompt: "x",
+        files: [],
+        model: "gpt-5.5-pro",
+        engine: "browser",
+        generateImage: target,
+        userConfig: undefined,
+        env: { ORACLE_MCP_ALLOW_EXTERNAL_OUTPUT: "1" },
+      });
+      expect(runOptions.generateImage).toBe(path.resolve(target));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
     }
   });
 });
