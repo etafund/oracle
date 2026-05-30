@@ -221,11 +221,7 @@ export async function waitForDeepResearchCompletion(
       !targetResult?.completed && Page
         ? await readDeepResearchFrameResult(Runtime, Page).catch(() => null)
         : null;
-    const frameResult = targetResult?.completed
-      ? targetResult
-      : inPageResult?.completed
-        ? inPageResult
-        : (targetResult ?? inPageResult);
+    const read = pickPreferredDeepResearchRead(targetResult, inPageResult);
     // A target-confirmed completion read the live connector iframe directly, so
     // it is authoritative even when the main DOM exposes no assistant turn (the
     // report lives entirely in the OOPIF). The main-DOM hasActiveScopedResearch
@@ -233,14 +229,14 @@ export async function waitForDeepResearchCompletion(
     const completedFromTarget = Boolean(targetResult?.completed);
     const scopedToNewTurns = minTurnLiteral >= 0;
     if (
-      frameResult?.completed &&
-      frameResult.text &&
+      read?.completed &&
+      read.text &&
       (completedFromTarget || !scopedToNewTurns || val?.hasActiveScopedResearch)
     ) {
       logger(`Deep Research completed (${Math.round((Date.now() - start) / 1000)}s elapsed)`);
       return {
-        text: frameResult.text,
-        html: frameResult.html,
+        text: read.text,
+        html: read.html,
         meta: { turnId: null, messageId: null },
       };
     }
@@ -255,9 +251,9 @@ export async function waitForDeepResearchCompletion(
     const now = Date.now();
     if (now - lastLogTime >= 60_000) {
       const elapsed = Math.round((now - start) / 1000);
-      const chars = Math.max(val?.textLength ?? 0, frameResult?.textLength ?? 0);
+      const chars = Math.max(val?.textLength ?? 0, read?.textLength ?? 0);
       const phase =
-        frameResult?.inProgress || val?.hasIframe
+        read?.inProgress || val?.hasIframe
           ? "researching"
           : val?.stopVisible
             ? "generating"
@@ -266,7 +262,7 @@ export async function waitForDeepResearchCompletion(
       lastLogTime = now;
     }
 
-    lastTextLength = Math.max(val?.textLength ?? 0, frameResult?.textLength ?? 0, lastTextLength);
+    lastTextLength = Math.max(val?.textLength ?? 0, read?.textLength ?? 0, lastTextLength);
     await delay(DEEP_RESEARCH_POLL_INTERVAL_MS);
   }
 
@@ -345,6 +341,34 @@ interface DeepResearchFrameStatus {
   textLength: number;
   text?: string;
   html?: string;
+}
+
+/**
+ * Choose the authoritative Deep Research read between the target-attach result
+ * and the in-page frame result. A completed read wins (target preferred, since
+ * it reads the live OOPIF directly); otherwise the best in-progress/text-bearing
+ * read is kept so progress logging still advances. This preserves the legacy
+ * Page-first inline behaviour: when the target read is missing or incomplete,
+ * a completed in-page result is still returned.
+ */
+function pickPreferredDeepResearchRead(
+  targetResult: DeepResearchFrameStatus | null,
+  inPageResult: DeepResearchFrameStatus | null,
+): DeepResearchFrameStatus | null {
+  if (targetResult?.completed) {
+    return targetResult;
+  }
+  if (inPageResult?.completed) {
+    return inPageResult;
+  }
+  return targetResult ?? inPageResult;
+}
+
+export function pickPreferredDeepResearchReadForTest(
+  targetResult: DeepResearchFrameStatus | null,
+  inPageResult: DeepResearchFrameStatus | null,
+): DeepResearchFrameStatus | null {
+  return pickPreferredDeepResearchRead(targetResult, inPageResult);
 }
 
 async function readDeepResearchFrameResult(

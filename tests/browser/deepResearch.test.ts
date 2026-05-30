@@ -18,6 +18,7 @@ import {
   buildDeepResearchStatusExpressionForTest,
   findDeepResearchFrameIdForTest,
   isDeepResearchPlaceholderTextForTest,
+  pickPreferredDeepResearchReadForTest,
   waitForResearchPlanAutoConfirm,
   waitForDeepResearchCompletion,
   checkDeepResearchStatus,
@@ -184,6 +185,49 @@ describe("Deep Research iframe helpers", () => {
     expect(result.text).not.toContain("citations");
     expect(result.text).not.toContain("searches");
     expect(result.textLength).toBeGreaterThan(40);
+  });
+});
+
+describe("pickPreferredDeepResearchReadForTest", () => {
+  const completed = (text: string, len = 80) => ({
+    completed: true,
+    inProgress: false,
+    textLength: len,
+    text,
+  });
+  const inProgress = (len: number) => ({ completed: false, inProgress: true, textLength: len });
+
+  it("returns null when neither read exists", () => {
+    expect(pickPreferredDeepResearchReadForTest(null, null)).toBeNull();
+  });
+
+  it("prefers a completed target read over an in-progress in-page read", () => {
+    expect(pickPreferredDeepResearchReadForTest(completed("TARGET"), inProgress(10))?.text).toBe(
+      "TARGET",
+    );
+  });
+
+  it("prefers the target read when both are completed", () => {
+    expect(
+      pickPreferredDeepResearchReadForTest(completed("TARGET"), completed("FRAME"))?.text,
+    ).toBe("TARGET");
+  });
+
+  it("uses a completed in-page read when the target read is missing (legacy inline)", () => {
+    expect(pickPreferredDeepResearchReadForTest(null, completed("FRAME"))?.text).toBe("FRAME");
+  });
+
+  it("uses a completed in-page read when the target read is only in-progress", () => {
+    expect(pickPreferredDeepResearchReadForTest(inProgress(12), completed("FRAME"))?.text).toBe(
+      "FRAME",
+    );
+  });
+
+  it("keeps the best in-progress read for progress when none completed", () => {
+    expect(pickPreferredDeepResearchReadForTest(inProgress(12), inProgress(5))?.textLength).toBe(
+      12,
+    );
+    expect(pickPreferredDeepResearchReadForTest(null, inProgress(7))?.textLength).toBe(7);
   });
 });
 
