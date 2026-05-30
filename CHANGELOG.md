@@ -23,6 +23,10 @@
 
 - CLI/API/Browser: render generated prompt, inline, and text-bundle context with stable line numbers so model answers can cite source as `path:line` or `path:line-line`, while preserving indexed `buildPrompt(...)` headings, raw browser uploads, ZIP entries, `createFileSections().sectionText`, and the default `formatFileSection(...)` output. Callers can request numbered output directly with `formatFileSection(..., { lineNumbers: true })`. Thanks @tristanmanchester!
 
+### Fixed
+
+- Browser: Deep Research runs now return the report again. ChatGPT renders the report inside an out-of-process sandboxed iframe (`connector_openai_deep_research.*.oaiusercontent.com`) that is invisible to the main page's frame tree, so the in-page extraction never saw it and the run timed out / harvested only the `"ChatGPT said:"` placeholder. `waitForDeepResearchCompletion` now prefers the CDP target-attach path (which reaches the OOPIF and its nested frame) and treats a target-confirmed completion as authoritative even when the main DOM has no assistant turn. Target discovery is scoped to the current Oracle-controlled page via page-session auto-attach (the browser-wide `Target.getTargets` scan is dropped) so a foreign completed Deep Research tab in a shared/persistent Chrome profile cannot be saved into the current session.
+
 ## 0.13.0 — 2026-05-22
 
 ### Added

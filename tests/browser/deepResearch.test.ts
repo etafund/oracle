@@ -436,6 +436,111 @@ describe("waitForDeepResearchCompletion", () => {
     );
   });
 
+  it("does not return a foreign completed Deep Research report from another tab", async () => {
+    // Cross-tab isolation: a shared/persistent Chrome profile can hold another
+    // tab's COMPLETED Deep Research report. Target discovery must be scoped to the
+    // current Oracle-controlled page (via page-session auto-attach), so the
+    // foreign report is never read into this session — even though a browser-wide
+    // Target.getTargets scan would surface it.
+    mockRuntime.evaluate.mockResolvedValue({
+      result: {
+        value: {
+          finished: false,
+          stopVisible: false,
+          textLength: 0,
+          hasIframe: true,
+          hasActiveScopedResearch: false,
+        },
+      },
+    });
+
+    let getTargetsCalled = false;
+    let foreignAttachCalled = false;
+    const listeners = new Map<string, (params: unknown, sessionId?: string) => void>();
+    const deepResearchUrl =
+      "https://connector_openai_deep_research.web-sandbox.oaiusercontent.com/";
+
+    const mockClient = {
+      on: vi.fn((event: string, listener: (params: unknown, sessionId?: string) => void) => {
+        listeners.set(event, listener);
+      }),
+      removeListener: vi.fn(),
+      send: vi.fn(async (method: string, params?: unknown, sessionId?: string) => {
+        if (method === "Target.setAutoAttach" && (params as { autoAttach?: boolean })?.autoAttach) {
+          // Page-scoped auto-attach surfaces only THIS page's OOPIF — still in progress.
+          listeners.get("Target.attachedToTarget")?.({
+            sessionId: "current-session",
+            targetInfo: { type: "iframe", url: deepResearchUrl },
+          });
+          return {};
+        }
+        if (method === "Target.getTargets") {
+          // A foreign tab's COMPLETED report is visible browser-wide; it must be ignored.
+          getTargetsCalled = true;
+          return {
+            targetInfos: [{ targetId: "foreign-target", type: "iframe", url: deepResearchUrl }],
+          };
+        }
+        if (method === "Target.attachToTarget") {
+          foreignAttachCalled = true;
+          return { sessionId: "foreign-session" };
+        }
+        if (method === "Page.getFrameTree") {
+          return {
+            frameTree: { frame: { id: `${sessionId}-frame`, name: "root", url: deepResearchUrl } },
+          };
+        }
+        if (method === "Page.createIsolatedWorld") {
+          return { executionContextId: sessionId === "foreign-session" ? 99 : 50 };
+        }
+        if (method === "Runtime.evaluate" && sessionId === "foreign-session") {
+          return {
+            result: {
+              value: {
+                completed: true,
+                inProgress: false,
+                textLength: 80,
+                text: "FOREIGN_REPORT https://example.com/foreign",
+              },
+            },
+          };
+        }
+        if (method === "Runtime.evaluate" && sessionId === "current-session") {
+          return {
+            result: {
+              value: { completed: false, inProgress: true, textLength: 10, text: undefined },
+            },
+          };
+        }
+        return {};
+      }),
+    };
+
+    let nowCalls = 0;
+    const dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => {
+      nowCalls += 1;
+      return nowCalls < 8 ? 1_000 : 2_000;
+    });
+
+    try {
+      await expect(
+        waitForDeepResearchCompletion(
+          mockRuntime as never,
+          mockLogger,
+          100,
+          1,
+          undefined,
+          mockClient as never,
+        ),
+      ).rejects.toThrow(/did not complete/);
+      // The foreign target must never be reached, regardless of the browser-wide scan.
+      expect(foreignAttachCalled).toBe(false);
+      expect(getTargetsCalled).toBe(false);
+    } finally {
+      dateNowSpy.mockRestore();
+    }
+  });
+
   it("returns an OOPIF report via the target path during a scoped run when the main DOM has no assistant turn", async () => {
     // Regression: ChatGPT renders the Deep Research report inside an
     // out-of-process iframe that is invisible to the main page's frame tree.

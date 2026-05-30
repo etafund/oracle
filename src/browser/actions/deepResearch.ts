@@ -407,7 +407,16 @@ async function readDeepResearchTargetResult(
 
   client.on?.("Target.attachedToTarget", onAttached as never);
   try {
-    await rawClient.send("Target.setDiscoverTargets", { discover: true }).catch(() => undefined);
+    // Scope discovery to the current Oracle-controlled page. `client` is
+    // connected to the conversation page target, so enabling auto-attach on this
+    // session only attaches THIS page's related targets (its Deep Research OOPIF
+    // subframe) and emits Target.attachedToTarget for them.
+    //
+    // We deliberately do NOT enumerate Target.getTargets / attachToTarget here:
+    // that scan is browser-wide, and in a shared/persistent Chrome profile it
+    // would surface another tab's completed Deep Research report and let it be
+    // saved into the current session (cross-tab leak). Only auto-attached,
+    // page-scoped sessions are treated as belonging to this run.
     await rawClient
       .send("Target.setAutoAttach", {
         autoAttach: true,
@@ -416,28 +425,6 @@ async function readDeepResearchTargetResult(
       })
       .catch(() => undefined);
     await delay(100);
-
-    const targets = (await rawClient.send("Target.getTargets", {})) as
-      | {
-          targetInfos?: Array<{
-            targetId?: string;
-            type?: string;
-            url?: string;
-          }>;
-        }
-      | undefined;
-    for (const target of targets?.targetInfos ?? []) {
-      if (!target.targetId || !isDeepResearchTarget(target.url ?? "", target.type ?? "")) {
-        continue;
-      }
-      const attached = (await rawClient
-        .send("Target.attachToTarget", { targetId: target.targetId, flatten: true })
-        .catch(() => null)) as { sessionId?: string } | null;
-      if (attached?.sessionId) {
-        sessionIds.add(attached.sessionId);
-        ownedSessionIds.add(attached.sessionId);
-      }
-    }
 
     for (const sessionId of sessionIds) {
       const value = await readDeepResearchTargetSession(rawClient, sessionId);
