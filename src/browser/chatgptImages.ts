@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import type {
   BrowserGeneratedImage,
   BrowserLogger,
@@ -203,9 +204,10 @@ function resolveDefaultGeneratedImagePath(
   sessionId?: string,
 ): string {
   const primary = images[0];
-  const stemSource =
-    primary?.fileId || primary?.alt || primary?.url || `generated-${Date.now().toString(36)}`;
-  const stem = sanitizeGeneratedImageStem(stemSource) || `generated-${Date.now().toString(36)}`;
+  // Random fallback token keeps concurrent session-less saves from colliding.
+  const uniqueFallback = `generated-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
+  const stemSource = primary?.fileId || primary?.alt || primary?.url || uniqueFallback;
+  const stem = sanitizeGeneratedImageStem(stemSource) || uniqueFallback;
   const baseDir = sessionId
     ? resolveSessionArtifactsDir(sessionId)
     : path.join(getOracleHomeDir(), ".temp");

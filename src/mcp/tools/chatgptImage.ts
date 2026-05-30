@@ -1,10 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { getOracleHomeDir } from "../../oracleHome.js";
 import type { ConsultInput } from "../types.js";
-import { runConsultTool } from "./consult.js";
+import { consultOutputShape, runConsultTool } from "./consult.js";
 
 const chatGptImageInputShape = {
   prompt: z.string().min(1, "Prompt is required.").describe("Image generation prompt."),
@@ -57,14 +58,11 @@ const chatGptImageInputShape = {
 } satisfies z.ZodRawShape;
 
 const chatGptImageOutputShape = {
-  sessionId: z.string().optional(),
-  status: z.string(),
-  output: z.string(),
-  dryRun: z.boolean().optional(),
+  // Mirror the consult output contract so structuredContent stays consistent
+  // (images/artifacts/resolved are typed by the shared consult shapes), plus the
+  // image-specific echo of the requested path.
+  ...consultOutputShape,
   requestedOutputPath: z.string(),
-  resolved: z.record(z.string(), z.any()).optional(),
-  artifacts: z.array(z.record(z.string(), z.any())).optional(),
-  images: z.array(z.record(z.string(), z.any())).optional(),
 } satisfies z.ZodRawShape;
 
 const chatGptImageInputSchema = z.object(chatGptImageInputShape).strict();
@@ -72,7 +70,10 @@ const chatGptImageInputSchema = z.object(chatGptImageInputShape).strict();
 export type ChatGptImageInput = z.infer<typeof chatGptImageInputSchema>;
 
 function resolveDefaultImageOutputPath(): string {
-  return path.join(getOracleHomeDir(), "generated", `chatgpt-image-${Date.now().toString(36)}.png`);
+  // Include a random token so concurrent agent calls in the same millisecond do
+  // not resolve to the same default path and overwrite each other.
+  const unique = `${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
+  return path.join(getOracleHomeDir(), "generated", `chatgpt-image-${unique}.png`);
 }
 
 function appendAspectRatio(prompt: string, aspectRatio?: string): string {

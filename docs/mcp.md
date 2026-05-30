@@ -13,12 +13,12 @@ Claude Code can call `oracle-mcp` and ask a subscription-backed ChatGPT browser 
 - Inputs: `prompt` (required), `files?: string[]` for reference images/assets, `outputPath?: string`, `aspectRatio?: string`, `model?: string`, plus browser controls such as `browserThinkingTime`, `browserModelLabel`, `browserModelStrategy`, `browserArchive`, `browserKeepBrowser`, and `dryRun`.
 - Behavior: convenience wrapper for ChatGPT browser image generation. It forces `engine:"browser"`, sets `generateImage` for the existing image-aware wait/download path, and defaults `browserAttachments:"always"` when files are provided so reference images are uploaded instead of pasted.
 - Output: returns the normal session metadata plus `requestedOutputPath` and `structuredContent.images[]` with saved image paths and ChatGPT file metadata when available. If `outputPath` is omitted, Oracle picks a unique file under `ORACLE_HOME_DIR/generated/`.
+- Output path safety: agent-supplied `outputPath` must resolve under `ORACLE_HOME_DIR` by default; paths outside it (and `..` traversal) are rejected. Set `ORACLE_MCP_ALLOW_EXTERNAL_OUTPUT=1` to allow writing elsewhere as an explicit decision. Omit `outputPath` to use the safe default.
 
 ```json
 {
   "prompt": "Create a 9:16 App Store screenshot background for a focus timer.",
   "files": ["./reference-screen.png"],
-  "outputPath": "/tmp/focus-timer-bg.png",
   "aspectRatio": "9:16"
 }
 ```
@@ -34,7 +34,7 @@ Claude Code can call `oracle-mcp` and ask a subscription-backed ChatGPT browser 
 - Research mode: set `browserResearchMode:"deep"` for broad public-web research and cited reports. Use normal browser runs with `gpt-5.5-pro` + `browserThinkingTime:"extended"` for Pro Extended code review, or `gpt-5.5` + `browserThinkingTime:"heavy"` when you explicitly want Thinking Heavy.
 - Multi-turn consults: set `browserFollowUps:["Challenge your recommendation", "Give the final decision"]` to keep one ChatGPT browser conversation open and ask sequential follow-up prompts. Use one-shot calls for narrow bugs and exact file-set reviews; use multi-turn for ambiguous architecture/product decisions where a challenge pass and final recommendation are useful; use Deep Research for broad public-web work with citations. Oracle never invents follow-ups automatically.
 - Archiving: set `browserArchive:"auto"|"always"|"never"` to control ChatGPT conversation cleanup. `auto` archives only successful browser one-shots after local artifacts are saved, and skips project, Deep Research, multi-turn, failed, and incomplete sessions.
-- ChatGPT image generation: set `engine:"browser"` and `generateImage:"/path/out.png"` to use the same image-aware wait/download path as CLI `--generate-image`. Saved files are returned in `structuredContent.images` and recorded as session artifacts; multiple images save as numbered siblings.
+- ChatGPT image generation: set `engine:"browser"` and `generateImage` to a path under `ORACLE_HOME_DIR` to use the same image-aware wait/download path as CLI `--generate-image`. Saved files are returned in `structuredContent.images` and recorded as session artifacts; multiple images save as numbered siblings. Agent-supplied `generateImage` / `outputPath` are constrained to `ORACLE_HOME_DIR` by default (set `ORACLE_MCP_ALLOW_EXTERNAL_OUTPUT=1` to allow external paths).
 
 #### Long browser consults from agents
 
@@ -42,14 +42,14 @@ Browser-backed GPT-5.5 Pro consults can legitimately run for many minutes. Some 
 
 #### ChatGPT images from agents
 
-For generated images, pass an explicit `generateImage` path. That opt-in is important because it switches the browser wait loop to watch for ChatGPT image artifacts instead of only assistant text.
+For generated images, pass an explicit `generateImage` path. That opt-in is important because it switches the browser wait loop to watch for ChatGPT image artifacts instead of only assistant text. The path must resolve under `ORACLE_HOME_DIR` unless `ORACLE_MCP_ALLOW_EXTERNAL_OUTPUT=1` is set.
 
 ```json
 {
   "engine": "browser",
   "model": "gpt-5.5-pro",
   "prompt": "Create a 9:16 App Store screenshot background for a focus timer.",
-  "generateImage": "/tmp/focus-timer-bg.png"
+  "generateImage": "${ORACLE_HOME_DIR}/generated/focus-timer-bg.png"
 }
 ```
 

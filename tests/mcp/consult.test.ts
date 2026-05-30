@@ -1,6 +1,10 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, test } from "vitest";
 import type { SessionModelRun } from "../../src/sessionStore.js";
 import { applyConsultPreset } from "../../src/mcp/consultPresets.ts";
+import { setOracleHomeDirOverrideForTest } from "../../src/oracleHome.js";
 import {
   buildConsultBrowserConfig,
   buildConsultDryRunResolved,
@@ -266,51 +270,92 @@ describe("summarizeModelRunsForConsult", () => {
   });
 
   test("returns resolved dry-run details from the registered MCP consult tool", async () => {
-    const handlers: Array<(input: unknown) => Promise<unknown>> = [];
-    registerConsultTool({
-      registerTool: (_name: string, _def: unknown, fn: (input: unknown) => Promise<unknown>) => {
-        handlers.push(fn);
-      },
-      server: {
-        sendLoggingMessage: async () => undefined,
-      },
-    } as unknown as Parameters<typeof registerConsultTool>[0]);
-    const handler = handlers[0];
-    if (!handler) throw new Error("handler not registered");
+    const home = mkdtempSync(path.join(tmpdir(), "oracle-home-"));
+    setOracleHomeDirOverrideForTest(home);
+    const imagePath = path.join(home, "from-mcp.png");
+    try {
+      const handlers: Array<(input: unknown) => Promise<unknown>> = [];
+      registerConsultTool({
+        registerTool: (_name: string, _def: unknown, fn: (input: unknown) => Promise<unknown>) => {
+          handlers.push(fn);
+        },
+        server: {
+          sendLoggingMessage: async () => undefined,
+        },
+      } as unknown as Parameters<typeof registerConsultTool>[0]);
+      const handler = handlers[0];
+      if (!handler) throw new Error("handler not registered");
 
-    const result = (await handler({
-      dryRun: true,
-      engine: "browser",
-      model: "gpt-5.5-pro",
-      prompt: "review this",
-      files: [],
-      browserThinkingTime: "extended",
-      browserModelStrategy: "select",
-      generateImage: "/tmp/from-mcp.png",
-    })) as {
-      content: Array<{ type: "text"; text: string }>;
-      structuredContent: {
-        status: string;
-        dryRun: boolean;
-        resolved: ReturnType<typeof buildConsultDryRunResolved>;
-      };
-    };
-
-    expect(result.structuredContent).toMatchObject({
-      status: "dry-run",
-      dryRun: true,
-      resolved: {
-        resolvedEngine: "browser",
+      const result = (await handler({
+        dryRun: true,
+        engine: "browser",
         model: "gpt-5.5-pro",
-        browser: expect.objectContaining({
-          desiredModel: "Pro",
-          thinkingTime: "extended",
-          modelStrategy: "select",
-          imageOutputPath: "/tmp/from-mcp.png",
-        }),
-      },
-    });
-    expect(result.content[0]?.text).toContain("[dry-run] MCP resolved request:");
+        prompt: "review this",
+        files: [],
+        browserThinkingTime: "extended",
+        browserModelStrategy: "select",
+        generateImage: imagePath,
+      })) as {
+        content: Array<{ type: "text"; text: string }>;
+        structuredContent: {
+          status: string;
+          dryRun: boolean;
+          resolved: ReturnType<typeof buildConsultDryRunResolved>;
+        };
+      };
+
+      expect(result.structuredContent).toMatchObject({
+        status: "dry-run",
+        dryRun: true,
+        resolved: {
+          resolvedEngine: "browser",
+          model: "gpt-5.5-pro",
+          browser: expect.objectContaining({
+            desiredModel: "Pro",
+            thinkingTime: "extended",
+            modelStrategy: "select",
+            imageOutputPath: imagePath,
+          }),
+        },
+      });
+      expect(result.content[0]?.text).toContain("[dry-run] MCP resolved request:");
+    } finally {
+      setOracleHomeDirOverrideForTest(null);
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects an MCP consult image path outside the Oracle home", async () => {
+    const home = mkdtempSync(path.join(tmpdir(), "oracle-home-"));
+    setOracleHomeDirOverrideForTest(home);
+    try {
+      const handlers: Array<(input: unknown) => Promise<unknown>> = [];
+      registerConsultTool({
+        registerTool: (_name: string, _def: unknown, fn: (input: unknown) => Promise<unknown>) => {
+          handlers.push(fn);
+        },
+        server: {
+          sendLoggingMessage: async () => undefined,
+        },
+      } as unknown as Parameters<typeof registerConsultTool>[0]);
+      const handler = handlers[0];
+      if (!handler) throw new Error("handler not registered");
+
+      const result = (await handler({
+        dryRun: true,
+        engine: "browser",
+        model: "gpt-5.5-pro",
+        prompt: "review this",
+        files: [],
+        generateImage: "/tmp/from-mcp.png",
+      })) as { isError?: boolean; content: Array<{ type: "text"; text: string }> };
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0]?.text).toMatch(/Oracle home directory/);
+    } finally {
+      setOracleHomeDirOverrideForTest(null);
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test("rejects unsupported consult fields instead of silently ignoring them", async () => {

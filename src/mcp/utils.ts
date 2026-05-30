@@ -1,8 +1,47 @@
+import path from "node:path";
 import type { RunOracleOptions } from "../oracle.js";
 import type { EngineMode } from "../cli/engine.js";
 import type { UserConfig } from "../config.js";
 import { resolveRunOptionsFromConfig } from "../cli/runOptions.js";
+import { getOracleHomeDir } from "../oracleHome.js";
 import { Launcher } from "chrome-launcher";
+
+const ALLOW_EXTERNAL_OUTPUT_ENV = "ORACLE_MCP_ALLOW_EXTERNAL_OUTPUT";
+
+/**
+ * Whether MCP callers may write generated images / saved responses outside the
+ * Oracle home directory. Off by default: MCP clients are less trusted than the
+ * CLI user, so an agent must not be able to write to arbitrary host paths.
+ */
+export function isExternalMcpOutputAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env[ALLOW_EXTERNAL_OUTPUT_ENV]?.trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
+/**
+ * Constrain an MCP-supplied output path to the Oracle home directory and return
+ * its resolved absolute form. `path.resolve` collapses `..`, so traversal
+ * escapes are rejected by the prefix check. Set ORACLE_MCP_ALLOW_EXTERNAL_OUTPUT
+ * to opt into writing outside the Oracle home as an explicit decision.
+ */
+export function resolveMcpOutputPath(
+  requestedPath: string,
+  field: "generateImage" | "outputPath",
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const resolved = path.resolve(requestedPath);
+  if (isExternalMcpOutputAllowed(env)) {
+    return resolved;
+  }
+  const root = path.resolve(getOracleHomeDir());
+  if (resolved === root || resolved.startsWith(`${root}${path.sep}`)) {
+    return resolved;
+  }
+  throw new Error(
+    `MCP "${field}" must resolve under the Oracle home directory (${root}); got "${resolved}". ` +
+      `Use a path under that directory, or set ${ALLOW_EXTERNAL_OUTPUT_ENV}=1 to allow external output paths.`,
+  );
+}
 
 export function mapConsultToRunOptions({
   prompt,
@@ -69,11 +108,11 @@ export function mapConsultToRunOptions({
   }
   const imageOutputPath = generateImage?.trim();
   if (imageOutputPath) {
-    result.runOptions.generateImage = imageOutputPath;
+    result.runOptions.generateImage = resolveMcpOutputPath(imageOutputPath, "generateImage", env);
   }
   const secondaryOutputPath = outputPath?.trim();
   if (secondaryOutputPath) {
-    result.runOptions.outputPath = secondaryOutputPath;
+    result.runOptions.outputPath = resolveMcpOutputPath(secondaryOutputPath, "outputPath", env);
   }
   return result;
 }

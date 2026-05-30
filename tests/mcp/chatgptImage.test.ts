@@ -1,10 +1,33 @@
-import { describe, expect, test } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, test } from "vitest";
 import {
   buildChatGptImageConsultInput,
   registerChatGptImageTool,
 } from "../../src/mcp/tools/chatgptImage.ts";
+import { setOracleHomeDirOverrideForTest } from "../../src/oracleHome.js";
+
+function registerHandler(): (input: unknown) => Promise<unknown> {
+  const handlers: Array<(input: unknown) => Promise<unknown>> = [];
+  registerChatGptImageTool({
+    registerTool: (_name: string, _def: unknown, fn: (input: unknown) => Promise<unknown>) => {
+      handlers.push(fn);
+    },
+    server: {
+      sendLoggingMessage: async () => undefined,
+    },
+  } as unknown as Parameters<typeof registerChatGptImageTool>[0]);
+  const handler = handlers[0];
+  if (!handler) throw new Error("handler not registered");
+  return handler;
+}
 
 describe("chatgpt_image MCP tool", () => {
+  afterEach(() => {
+    setOracleHomeDirOverrideForTest(null);
+  });
+
   test("builds an image-aware browser consult with uploaded references", () => {
     const input = buildChatGptImageConsultInput({
       prompt: "Create an App Store screenshot background.",
@@ -24,45 +47,59 @@ describe("chatgpt_image MCP tool", () => {
     expect(input.prompt).toContain("aspect ratio 9:16");
   });
 
-  test("uses a default output path when agents only provide a prompt", () => {
-    const input = buildChatGptImageConsultInput({
+  test("uses a unique default output path when agents only provide a prompt", () => {
+    const first = buildChatGptImageConsultInput({ prompt: "Create a simple app icon.", files: [] });
+    const second = buildChatGptImageConsultInput({
       prompt: "Create a simple app icon.",
       files: [],
     });
 
-    expect(input.engine).toBe("browser");
-    expect(input.generateImage).toMatch(/generated\/chatgpt-image-[a-z0-9]+\.png$/);
-    expect(input.browserAttachments).toBeUndefined();
+    expect(first.engine).toBe("browser");
+    expect(first.generateImage).toMatch(/generated\/chatgpt-image-[a-z0-9-]+\.png$/);
+    // Random suffix keeps concurrent default paths from colliding.
+    expect(first.generateImage).not.toBe(second.generateImage);
+    expect(first.browserAttachments).toBeUndefined();
   });
 
   test("returns resolved dry-run details from the registered tool", async () => {
-    const handlers: Array<(input: unknown) => Promise<unknown>> = [];
-    registerChatGptImageTool({
-      registerTool: (_name: string, _def: unknown, fn: (input: unknown) => Promise<unknown>) => {
-        handlers.push(fn);
-      },
-      server: {
-        sendLoggingMessage: async () => undefined,
-      },
-    } as unknown as Parameters<typeof registerChatGptImageTool>[0]);
-    const handler = handlers[0];
-    if (!handler) throw new Error("handler not registered");
-
-    const result = (await handler({
-      dryRun: true,
-      prompt: "Create a small product mockup.",
-      outputPath: "/tmp/product-mockup.png",
-      aspectRatio: "1:1",
-    })) as {
-      structuredContent: {
-        requestedOutputPath: string;
-        resolved: { browser?: { imageOutputPath?: string } };
+    const home = mkdtempSync(path.join(tmpdir(), "oracle-home-"));
+    setOracleHomeDirOverrideForTest(home);
+    try {
+      const handler = registerHandler();
+      const target = path.join(home, "product-mockup.png");
+      const result = (await handler({
+        dryRun: true,
+        prompt: "Create a small product mockup.",
+        outputPath: target,
+        aspectRatio: "1:1",
+      })) as {
+        structuredContent: {
+          requestedOutputPath: string;
+          resolved: { browser?: { imageOutputPath?: string } };
+        };
       };
-    };
 
-    expect(result.structuredContent.requestedOutputPath).toBe("/tmp/product-mockup.png");
-    expect(result.structuredContent.resolved.browser?.imageOutputPath).toBe(
-      "/tmp/product-mockup.png",
-    );
+      expect(result.structuredContent.requestedOutputPath).toBe(target);
+      expect(result.structuredContent.resolved.browser?.imageOutputPath).toBe(target);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects an output path outside the Oracle home", async () => {
+    const home = mkdtempSync(path.join(tmpdir(), "oracle-home-"));
+    setOracleHomeDirOverrideForTest(home);
+    try {
+      const handler = registerHandler();
+      const result = (await handler({
+        dryRun: true,
+        prompt: "Create a small product mockup.",
+        outputPath: "/tmp/escape.png",
+      })) as { isError?: boolean };
+
+      expect(result.isError).toBe(true);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

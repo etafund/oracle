@@ -6,6 +6,8 @@ import {
   type CallToolResult,
 } from "@modelcontextprotocol/sdk/types.js";
 import { ensureBrowserAvailable, mapConsultToRunOptions } from "../utils.js";
+import type { RunOracleOptions } from "../../oracle.js";
+import type { EngineMode } from "../../cli/engine.js";
 import type { BrowserSessionConfig, SessionArtifact, SessionModelRun } from "../../sessionStore.js";
 import { sessionStore } from "../../sessionStore.js";
 import { resolveRemoteServiceConfig } from "../../remote/remoteServiceConfig.js";
@@ -218,7 +220,7 @@ const consultDryRunResolvedShape = z.object({
   guidance: z.array(z.string()),
 });
 
-const consultOutputShape = {
+export const consultOutputShape = {
   sessionId: z.string().optional(),
   status: z.string(),
   output: z.string(),
@@ -532,22 +534,31 @@ export async function runConsultTool(
     slug,
   } = parsedInput;
   const { config: userConfig } = await loadUserConfig();
-  const { runOptions, resolvedEngine } = mapConsultToRunOptions({
-    prompt,
-    files: files ?? [],
-    model,
-    models,
-    engine,
-    search,
-    browserAttachments,
-    browserBundleFiles,
-    browserBundleFormat,
-    browserFollowUps,
-    generateImage,
-    outputPath,
-    userConfig,
-    env: process.env,
-  });
+  let runOptions: RunOracleOptions;
+  let resolvedEngine: EngineMode;
+  try {
+    ({ runOptions, resolvedEngine } = mapConsultToRunOptions({
+      prompt,
+      files: files ?? [],
+      model,
+      models,
+      engine,
+      search,
+      browserAttachments,
+      browserBundleFiles,
+      browserBundleFormat,
+      browserFollowUps,
+      generateImage,
+      outputPath,
+      userConfig,
+      env: process.env,
+    }));
+  } catch (error) {
+    return {
+      isError: true,
+      content: textContent(error instanceof Error ? error.message : String(error)),
+    };
+  }
   const cwd = process.cwd();
   const sendLog = (text: string, level: "info" | "debug" = "info") =>
     server
