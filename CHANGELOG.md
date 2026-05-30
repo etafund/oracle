@@ -10,6 +10,7 @@
 ### Security
 
 - MCP: constrain agent-supplied `generateImage` / `outputPath` to the Oracle home directory (`ORACLE_HOME_DIR`) by default so an MCP caller cannot write generated images or saved responses to arbitrary host paths. `..` traversal is rejected, and the boundary check resolves symlinks in the existing path prefix (via `realpath`) so a symlinked parent under the Oracle home cannot smuggle a write outside it. Set `ORACLE_MCP_ALLOW_EXTERNAL_OUTPUT=1` to opt into external output paths as an explicit decision. CLI `--generate-image` / `--output` are unaffected.
+- MCP: `chatgpt_image` / `consult` image output fails closed when a remote browser service is configured (`ORACLE_REMOTE_HOST`), since the remote executor does not transfer image artifacts back and the `structuredContent.images` contract could not be fulfilled. The run is rejected with a clear error instead of silently returning no images.
 
 ## 0.13.0 — 2026-05-22
 

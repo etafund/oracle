@@ -642,6 +642,20 @@ export async function runConsultTool(
         ),
       };
     }
+    // Fail closed for image output over the remote browser service: the remote
+    // executor does not thread image artifacts back through the protocol, so the
+    // generated image would be written on the remote host and the promised
+    // structuredContent.images contract could not be fulfilled. Better to reject
+    // explicitly than silently return no images.
+    const imageOutputPath = runOptions.generateImage ?? runOptions.outputPath;
+    if (imageOutputPath) {
+      return {
+        isError: true,
+        content: textContent(
+          `ChatGPT image output is not supported with a remote browser service (ORACLE_REMOTE_HOST=${resolvedRemote.host}): generated images are written on the remote host and are not transferred back, so structuredContent.images cannot be returned. Unset the remote host to generate images on the local browser, or omit generateImage/outputPath.`,
+        ),
+      };
+    }
     browserDeps = {
       executeBrowser: createRemoteBrowserExecutor({
         host: resolvedRemote.host,
