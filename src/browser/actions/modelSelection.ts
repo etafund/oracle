@@ -32,7 +32,7 @@ export async function ensureModelSelection(
         status: "option-not-found";
         hint?: { temporaryChat?: boolean; availableOptions?: string[] };
       }
-    | { status: "button-missing" }
+    | { status: "button-missing"; hint?: { accountPlan?: string; composerSignal?: string } }
     | undefined;
 
   switch (result?.status) {
@@ -69,7 +69,19 @@ export async function ensureModelSelection(
     }
     default: {
       await logDomFailure(Runtime, logger, "model-switcher-button");
-      throw new Error("Unable to locate the ChatGPT model selector button.");
+      const accountPlan = result?.status === "button-missing" ? result.hint?.accountPlan : null;
+      const composerSignal =
+        result?.status === "button-missing" ? result.hint?.composerSignal : null;
+      const visibleState = [
+        accountPlan ? `account=${accountPlan}` : null,
+        composerSignal ? `composer=${composerSignal}` : null,
+      ]
+        .filter(Boolean)
+        .join("; ");
+      const stateHint = visibleState ? ` Visible state: ${visibleState}.` : "";
+      throw new Error(
+        `Unable to locate the ChatGPT model selector button.${stateHint} If the desired model is already selected in the browser, retry with --browser-model-strategy current; otherwise retry with --browser-model-strategy ignore to skip model selection.`,
+      );
     }
   }
 }
@@ -252,12 +264,9 @@ function buildModelSelectionExpression(
       return Array.from(document.querySelectorAll('button.__composer-pill')).find(looksLikeModelPill) ?? null;
     };
 
-    const button = findModelButton();
-    if (!button) {
-      return { status: 'button-missing' };
-    }
-
     const closeMenu = () => {
+      const button = findModelButton();
+      if (!button) return;
       try {
         if (dispatchClickSequence(button)) {
           lastPointerClick = performance.now();
@@ -277,9 +286,15 @@ function buildModelSelectionExpression(
       } catch {}
     };
 
-    const getButtonLabel = () => (button.textContent ?? '').trim();
+    const getButtonLabel = () => (findModelButton()?.textContent ?? '').trim();
     const getComposerModelLabel = () =>
       (document.querySelector(COMPOSER_MODEL_SIGNAL_SELECTOR)?.textContent ?? '').trim();
+    const getAccountPlanLabel = () => {
+      const labels = Array.from(document.querySelectorAll('[data-testid="accounts-profile-button"]'))
+        .map((node) => (node.getAttribute('aria-label') ?? node.textContent ?? '').trim())
+        .filter(Boolean);
+      return labels.find((label) => hasToken(label, 'pro')) ?? labels[0] ?? '';
+    };
     const readComposerModelSignal = () => normalizeText(getComposerModelLabel());
     const withProPillSignal = (label) => {
       const resolved = label || '';
@@ -299,6 +314,17 @@ function buildModelSelectionExpression(
       return {
         status: 'already-selected',
         label: currentLabel,
+      };
+    }
+
+    const button = findModelButton();
+    if (!button) {
+      return {
+        status: 'button-missing',
+        hint: {
+          accountPlan: getAccountPlanLabel(),
+          composerSignal: getComposerModelLabel(),
+        },
       };
     }
     const buttonMatchesTarget = () => {

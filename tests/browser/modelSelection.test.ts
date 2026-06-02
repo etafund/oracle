@@ -334,6 +334,64 @@ const evaluateComposerPillFallbackExpression = (
   );
 };
 
+const evaluateNoModelButtonExpression = (
+  targetModel: string,
+  strategy: "select" | "current" = "select",
+): unknown => {
+  const expression = buildModelSelectionExpressionForTest(targetModel, strategy);
+  const accountNodes = [
+    {
+      textContent: "",
+      getAttribute: (name: string) => (name === "aria-label" ? "Open profile menu" : null),
+    },
+    {
+      textContent: "marc rousseau Pro",
+      getAttribute: (name: string) =>
+        name === "aria-label" ? "marc rousseau Pro, open profile menu" : null,
+    },
+  ];
+  const documentStub = {
+    querySelector: () => null,
+    querySelectorAll: (selector: string) =>
+      selector.includes("accounts-profile-button") ? accountNodes : [],
+    title: "",
+    body: { innerText: "marc rousseau Pro Ready when you are." },
+    dispatchEvent: () => true,
+  };
+  const performanceStub = { now: () => 0 };
+  const windowStub = { location: { href: "https://chatgpt.com/" } };
+  const EventTargetStub = class {};
+  const MouseEventStub = class {};
+  const evaluate = new Function(
+    "document",
+    "performance",
+    "setTimeout",
+    "window",
+    "EventTarget",
+    "MouseEvent",
+    "HTMLElement",
+    `return ${expression};`,
+  ) as (
+    document: unknown,
+    performance: unknown,
+    setTimeout: unknown,
+    window: unknown,
+    EventTarget: unknown,
+    MouseEvent: unknown,
+    HTMLElement: unknown,
+  ) => unknown;
+
+  return evaluate(
+    documentStub,
+    performanceStub,
+    () => 0,
+    windowStub,
+    EventTargetStub,
+    MouseEventStub,
+    class {},
+  );
+};
+
 describe("browser model selection matchers", () => {
   it("includes pro + 5.5 tokens for gpt-5.5-pro", () => {
     const { labelTokens, testIdTokens } = buildModelMatchersLiteralForTest("gpt-5.5-pro");
@@ -546,6 +604,22 @@ describe("browser model selection matchers", () => {
   it("finds the current model pill when ChatGPT omits aria-haspopup", () => {
     const result = evaluateComposerPillFallbackExpression("Thinking 5.5", "Thinking Heavy");
     expect(result).toEqual({ status: "already-selected", label: "Thinking Heavy" });
+  });
+
+  it("allows the explicit current strategy when ChatGPT hides the model picker", () => {
+    const result = evaluateNoModelButtonExpression("Pro", "current");
+    expect(result).toEqual({ status: "already-selected", label: "Pro" });
+  });
+
+  it("reports visible account state when strict selection cannot find a picker", () => {
+    const result = evaluateNoModelButtonExpression("Pro", "select");
+    expect(result).toEqual({
+      status: "button-missing",
+      hint: {
+        accountPlan: "marc rousseau Pro, open profile menu",
+        composerSignal: "",
+      },
+    });
   });
 
   it("does not treat per-row thinking effort controls as model options", () => {
