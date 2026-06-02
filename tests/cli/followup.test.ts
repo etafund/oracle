@@ -9,6 +9,7 @@ const baseMetadata: SessionMetadata = {
   id: "session-1",
   createdAt: "2026-01-01T00:00:00.000Z",
   status: "completed",
+  options: {},
 };
 
 describe("browser follow-up resolution", () => {
@@ -61,7 +62,7 @@ describe("browser follow-up resolution", () => {
       ...baseMetadata,
       id: "api-slug",
       mode: "api",
-      response: { responseId: "resp_parent" },
+      response: { id: "resp_parent" },
     };
     const store = { readSession: vi.fn(async () => metadata) };
 
