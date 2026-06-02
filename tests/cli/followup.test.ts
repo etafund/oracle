@@ -82,4 +82,66 @@ describe("browser follow-up resolution", () => {
       /does not contain a ChatGPT conversation URL.*oracle status/s,
     );
   });
+
+  test("prefers the harvested URL over a stale runtime tab URL", () => {
+    const metadata: SessionMetadata = {
+      ...baseMetadata,
+      mode: "browser",
+      browser: {
+        harvest: { url: "https://chatgpt.com/c/harvested" },
+        runtime: { tabUrl: "https://chatgpt.com/c/stale-runtime" },
+      },
+    };
+
+    expect(resolveBrowserResumeConversationUrl(metadata)).toBe("https://chatgpt.com/c/harvested");
+  });
+
+  test("rejects an external resume URL stored in metadata", async () => {
+    const metadata: SessionMetadata = {
+      ...baseMetadata,
+      id: "external-url",
+      mode: "browser",
+      browser: { runtime: { tabUrl: "https://evil.example.com/c/pwned" } },
+    };
+
+    expect(resolveBrowserResumeConversationUrl(metadata)).toBeNull();
+
+    const store = { readSession: vi.fn(async () => metadata) };
+    await expect(resolveBrowserFollowupReference("external-url", store)).rejects.toThrow(
+      /does not contain a ChatGPT conversation URL/s,
+    );
+  });
+
+  test("rejects a project-shell URL that has no conversation id", async () => {
+    const metadata: SessionMetadata = {
+      ...baseMetadata,
+      id: "project-shell",
+      mode: "browser",
+      browser: {
+        config: { url: "https://chatgpt.com/g/g-p-abc123/project" },
+        runtime: { tabUrl: "https://chatgpt.com/g/g-p-abc123/project" },
+      },
+    };
+
+    expect(resolveBrowserResumeConversationUrl(metadata)).toBeNull();
+
+    const store = { readSession: vi.fn(async () => metadata) };
+    await expect(resolveBrowserFollowupReference("project-shell", store)).rejects.toThrow(
+      /does not contain a ChatGPT conversation URL/s,
+    );
+  });
+
+  test("rejects a conversationId fallback when the base URL is not ChatGPT", () => {
+    const metadata: SessionMetadata = {
+      ...baseMetadata,
+      mode: "browser",
+      browser: {
+        config: { url: "https://evil.example.com/" },
+        runtime: { conversationId: "abc-123" },
+      },
+    };
+
+    // conversationId would rebuild against the stored base; the gate must reject a non-ChatGPT host.
+    expect(resolveBrowserResumeConversationUrl(metadata)).toBeNull();
+  });
 });

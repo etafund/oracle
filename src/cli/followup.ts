@@ -1,9 +1,8 @@
 import type { SessionMetadata } from "../sessionStore.js";
 import { CHATGPT_URL } from "../browser/constants.js";
-import {
-  buildConversationUrl,
-  extractConversationIdFromUrl,
-} from "../browser/reattachHelpers.js";
+import { buildConversationUrl } from "../browser/reattachHelpers.js";
+import { resolveRecoveryUrl } from "../browser/recoverConversation.js";
+import { isRecoverableChatGptConversationUrl } from "../browser/reattachability.js";
 
 export interface BrowserFollowupResolution {
   sessionId: string;
@@ -14,25 +13,36 @@ export interface FollowupSessionReader {
   readSession(sessionId: string): Promise<SessionMetadata | null>;
 }
 
+/**
+ * Resolve the ChatGPT conversation URL to reopen for a browser follow-up.
+ *
+ * Reuses the same recoverable-URL gate as conversation recovery
+ * (`resolveRecoveryUrl`): prefer the post-harvest URL, fall back to the
+ * runtime tab URL, and reject home / project-shell / external URLs via
+ * `isRecoverableChatGptConversationUrl`. Only when neither candidate is a
+ * recoverable `chatgpt.com/c/<id>` URL do we rebuild from a stored
+ * `conversationId` against the session's ChatGPT base — and that rebuilt URL is
+ * gated too. This prevents a stale or attacker-controlled URL in session
+ * metadata from navigating the signed-in browser profile somewhere unintended.
+ */
 export function resolveBrowserResumeConversationUrl(
   metadata: SessionMetadata,
   fallbackBaseUrl = CHATGPT_URL,
 ): string | null {
-  const runtime = metadata.browser?.runtime;
-  if (!runtime) {
-    return null;
+  const gatedUrl = resolveRecoveryUrl(metadata);
+  if (gatedUrl) {
+    return gatedUrl;
   }
-  const baseUrl = metadata.browser?.config?.url ?? fallbackBaseUrl;
-  const directUrl = buildConversationUrl(runtime, baseUrl);
-  if (directUrl) {
-    return directUrl;
-  }
-  const conversationId =
-    runtime.conversationId ?? extractConversationIdFromUrl(runtime.tabUrl ?? "");
+  const conversationId = metadata.browser?.runtime?.conversationId?.trim();
   if (!conversationId) {
     return null;
   }
-  return buildConversationUrl({ conversationId }, baseUrl);
+  const baseUrl = metadata.browser?.config?.url ?? fallbackBaseUrl;
+  const built = buildConversationUrl({ conversationId }, baseUrl);
+  if (built && isRecoverableChatGptConversationUrl(built)) {
+    return built;
+  }
+  return null;
 }
 
 export async function resolveBrowserFollowupReference(

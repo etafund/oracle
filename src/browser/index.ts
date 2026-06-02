@@ -29,6 +29,7 @@ import {
   ensureNotBlocked,
   ensureLoggedIn,
   ensurePromptReady,
+  waitForResumedConversationHydration,
   installJavaScriptDialogAutoDismissal,
   ensureModelSelection,
   clearPromptComposer,
@@ -913,40 +914,12 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       }
       if (isResumingConversation) {
         // A resumed thread loads its prior history after navigation; ChatGPT can reset the
-        // composer mid-hydration and wipe a freshly-typed prompt (a fresh chat has no history,
-        // so it never hits this race). Wait for the prior turns to render AND stop growing
-        // (a big thread keeps appending turns as it hydrates), let React settle, then
-        // re-confirm the composer is ready — before the prompt is typed/submitted below.
-        const hydrationDeadline =
-          Date.now() + Math.min(config.inputTimeoutMs ?? 30_000, 30_000);
-        let priorTurns = 0;
-        let stableChecks = 0;
-        while (Date.now() < hydrationDeadline) {
-          let turns = 0;
-          try {
-            const { result } = await Runtime.evaluate({
-              expression: `document.querySelectorAll(${JSON.stringify(
-                CONVERSATION_TURN_SELECTOR,
-              )}).length`,
-              returnByValue: true,
-            });
-            turns = typeof result?.value === "number" ? result.value : 0;
-          } catch {
-            // keep polling until the conversation hydrates
-          }
-          if (turns > 0 && turns === priorTurns) {
-            stableChecks += 1;
-            if (stableChecks >= 3) break; // turn count steady ~750ms → hydration settled
-          } else {
-            stableChecks = 0;
-          }
-          priorTurns = turns;
-          await delay(250);
-        }
-        await delay(1_000); // final settle so React won't wipe the composer after we type
-        await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
-        logger(
-          `[browser] Resumed conversation hydrated (${priorTurns} prior turns); composer settled.`,
+        // composer mid-hydration and wipe a freshly-typed prompt. Wait for hydration to settle
+        // and re-confirm the composer before the prompt is typed/submitted below. Wrapped in
+        // raceWithDisconnect so a dropped client aborts immediately instead of polling to the
+        // hydration deadline. Shared with the remote path via the same helper.
+        await raceWithDisconnect(
+          waitForResumedConversationHydration(Runtime, config.inputTimeoutMs, logger),
         );
       }
     }
@@ -2414,6 +2387,11 @@ async function runRemoteBrowserMode(
       await ensureNotBlocked(Runtime, config.headless, logger);
       await ensureLoggedIn(Runtime, logger, { remoteSession: true });
       await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
+      if (config.resumeConversationUrl) {
+        // Same prior-history hydration race as the local path: a resumed thread can wipe the
+        // composer mid-hydration. Wait for it to settle before this path types/submits.
+        await waitForResumedConversationHydration(Runtime, config.inputTimeoutMs, logger);
+      }
     } else {
       await ensureNotBlocked(Runtime, config.headless, logger);
       await ensureLoggedIn(Runtime, logger, { remoteSession: true });
