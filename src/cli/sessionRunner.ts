@@ -50,6 +50,7 @@ import { hasRecoverableChatGptConversation } from "../browser/reattachability.js
 import { estimateTokenCount } from "../browser/utils.js";
 import type { BrowserLogger } from "../browser/types.js";
 import { formatElapsed } from "../oracle/format.js";
+import { formatBrowserReattachGuidance } from "./reattachGuidance.js";
 
 const isTty = process.stdout.isTTY;
 const dim = (text: string): string => (isTty ? kleur.dim(text) : text);
@@ -505,6 +506,12 @@ export async function performSessionRun({
     const cloudflareChallenge =
       userError?.category === "browser-automation" &&
       (userError.details as { stage?: string } | undefined)?.stage === "cloudflare-challenge";
+    let reattachGuidanceLogged = false;
+    const logBrowserReattachGuidance = (): void => {
+      if (reattachGuidanceLogged || mode !== "browser") return;
+      reattachGuidanceLogged = true;
+      log(formatBrowserReattachGuidance(sessionMeta.id));
+    };
     if (connectionLost && mode === "browser") {
       const runtime = (userError.details as { runtime?: BrowserRuntimeMetadata } | undefined)
         ?.runtime;
@@ -546,6 +553,7 @@ export async function performSessionRun({
             details: userError.details,
           },
         });
+        logBrowserReattachGuidance();
         throw error;
       }
       log(dim("Chrome disconnected before completion; keeping session running for reattach."));
@@ -565,6 +573,7 @@ export async function performSessionRun({
         },
         response: { status: "running", incompleteReason: "chrome-disconnected" },
       });
+      logBrowserReattachGuidance();
       return;
     }
     if (assistantTimeout && mode === "browser") {
@@ -615,7 +624,7 @@ export async function performSessionRun({
           return;
         }
       }
-      log(dim(`Reattach later with: oracle session ${sessionMeta.id}`));
+      logBrowserReattachGuidance();
       return;
     }
     if (cloudflareChallenge && mode === "browser") {
@@ -641,6 +650,7 @@ export async function performSessionRun({
     if (transportLine) {
       log(dim(`Transport: ${transportLine}`));
     }
+    logBrowserReattachGuidance();
     const browserRuntime =
       mode === "browser"
         ? (userError?.details as { runtime?: BrowserRuntimeMetadata } | undefined)?.runtime

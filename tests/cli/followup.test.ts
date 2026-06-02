@@ -1,0 +1,84 @@
+import { describe, expect, test, vi } from "vitest";
+import type { SessionMetadata } from "../../src/sessionStore.js";
+import {
+  resolveBrowserFollowupReference,
+  resolveBrowserResumeConversationUrl,
+} from "../../src/cli/followup.js";
+
+const baseMetadata: SessionMetadata = {
+  id: "session-1",
+  createdAt: "2026-01-01T00:00:00.000Z",
+  status: "completed",
+};
+
+describe("browser follow-up resolution", () => {
+  test("derives a resume URL from conversationId", () => {
+    const metadata: SessionMetadata = {
+      ...baseMetadata,
+      mode: "browser",
+      browser: {
+        config: { url: "https://chatgpt.com/" },
+        runtime: { conversationId: "abc-123" },
+      },
+    };
+
+    expect(resolveBrowserResumeConversationUrl(metadata)).toBe("https://chatgpt.com/c/abc-123");
+  });
+
+  test("derives a resume URL from tabUrl", () => {
+    const metadata: SessionMetadata = {
+      ...baseMetadata,
+      mode: "browser",
+      browser: {
+        runtime: { tabUrl: "https://chatgpt.com/c/live-thread" },
+      },
+    };
+
+    expect(resolveBrowserResumeConversationUrl(metadata)).toBe(
+      "https://chatgpt.com/c/live-thread",
+    );
+  });
+
+  test("resolves stored browser sessions to a browser resume path", async () => {
+    const metadata: SessionMetadata = {
+      ...baseMetadata,
+      id: "browser-slug",
+      mode: "browser",
+      browser: {
+        runtime: { conversationId: "resume-me" },
+      },
+    };
+    const store = { readSession: vi.fn(async () => metadata) };
+
+    await expect(resolveBrowserFollowupReference("browser-slug", store)).resolves.toEqual({
+      sessionId: "browser-slug",
+      resumeConversationUrl: "https://chatgpt.com/c/resume-me",
+    });
+  });
+
+  test("leaves stored API sessions on the existing API follow-up path", async () => {
+    const metadata: SessionMetadata = {
+      ...baseMetadata,
+      id: "api-slug",
+      mode: "api",
+      response: { responseId: "resp_parent" },
+    };
+    const store = { readSession: vi.fn(async () => metadata) };
+
+    await expect(resolveBrowserFollowupReference("api-slug", store)).resolves.toBeNull();
+  });
+
+  test("errors clearly when a browser session has no conversation URL", async () => {
+    const metadata: SessionMetadata = {
+      ...baseMetadata,
+      id: "missing-url",
+      mode: "browser",
+      browser: { runtime: { chromePort: 9222 } },
+    };
+    const store = { readSession: vi.fn(async () => metadata) };
+
+    await expect(resolveBrowserFollowupReference("missing-url", store)).rejects.toThrow(
+      /does not contain a ChatGPT conversation URL.*oracle status/s,
+    );
+  });
+});

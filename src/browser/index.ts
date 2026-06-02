@@ -547,6 +547,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
   const fallbackSubmission = options.fallbackSubmission;
 
   let config = resolveBrowserConfig(options.config);
+  const isResumingConversation = Boolean(config.resumeConversationUrl);
   const followUpPrompts = normalizeBrowserFollowUpPrompts(options.followUpPrompts);
   if (config.researchMode === "deep" && followUpPrompts.length > 0) {
     throw new BrowserAutomationError(
@@ -896,10 +897,11 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         }),
       );
 
-      if (config.url !== baseUrl) {
+      const targetUrl = config.resumeConversationUrl ?? config.url;
+      if (targetUrl !== baseUrl) {
         await raceWithDisconnect(
           navigateToPromptReadyWithFallback(Page, Runtime, {
-            url: config.url,
+            url: targetUrl,
             fallbackUrl: baseUrl,
             timeoutMs: config.inputTimeoutMs,
             headless: config.headless,
@@ -908,6 +910,44 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         );
       } else {
         await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+      }
+      if (isResumingConversation) {
+        // A resumed thread loads its prior history after navigation; ChatGPT can reset the
+        // composer mid-hydration and wipe a freshly-typed prompt (a fresh chat has no history,
+        // so it never hits this race). Wait for the prior turns to render AND stop growing
+        // (a big thread keeps appending turns as it hydrates), let React settle, then
+        // re-confirm the composer is ready — before the prompt is typed/submitted below.
+        const hydrationDeadline =
+          Date.now() + Math.min(config.inputTimeoutMs ?? 30_000, 30_000);
+        let priorTurns = 0;
+        let stableChecks = 0;
+        while (Date.now() < hydrationDeadline) {
+          let turns = 0;
+          try {
+            const { result } = await Runtime.evaluate({
+              expression: `document.querySelectorAll(${JSON.stringify(
+                CONVERSATION_TURN_SELECTOR,
+              )}).length`,
+              returnByValue: true,
+            });
+            turns = typeof result?.value === "number" ? result.value : 0;
+          } catch {
+            // keep polling until the conversation hydrates
+          }
+          if (turns > 0 && turns === priorTurns) {
+            stableChecks += 1;
+            if (stableChecks >= 3) break; // turn count steady ~750ms → hydration settled
+          } else {
+            stableChecks = 0;
+          }
+          priorTurns = turns;
+          await delay(250);
+        }
+        await delay(1_000); // final settle so React won't wipe the composer after we type
+        await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+        logger(
+          `[browser] Resumed conversation hydrated (${priorTurns} prior turns); composer settled.`,
+        );
       }
     }
     logger(
@@ -988,7 +1028,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     };
     await captureRuntimeSnapshot();
     const modelStrategy = config.modelStrategy ?? DEFAULT_MODEL_STRATEGY;
-    if (config.desiredModel && modelStrategy !== "ignore") {
+    if (config.desiredModel && modelStrategy !== "ignore" && !isResumingConversation) {
       modelSelectionEvidence = await raceWithDisconnect(
         withRetries(
           () => ensureModelSelection(Runtime, config.desiredModel as string, logger, modelStrategy),
@@ -1016,12 +1056,16 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       logger(
         `Prompt textarea ready (after model switch, ${promptText.length.toLocaleString()} chars queued)`,
       );
-    } else if (modelStrategy === "ignore") {
+    } else if (modelStrategy === "ignore" || isResumingConversation) {
       modelSelectionEvidence = buildSkippedModelSelectionEvidence(
         config.desiredModel,
         modelStrategy,
       );
-      logger("Model picker: skipped (strategy=ignore)");
+      logger(
+        isResumingConversation
+          ? "Model picker: skipped (resumed conversation)"
+          : "Model picker: skipped (strategy=ignore)",
+      );
     }
     const deepResearch = config.researchMode === "deep";
     // Handle thinking time selection if specified. Deep Research owns its own effort flow.
@@ -2366,7 +2410,7 @@ async function runRemoteBrowserMode(
     logger("Skipping cookie sync for remote Chrome (using existing session)");
 
     if (!attachedExistingTab) {
-      await navigateToChatGPT(Page, Runtime, config.url, logger);
+      await navigateToChatGPT(Page, Runtime, config.resumeConversationUrl ?? config.url, logger);
       await ensureNotBlocked(Runtime, config.headless, logger);
       await ensureLoggedIn(Runtime, logger, { remoteSession: true });
       await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
@@ -2392,7 +2436,7 @@ async function runRemoteBrowserMode(
     }
 
     const modelStrategy = config.modelStrategy ?? DEFAULT_MODEL_STRATEGY;
-    if (config.desiredModel && modelStrategy !== "ignore") {
+    if (config.desiredModel && modelStrategy !== "ignore" && !config.resumeConversationUrl) {
       modelSelectionEvidence = await withRetries(
         () => ensureModelSelection(Runtime, config.desiredModel as string, logger, modelStrategy),
         {
@@ -2411,12 +2455,16 @@ async function runRemoteBrowserMode(
       logger(
         `Prompt textarea ready (after model switch, ${promptText.length.toLocaleString()} chars queued)`,
       );
-    } else if (modelStrategy === "ignore") {
+    } else if (modelStrategy === "ignore" || config.resumeConversationUrl) {
       modelSelectionEvidence = buildSkippedModelSelectionEvidence(
         config.desiredModel,
         modelStrategy,
       );
-      logger("Model picker: skipped (strategy=ignore)");
+      logger(
+        config.resumeConversationUrl
+          ? "Model picker: skipped (resumed conversation)"
+          : "Model picker: skipped (strategy=ignore)",
+      );
     }
     const deepResearch = config.researchMode === "deep";
     // Handle thinking time selection if specified. Deep Research owns its own effort flow.

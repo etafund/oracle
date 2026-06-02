@@ -1218,6 +1218,12 @@ describe("performSessionRun", () => {
     const logLines = log.mock.calls.map((c) => String(c[0])).join("\n");
     expect(logLines).not.toContain("Next steps (browser fallback)");
     expect(logLines).not.toContain("--engine api");
+    expect(logLines).toContain(
+      "This run did not return cleanly, but it may still be alive. Reattach:",
+    );
+    expect(logLines).toContain("oracle session sess-1 --render");
+    expect(logLines).toContain("oracle session sess-1 --live");
+    expect(logLines).toContain("oracle session sess-1 --harvest");
   });
 
   test("keeps session running when browser connection is lost", async () => {
@@ -1513,7 +1519,12 @@ describe("performSessionRun", () => {
       });
       const logLines = log.mock.calls.map((c) => String(c[0])).join("\n");
       expect(logLines).toContain("Auto-reattach stopped");
-      expect(logLines).toContain("Reattach later with: oracle session");
+      expect(logLines).toContain(
+        "This run did not return cleanly, but it may still be alive. Reattach:",
+      );
+      expect(logLines).toContain("oracle session sess-1 --render");
+      expect(logLines).toContain("oracle session sess-1 --live");
+      expect(logLines).toContain("oracle session sess-1 --harvest");
     } finally {
       vi.useRealTimers();
     }
