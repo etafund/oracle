@@ -346,6 +346,7 @@ function buildAttachmentReadyExpression(attachmentNames: string[]): string {
       name: normalized,
       stem: normalized.replace(/\.[a-z0-9]{1,10}$/i, ""),
       extension: normalized.match(/(\.[a-z0-9]{1,10})$/i)?.[1] ?? "",
+      generatedBundle: /^attachments-bundle\.(txt|zip)$/i.test(normalized),
     };
   });
   const namesLiteral = JSON.stringify(attachmentExpectations);
@@ -361,10 +362,25 @@ function buildAttachmentReadyExpression(attachmentNames: string[]): string {
         if (index === -1) return false;
         const previous = text[index - 1] || '';
         const next = text[index + name.length] || '';
-        const previousOk = !previous || !/[a-z0-9]/.test(previous);
-        const nextOk = !next || !/[a-z0-9]/.test(next);
+        const previousOk = !previous || !/[a-z0-9._-]/.test(previous);
+        const nextOk = !next || !/[a-z0-9._-]/.test(next);
         if (previousOk && nextOk) return true;
         from = index + name.length;
+      }
+      return false;
+    };
+    const hasStemFileBoundary = (text, stem) => {
+      if (!stem) return false;
+      let from = 0;
+      while (from < text.length) {
+        const index = text.indexOf(stem, from);
+        if (index === -1) return false;
+        const previous = text[index - 1] || '';
+        const next = text[index + stem.length] || '';
+        const previousOk = !previous || !/[a-z0-9._-]/.test(previous);
+        const nextOk = !next || !/[a-z0-9_-]/.test(next);
+        if (previousOk && nextOk) return true;
+        from = index + stem.length;
       }
       return false;
     };
@@ -384,6 +400,7 @@ function buildAttachmentReadyExpression(attachmentNames: string[]): string {
       const text = normalize(value);
       if (!text) return false;
       if (hasNameBoundary(text, item.name)) return true;
+      if (item.generatedBundle && hasStemFileBoundary(text, item.stem)) return true;
       if (
         item.stem &&
         item.stem.length >= 4 &&

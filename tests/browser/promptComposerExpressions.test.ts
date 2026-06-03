@@ -253,6 +253,55 @@ describe("prompt composer attachment expressions", () => {
     expect(evaluateAttachmentReadyExpression(["README.md"], document)).toBe(true);
   });
 
+  test("attachment ready check accepts generated bundle chips that expose only the bundle stem", () => {
+    const document = new FakeDocument([
+      new FakeElement("div", { "data-testid": "unified-composer" }, [
+        new FakeElement("div", { "data-testid": "attachment-chip" }, [
+          new FakeElement("span", {}, [], "attachments-bundle"),
+        ]),
+      ]),
+    ]);
+
+    expect(evaluateAttachmentReadyExpression(["attachments-bundle.txt"], document)).toBe(true);
+  });
+
+  test("attachment ready check accepts duplicate-renamed generated bundle chips", () => {
+    const document = new FakeDocument([
+      new FakeElement("div", { "data-testid": "unified-composer" }, [
+        new FakeElement("div", { "data-testid": "attachment-chip" }, [
+          new FakeElement("span", {}, [], "attachments-bundle(13).txt"),
+          new FakeElement("button", { "aria-label": "Remove file 1: attachments-bundle(13).txt" }),
+        ]),
+      ]),
+    ]);
+
+    expect(evaluateAttachmentReadyExpression(["attachments-bundle.txt"], document)).toBe(true);
+  });
+
+  test("attachment ready check does not use stem-only fallback for non-bundle files", () => {
+    const document = new FakeDocument([
+      new FakeElement("div", { "data-testid": "unified-composer" }, [
+        new FakeElement("div", { "data-testid": "attachment-chip" }, [
+          new FakeElement("span", {}, [], "README"),
+        ]),
+      ]),
+    ]);
+
+    expect(evaluateAttachmentReadyExpression(["README.md"], document)).toBe(false);
+  });
+
+  test("attachment ready check does not match generated bundle stem inside another filename", () => {
+    const document = new FakeDocument([
+      new FakeElement("div", { "data-testid": "unified-composer" }, [
+        new FakeElement("div", { "data-testid": "attachment-chip" }, [
+          new FakeElement("span", {}, [], "not-attachments-bundle.txt"),
+        ]),
+      ]),
+    ]);
+
+    expect(evaluateAttachmentReadyExpression(["attachments-bundle.txt"], document)).toBe(false);
+  });
+
   test("attachment ready check does not let one duplicate-renamed chip satisfy same-stem files", () => {
     const document = new FakeDocument([
       new FakeElement("div", { "data-testid": "unified-composer" }, [
