@@ -1081,6 +1081,10 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       const baselineAssistantText =
         typeof baselineSnapshot?.text === "string" ? baselineSnapshot.text.trim() : "";
       const attachmentNames = submissionAttachments.map((a) => path.basename(a.path));
+      const attachmentExpectations = submissionAttachments.map((a) => ({
+        name: path.basename(a.path),
+        generatedBundle: a.generatedBundle === true,
+      }));
       let inputOnlyAttachments = false;
       await raceWithDisconnect(clearPromptComposer(Runtime, logger));
       await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
@@ -1126,7 +1130,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         inputTimeoutMs: config.inputTimeoutMs ?? undefined,
         attachmentTimeoutMs: config.attachmentTimeoutMs ?? undefined,
         baselineTurns: baselineTurns ?? undefined,
-        attachmentNames,
+        attachmentNames: attachmentExpectations,
         onPromptSubmitted: markPromptSubmitted,
       };
       await runProviderSubmissionFlow(chatgptDomProvider, {
@@ -2461,6 +2465,10 @@ async function runRemoteBrowserMode(
       const baselineAssistantText =
         typeof baselineSnapshot?.text === "string" ? baselineSnapshot.text.trim() : "";
       const attachmentNames = submissionAttachments.map((a) => path.basename(a.path));
+      const attachmentExpectations = submissionAttachments.map((a) => ({
+        name: path.basename(a.path),
+        generatedBundle: a.generatedBundle === true,
+      }));
       await clearPromptComposer(Runtime, logger);
       await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
       if (submissionAttachments.length > 0) {
@@ -2492,7 +2500,7 @@ async function runRemoteBrowserMode(
         inputTimeoutMs: config.inputTimeoutMs ?? undefined,
         attachmentTimeoutMs: config.attachmentTimeoutMs ?? undefined,
         baselineTurns: baselineTurns ?? undefined,
-        attachmentNames,
+        attachmentNames: attachmentExpectations,
         onPromptSubmitted: markPromptSubmitted,
       };
       await runProviderSubmissionFlow(chatgptDomProvider, {
