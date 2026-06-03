@@ -302,6 +302,24 @@ describe("prompt composer attachment expressions", () => {
     ).toBe(true);
   });
 
+  test("attachment ready check rejects duplicate-renamed generated bundle chips with the wrong extension", () => {
+    const document = new FakeDocument([
+      new FakeElement("div", { "data-testid": "unified-composer" }, [
+        new FakeElement("div", { "data-testid": "attachment-chip" }, [
+          new FakeElement("span", {}, [], "attachments-bundle(13).md"),
+          new FakeElement("button", { "aria-label": "Remove file 1: attachments-bundle(13).md" }),
+        ]),
+      ]),
+    ]);
+
+    expect(
+      evaluateAttachmentReadyExpression(
+        [{ name: "attachments-bundle.txt", generatedBundle: true }],
+        document,
+      ),
+    ).toBe(false);
+  });
+
   test("attachment ready check accepts generated zip bundle chips that expose only the bundle stem", () => {
     const document = new FakeDocument([
       new FakeElement("div", { "data-testid": "unified-composer" }, [

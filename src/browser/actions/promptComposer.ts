@@ -392,6 +392,21 @@ function buildAttachmentReadyExpression(attachmentNames: AttachmentReadyInput[])
       }
       return false;
     };
+    const hasBareStemBoundary = (text, stem) => {
+      if (!stem) return false;
+      let from = 0;
+      while (from < text.length) {
+        const index = text.indexOf(stem, from);
+        if (index === -1) return false;
+        const previous = text[index - 1] || '';
+        const next = text[index + stem.length] || '';
+        const previousOk = !previous || !/[a-z0-9._-]/.test(previous);
+        const nextOk = !next || !/[a-z0-9._(-]/.test(next);
+        if (previousOk && nextOk) return true;
+        from = index + stem.length;
+      }
+      return false;
+    };
     const hasExtensionBoundary = (text, extension) => {
       if (!extension) return false;
       let from = 0;
@@ -408,7 +423,7 @@ function buildAttachmentReadyExpression(attachmentNames: AttachmentReadyInput[])
       const text = normalize(value);
       if (!text) return false;
       if (hasNameBoundary(text, item.name)) return true;
-      if (item.generatedBundle && hasStemFileBoundary(text, item.stem)) return true;
+      if (item.generatedBundle && hasBareStemBoundary(text, item.stem)) return true;
       if (
         item.stem &&
         item.stem.length >= 4 &&
