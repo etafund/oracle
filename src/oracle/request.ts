@@ -9,7 +9,7 @@ import type {
 } from "./types.js";
 import { DEFAULT_SYSTEM_PROMPT } from "./config.js";
 import { createFileSections, readFiles } from "./files.js";
-import { formatFileSection } from "./markdown.js";
+import { formatFileSection, formatFileSections } from "./markdown.js";
 import { createFsAdapter } from "./fsAdapter.js";
 
 export function buildPrompt(basePrompt: string, files: FileContent[], cwd = process.cwd()): string {
@@ -17,7 +17,7 @@ export function buildPrompt(basePrompt: string, files: FileContent[], cwd = proc
     return basePrompt;
   }
   const sections = createFileSections(files, cwd);
-  const sectionText = sections.map((section) => section.sectionText).join("\n\n");
+  const sectionText = formatFileSections(sections);
   return `${basePrompt.trim()}\n\n${sectionText}`;
 }
 

@@ -7,7 +7,7 @@ import {
   createFileSections,
   MODEL_CONFIGS,
   TOKENIZER_OPTIONS,
-  formatFileSection,
+  formatFileSections,
 } from "../oracle.js";
 import { isKnownModel } from "../oracle/modelResolver.js";
 import { buildPromptMarkdown } from "../oracle/promptAssembly.js";
@@ -85,15 +85,7 @@ interface WrittenBrowserBundle {
 function formatSectionsForBundle(
   sections: Array<{ displayPath: string; content: string }>,
 ): string {
-  const bundleLines: string[] = [];
-  sections.forEach((section) => {
-    bundleLines.push(formatFileSection(section.displayPath, section.content).trimEnd());
-    bundleLines.push("");
-  });
-  return `${bundleLines
-    .join("\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trimEnd()}\n`;
+  return formatFileSections(sections, { trailingNewline: true });
 }
 
 async function writeBrowserBundle(
@@ -240,11 +232,7 @@ export async function assembleBrowserPrompt(
   );
   const tokenEstimateIncludesInlineFiles = inlineFileCount > 0 && Boolean(selectedPlan.inlineBlock);
   if (!tokenEstimateIncludesInlineFiles && sections.length > 0) {
-    const attachmentText =
-      bundleText ??
-      sections
-        .map((section) => formatFileSection(section.displayPath, section.content).trimEnd())
-        .join("\n\n");
+    const attachmentText = bundleText ?? formatFileSections(sections);
     const attachmentTokens = tokenizer(
       [{ role: "user", content: attachmentText }],
       TOKENIZER_OPTIONS,

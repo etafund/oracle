@@ -2,6 +2,19 @@ import path from "node:path";
 
 export type FenceLanguage = string | null | undefined;
 
+export interface FormatFileSectionOptions {
+  lineNumbers?: boolean;
+}
+
+export interface FormatFileSectionsOptions extends FormatFileSectionOptions {
+  trailingNewline?: boolean;
+}
+
+export interface FileSectionInput {
+  displayPath: string;
+  content: string;
+}
+
 const EXT_TO_LANG: Record<string, string> = {
   ".ts": "ts",
   ".tsx": "tsx",
@@ -42,11 +55,49 @@ function pickFence(content: string): string {
   return "`".repeat(fenceLength);
 }
 
-export function formatFileSection(displayPath: string, content: string): string {
+function formatLineRange(lineCount: number): string {
+  return lineCount === 0 ? "Lines: 0" : `Lines: 1-${lineCount}`;
+}
+
+function addLineNumbers(content: string): { text: string; lineCount: number } {
+  if (content.length === 0) {
+    return { text: "", lineCount: 0 };
+  }
+
+  const lines = content.split("\n");
+  const width = String(lines.length).length;
+  const numbered = lines
+    .map((line, index) => `${String(index + 1).padStart(width, " ")} | ${line}`)
+    .join("\n");
+  return { text: numbered, lineCount: lines.length };
+}
+
+export function formatFileSection(
+  displayPath: string,
+  content: string,
+  options: FormatFileSectionOptions = {},
+): string {
   const fence = pickFence(content);
   const lang = detectFenceLanguage(displayPath);
   const normalized = content.replace(/\s+$/u, "");
   const header = `### File: ${displayPath}`;
   const fenceOpen = lang ? `${fence}${lang}` : fence;
-  return [header, fenceOpen, normalized, fence, ""].join("\n");
+  if (options.lineNumbers === false) {
+    return [header, fenceOpen, normalized, fence, ""].join("\n");
+  }
+
+  const numbered = addLineNumbers(normalized);
+  return [header, formatLineRange(numbered.lineCount), fenceOpen, numbered.text, fence, ""].join(
+    "\n",
+  );
+}
+
+export function formatFileSections(
+  sections: FileSectionInput[],
+  options: FormatFileSectionsOptions = {},
+): string {
+  const rendered = sections
+    .map((section) => formatFileSection(section.displayPath, section.content, options).trimEnd())
+    .join("\n\n");
+  return options.trailingNewline && rendered ? `${rendered}\n` : rendered;
 }
