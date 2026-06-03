@@ -23,7 +23,9 @@ export function getFileTokenStats(
   const sections = createFileSections(files, cwd);
   const stats = sections
     .map((section) => {
-      const sectionText = formatFileSection(section.displayPath, section.content).trimEnd();
+      const sectionText = formatFileSection(section.displayPath, section.content, {
+        lineNumbers: true,
+      }).trimEnd();
       const tokens = tokenizer(sectionText, tokenizerOptions);
       const percent = inputTokenBudget ? (tokens / inputTokenBudget) * 100 : undefined;
       return {

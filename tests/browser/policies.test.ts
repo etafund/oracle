@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { buildAttachmentPlan, buildCookiePlan } from "../../src/browser/policies.js";
-import { formatFileSection } from "../../src/oracle/markdown.js";
+import { formatFileSections } from "../../src/oracle/markdown.js";
 
 const sections = [
   { displayPath: "a.txt", absolutePath: "/repo/a.txt", content: "hello" },
@@ -19,7 +19,7 @@ describe("buildAttachmentPlan", () => {
     expect(plan.attachments).toHaveLength(0);
     expect(plan.shouldBundle).toBe(false);
     expect(plan.inlineBlock).toContain("### File: a.txt");
-    expect(plan.inlineBlock).toContain(formatFileSection("b.txt", "world").trim());
+    expect(plan.inlineBlock).toContain(formatFileSections([sections[1]]).trim());
   });
 
   test("bundles when over max attachments", () => {

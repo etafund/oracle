@@ -11,14 +11,14 @@ describe("oracle entrypoint exports", () => {
     expect(oracle.PRO_MODELS instanceof Set).toBe(true);
   });
 
-  test("exposes numbered and raw file-section formatting", () => {
-    const numbered = oracle.formatFileSection("a.txt", "hello");
+  test("preserves raw exported file-section formatting by default", () => {
+    const rawDefault = oracle.formatFileSection("a.txt", "hello");
+    expect(rawDefault).not.toContain("Lines:");
+    expect(rawDefault).toContain("```\nhello\n```");
+
+    const numbered = oracle.formatFileSection("a.txt", "hello", { lineNumbers: true });
     expect(numbered).toContain("Lines: 1-1");
     expect(numbered).toContain("1 | hello");
-
-    const raw = oracle.formatFileSection("a.txt", "hello", { lineNumbers: false });
-    expect(raw).not.toContain("Lines:");
-    expect(raw).toContain("```\nhello\n```");
   });
 
   test("exposes generated file-section list formatting", () => {

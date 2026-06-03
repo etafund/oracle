@@ -82,7 +82,7 @@ export function formatFileSection(
   const normalized = content.replace(/\s+$/u, "");
   const header = `### File: ${displayPath}`;
   const fenceOpen = lang ? `${fence}${lang}` : fence;
-  if (options.lineNumbers === false) {
+  if (options.lineNumbers !== true) {
     return [header, fenceOpen, normalized, fence, ""].join("\n");
   }
 
@@ -96,8 +96,11 @@ export function formatFileSections(
   sections: FileSectionInput[],
   options: FormatFileSectionsOptions = {},
 ): string {
+  const sectionOptions = { ...options, lineNumbers: options.lineNumbers ?? true };
   const rendered = sections
-    .map((section) => formatFileSection(section.displayPath, section.content, options).trimEnd())
+    .map((section) =>
+      formatFileSection(section.displayPath, section.content, sectionOptions).trimEnd(),
+    )
     .join("\n\n");
   return options.trailingNewline && rendered ? `${rendered}\n` : rendered;
 }
