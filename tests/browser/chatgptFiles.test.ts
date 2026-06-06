@@ -22,6 +22,11 @@ describe("readAssistantDownloadableFiles", () => {
               filename: "archive.zip",
             },
             {
+              url: "https://chatgpt.com/backend-api/me",
+              downloadUrl: "https://chatgpt.com/backend-api/me",
+              filename: "not-a-file.json",
+            },
+            {
               url: "https://chatgpt.com/backend-api/files/file_package/download",
               downloadUrl: "https://chatgpt.com/backend-api/files/file_package/download",
               sandboxUrl: "sandbox:/mnt/data/package.zip",
@@ -117,7 +122,63 @@ describe("saveChatGptDownloadableFiles", () => {
     await expect(fs.readFile(result.savedFiles[0]!.path)).resolves.toEqual(Buffer.from([9, 8, 7]));
   });
 
-  test("does not fetch sandbox-only references", async () => {
+  test("saves sandbox-only references through the ChatGPT sandbox download endpoint", async () => {
+    const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-chatgpt-sandbox-file-"));
+    setOracleHomeDirOverrideForTest(tmpHome);
+    const network = {
+      getCookies: vi.fn().mockResolvedValue({
+        cookies: [{ name: "__Secure-next-auth.session-token", value: "abc" }],
+      }),
+    } as unknown as ChromeClient["Network"];
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      url: "https://chatgpt.com/backend-api/sandbox/download?path=%2Fmnt%2Fdata%2Fsource.tar.gz",
+      headers: {
+        get: (name: string) => {
+          if (name === "content-type") return "application/gzip";
+          if (name === "content-disposition") return 'attachment; filename="source.tar.gz"';
+          return null;
+        },
+      },
+      arrayBuffer: async () => Uint8Array.from([3, 2, 1]).buffer,
+    } as Response);
+
+    const result = await saveChatGptDownloadableFiles({
+      Network: network,
+      sessionId: "file-session",
+      files: [
+        {
+          url: "sandbox:/mnt/data/source.tar.gz",
+          sandboxUrl: "sandbox:/mnt/data/source.tar.gz",
+          filename: "source.tar.gz",
+        },
+      ],
+    });
+
+    expect(result.saved).toBe(true);
+    expect(result.fileCount).toBe(1);
+    expect(result.savedFiles[0]).toMatchObject({
+      kind: "file",
+      filename: "source.tar.gz",
+      sourceUrl: "sandbox:/mnt/data/source.tar.gz",
+      sandboxUrl: "sandbox:/mnt/data/source.tar.gz",
+    });
+    expect(result.savedFiles[0]?.path).toBe(
+      path.join(tmpHome, "sessions", "file-session", "artifacts", "source.tar.gz"),
+    );
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "https://chatgpt.com/backend-api/sandbox/download?path=%2Fmnt%2Fdata%2Fsource.tar.gz",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          cookie: "__Secure-next-auth.session-token=abc",
+        }),
+      }),
+    );
+  });
+
+  test("does not fetch unsafe sandbox paths", async () => {
     const network = {
       getCookies: vi.fn().mockResolvedValue({
         cookies: [{ name: "__Secure-next-auth.session-token", value: "abc" }],
@@ -130,9 +191,9 @@ describe("saveChatGptDownloadableFiles", () => {
       sessionId: "file-session",
       files: [
         {
-          url: "sandbox:/mnt/data/source.tar.gz",
-          sandboxUrl: "sandbox:/mnt/data/source.tar.gz",
-          filename: "source.tar.gz",
+          url: "sandbox:/mnt/data/../secret.txt",
+          sandboxUrl: "sandbox:/mnt/data/../secret.txt",
+          filename: "secret.txt",
         },
       ],
     });
@@ -200,11 +261,189 @@ describe("collectChatGptFileArtifacts", () => {
     );
   });
 
+  test("discovers sandbox links from captured answer markdown when DOM anchors are absent", async () => {
+    const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-chatgpt-file-text-"));
+    setOracleHomeDirOverrideForTest(tmpHome);
+    const csv = "name,value\nalpha,1\nbeta,2\n";
+    const runtime = {
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({ result: { value: [] } })
+        .mockResolvedValueOnce({
+          result: {
+            value: {
+              ok: true,
+              status: 200,
+              statusText: "OK",
+              url: "https://chatgpt.com/backend-api/sandbox/download?path=%2Fmnt%2Fdata%2Foracle_pr245_file_artifact_smoke.csv",
+              contentDisposition: null,
+              contentType: "text/csv",
+              base64: Buffer.from(csv).toString("base64"),
+            },
+          },
+        }),
+    } as unknown as ChromeClient["Runtime"];
+    const network = {
+      getCookies: vi.fn().mockResolvedValue({
+        cookies: [{ name: "__Secure-next-auth.session-token", value: "abc" }],
+      }),
+    } as unknown as ChromeClient["Network"];
+    globalThis.fetch = vi.fn();
+
+    const result = await collectChatGptFileArtifacts({
+      Runtime: runtime,
+      Network: network,
+      sessionId: "collect-session",
+      answerText:
+        "CHECK_FILE_ARTIFACT_OK — [oracle_pr245_file_artifact_smoke.csv](sandbox:/mnt/data/oracle_pr245_file_artifact_smoke.csv)",
+    });
+
+    expect(result.fileCount).toBe(1);
+    expect(result.files[0]).toMatchObject({
+      sandboxUrl: "sandbox:/mnt/data/oracle_pr245_file_artifact_smoke.csv",
+      filename: "oracle_pr245_file_artifact_smoke.csv",
+    });
+    expect(result.savedFiles[0]).toMatchObject({
+      kind: "file",
+      filename: "oracle_pr245_file_artifact_smoke.csv",
+      sourceUrl: "sandbox:/mnt/data/oracle_pr245_file_artifact_smoke.csv",
+      mimeType: "text/csv",
+    });
+    expect(result.savedFiles[0]?.path).toBe(
+      path.join(
+        tmpHome,
+        "sessions",
+        "collect-session",
+        "artifacts",
+        "oracle_pr245_file_artifact_smoke.csv",
+      ),
+    );
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(runtime.evaluate).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        awaitPromise: true,
+        returnByValue: true,
+      }),
+    );
+  });
+
+  test("falls back to assistant download buttons when sandbox download URL is not fetchable", async () => {
+    const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-chatgpt-file-button-"));
+    setOracleHomeDirOverrideForTest(tmpHome);
+    const sessionId = "collect-session";
+    const artifactsDir = path.join(tmpHome, "sessions", sessionId, "artifacts");
+    const filename = "oracle_pr245_file_artifact_smoke_out.csv";
+    const csv = "name,value\nalpha,1\nbeta,2\n";
+    const runtime = {
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({ result: { value: [] } })
+        .mockResolvedValueOnce({
+          result: {
+            value: {
+              ok: false,
+              status: 404,
+              statusText: "Not Found",
+              url: "https://chatgpt.com/backend-api/sandbox/download?path=%2Fmnt%2Fdata%2Foracle_pr245_file_artifact_smoke_out.csv",
+              contentDisposition: null,
+              contentType: "application/json",
+              base64: Buffer.from('{"detail":"Not Found"}').toString("base64"),
+            },
+          },
+        })
+        .mockImplementationOnce(async () => {
+          await fs.mkdir(artifactsDir, { recursive: true });
+          await fs.writeFile(path.join(artifactsDir, filename), csv, "utf8");
+          return { result: { value: [{ text: "Download the CSV", ariaLabel: "", testId: "" }] } };
+        }),
+    } as unknown as ChromeClient["Runtime"];
+    const network = {
+      getCookies: vi.fn().mockResolvedValue({
+        cookies: [{ name: "__Secure-next-auth.session-token", value: "abc" }],
+      }),
+    } as unknown as ChromeClient["Network"];
+    const page = {
+      setDownloadBehavior: vi.fn().mockResolvedValue({}),
+    } as unknown as ChromeClient["Page"];
+
+    const result = await collectChatGptFileArtifacts({
+      Page: page,
+      Runtime: runtime,
+      Network: network,
+      sessionId,
+      answerText:
+        "CHECK_FILE_ARTIFACT_OK [download](sandbox:/mnt/data/oracle_pr245_file_artifact_smoke_out.csv)",
+    });
+
+    expect(result.fileCount).toBe(1);
+    expect(result.savedFiles[0]).toMatchObject({
+      kind: "file",
+      filename,
+      label: filename,
+      mimeType: "text/csv",
+      path: path.join(artifactsDir, filename),
+    });
+    expect(page.setDownloadBehavior).toHaveBeenCalledWith({
+      behavior: "allow",
+      downloadPath: artifactsDir,
+    });
+  });
+
   test("normalizes only ChatGPT backend file URLs", () => {
     expect(__test__.normalizeChatGptDownloadUrl("https://example.com/file_1.zip")).toBeUndefined();
+    expect(
+      __test__.normalizeChatGptDownloadUrl("https://chatgpt.com/backend-api/me"),
+    ).toBeUndefined();
+    expect(
+      __test__.normalizeChatGptDownloadUrl("https://chatgpt.com/backend-api/conversation/abc"),
+    ).toBeUndefined();
+    expect(
+      __test__.normalizeChatGptDownloadUrl(
+        "https://chatgpt.com/backend-api/estuary/content?id=not_file",
+      ),
+    ).toBeUndefined();
+    expect(
+      __test__.normalizeChatGptDownloadUrl(
+        "https://chatgpt.com/backend-api/sandbox/download?path=%2Fetc%2Fpasswd",
+      ),
+    ).toBeUndefined();
+    expect(
+      __test__.normalizeChatGptDownloadUrl(
+        "https://chatgpt.com/backend-api/files/file_package/download",
+      ),
+    ).toBe("https://chatgpt.com/backend-api/files/file_package/download");
+    expect(
+      __test__.normalizeChatGptDownloadUrl(
+        "https://chatgpt.com/backend-api/sandbox/download?path=%2Fmnt%2Fdata%2Ffile.zip",
+      ),
+    ).toBe("https://chatgpt.com/backend-api/sandbox/download?path=%2Fmnt%2Fdata%2Ffile.zip");
+    expect(
+      __test__.normalizeChatGptDownloadUrl(
+        "https://chatgpt.com/backend-api/estuary/content?id=file_abc123",
+      ),
+    ).toBe("https://chatgpt.com/backend-api/estuary/content?id=file_abc123");
     expect(__test__.normalizeChatGptDownloadUrl("sandbox:/mnt/data/file.zip")).toBeUndefined();
     expect(__test__.normalizeSandboxUrl("sandbox:/mnt/data/file.zip")).toBe(
       "sandbox:/mnt/data/file.zip",
     );
+    expect(__test__.normalizeSandboxUrl("sandbox:/mnt/data/../secret.txt")).toBeUndefined();
+    expect(__test__.downloadUrlFromSandboxUrl("sandbox:/mnt/data/file.zip")).toBe(
+      "https://chatgpt.com/backend-api/sandbox/download?path=%2Fmnt%2Fdata%2Ffile.zip",
+    );
+    expect(
+      __test__.readTextDownloadableFiles(
+        "[file](sandbox:/mnt/data/oracle_pr245_file_artifact_smoke.csv)",
+      )[0],
+    ).toMatchObject({
+      sandboxUrl: "sandbox:/mnt/data/oracle_pr245_file_artifact_smoke.csv",
+      filename: "oracle_pr245_file_artifact_smoke.csv",
+    });
+  });
+
+  test("matches ChatGPT behavior download buttons with descriptive labels", () => {
+    const expression = __test__.buildClickAssistantDownloadButtonsExpression();
+
+    expect(expression).toContain("/^download\\b/");
+    expect(expression).not.toContain("/^download\b/");
   });
 });
