@@ -261,6 +261,32 @@ describe("collectChatGptFileArtifacts", () => {
     );
   });
 
+  test("does not poll download buttons when no file candidates are found", async () => {
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: { value: [] },
+      }),
+    } as unknown as ChromeClient["Runtime"];
+    const network = {
+      getCookies: vi.fn().mockResolvedValue({ cookies: [] }),
+    } as unknown as ChromeClient["Network"];
+    const page = {
+      setDownloadBehavior: vi.fn().mockResolvedValue({}),
+    } as unknown as ChromeClient["Page"];
+
+    const result = await collectChatGptFileArtifacts({
+      Page: page,
+      Runtime: runtime,
+      Network: network,
+      sessionId: "collect-session",
+      answerText: "Plain answer with no downloadable files.",
+    });
+
+    expect(result).toEqual({ files: [], savedFiles: [], fileCount: 0 });
+    expect(page.setDownloadBehavior).not.toHaveBeenCalled();
+    expect(runtime.evaluate).toHaveBeenCalledTimes(1);
+  });
+
   test("discovers sandbox links from captured answer markdown when DOM anchors are absent", async () => {
     const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-chatgpt-file-text-"));
     setOracleHomeDirOverrideForTest(tmpHome);
@@ -445,5 +471,7 @@ describe("collectChatGptFileArtifacts", () => {
 
     expect(expression).toContain("/^download\\b/");
     expect(expression).not.toContain("/^download\b/");
+    expect(expression).toContain("document.querySelectorAll(CONVERSATION_SELECTOR)");
+    expect(expression).not.toContain("document.querySelectorAll('button')");
   });
 });

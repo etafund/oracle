@@ -479,16 +479,7 @@ function buildClickAssistantDownloadButtonsExpression(minTurnIndex?: number | nu
         }));
       }
     }
-    const globalButtons = Array.from(document.querySelectorAll('button')).filter((button) =>
-      /^download\\b/.test((button.textContent || '').trim().toLowerCase()) &&
-      String(button.className || '').includes('behavior-btn')
-    ).slice(-3);
-    globalButtons.forEach((button) => button.click());
-    return globalButtons.map((button) => ({
-      text: (button.textContent || '').trim(),
-      ariaLabel: button.getAttribute('aria-label') || '',
-      testId: button.getAttribute('data-testid') || '',
-    }));
+    return [];
   })()`;
 }
 
@@ -777,7 +768,7 @@ export async function collectChatGptFileArtifacts(params: {
     params.logger?.(`[browser] Found ${allFiles.length} downloadable file candidate(s).`);
   }
   const buttonSavedFiles =
-    saved.savedFiles.length < Math.max(allFiles.length, 1)
+    allFiles.length > 0 && saved.savedFiles.length < allFiles.length
       ? await saveAssistantDownloadButtonArtifacts({
           Browser: params.Browser,
           Client: params.Client,
