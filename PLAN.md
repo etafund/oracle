@@ -64,5 +64,6 @@ green.
 - [x] All 4 upstream commits are ancestors of `main` (behind count = 0)
 - [x] Fork customizations preserved (askoracle.sh homepage, 251 ahead commits)
 - [x] Build + lint + typecheck + docs + tests green
-- [ ] Pushed to `origin/main` (etafund)
-- [ ] GitHub no longer shows "behind"
+- [x] Pushed to `origin/main` (etafund) — `df41072d..0ab497a1`
+- [x] GitHub no longer shows "behind" — compare `steipete:main...etafund:main`
+      reports `behind_by: 0, ahead_by: 254, status: "ahead"`
