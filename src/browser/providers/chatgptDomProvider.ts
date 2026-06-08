@@ -364,21 +364,49 @@ function buildChatGptProDomProbeExpression(): string {
       .filter(Boolean);
     const fixtureSelectedEffort =
       text(byOracleRole('chatgpt-effort-option').find(selected)) || null;
+    const composerPillTexts = collectTexts(['button.__composer-pill']);
+    const effortLikeComposerPills = composerPillTexts.filter((label) =>
+      /\\b(extended\\s+pro|pro\\s+extended|heavy|ultra|max|standard|light)\\b/i.test(label)
+    );
+    const modelLikeComposerPill =
+      composerPillTexts.find((label) => /\\b(pro|gpt|chatgpt|thinking|instant)\\b/i.test(label)) || '';
     const composerModel =
       normalize(document.querySelector('[data-testid="composer-model-label"], [data-testid="model-label"]')?.textContent || '');
-    const buttonModel = firstText(MODEL_PICKER_BUTTONS);
+    const buttonModel = firstText(MODEL_PICKER_BUTTONS) || modelLikeComposerPill;
     const selectedModel = selectedText(MODEL_ROWS);
-    const hasProPill = Boolean(
-      document.querySelector('button.__composer-pill[aria-label*="Pro" i], button[aria-label="Pro, click to remove"]')
-    );
-    const baseModel = fixtureModel || selectedModel || composerModel || buttonModel;
-    const modelLabel =
-      baseModel && hasProPill && !/\\bpro\\b/i.test(baseModel) ? baseModel + ' + Pro' : baseModel;
-    const selectedEffort = fixtureSelectedEffort || selectedText(EFFORT_ROWS) || firstText(EFFORT_BUTTONS) || null;
-    const effortLabels = fixtureEfforts.length > 0 ? fixtureEfforts : collectTexts(EFFORT_ROWS);
+    const selectedEffort =
+      fixtureSelectedEffort ||
+      selectedText(EFFORT_ROWS) ||
+      firstText(EFFORT_BUTTONS) ||
+      effortLikeComposerPills[0] ||
+      null;
+    const effortLabels =
+      fixtureEfforts.length > 0
+        ? fixtureEfforts
+        : Array.from(new Set([...collectTexts(EFFORT_ROWS), ...effortLikeComposerPills]));
     if (effortLabels.length === 0 && selectedEffort) {
       effortLabels.push(selectedEffort);
     }
+    const hasProPill = Boolean(
+      document.querySelector('button.__composer-pill[aria-label*="Pro" i], button[aria-label="Pro, click to remove"]')
+    );
+    const accountProfileText = normalize(
+      Array.from(document.querySelectorAll('[data-testid="accounts-profile-button"]'))
+        .map((node) => (node.textContent || '') + ' ' + (node.getAttribute?.('aria-label') || ''))
+        .join(' ')
+    );
+    const accountHasPro = /\\bpro\\b/i.test(accountProfileText);
+    const highEffortLabels = new Set(['heavy', 'thinking heavy', 'heavy thinking', 'pro heavy', 'ultra', 'pro ultra', 'max']);
+    const hasHighEffort = (label) => highEffortLabels.has(normalize(label).toLowerCase());
+    const hasProEffortSignal =
+      Boolean(selectedEffort && (hasHighEffort(selectedEffort) || /\\bpro\\b/i.test(selectedEffort))) ||
+      effortLabels.some((label) => hasHighEffort(label) || /\\bpro\\b/i.test(label));
+    const baseModel = fixtureModel || selectedModel || composerModel || buttonModel;
+    const modelLabel = baseModel
+      ? (effortLikeComposerPills.includes(baseModel) && /\\bpro\\b/i.test(baseModel)
+          ? 'Pro'
+          : hasProPill && !/\\bpro\\b/i.test(baseModel) ? baseModel + ' + Pro' : baseModel)
+      : (accountHasPro && hasProEffortSignal ? 'Pro' : '');
     const promptReady = COMPOSER_INPUTS.some((selector) => Boolean(document.querySelector(selector)));
     const sendExists = SEND_BUTTONS.some((selector) => Boolean(document.querySelector(selector)));
     const url = window.location?.href || null;
@@ -396,6 +424,10 @@ function buildChatGptProDomProbeExpression(): string {
       fingerprint: [modelLabel, selectedEffort, effortLabels.join('|')].join('::'),
     };
   })()`;
+}
+
+export function buildChatGptProDomProbeExpressionForTest(): string {
+  return buildChatGptProDomProbeExpression();
 }
 
 function buildSynthesisGateInput(

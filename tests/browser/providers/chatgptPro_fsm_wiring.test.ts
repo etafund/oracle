@@ -10,6 +10,7 @@ import type {
   ProviderDomResponse,
 } from "../../../src/browser/providerDomFlow.js";
 import {
+  buildChatGptProDomProbeExpressionForTest,
   ChatGptProFsmError,
   chatgptDomProvider,
   wireChatGptProFsm,
@@ -23,6 +24,50 @@ import type {
 const SESSION_HASH = `sha256:${"a".repeat(64)}` as const;
 const PROMPT_HASH = `sha256:${"b".repeat(64)}` as const;
 const OUTPUT_HASH = `sha256:${"c".repeat(64)}` as const;
+
+class FakeDomNode {
+  constructor(
+    readonly textContent: string,
+    private readonly attributes: Readonly<Record<string, string>> = {},
+  ) {}
+
+  getAttribute(name: string): string | null {
+    return this.attributes[name] ?? null;
+  }
+}
+
+function evaluateChatGptProDomProbeForTest(args: {
+  composerPills: readonly string[];
+  accountProfiles: readonly { text: string; ariaLabel?: string };
+}): Record<string, unknown> {
+  const composerPills = args.composerPills.map((text) => new FakeDomNode(text));
+  const accountProfiles = args.accountProfiles.map(
+    (profile) =>
+      new FakeDomNode(profile.text, {
+        ...(profile.ariaLabel ? { "aria-label": profile.ariaLabel } : {}),
+      }),
+  );
+  const promptInput = new FakeDomNode("", { id: "prompt-textarea" });
+  const documentStub = {
+    querySelector: (selector: string) => {
+      if (selector.includes("#prompt-textarea") || selector.includes("composer-input")) {
+        return promptInput;
+      }
+      return null;
+    },
+    querySelectorAll: (selector: string) => {
+      if (selector === "button.__composer-pill") return composerPills;
+      if (selector.includes("accounts-profile-button")) return accountProfiles;
+      return [];
+    },
+  };
+  const expression = buildChatGptProDomProbeExpressionForTest();
+  const evaluate = new Function("document", "window", `return ${expression};`) as (
+    document: unknown,
+    window: unknown,
+  ) => Record<string, unknown>;
+  return evaluate(documentStub, { location: { href: "https://chatgpt.com/" } });
+}
 
 interface FakeAdapterCalls {
   waitForUi: number;
@@ -144,6 +189,39 @@ function makeCtx(
 }
 
 describe("wireChatGptProFsm — adapter wrapper invariants (oracle-byl)", () => {
+  it("probes the current ChatGPT Extended Pro composer pill as Pro plus effort", () => {
+    const probe = evaluateChatGptProDomProbeForTest({
+      composerPills: ["Extended Pro"],
+      accountProfiles: [
+        { text: "", ariaLabel: "Open profile menu" },
+        { text: "Test UserPro", ariaLabel: "Test User Pro, open profile menu" },
+      ],
+    });
+
+    expect(probe).toMatchObject({
+      modelLabel: "Pro",
+      selectedEffortLabel: "Extended Pro",
+      effortLabels: ["Extended Pro"],
+      authenticated: true,
+      promptReady: true,
+    });
+  });
+
+  it("probes Pro account plus Heavy composer pill as Pro plus highest effort", () => {
+    const probe = evaluateChatGptProDomProbeForTest({
+      composerPills: ["Heavy"],
+      accountProfiles: [{ text: "Test UserPro", ariaLabel: "Test User Pro" }],
+    });
+
+    expect(probe).toMatchObject({
+      modelLabel: "Pro",
+      selectedEffortLabel: "Heavy",
+      effortLabels: ["Heavy"],
+      authenticated: true,
+      promptReady: true,
+    });
+  });
+
   it("happy path drives the FSM through mode verification, gate, submit, and output capture", async () => {
     const transitions: ChatGptProState[] = [];
     const { adapter, calls } = makeFakeAdapter();

@@ -537,6 +537,10 @@ function buildSkippedModelSelectionEvidence(
   };
 }
 
+function isDesiredChatGptProModel(model: string | null | undefined): boolean {
+  return typeof model === "string" && /\bpro\b/i.test(model);
+}
+
 export async function runBrowserMode(options: BrowserRunOptions): Promise<BrowserRunResult> {
   const promptText = options.prompt?.trim();
   if (!promptText) {
@@ -1128,6 +1132,9 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         baselineTurns: baselineTurns ?? undefined,
         attachmentNames,
         onPromptSubmitted: markPromptSubmitted,
+        chatgptProVerification: {
+          enabled: isDesiredChatGptProModel(config.desiredModel),
+        },
       };
       await runProviderSubmissionFlow(chatgptDomProvider, {
         prompt,
@@ -2494,6 +2501,9 @@ async function runRemoteBrowserMode(
         baselineTurns: baselineTurns ?? undefined,
         attachmentNames,
         onPromptSubmitted: markPromptSubmitted,
+        chatgptProVerification: {
+          enabled: isDesiredChatGptProModel(config.desiredModel),
+        },
       };
       await runProviderSubmissionFlow(chatgptDomProvider, {
         prompt,

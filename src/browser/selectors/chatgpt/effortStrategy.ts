@@ -74,7 +74,7 @@ export const CHATGPT_EFFORT_TIERS: readonly ChatGptEffortTierEntry[] = Object.fr
   {
     tier: "pro_extended",
     rank: 50,
-    aliases: ["Pro Extended", "Extended", "Extended Reasoning"],
+    aliases: ["Pro Extended", "Extended Pro", "Extended", "Extended Reasoning"],
   },
   {
     tier: "heavy",
