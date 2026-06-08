@@ -22,3 +22,12 @@ oracle-*.tgz.sha256
 # Local agent/runtime artifacts
 .ntm/
 .oracle-v18-validation/
+.claude/settings.local.json
+
+# Per-machine editor MCP configs (contain local auth tokens — never commit)
+/cursor.mcp.json
+/factory.mcp.json
+/gemini.mcp.json
+/opencode.json
+/windsurf.mcp.json
+*.bak
