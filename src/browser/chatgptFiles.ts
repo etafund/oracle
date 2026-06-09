@@ -28,7 +28,9 @@ function isSafeSandboxPath(value?: string | null): boolean {
 }
 
 function isKnownChatGptFileDownloadUrl(url: URL): boolean {
-  const pathName = url.pathname.toLowerCase();
+  // Match the canonical lower-case endpoint paths exactly; do not fold case so a
+  // server that routes case-sensitively can't be reached via a path variant.
+  const pathName = url.pathname;
   if (pathName === "/backend-api/sandbox/download") {
     return isSafeSandboxPath(url.searchParams.get("path"));
   }
@@ -36,7 +38,9 @@ function isKnownChatGptFileDownloadUrl(url: URL): boolean {
     return true;
   }
   if (pathName === "/backend-api/estuary/content") {
-    return (url.searchParams.get("id") ?? "").startsWith("file_");
+    // Require a well-formed file id, not just a `file_` prefix, so values like
+    // `file_../../etc` are rejected before any cookie-bearing request.
+    return /^file_[\w-]+$/.test(url.searchParams.get("id") ?? "");
   }
   return false;
 }

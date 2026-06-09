@@ -480,6 +480,28 @@ describe("collectChatGptFileArtifacts", () => {
     );
   });
 
+  test("validates estuary id shape and endpoint case strictly (PR245 hardening)", () => {
+    // A loose `file_` prefix used to pass; a malformed id must now be rejected.
+    expect(
+      __test__.normalizeChatGptDownloadUrl(
+        "https://chatgpt.com/backend-api/estuary/content?id=file_../../etc",
+      ),
+    ).toBeUndefined();
+    // A well-formed estuary id is still accepted.
+    expect(
+      __test__.normalizeChatGptDownloadUrl(
+        "https://chatgpt.com/backend-api/estuary/content?id=file_abc-123_DEF",
+      ),
+    ).toBe("https://chatgpt.com/backend-api/estuary/content?id=file_abc-123_DEF");
+    // Endpoint path case is no longer folded, so case-variant paths are rejected.
+    expect(
+      __test__.normalizeChatGptDownloadUrl("https://chatgpt.com/backend-api/Files/file_x/download"),
+    ).toBeUndefined();
+    expect(
+      __test__.normalizeChatGptDownloadUrl("https://chatgpt.com/backend-api/files/file_x/DOWNLOAD"),
+    ).toBeUndefined();
+  });
+
   test("matches ChatGPT behavior download buttons with descriptive labels", () => {
     const expression = __test__.buildClickAssistantDownloadButtonsExpression();
 
