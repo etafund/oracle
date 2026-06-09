@@ -1,0 +1,13 @@
+# Enforce LF line endings in working trees on every platform.
+#
+# Without this, Windows checkouts use git's default core.autocrlf=true and
+# convert source to CRLF. tsgo (typecheck) tolerates that, but the vitest
+# esbuild transform of the CLI import chain throws "SyntaxError: Invalid or
+# unexpected token" on build (windows-latest) only. Forcing LF keeps Windows
+# checkouts byte-identical to Linux/macOS.
+* text=auto eol=lf
+
+# Binary assets: never normalize or diff as text.
+*.png binary
+*.swift text eol=lf
+vendor/oracle-notifier/OracleNotifier.app/** binary
