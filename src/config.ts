@@ -368,6 +368,32 @@ function isTrustedProjectChatgptUrl(rawUrl: string): boolean {
   }
 }
 
+/**
+ * Rename that tolerates transient Windows failures. fs.rename over an existing
+ * target can fail with EPERM/EACCES/EBUSY on Windows (antivirus scanning the
+ * freshly written temp file, or another handle briefly holding the destination).
+ * Retry with a short backoff before giving up; POSIX platforms throw immediately
+ * as before, so behaviour there is unchanged.
+ */
+async function renameWithRetry(from: string, to: string): Promise<void> {
+  const transient = new Set(["EPERM", "EACCES", "EBUSY"]);
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    try {
+      await fs.rename(from, to);
+      return;
+    } catch (error) {
+      lastError = error;
+      const code = (error as NodeJS.ErrnoException)?.code;
+      if (process.platform !== "win32" || !code || !transient.has(code)) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+
 export async function writeUserConfig(
   config: UserConfig,
   targetPath: string = resolveUserConfigPath(),
@@ -383,7 +409,7 @@ export async function writeUserConfig(
   const tempPath = path.join(dir, `.config.json.tmp-${process.pid}-${randomUUID()}`);
   try {
     await fs.writeFile(tempPath, contents, { encoding: "utf8", mode: 0o600, flag: "wx" });
-    await fs.rename(tempPath, resolvedTarget);
+    await renameWithRetry(tempPath, resolvedTarget);
     if (process.platform !== "win32") {
       await fs.chmod(resolvedTarget, 0o600).catch(() => undefined);
     }
