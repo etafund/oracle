@@ -31,3 +31,6 @@ oracle-*.tgz.sha256
 /opencode.json
 /windsurf.mcp.json
 *.bak
+
+# Local /goal instruction file (not part of the repo)
+/GOAL.md
