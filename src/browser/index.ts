@@ -1096,7 +1096,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       ).catch((error) => {
         const base = error instanceof Error ? error.message : String(error);
         const hint =
-          appliedCookies === 0
+          !manualLogin && appliedCookies === 0
             ? " No cookies were applied; log in to ChatGPT in Chrome or provide inline cookies (--browser-inline-cookies[(-file)] or ORACLE_BROWSER_COOKIES_JSON)."
             : "";
         throw new Error(`${base}${hint}`);

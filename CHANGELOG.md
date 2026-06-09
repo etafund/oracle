@@ -13,6 +13,10 @@
 
 - Website: point package/homepage metadata and generated site chrome at `https://askoracle.sh` instead of the GitHub repository.
 
+### Fixed
+
+- Browser: wait for ChatGPT's model picker/composer pill to hydrate after the prompt textarea before failing model selection, and avoid the misleading no-cookies hint for manual-login profile runs.
+
 ## 0.13.0 — 2026-05-22
 
 ### Added

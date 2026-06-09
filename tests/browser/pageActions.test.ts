@@ -73,6 +73,23 @@ describe("ensureModelSelection", () => {
       /Unable to locate the ChatGPT model selector button/,
     );
   });
+
+  test("retries when the model picker hydrates after the prompt textarea", async () => {
+    const runtime = {
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({ result: { value: { status: "button-missing" } } })
+        .mockResolvedValueOnce({ result: { value: true } })
+        .mockResolvedValueOnce({ result: { value: { status: "already-selected", label: "Pro" } } }),
+    } as unknown as ChromeClient["Runtime"];
+
+    await expect(ensureModelSelection(runtime, "gpt-5.5-pro", logger)).resolves.toMatchObject({
+      requestedModel: "gpt-5.5-pro",
+      resolvedLabel: "Pro",
+      status: "already-selected",
+    });
+    expect(runtime.evaluate).toHaveBeenCalledTimes(3);
+  });
 });
 
 describe("navigateToChatGPT", () => {

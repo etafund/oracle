@@ -11,6 +11,17 @@ import { buildClickDispatcher } from "./domEvents.js";
 
 const LEGACY_PRO_VERSION_WORD_TOKENS = ["5 4", "5 2", "5 1", "5 0", "gpt 5 pro"] as const;
 const LEGACY_PRO_VERSION_COMPACT_TOKENS = ["gpt54", "gpt52", "gpt51", "gpt50"] as const;
+const MODEL_BUTTON_HYDRATION_TIMEOUT_MS = 20_000;
+
+type ModelSelectionDomResult =
+  | { status: "already-selected"; label?: string | null }
+  | { status: "switched"; label?: string | null }
+  | { status: "switched-best-effort"; label?: string | null }
+  | {
+      status: "option-not-found";
+      hint?: { temporaryChat?: boolean; availableOptions?: string[] };
+    }
+  | { status: "button-missing" };
 
 export async function ensureModelSelection(
   Runtime: ChromeClient["Runtime"],
@@ -18,22 +29,22 @@ export async function ensureModelSelection(
   logger: BrowserLogger,
   strategy: BrowserModelStrategy = "select",
 ): Promise<BrowserModelSelectionEvidence> {
-  const outcome = await Runtime.evaluate({
-    expression: buildModelSelectionExpression(desiredModel, strategy),
-    awaitPromise: true,
-    returnByValue: true,
-  });
+  const evaluateSelection = async (): Promise<ModelSelectionDomResult | undefined> => {
+    const outcome = await Runtime.evaluate({
+      expression: buildModelSelectionExpression(desiredModel, strategy),
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    return outcome.result?.value as ModelSelectionDomResult | undefined;
+  };
 
-  const result = outcome.result?.value as
-    | { status: "already-selected"; label?: string | null }
-    | { status: "switched"; label?: string | null }
-    | { status: "switched-best-effort"; label?: string | null }
-    | {
-        status: "option-not-found";
-        hint?: { temporaryChat?: boolean; availableOptions?: string[] };
-      }
-    | { status: "button-missing" }
-    | undefined;
+  let result = await evaluateSelection();
+  if (result?.status === "button-missing") {
+    const hydrated = await waitForModelButtonHydration(Runtime);
+    if (hydrated) {
+      result = await evaluateSelection();
+    }
+  }
 
   switch (result?.status) {
     case "already-selected":
@@ -72,6 +83,67 @@ export async function ensureModelSelection(
       throw new Error("Unable to locate the ChatGPT model selector button.");
     }
   }
+}
+
+async function waitForModelButtonHydration(
+  Runtime: ChromeClient["Runtime"],
+  timeoutMs = MODEL_BUTTON_HYDRATION_TIMEOUT_MS,
+): Promise<boolean> {
+  const outcome = await Runtime.evaluate({
+    expression: buildModelButtonHydrationExpression(timeoutMs),
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  return outcome.result?.value === true;
+}
+
+function buildModelButtonHydrationExpression(timeoutMs: number): string {
+  const timeoutLiteral = JSON.stringify(Math.max(0, timeoutMs));
+  const selectorLiteral = JSON.stringify(MODEL_BUTTON_SELECTOR);
+  return `(() => new Promise((resolve) => {
+    const MODEL_BUTTON_SELECTOR = ${selectorLiteral};
+    const timeoutMs = ${timeoutLiteral};
+    const deadline = Date.now() + timeoutMs;
+    const normalizeText = (value) => String(value || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .replace(/\\s+/g, ' ')
+      .trim();
+    const hasToken = (value, token) => normalizeText(value).split(' ').includes(token);
+    const isVisibleElement = (node) => {
+      if (!(node instanceof HTMLElement)) return false;
+      const rect = node.getBoundingClientRect();
+      const style = window.getComputedStyle(node);
+      return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    const looksLikeModelPill = (node) => {
+      if (!(node instanceof HTMLElement) || !node.matches('button.__composer-pill')) return false;
+      if (!isVisibleElement(node)) return false;
+      const label = normalizeText(
+        (node.textContent ?? '') + ' ' + (node.getAttribute('aria-label') ?? '') + ' ' + (node.getAttribute('title') ?? '')
+      );
+      if (!label || label.includes('click to remove')) return false;
+      const modelTokens = ['chatgpt', 'gpt', 'instant', 'thinking', 'pro', 'extended', 'standard', 'heavy', 'light'];
+      return modelTokens.some((token) => hasToken(label, token));
+    };
+    const hasModelButton = () => {
+      const explicit = document.querySelector(MODEL_BUTTON_SELECTOR);
+      if (explicit && isVisibleElement(explicit)) return true;
+      return Array.from(document.querySelectorAll('button.__composer-pill')).some(looksLikeModelPill);
+    };
+    const check = () => {
+      if (hasModelButton()) {
+        resolve(true);
+        return;
+      }
+      if (Date.now() >= deadline) {
+        resolve(false);
+        return;
+      }
+      setTimeout(check, 200);
+    };
+    check();
+  }))()`;
 }
 
 function assertResolvedModelSelection(desiredModel: string, resolvedLabel: string): void {
