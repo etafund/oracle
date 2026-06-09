@@ -92,6 +92,7 @@ import {
   createPerfTrace,
   isTraceValueFlag,
 } from "../src/cli/perfTrace.js";
+import { resolveBrowserFollowupReference } from "../src/cli/followup.js";
 
 interface CliOptions extends OptionValues {
   prompt?: string;
@@ -214,6 +215,7 @@ type ResolvedCliOptions = Omit<CliOptions, "model"> & {
   previousResponseId?: string;
   followupSessionId?: string;
   followupModel?: string;
+  browserResumeConversationUrl?: string;
 };
 
 interface RestartCommandOptions {
@@ -1401,6 +1403,8 @@ function buildRunOptions(
     model: options.model,
     models: overrides.models ?? options.models,
     previousResponseId: overrides.previousResponseId ?? options.previousResponseId,
+    browserResumeConversationUrl:
+      overrides.browserResumeConversationUrl ?? options.browserResumeConversationUrl,
     effectiveModelId: overrides.effectiveModelId ?? options.effectiveModelId ?? options.model,
     file: overrides.file ?? options.file ?? [],
     maxFileSizeBytes: overrides.maxFileSizeBytes ?? options.maxFileSizeBytes,
@@ -1742,6 +1746,7 @@ function buildRunOptionsFromMetadata(metadata: SessionMetadata): RunOracleOption
     model: (stored.model as ModelName) ?? DEFAULT_MODEL,
     models: stored.models as ModelName[] | undefined,
     previousResponseId: stored.previousResponseId,
+    browserResumeConversationUrl: stored.browserResumeConversationUrl,
     effectiveModelId: stored.effectiveModelId ?? stored.model,
     file: stored.file ?? [],
     maxFileSizeBytes: stored.maxFileSizeBytes,
@@ -2088,11 +2093,6 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     console.log(chalk.dim("gemini-3.1-pro is API-only today; switching to API."));
     engine = "api";
   }
-  const browserFollowUpCount =
-    options.browserFollowUp?.filter((entry) => entry.trim().length > 0).length ?? 0;
-  if (engine !== "browser" && browserFollowUpCount > 0) {
-    throw new Error("--browser-follow-up requires --engine browser.");
-  }
   const effectiveModelId = resolvedModel.startsWith("gemini")
     ? resolveGeminiModelId(resolvedModel)
     : isKnownModel(resolvedModel)
@@ -2112,19 +2112,6 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   resolvedOptions.effectiveModelId = effectiveModelId;
   resolvedOptions.provider = providerMode;
   resolvedOptions.writeOutputPath = resolveOutputPath(options.writeOutput, process.cwd());
-
-  // Decide whether to block until completion:
-  // - explicit --wait / --no-wait wins
-  // - otherwise block for fast models (gpt-5.1, browser) and detach by default for pro API runs
-  let waitPreference = resolveWaitFlag({
-    waitFlag: options.wait,
-    model: resolvedModel,
-    engine,
-  });
-  if (remoteHost && waitPreference === false) {
-    console.log(chalk.dim("Remote browser runs require --wait; ignoring --no-wait."));
-    waitPreference = true;
-  }
 
   if (options.status) {
     const { attachSession, showStatus } = await import("../src/cli/sessionDisplay.js");
@@ -2212,16 +2199,48 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     options.browserAttachmentTimeout = attachmentTimeoutEnv;
   }
 
+  if (options.followup) {
+    if (normalizedMultiModels.length > 0) {
+      throw new Error("--followup cannot be combined with --models.");
+    }
+    const browserFollowup = await resolveBrowserFollowupReference(options.followup, sessionStore);
+    if (browserFollowup) {
+      engine = "browser";
+      resolvedOptions.followupSessionId = browserFollowup.sessionId;
+      resolvedOptions.browserResumeConversationUrl = browserFollowup.resumeConversationUrl;
+    } else {
+      assertFollowupSupported({
+        engine,
+        model: resolvedModel,
+        baseUrl: resolvedBaseUrl,
+        azureEndpoint: resolvedOptions.azure?.endpoint,
+      });
+      const followup = await resolveFollowupReference(options.followup, options.followupModel);
+      resolvedOptions.previousResponseId = followup.responseId;
+      resolvedOptions.followupSessionId = followup.sessionId;
+      resolvedOptions.followupModel = options.followupModel;
+    }
+  }
+
+  const browserFollowUpCount =
+    options.browserFollowUp?.filter((entry) => entry.trim().length > 0).length ?? 0;
+  if (engine !== "browser" && browserFollowUpCount > 0) {
+    throw new Error("--browser-follow-up requires --engine browser.");
+  }
+
   const sessionMode: SessionMode = engine === "browser" ? "browser" : "api";
   const browserConfig = await (async (): Promise<BrowserSessionConfig | undefined> => {
     if (sessionMode !== "browser") return undefined;
     const { buildBrowserConfig, resolveBrowserModelLabel } =
       await import("../src/cli/browserConfig.js");
-    return buildBrowserConfig({
+    const config = await buildBrowserConfig({
       ...options,
       model: resolvedModel,
       browserModelLabel: resolveBrowserModelLabel(cliModelArg, resolvedModel),
     });
+    return resolvedOptions.browserResumeConversationUrl
+      ? { ...config, resumeConversationUrl: resolvedOptions.browserResumeConversationUrl }
+      : config;
   })();
 
   if (previewMode) {
@@ -2232,21 +2251,6 @@ async function runRootCommand(options: CliOptions): Promise<void> {
       options.prompt = `${options.prompt.trim()}\n${userConfig.promptSuffix}`;
     }
     resolvedOptions.prompt = options.prompt;
-    if (options.followup) {
-      assertFollowupSupported({
-        engine,
-        model: resolvedModel,
-        baseUrl: resolvedBaseUrl,
-        azureEndpoint: resolvedOptions.azure?.endpoint,
-      });
-      if (normalizedMultiModels.length > 0) {
-        throw new Error("--followup cannot be combined with --models.");
-      }
-      const followup = await resolveFollowupReference(options.followup, options.followupModel);
-      resolvedOptions.previousResponseId = followup.responseId;
-      resolvedOptions.followupSessionId = followup.sessionId;
-      resolvedOptions.followupModel = options.followupModel;
-    }
     const runOptions = buildRunOptions(resolvedOptions, {
       preview: true,
       previewMode,
@@ -2304,22 +2308,6 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     options.prompt = `${options.prompt.trim()}\n${userConfig.promptSuffix}`;
   }
   resolvedOptions.prompt = options.prompt;
-  if (options.followup) {
-    assertFollowupSupported({
-      engine,
-      model: resolvedModel,
-      baseUrl: resolvedBaseUrl,
-      azureEndpoint: resolvedOptions.azure?.endpoint,
-    });
-    if (normalizedMultiModels.length > 0) {
-      throw new Error("--followup cannot be combined with --models.");
-    }
-    const followup = await resolveFollowupReference(options.followup, options.followupModel);
-    resolvedOptions.previousResponseId = followup.responseId;
-    resolvedOptions.followupSessionId = followup.sessionId;
-    resolvedOptions.followupModel = options.followupModel;
-  }
-
   const duplicateBlocked = await shouldBlockDuplicatePrompt({
     prompt: resolvedOptions.prompt,
     browserFollowUps: resolvedOptions.browserFollowUp,
@@ -2400,6 +2388,19 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     return;
   }
 
+  // Decide whether to block until completion:
+  // - explicit --wait / --no-wait wins
+  // - otherwise block for fast models (gpt-5.1, browser) and detach by default for pro API runs
+  let waitPreference = resolveWaitFlag({
+    waitFlag: options.wait,
+    model: resolvedModel,
+    engine,
+  });
+  if (remoteHost && waitPreference === false) {
+    console.log(chalk.dim("Remote browser runs require --wait; ignoring --no-wait."));
+    waitPreference = true;
+  }
+
   await sessionStore.ensureStorage();
   const baseRunOptions = buildRunOptions(resolvedOptions, {
     preview: false,
@@ -2424,6 +2425,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
       browserConfig,
       followupSessionId: resolvedOptions.followupSessionId,
       followupModel: resolvedOptions.followupModel,
+      browserResumeConversationUrl: resolvedOptions.browserResumeConversationUrl,
       waitPreference,
       youtube: options.youtube,
       generateImage: options.generateImage,

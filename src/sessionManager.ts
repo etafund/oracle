@@ -83,6 +83,8 @@ export interface BrowserSessionConfig {
   researchMode?: BrowserResearchMode;
   /** Archive completed ChatGPT conversations after local artifacts are saved. */
   archiveConversations?: BrowserArchiveMode;
+  /** Browser-only: existing ChatGPT conversation URL to resume before submitting. */
+  resumeConversationUrl?: string | null;
 }
 
 export interface BrowserRuntimeMetadata {
@@ -235,6 +237,7 @@ export interface StoredRunOptions {
   editImage?: string;
   outputPath?: string;
   browserFollowUps?: string[];
+  browserResumeConversationUrl?: string;
   aspectRatio?: string;
   geminiShowThoughts?: boolean;
   providerBoundary?: SessionProviderBoundaryOptions;
@@ -621,6 +624,7 @@ export async function initializeSession(
       editImage: options.editImage,
       outputPath: options.outputPath,
       browserFollowUps: options.browserFollowUps,
+      browserResumeConversationUrl: options.browserResumeConversationUrl,
       aspectRatio: options.aspectRatio,
       geminiShowThoughts: options.geminiShowThoughts,
     },
