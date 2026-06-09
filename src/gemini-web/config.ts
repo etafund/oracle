@@ -45,6 +45,7 @@ export const DEFAULT_GEMINI_BROWSER_CONFIG: ResolvedBrowserConfig = {
   browserTabRef: null,
   url: GEMINI_APP_URL,
   chatgptUrl: null,
+  resumeConversationUrl: null,
   timeoutMs: 1_200_000,
   debugPort: null,
   inputTimeoutMs: 60_000,
