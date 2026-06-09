@@ -883,6 +883,13 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       await raceWithDisconnect(ensureNotBlocked(Runtime, config.headless, logger));
       await raceWithDisconnect(ensureLoggedIn(Runtime, logger));
       await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+      if (isResumingConversation) {
+        await raceWithDisconnect(
+          waitForResumedConversationHydration(Runtime, config.inputTimeoutMs, logger, {
+            requirePriorTurns: true,
+          }),
+        );
+      }
     } else {
       const baseUrl = CHATGPT_URL;
       // First load the base ChatGPT homepage to satisfy potential interstitials,
@@ -903,7 +910,11 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       );
 
       const targetUrl = config.resumeConversationUrl ?? config.url;
-      if (targetUrl !== baseUrl) {
+      if (isResumingConversation) {
+        await raceWithDisconnect(navigateToChatGPT(Page, Runtime, targetUrl, logger));
+        await raceWithDisconnect(ensureNotBlocked(Runtime, config.headless, logger));
+        await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+      } else if (targetUrl !== baseUrl) {
         await raceWithDisconnect(
           navigateToPromptReadyWithFallback(Page, Runtime, {
             url: targetUrl,
@@ -921,9 +932,12 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         // composer mid-hydration and wipe a freshly-typed prompt. Wait for hydration to settle
         // and re-confirm the composer before the prompt is typed/submitted below. Wrapped in
         // raceWithDisconnect so a dropped client aborts immediately instead of polling to the
-        // hydration deadline. Shared with the remote path via the same helper.
+        // hydration deadline. Shared with the remote path via the same helper. requirePriorTurns
+        // fails closed if no history hydrates instead of posting into a fresh chat.
         await raceWithDisconnect(
-          waitForResumedConversationHydration(Runtime, config.inputTimeoutMs, logger),
+          waitForResumedConversationHydration(Runtime, config.inputTimeoutMs, logger, {
+            requirePriorTurns: true,
+          }),
         );
       }
     }
@@ -2397,12 +2411,20 @@ async function runRemoteBrowserMode(
       if (config.resumeConversationUrl) {
         // Same prior-history hydration race as the local path: a resumed thread can wipe the
         // composer mid-hydration. Wait for it to settle before this path types/submits.
-        await waitForResumedConversationHydration(Runtime, config.inputTimeoutMs, logger);
+        // requirePriorTurns fails closed if no history hydrates instead of posting into a fresh chat.
+        await waitForResumedConversationHydration(Runtime, config.inputTimeoutMs, logger, {
+          requirePriorTurns: true,
+        });
       }
     } else {
       await ensureNotBlocked(Runtime, config.headless, logger);
       await ensureLoggedIn(Runtime, logger, { remoteSession: true });
       await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
+      if (config.resumeConversationUrl) {
+        await waitForResumedConversationHydration(Runtime, config.inputTimeoutMs, logger, {
+          requirePriorTurns: true,
+        });
+      }
     }
     logger(
       `Prompt textarea ready (initial focus, ${promptText.length.toLocaleString()} chars queued)`,

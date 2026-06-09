@@ -35,9 +35,7 @@ describe("browser follow-up resolution", () => {
       },
     };
 
-    expect(resolveBrowserResumeConversationUrl(metadata)).toBe(
-      "https://chatgpt.com/c/live-thread",
-    );
+    expect(resolveBrowserResumeConversationUrl(metadata)).toBe("https://chatgpt.com/c/live-thread");
   });
 
   test("resolves stored browser sessions to a browser resume path", async () => {

@@ -358,6 +358,7 @@ export async function ensurePromptReady(
 
 export interface ResumedConversationHydrationDeps {
   ensurePromptReady?: typeof ensurePromptReady;
+  requirePriorTurns?: boolean;
 }
 
 /**
@@ -370,6 +371,9 @@ export interface ResumedConversationHydrationDeps {
  * appending turns as it hydrates), let React settle, then re-confirm the
  * composer is ready — before the caller types/submits. Shared by the local and
  * remote browser execution paths so neither loses the submitted prompt.
+ *
+ * When requirePriorTurns is set, fail closed if no prior turns hydrate rather
+ * than submitting the follow-up as a fresh chat.
  *
  * Returns the number of prior turns observed once hydration settled.
  */
@@ -394,11 +398,13 @@ export async function waitForResumedConversationHydration(
       });
       turns = typeof result?.value === "number" ? result.value : 0;
     } catch {
-      // keep polling until the conversation hydrates
+      // Keep polling until the conversation hydrates or the bounded deadline expires.
     }
     if (turns > 0 && turns === priorTurns) {
       stableChecks += 1;
-      if (stableChecks >= 3) break; // turn count steady ~750ms → hydration settled
+      if (stableChecks >= 3) {
+        break; // turn count steady ~750ms → hydration settled
+      }
     } else {
       stableChecks = 0;
     }
@@ -407,6 +413,15 @@ export async function waitForResumedConversationHydration(
   }
   await delay(1_000); // final settle so React won't wipe the composer after we type
   await ensureReady(Runtime, timeoutMs, logger);
+  if ((deps.requirePriorTurns ?? false) && priorTurns <= 0) {
+    throw new BrowserAutomationError(
+      "Saved ChatGPT conversation did not load prior turns; refusing to submit follow-up as a fresh chat.",
+      {
+        stage: "resume-conversation",
+        priorTurns,
+      },
+    );
+  }
   logger(`[browser] Resumed conversation hydrated (${priorTurns} prior turns); composer settled.`);
   return priorTurns;
 }

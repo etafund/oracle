@@ -507,8 +507,15 @@ export async function performSessionRun({
       userError?.category === "browser-automation" &&
       (userError.details as { stage?: string } | undefined)?.stage === "cloudflare-challenge";
     let reattachGuidanceLogged = false;
-    const logBrowserReattachGuidance = (): void => {
+    const logBrowserReattachGuidance = (runtime?: BrowserRuntimeMetadata | null): void => {
       if (reattachGuidanceLogged || mode !== "browser") return;
+      const recoverableRuntime = runtime ?? sessionMeta.browser?.runtime;
+      if (
+        !hasRecoverableChatGptConversation(recoverableRuntime) &&
+        recoverableRuntime?.promptSubmitted !== true
+      ) {
+        return;
+      }
       reattachGuidanceLogged = true;
       log(formatBrowserReattachGuidance(sessionMeta.id));
     };
@@ -573,7 +580,7 @@ export async function performSessionRun({
         },
         response: { status: "running", incompleteReason: "chrome-disconnected" },
       });
-      logBrowserReattachGuidance();
+      logBrowserReattachGuidance(runtime ?? sessionMeta.browser?.runtime);
       return;
     }
     if (assistantTimeout && mode === "browser") {
@@ -624,7 +631,7 @@ export async function performSessionRun({
           return;
         }
       }
-      logBrowserReattachGuidance();
+      logBrowserReattachGuidance(runtime ?? sessionMeta.browser?.runtime);
       return;
     }
     if (cloudflareChallenge && mode === "browser") {
@@ -655,6 +662,7 @@ export async function performSessionRun({
       mode === "browser"
         ? (userError?.details as { runtime?: BrowserRuntimeMetadata } | undefined)?.runtime
         : undefined;
+    logBrowserReattachGuidance(browserRuntime);
     await sessionStore.updateSession(sessionMeta.id, {
       status: "error",
       completedAt: new Date().toISOString(),

@@ -38,6 +38,8 @@ export interface BrowserSessionConfig {
   chromeCookiePath?: string | null;
   attachRunning?: boolean;
   browserTabRef?: string | null;
+  /** Existing ChatGPT conversation URL to continue without starting a new thread. */
+  resumeConversationUrl?: string | null;
   chatgptUrl?: string | null;
   url?: string;
   timeoutMs?: number;
@@ -83,8 +85,6 @@ export interface BrowserSessionConfig {
   researchMode?: BrowserResearchMode;
   /** Archive completed ChatGPT conversations after local artifacts are saved. */
   archiveConversations?: BrowserArchiveMode;
-  /** Browser-only: existing ChatGPT conversation URL to resume before submitting. */
-  resumeConversationUrl?: string | null;
 }
 
 export interface BrowserRuntimeMetadata {
@@ -203,6 +203,10 @@ export interface StoredRunOptions {
   followupSessionId?: string;
   /** Optional model selector used with --followup-model for multi-model parent sessions. */
   followupModel?: string;
+  /** Browser session this run continues as a child follow-up. */
+  parentSessionId?: string;
+  /** Alias for parentSessionId used by follow-up APIs. */
+  followUpOfSessionId?: string;
   maxInput?: number;
   system?: string;
   maxOutput?: number;
@@ -247,6 +251,8 @@ export interface SessionMetadata {
   id: string;
   createdAt: string;
   status: string;
+  parentSessionId?: string;
+  followUpOfSessionId?: string;
   promptPreview?: string;
   model?: string;
   models?: SessionModelRun[];
@@ -580,6 +586,8 @@ export async function initializeSession(
     })),
     cwd,
     mode,
+    parentSessionId: options.parentSessionId,
+    followUpOfSessionId: options.followUpOfSessionId,
     browser: browserConfig ? { config: browserConfig } : undefined,
     evidence,
     notifications,
@@ -592,6 +600,8 @@ export async function initializeSession(
       previousResponseId: options.previousResponseId,
       followupSessionId: options.followupSessionId,
       followupModel: options.followupModel,
+      parentSessionId: options.parentSessionId,
+      followUpOfSessionId: options.followUpOfSessionId,
       effectiveModelId: options.effectiveModelId,
       maxInput: options.maxInput,
       system: options.system,

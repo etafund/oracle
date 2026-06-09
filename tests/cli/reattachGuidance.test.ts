@@ -11,9 +11,7 @@ describe("formatBrowserReattachGuidance", () => {
     expect(message).toContain(
       "oracle session gpt55-pro-plan-review --render    # final markdown when complete",
     );
-    expect(message).toContain(
-      "oracle session gpt55-pro-plan-review --live      # tail until done",
-    );
+    expect(message).toContain("oracle session gpt55-pro-plan-review --live      # tail until done");
     expect(message).toContain(
       "oracle session gpt55-pro-plan-review --harvest   # snapshot the current answer now",
     );

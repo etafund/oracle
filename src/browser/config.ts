@@ -32,6 +32,7 @@ export const DEFAULT_BROWSER_CONFIG: ResolvedBrowserConfig = {
   chromeCookiePath: null,
   attachRunning: false,
   browserTabRef: null,
+  resumeConversationUrl: null,
   url: CHATGPT_URL,
   chatgptUrl: CHATGPT_URL,
   timeoutMs: 1_200_000,
@@ -66,7 +67,6 @@ export const DEFAULT_BROWSER_CONFIG: ResolvedBrowserConfig = {
   manualLoginCookieSync: false,
   researchMode: "off",
   archiveConversations: "auto",
-  resumeConversationUrl: null,
 };
 
 export function resolveBrowserConfig(
@@ -140,6 +140,8 @@ export function resolveBrowserConfig(
     chromeCookiePath: config?.chromeCookiePath ?? DEFAULT_BROWSER_CONFIG.chromeCookiePath,
     attachRunning: config?.attachRunning ?? DEFAULT_BROWSER_CONFIG.attachRunning,
     browserTabRef: config?.browserTabRef ?? DEFAULT_BROWSER_CONFIG.browserTabRef,
+    resumeConversationUrl:
+      config?.resumeConversationUrl ?? DEFAULT_BROWSER_CONFIG.resumeConversationUrl,
     debug: config?.debug ?? DEFAULT_BROWSER_CONFIG.debug,
     allowCookieErrors:
       config?.allowCookieErrors ?? envAllowCookieErrors ?? DEFAULT_BROWSER_CONFIG.allowCookieErrors,
@@ -150,8 +152,6 @@ export function resolveBrowserConfig(
     thinkingTime: config?.thinkingTime,
     researchMode,
     archiveConversations,
-    resumeConversationUrl:
-      config?.resumeConversationUrl ?? DEFAULT_BROWSER_CONFIG.resumeConversationUrl,
     manualLogin,
     manualLoginProfileDir: manualLogin ? resolvedProfileDir : null,
     manualLoginCookieSync:
