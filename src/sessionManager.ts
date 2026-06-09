@@ -76,6 +76,10 @@ export interface BrowserSessionConfig {
   debug?: boolean;
   allowCookieErrors?: boolean;
   remoteChrome?: { host: string; port: number } | null;
+  // Remote-Chrome connectivity fields, kept in sync with BrowserAutomationConfig
+  // (src/browser/types.ts) so stored session config can round-trip them.
+  remoteChromeBrowserWSEndpoint?: string | null;
+  remoteChromeProfileRoot?: string | null;
   manualLogin?: boolean;
   manualLoginProfileDir?: string | null;
   manualLoginCookieSync?: boolean;

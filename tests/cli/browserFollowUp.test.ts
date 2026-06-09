@@ -210,4 +210,25 @@ describe("browser follow-up sessions", () => {
       ).rejects.toThrow(/no recoverable ChatGPT conversation URL/i);
     });
   });
+
+  test("does not mutate the parent session metadata", async () => {
+    await withOracleHome(async () => {
+      const parent = await createBrowserParent(true);
+      const before = JSON.stringify(await sessionStore.readSession(parent.id));
+
+      await startBrowserFollowUpSession(
+        parent.id,
+        { prompt: "child turn", slug: "no mutate child", cliEntrypoint: "/tmp/oracle-cli.js" },
+        {
+          launchDetachedSessionRunner: vi.fn(async () => true),
+          launchDetachedSessionFinalizer: vi.fn(async () => true),
+        },
+      );
+
+      const after = JSON.stringify(await sessionStore.readSession(parent.id));
+      // The parent's prompt, status, browser config/runtime, and waitPreference
+      // must be byte-identical: follow-up creates a child, never edits the parent.
+      expect(after).toBe(before);
+    });
+  });
 });

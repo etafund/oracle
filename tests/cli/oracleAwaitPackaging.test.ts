@@ -22,10 +22,14 @@ describe("oracle-await packaging (PR 243)", () => {
     expect(pkg.files ?? []).toContain(awaitScriptRelPath);
   });
 
-  test("ships as an existing executable script", () => {
-    const full = path.join(repoRoot, awaitScriptRelPath);
-    expect(existsSync(full)).toBe(true);
-    // At least one execute bit must be set so the published bin is runnable.
-    expect(statSync(full).mode & 0o111).not.toBe(0);
+  test("ships as an existing script", () => {
+    expect(existsSync(path.join(repoRoot, awaitScriptRelPath))).toBe(true);
+  });
+
+  // Unix execute bits are not represented on Windows checkouts (statSync mode &
+  // 0o111 === 0 there), so scope the filesystem exec-bit assertion to POSIX. The
+  // published 100755 git mode is what actually ships and is verified by pnpm pack.
+  test.skipIf(process.platform === "win32")("is executable on POSIX (exec bit set)", () => {
+    expect(statSync(path.join(repoRoot, awaitScriptRelPath)).mode & 0o111).not.toBe(0);
   });
 });
