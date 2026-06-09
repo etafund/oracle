@@ -43,9 +43,7 @@ function evaluateChatGptProDomProbeForTest(args: {
   const composerPills = args.composerPills.map((text) => new FakeDomNode(text));
   const accountProfiles = args.accountProfiles.map(
     (profile) =>
-      new FakeDomNode(profile.text, {
-        ...(profile.ariaLabel ? { "aria-label": profile.ariaLabel } : {}),
-      }),
+      new FakeDomNode(profile.text, profile.ariaLabel ? { "aria-label": profile.ariaLabel } : {}),
   );
   const promptInput = new FakeDomNode("", { id: "prompt-textarea" });
   const documentStub = {
