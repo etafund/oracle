@@ -466,6 +466,20 @@ describe("collectChatGptFileArtifacts", () => {
     });
   });
 
+  test("rejects unsafe sandbox paths: backslash, NUL, traversal, and outside /mnt/data", () => {
+    const nul = String.fromCharCode(0);
+    // Security-critical: none of these may normalize into a fetchable ChatGPT sandbox endpoint.
+    expect(__test__.normalizeSandboxUrl("sandbox:/mnt/data/sub\\win.zip")).toBeUndefined();
+    expect(__test__.normalizeSandboxUrl(`sandbox:/mnt/data/bad${nul}.zip`)).toBeUndefined();
+    expect(__test__.normalizeSandboxUrl("sandbox:/etc/passwd")).toBeUndefined();
+    expect(__test__.normalizeSandboxPath("sandbox:/mnt/data/../../etc/passwd")).toBeUndefined();
+    expect(__test__.downloadUrlFromSandboxUrl("sandbox:/mnt/data/sub\\win.zip")).toBeUndefined();
+    // A clean nested path under /mnt/data is still allowed.
+    expect(__test__.normalizeSandboxUrl("sandbox:/mnt/data/sub/dir/file.csv")).toBe(
+      "sandbox:/mnt/data/sub/dir/file.csv",
+    );
+  });
+
   test("matches ChatGPT behavior download buttons with descriptive labels", () => {
     const expression = __test__.buildClickAssistantDownloadButtonsExpression();
 

@@ -22,6 +22,10 @@ const followUpInputShape = {
     .boolean()
     .optional()
     .describe("Wait briefly for completion before returning. The child session remains detached."),
+  noRecover: z
+    .boolean()
+    .optional()
+    .describe("Require a live matching ChatGPT tab; do not relaunch/recover Chrome."),
   files: z
     .array(z.string())
     .optional()
@@ -79,6 +83,8 @@ export function registerFollowUpTool(server: McpServer, deps: FollowUpToolDeps =
         prompt: parsed.prompt,
         slug: parsed.slug,
         wait: parsed.wait,
+        // GOAL spec parity with the CLI `--no-recover` flag (upstream MCP omits it).
+        recover: parsed.noRecover === true ? false : undefined,
         files: parsed.files,
         cliEntrypoint: deps.cliEntrypoint ?? resolveMcpCliEntrypoint(),
       });

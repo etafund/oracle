@@ -62,6 +62,44 @@ describe("follow_up MCP tool", () => {
     expect(result.content[0]?.text).toContain("Follow-up session child-session");
   });
 
+  test("threads noRecover through to the runner as recover:false", async () => {
+    const handlers: Array<(input: unknown) => Promise<unknown>> = [];
+    const startBrowserFollowUpSession = vi.fn(async () => ({
+      parentSessionId: "parent-session",
+      parentConversationUrl: "https://chatgpt.com/c/abc123",
+      session: { id: "child-session", status: "pending", options: {} },
+      detached: true,
+      finalizerStarted: true,
+      reattachCommand: "oracle session child-session --render",
+    }));
+    const readFollowUpLogTail = vi.fn(async () => "log tail");
+    registerFollowUpTool(
+      {
+        registerTool: (_name: string, _def: unknown, fn: (input: unknown) => Promise<unknown>) => {
+          handlers.push(fn);
+        },
+      } as unknown as Parameters<typeof registerFollowUpTool>[0],
+      {
+        startBrowserFollowUpSession: startBrowserFollowUpSession as never,
+        readFollowUpLogTail,
+        cliEntrypoint: "/tmp/oracle-cli.js",
+      },
+    );
+    const handler = handlers[0];
+    if (!handler) throw new Error("handler not registered");
+
+    await handler({
+      parentSessionId: "parent-session",
+      prompt: "continue this",
+      noRecover: true,
+    });
+
+    expect(startBrowserFollowUpSession).toHaveBeenCalledWith(
+      "parent-session",
+      expect.objectContaining({ recover: false }),
+    );
+  });
+
   test("rejects files because follow_up is prompt-only in v1", async () => {
     const handlers: Array<(input: unknown) => Promise<unknown>> = [];
     const startBrowserFollowUpSession = vi.fn();

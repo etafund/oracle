@@ -49,6 +49,7 @@ export const followUpInputSchema = z
     prompt: z.string().min(1, "Prompt is required."),
     slug: z.string().optional(),
     wait: z.boolean().optional(),
+    noRecover: z.boolean().optional(),
     files: z.array(z.string()).optional(),
   })
   .strict();
