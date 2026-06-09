@@ -38,7 +38,7 @@ class FakeDomNode {
 
 function evaluateChatGptProDomProbeForTest(args: {
   composerPills: readonly string[];
-  accountProfiles: readonly { text: string; ariaLabel?: string };
+  accountProfiles: readonly { text: string; ariaLabel?: string }[];
 }): Record<string, unknown> {
   const composerPills = args.composerPills.map((text) => new FakeDomNode(text));
   const accountProfiles = args.accountProfiles.map(
