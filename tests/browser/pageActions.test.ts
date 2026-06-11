@@ -77,7 +77,7 @@ describe("ensureModelSelection", () => {
       evaluate: vi.fn().mockResolvedValue({ result: { value: { status: "button-missing" } } }),
     } as unknown as ChromeClient["Runtime"];
     await expect(ensureModelSelection(runtime, "Instant", logger)).rejects.toThrow(
-      /Unable to locate the ChatGPT model selector button/,
+      /Unable to locate the ChatGPT model selector button.*--browser-model-strategy current.*--browser-model-strategy ignore/s,
     );
   });
 });

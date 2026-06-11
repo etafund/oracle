@@ -334,6 +334,56 @@ const evaluateComposerPillFallbackExpression = (
   );
 };
 
+const evaluateNoModelButtonExpression = (
+  targetModel: string,
+  strategy: "select" | "current" = "select",
+  composerLabel = "",
+): unknown => {
+  const expression = buildModelSelectionExpressionForTest(targetModel, strategy);
+  const documentStub = {
+    querySelector: (selector: string) =>
+      selector.includes("composer-footer-actions") && composerLabel
+        ? { textContent: composerLabel }
+        : null,
+    querySelectorAll: () => [],
+    title: "",
+    body: { innerText: "Ready when you are." },
+    dispatchEvent: () => true,
+  };
+  const performanceStub = { now: () => 0 };
+  const windowStub = { location: { href: "https://chatgpt.com/" } };
+  const EventTargetStub = class {};
+  const MouseEventStub = class {};
+  const evaluate = new Function(
+    "document",
+    "performance",
+    "setTimeout",
+    "window",
+    "EventTarget",
+    "MouseEvent",
+    "HTMLElement",
+    `return ${expression};`,
+  ) as (
+    document: unknown,
+    performance: unknown,
+    setTimeout: unknown,
+    window: unknown,
+    EventTarget: unknown,
+    MouseEvent: unknown,
+    HTMLElement: unknown,
+  ) => unknown;
+
+  return evaluate(
+    documentStub,
+    performanceStub,
+    () => 0,
+    windowStub,
+    EventTargetStub,
+    MouseEventStub,
+    class {},
+  );
+};
+
 describe("browser model selection matchers", () => {
   it("includes pro + 5.5 tokens for gpt-5.5-pro", () => {
     const { labelTokens, testIdTokens } = buildModelMatchersLiteralForTest("gpt-5.5-pro");
@@ -548,6 +598,21 @@ describe("browser model selection matchers", () => {
     expect(result).toEqual({ status: "already-selected", label: "Thinking Heavy" });
   });
 
+  it("allows the explicit current strategy when ChatGPT hides the model picker", () => {
+    const result = evaluateNoModelButtonExpression("Pro", "current");
+    expect(result).toEqual({ status: "already-selected", label: null });
+  });
+
+  it("records a visible composer model label without requiring the picker", () => {
+    const result = evaluateNoModelButtonExpression("Pro", "current", "Thinking");
+    expect(result).toEqual({ status: "already-selected", label: "Thinking" });
+  });
+
+  it("keeps strict selection failed when ChatGPT hides the model picker", () => {
+    const result = evaluateNoModelButtonExpression("Pro", "select");
+    expect(result).toEqual({ status: "button-missing" });
+  });
+
   it("does not treat per-row thinking effort controls as model options", () => {
     const expression = buildModelSelectionExpressionForTest("gpt-5.5-pro");
     expect(expression).toContain("const isThinkingEffortControl = (node) =>");
@@ -663,6 +728,26 @@ describe("browser model selection matchers", () => {
       verified: false,
     });
     expect(logger).toHaveBeenCalledWith("Model picker: Thinking 5.5 Heavy");
+  });
+
+  it("does not substitute the requested model when the current label is unavailable", async () => {
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: { value: { status: "already-selected", label: null } },
+      }),
+    };
+    const logger = vi.fn();
+
+    await expect(
+      ensureModelSelection(runtime as never, "gpt-5.5-pro", logger as never, "current"),
+    ).resolves.toMatchObject({
+      requestedModel: "gpt-5.5-pro",
+      resolvedLabel: null,
+      status: "already-selected",
+      strategy: "current",
+      verified: false,
+    });
+    expect(logger).toHaveBeenCalledWith("Model picker: current model (label unavailable)");
   });
 
   it("builds composer footer matchers for generic ChatGPT header states", () => {
