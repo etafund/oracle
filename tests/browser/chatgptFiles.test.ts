@@ -525,26 +525,39 @@ describe("collectChatGptFileArtifacts", () => {
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
   });
 
-  test("does not click broad button fallback after a partial direct save", async () => {
+  test("scopes button fallback to failed files after a partial direct save", async () => {
     const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-chatgpt-file-partial-"));
     setOracleHomeDirOverrideForTest(tmpHome);
+    const sessionId = "collect-session";
+    const artifactsDir = path.join(tmpHome, "sessions", sessionId, "artifacts");
     const runtime = {
-      evaluate: vi.fn().mockResolvedValue({
-        result: {
-          value: [
-            {
-              url: "https://chatgpt.com/backend-api/files/file_ok/download",
-              downloadUrl: "https://chatgpt.com/backend-api/files/file_ok/download",
-              filename: "ok.csv",
-            },
-            {
-              url: "https://chatgpt.com/backend-api/files/file_missing/download",
-              downloadUrl: "https://chatgpt.com/backend-api/files/file_missing/download",
-              filename: "missing.csv",
-            },
-          ],
-        },
-      }),
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({
+          result: {
+            value: [
+              {
+                url: "https://chatgpt.com/backend-api/files/file_ok/download",
+                downloadUrl: "https://chatgpt.com/backend-api/files/file_ok/download",
+                filename: "ok.csv",
+              },
+              {
+                url: "https://chatgpt.com/backend-api/files/file_missing/download",
+                downloadUrl: "https://chatgpt.com/backend-api/files/file_missing/download",
+                filename: "missing.csv",
+              },
+            ],
+          },
+        })
+        .mockImplementationOnce(async () => {
+          await fs.mkdir(artifactsDir, { recursive: true });
+          await fs.writeFile(
+            path.join(artifactsDir, "missing.csv"),
+            "missing,value\nrow,2\n",
+            "utf8",
+          );
+          return { result: { value: [{ text: "missing.csv", ariaLabel: "", testId: "" }] } };
+        }),
     } as unknown as ChromeClient["Runtime"];
     const network = {
       getCookies: vi.fn().mockResolvedValue({
@@ -570,13 +583,23 @@ describe("collectChatGptFileArtifacts", () => {
       Page: page,
       Runtime: runtime,
       Network: network,
-      sessionId: "collect-session",
+      sessionId,
     });
 
     expect(result.fileCount).toBe(2);
-    expect(result.savedFiles).toHaveLength(1);
-    expect(page.setDownloadBehavior).not.toHaveBeenCalled();
-    expect(runtime.evaluate).toHaveBeenCalledTimes(1);
+    expect(result.savedFiles).toHaveLength(2);
+    expect(result.savedFiles.map((file) => file.filename)).toEqual(
+      expect.arrayContaining(["ok.csv", "missing.csv"]),
+    );
+    expect(page.setDownloadBehavior).toHaveBeenCalledWith({
+      behavior: "allow",
+      downloadPath: artifactsDir,
+    });
+    expect(runtime.evaluate).toHaveBeenCalledTimes(2);
+    const fallbackExpression = vi.mocked(runtime.evaluate).mock.calls[1]?.[0]?.expression;
+    expect(fallbackExpression).toContain('"missing.csv"');
+    expect(fallbackExpression).not.toContain('"ok.csv"');
+    expect(fallbackExpression).toContain("const ALLOW_GENERIC_DOWNLOAD_LABELS = false");
   });
 
   test("normalizes only ChatGPT backend file URLs", () => {
@@ -645,6 +668,11 @@ describe("collectChatGptFileArtifacts", () => {
     const expression = __test__.buildClickAssistantDownloadButtonsExpression(undefined, [
       "oracle_pr245_file.csv",
     ]);
+    const scopedExpression = __test__.buildClickAssistantDownloadButtonsExpression(
+      undefined,
+      ["oracle_pr245_file.csv"],
+      false,
+    );
 
     expect(fileExpression).toContain("files.push(...serializeFiles(messageRoot))");
     expect(fileExpression).not.toContain("if (files.length > 0) return files");
@@ -657,6 +685,7 @@ describe("collectChatGptFileArtifacts", () => {
     expect(expression).toContain(
       "[...primary, ...fallback].forEach((button) => selected.add(button))",
     );
+    expect(scopedExpression).toContain("const ALLOW_GENERIC_DOWNLOAD_LABELS = false");
     const labels = __test__.resolveDownloadButtonLabels([
       {
         url: "sandbox:/mnt/data/oracle_pr245_file.csv",

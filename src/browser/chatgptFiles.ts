@@ -501,6 +501,7 @@ async function configureBrowserDownloadPath(params: {
 function buildClickAssistantDownloadButtonsExpression(
   minTurnIndex?: number | null,
   expectedLabels: string[] = [],
+  allowGenericDownloadLabels = true,
 ): string {
   const minTurnLiteral =
     typeof minTurnIndex === "number" && Number.isFinite(minTurnIndex) && minTurnIndex >= 0
@@ -509,11 +510,13 @@ function buildClickAssistantDownloadButtonsExpression(
   const conversationLiteral = JSON.stringify(CONVERSATION_TURN_SELECTOR);
   const assistantLiteral = JSON.stringify(ASSISTANT_ROLE_SELECTOR);
   const expectedLabelsLiteral = JSON.stringify(expectedLabels);
+  const allowGenericDownloadLabelsLiteral = JSON.stringify(allowGenericDownloadLabels);
   return `(() => {
     const MIN_TURN_INDEX = ${minTurnLiteral};
     const CONVERSATION_SELECTOR = ${conversationLiteral};
     const ASSISTANT_SELECTOR = ${assistantLiteral};
     const EXPECTED_LABELS = ${expectedLabelsLiteral};
+    const ALLOW_GENERIC_DOWNLOAD_LABELS = ${allowGenericDownloadLabelsLiteral};
     const isAssistantTurn = (node) => {
       if (!(node instanceof HTMLElement)) return false;
       const turnAttr = (node.getAttribute('data-turn') || node.dataset?.turn || '').toLowerCase();
@@ -538,9 +541,10 @@ function buildClickAssistantDownloadButtonsExpression(
           (label) => text === label || text.startsWith(label + ' ')
         );
         return String(button.className || '').includes('behavior-btn') &&
-          (/^download\\b/.test(text) || expectedFile);
+          (expectedFile || (ALLOW_GENERIC_DOWNLOAD_LABELS && /^download\\b/.test(text)));
       });
       const fallback = primary.length > 0 ? [] : buttons.filter((button) => {
+        if (!ALLOW_GENERIC_DOWNLOAD_LABELS) return false;
         const text = (button.textContent || '').trim().toLowerCase();
         const aria = (button.getAttribute('aria-label') || '').trim().toLowerCase();
         const testId = (button.getAttribute('data-testid') || '').trim().toLowerCase();
@@ -565,6 +569,7 @@ async function saveAssistantDownloadButtonArtifacts(params: {
   Runtime: ChromeClient["Runtime"];
   logger?: BrowserLogger;
   files: BrowserDownloadableFile[];
+  allowGenericDownloadLabels?: boolean;
   minTurnIndex?: number | null;
   sessionId?: string;
 }): Promise<SavedBrowserFile[]> {
@@ -596,6 +601,7 @@ async function saveAssistantDownloadButtonArtifacts(params: {
   const expression = buildClickAssistantDownloadButtonsExpression(
     params.minTurnIndex,
     resolveDownloadButtonLabels(params.files),
+    params.allowGenericDownloadLabels,
   );
   const deadline = Date.now() + DOWNLOAD_BUTTON_WAIT_MS;
   while (Date.now() < deadline) {
@@ -757,11 +763,12 @@ export async function saveChatGptDownloadableFiles(params: {
   saved: boolean;
   fileCount: number;
   savedFiles: SavedBrowserFile[];
+  failedFiles: BrowserDownloadableFile[];
   errors: string[];
 }> {
   const { Network, files, sessionId, logger } = params;
   if (!files.length) {
-    return { saved: false, fileCount: 0, savedFiles: [], errors: [] };
+    return { saved: false, fileCount: 0, savedFiles: [], failedFiles: [], errors: [] };
   }
 
   const cookieHeaders = new Map<string, string>();
@@ -776,6 +783,7 @@ export async function saveChatGptDownloadableFiles(params: {
     return cookieHeader;
   };
   const savedFiles: SavedBrowserFile[] = [];
+  const failedFiles: BrowserDownloadableFile[] = [];
   const errors: string[] = [];
   for (let index = 0; index < files.length; index += 1) {
     const file = files[index];
@@ -785,6 +793,7 @@ export async function saveChatGptDownloadableFiles(params: {
     if (!downloadUrl) {
       const source = file.sandboxUrl ?? file.filename ?? file.url;
       errors.push(`${source}: no ChatGPT download URL found`);
+      failedFiles.push(file);
       continue;
     }
     try {
@@ -818,10 +827,13 @@ export async function saveChatGptDownloadableFiles(params: {
           sandboxUrl: file.sandboxUrl,
           filename,
         });
+      } else {
+        failedFiles.push(file);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       errors.push(`${file.filename ?? file.downloadUrl ?? file.url}: ${message}`);
+      failedFiles.push(file);
       logger?.(
         `[browser] Failed to save downloadable file ${index + 1}/${files.length}: ${message}`,
       );
@@ -832,6 +844,7 @@ export async function saveChatGptDownloadableFiles(params: {
     saved: savedFiles.length > 0,
     fileCount: files.length,
     savedFiles,
+    failedFiles,
     errors,
   };
 }
@@ -874,14 +887,15 @@ export async function collectChatGptFileArtifacts(params: {
     logger: params.logger,
   });
   const buttonSavedFiles =
-    saved.savedFiles.length === 0
+    saved.failedFiles.length > 0
       ? await saveAssistantDownloadButtonArtifacts({
           Browser: params.Browser,
           Client: params.Client,
           Page: params.Page,
           Runtime: params.Runtime,
           logger: params.logger,
-          files: allFiles,
+          files: saved.failedFiles,
+          allowGenericDownloadLabels: saved.savedFiles.length === 0,
           minTurnIndex: params.minTurnIndex,
           sessionId: params.sessionId,
         })
