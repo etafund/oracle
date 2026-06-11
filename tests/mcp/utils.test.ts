@@ -122,6 +122,26 @@ describe("mapConsultToRunOptions", () => {
     }
   });
 
+  test("rejects the generated output directory itself as an image path", () => {
+    const home = mkdtempSync(path.join(tmpdir(), "oracle-home-"));
+    setOracleHomeDirOverrideForTest(home);
+    try {
+      expect(() =>
+        mapConsultToRunOptions({
+          prompt: "x",
+          files: [],
+          model: "gpt-5.5-pro",
+          engine: "browser",
+          generateImage: path.join(home, "generated"),
+          userConfig: undefined,
+          env: {},
+        }),
+      ).toThrow(/generated output directory/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test("rejects writes into Oracle config and session state", () => {
     const home = mkdtempSync(path.join(tmpdir(), "oracle-home-"));
     setOracleHomeDirOverrideForTest(home);

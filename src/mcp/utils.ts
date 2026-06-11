@@ -65,7 +65,7 @@ export function resolveMcpOutputPath(
   const oracleHome = resolveThroughSymlinks(getOracleHomeDir());
   const root = path.join(oracleHome, MCP_OUTPUT_DIRNAME);
   const realTarget = resolveThroughSymlinks(resolved);
-  if (realTarget === root || realTarget.startsWith(`${root}${path.sep}`)) {
+  if (realTarget.startsWith(`${root}${path.sep}`)) {
     return realTarget;
   }
   throw new Error(
