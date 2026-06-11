@@ -17,7 +17,7 @@ export function buildPrompt(basePrompt: string, files: FileContent[], cwd = proc
     return basePrompt;
   }
   const sections = createFileSections(files, cwd);
-  const sectionText = formatFileSections(sections);
+  const sectionText = formatFileSections(sections, { includeFileIndex: true });
   return `${basePrompt.trim()}\n\n${sectionText}`;
 }
 

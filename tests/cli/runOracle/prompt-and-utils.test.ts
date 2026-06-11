@@ -27,7 +27,7 @@ describe("buildPrompt", () => {
     const { dir, filePath } = await createTempFile("hello from file");
     try {
       const prompt = buildPrompt("Base", [{ path: filePath, content: "hello from file" }], dir);
-      expect(prompt).toContain("### File: sample.txt");
+      expect(prompt).toContain("### File 1: sample.txt");
       expect(prompt).toContain("Lines: 1-1");
       expect(prompt).toContain("1 | hello from file");
     } finally {
@@ -418,8 +418,8 @@ describe("oracle utility helpers", () => {
     expect(totalTokens).toBeGreaterThan(0);
     expect(stats[0].displayPath).toBe("b.txt");
     expect(stats[1].displayPath).toBe("a.txt");
-    expect(tokenizerInputs).toContain("### File: a.txt\nLines: 1-1\n```\n1 | aaa\n```");
-    expect(tokenizerInputs).toContain("### File: b.txt\nLines: 1-1\n```\n1 | bbbbbb\n```");
+    expect(tokenizerInputs).toContain("### File 1: a.txt\nLines: 1-1\n```\n1 | aaa\n```");
+    expect(tokenizerInputs).toContain("### File 2: b.txt\nLines: 1-1\n```\n1 | bbbbbb\n```");
 
     const logs: string[] = [];
     printFileTokenStats(

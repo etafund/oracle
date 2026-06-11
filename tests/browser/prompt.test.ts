@@ -37,12 +37,16 @@ describe("assembleBrowserPrompt", () => {
     expect(result.markdown).toContain("[SYSTEM]");
     expect(result.markdown).toContain("[USER]");
     expect(result.markdown).toContain("### File: a.txt");
+    expect(result.markdown).toContain("Lines: 1-1");
+    expect(result.markdown).toContain('1 | console.log("hi")');
     expect(result.markdown).toContain("```");
     expect(result.composerText).not.toContain(DEFAULT_SYSTEM_PROMPT);
     expect(result.composerText).toContain("Explain the bug");
     expect(result.composerText).not.toContain("[SYSTEM]");
     expect(result.composerText).not.toContain("[USER]");
     expect(result.composerText).toContain("### File: a.txt");
+    expect(result.composerText).toContain("Lines: 1-1");
+    expect(result.composerText).toContain('1 | console.log("hi")');
     expect(result.estimatedInputTokens).toBeGreaterThan(0);
     expect(result.attachments).toEqual([]);
     expect(result.inlineFileCount).toBe(1);
@@ -100,9 +104,15 @@ describe("assembleBrowserPrompt", () => {
       file: ["a.txt"],
       browserAttachments: "always",
     });
+    const tokenizedContents: string[] = [];
     const result = await assembleBrowserPrompt(options, {
       cwd: "/repo",
       readFilesImpl: async () => [{ path: "/repo/a.txt", content: "tiny" }],
+      tokenizeImpl: (messages) => {
+        const typed = messages as Array<{ content: string }>;
+        tokenizedContents.push(...typed.map((message) => message.content));
+        return fastTokenizer(messages);
+      },
     });
     expect(result.attachmentMode).toBe("upload");
     expect(result.attachments).toEqual([
@@ -110,6 +120,8 @@ describe("assembleBrowserPrompt", () => {
     ]);
     expect(result.composerText).toBe("Explain the bug");
     expect(result.composerText).not.toContain("### File: a.txt");
+    expect(tokenizedContents).toContain("### File: a.txt\n```\ntiny\n```");
+    expect(tokenizedContents.some((content) => content.includes("1 | tiny"))).toBe(false);
     expect(result.fallback).toBeNull();
   });
 
@@ -255,6 +267,7 @@ describe("assembleBrowserPrompt", () => {
       browserBundleFiles: true,
       browserBundleFormat: "zip",
     });
+    const tokenizedContents: string[] = [];
     const result = await assembleBrowserPrompt(options, {
       cwd: "/repo",
       readFilesImpl: async (paths) =>
@@ -262,6 +275,11 @@ describe("assembleBrowserPrompt", () => {
           path: path.resolve("/repo", entry),
           content: `content for ${entry}`,
         })),
+      tokenizeImpl: (messages) => {
+        const typed = messages as Array<{ content: string }>;
+        tokenizedContents.push(...typed.map((message) => message.content));
+        return fastTokenizer(messages);
+      },
     });
 
     expect(result.attachments).toHaveLength(1);
@@ -278,5 +296,11 @@ describe("assembleBrowserPrompt", () => {
     expect(zipBytes.toString("utf8")).toContain("src/b.ts");
     expect(zipBytes.toString("utf8")).toContain("content for src/a.ts");
     expect(zipBytes.toString("utf8")).not.toContain("1 | content for src/a.ts");
+    expect(tokenizedContents.some((content) => content.includes("content for src/a.ts"))).toBe(
+      true,
+    );
+    expect(tokenizedContents.some((content) => content.includes("1 | content for src/a.ts"))).toBe(
+      false,
+    );
   });
 });

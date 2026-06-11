@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import type { FileContent, FileTokenStats, TokenizerFn } from "./types.js";
 import { createFileSections } from "./files.js";
-import { formatFileSection } from "./markdown.js";
+import { formatFileSections } from "./markdown.js";
 
 export function getFileTokenStats(
   files: FileContent[],
@@ -23,8 +23,8 @@ export function getFileTokenStats(
   const sections = createFileSections(files, cwd);
   const stats = sections
     .map((section) => {
-      const sectionText = formatFileSection(section.displayPath, section.content, {
-        lineNumbers: true,
+      const sectionText = formatFileSections([section], {
+        includeFileIndex: true,
       }).trimEnd();
       const tokens = tokenizer(sectionText, tokenizerOptions);
       const percent = inputTokenBudget ? (tokens / inputTokenBudget) * 100 : undefined;

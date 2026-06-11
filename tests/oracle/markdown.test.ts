@@ -67,4 +67,13 @@ describe("formatFileSections", () => {
     expect(out).not.toContain("Lines:");
     expect(out).toContain("```ts\nconst x = 1;\n```");
   });
+
+  test("can preserve indexed headings for legacy generated prompts", () => {
+    const out = formatFileSections(
+      [{ index: 3, displayPath: "src/app.ts", content: "const x = 1;\n" }],
+      { includeFileIndex: true },
+    );
+    expect(out).toContain("### File 3: src/app.ts");
+    expect(out).toContain("Lines: 1-1");
+  });
 });

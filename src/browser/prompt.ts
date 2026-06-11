@@ -84,8 +84,12 @@ interface WrittenBrowserBundle {
 
 function formatSectionsForBundle(
   sections: Array<{ displayPath: string; content: string }>,
+  options: { lineNumbers?: boolean } = {},
 ): string {
-  return formatFileSections(sections, { trailingNewline: true });
+  return formatFileSections(sections, {
+    lineNumbers: options.lineNumbers ?? true,
+    trailingNewline: true,
+  });
 }
 
 async function writeBrowserBundle(
@@ -93,7 +97,9 @@ async function writeBrowserBundle(
   format: BrowserBundleFormat,
 ): Promise<WrittenBrowserBundle> {
   const bundleDir = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-browser-bundle-"));
-  const tokenEstimateText = formatSectionsForBundle(sections);
+  const tokenEstimateText = formatSectionsForBundle(sections, {
+    lineNumbers: format === "text",
+  });
   if (format === "zip") {
     const bundlePath = path.join(bundleDir, "attachments-bundle.zip");
     const buffer = createStoredZip(
@@ -232,7 +238,7 @@ export async function assembleBrowserPrompt(
   );
   const tokenEstimateIncludesInlineFiles = inlineFileCount > 0 && Boolean(selectedPlan.inlineBlock);
   if (!tokenEstimateIncludesInlineFiles && sections.length > 0) {
-    const attachmentText = bundleText ?? formatFileSections(sections);
+    const attachmentText = bundleText ?? formatFileSections(sections, { lineNumbers: false });
     const attachmentTokens = tokenizer(
       [{ role: "user", content: attachmentText }],
       TOKENIZER_OPTIONS,

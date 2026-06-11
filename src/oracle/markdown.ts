@@ -7,12 +7,18 @@ export interface FormatFileSectionOptions {
 }
 
 export interface FormatFileSectionsOptions extends FormatFileSectionOptions {
+  includeFileIndex?: boolean;
   trailingNewline?: boolean;
 }
 
 export interface FileSectionInput {
+  index?: number;
   displayPath: string;
   content: string;
+}
+
+interface RenderFileSectionOptions extends FormatFileSectionOptions {
+  index?: number;
 }
 
 const EXT_TO_LANG: Record<string, string> = {
@@ -72,15 +78,18 @@ function addLineNumbers(content: string): { text: string; lineCount: number } {
   return { text: numbered, lineCount: lines.length };
 }
 
-export function formatFileSection(
+function renderFileSection(
   displayPath: string,
   content: string,
-  options: FormatFileSectionOptions = {},
+  options: RenderFileSectionOptions,
 ): string {
   const fence = pickFence(content);
   const lang = detectFenceLanguage(displayPath);
   const normalized = content.replace(/\s+$/u, "");
-  const header = `### File: ${displayPath}`;
+  const header =
+    options.index == null
+      ? `### File: ${displayPath}`
+      : `### File ${options.index}: ${displayPath}`;
   const fenceOpen = lang ? `${fence}${lang}` : fence;
   if (options.lineNumbers !== true) {
     return [header, fenceOpen, normalized, fence, ""].join("\n");
@@ -92,14 +101,25 @@ export function formatFileSection(
   );
 }
 
+export function formatFileSection(
+  displayPath: string,
+  content: string,
+  options: FormatFileSectionOptions = {},
+): string {
+  return renderFileSection(displayPath, content, options);
+}
+
 export function formatFileSections(
   sections: FileSectionInput[],
   options: FormatFileSectionsOptions = {},
 ): string {
-  const sectionOptions = { ...options, lineNumbers: options.lineNumbers ?? true };
+  const lineNumbers = options.lineNumbers ?? true;
   const rendered = sections
     .map((section) =>
-      formatFileSection(section.displayPath, section.content, sectionOptions).trimEnd(),
+      renderFileSection(section.displayPath, section.content, {
+        lineNumbers,
+        index: options.includeFileIndex ? section.index : undefined,
+      }).trimEnd(),
     )
     .join("\n\n");
   return options.trailingNewline && rendered ? `${rendered}\n` : rendered;

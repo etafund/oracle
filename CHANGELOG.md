@@ -18,7 +18,7 @@
 
 ### Changed
 
-- CLI/API/Browser: render Oracle-generated prompt context blocks with stable line numbers so model answers can cite bundled source as `path:line` or `path:line-line`, while raw file uploads, ZIP bundle entries, exported `createFileSections().sectionText`, and the default `formatFileSection(...)` output remain unchanged. Generated prompt paths use the new `formatFileSections(...)` helper, and callers can request numbered output directly with `formatFileSection(..., { lineNumbers: true })`.
+- CLI/API/Browser: render generated prompt, inline, and text-bundle context with stable line numbers so model answers can cite source as `path:line` or `path:line-line`, while preserving indexed `buildPrompt(...)` headings, raw browser uploads, ZIP entries, `createFileSections().sectionText`, and the default `formatFileSection(...)` output. Callers can request numbered output directly with `formatFileSection(..., { lineNumbers: true })`. Thanks @tristanmanchester!
 
 ## 0.13.0 — 2026-05-22
 
