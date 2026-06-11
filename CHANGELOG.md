@@ -8,6 +8,7 @@
 - Browser: clean stale manual-login Chrome profile locks before relaunching browser and Project Sources runs, while preserving locks when the recorded Chrome process is still alive. Thanks @derekszen!
 - Browser: `oracle session <id> --harvest` and `--live` now auto-recover when the original Chrome has been closed by relaunching the manual-login profile and reopening the saved conversation URL, then retrying the harvest against the recovered tab. Resolves the failure mode where a long GPT-5 Pro Extended response completed in the background after the CLI's 20-minute wall expired and the conversation was archived. Recovery URL selection prefers `browser.harvest.url` over `browser.runtime.tabUrl` and is gated by a shared ChatGPT-conversation-URL check (rejects home, project shell, and external URLs so the persistent profile can't be navigated to the wrong page from stale metadata). Opt out with `--no-recover` on the `session` subcommand.
 - Browser: persist ChatGPT-generated downloadable files such as CSV, PDF, ZIP, wheel, and source-distribution outputs beside the session transcript, limited to current-run assistant artifacts and known ChatGPT file endpoints. Fixes #244. Thanks @pdurlej!
+- MCP: add a dedicated `chatgpt_image` tool plus `generateImage` / `outputPath` support in `consult` so agent callers can trigger ChatGPT image generation and receive saved local artifacts in typed structured output. Thanks @umutkeltek!
 
 ### Fixed
 
@@ -23,6 +24,11 @@
 ### Changed
 
 - CLI/API/Browser: render generated prompt, inline, and text-bundle context with stable line numbers so model answers can cite source as `path:line` or `path:line-line`, while preserving indexed `buildPrompt(...)` headings, raw browser uploads, ZIP entries, `createFileSections().sectionText`, and the default `formatFileSection(...)` output. Callers can request numbered output directly with `formatFileSection(..., { lineNumbers: true })`. Thanks @tristanmanchester!
+
+### Security
+
+- MCP: constrain image output paths to the symlink-safe `ORACLE_HOME_DIR/generated` directory by default, keeping agent writes away from Oracle config, session, and browser-profile state; explicit opt-in remains required for external paths.
+- MCP: reject image output through the remote browser service until generated artifacts can be transferred back to the caller.
 
 ## 0.13.0 — 2026-05-22
 

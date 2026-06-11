@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import type {
   BrowserGeneratedImage,
   BrowserLogger,
@@ -203,13 +204,13 @@ function resolveDefaultGeneratedImagePath(
   sessionId?: string,
 ): string {
   const primary = images[0];
-  const stemSource =
-    primary?.fileId || primary?.alt || primary?.url || `generated-${Date.now().toString(36)}`;
-  const stem = sanitizeGeneratedImageStem(stemSource) || `generated-${Date.now().toString(36)}`;
+  const stemSource = primary?.fileId || primary?.alt || primary?.url || "generated";
+  const stem = sanitizeGeneratedImageStem(stemSource) || "generated";
   const baseDir = sessionId
     ? resolveSessionArtifactsDir(sessionId)
     : path.join(getOracleHomeDir(), ".temp");
-  return path.join(baseDir, `${stem}.png`);
+  const uniqueSuffix = sessionId ? "" : `-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
+  return path.join(baseDir, `${stem}${uniqueSuffix}.png`);
 }
 
 async function buildCookieHeader(Network: ChromeClient["Network"]): Promise<string> {

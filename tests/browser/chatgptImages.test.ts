@@ -324,4 +324,56 @@ describe("collectGeneratedImageArtifacts", () => {
       Buffer.from([4, 3, 2, 1]),
     );
   });
+
+  test("uses unique paths for concurrent sessionless images with the same metadata", async () => {
+    const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-home-"));
+    setOracleHomeDirOverrideForTest(tmpHome);
+    const runtime = {
+      evaluate: vi.fn(async ({ expression }: { expression: string }) => {
+        if (expression.includes("/backend-api/estuary/content?id=file_")) {
+          return {
+            result: {
+              value: [
+                {
+                  url: "https://chatgpt.com/backend-api/estuary/content?id=file_same",
+                  alt: "generated image",
+                },
+              ],
+            },
+          };
+        }
+        return { result: { value: null } };
+      }),
+    } as unknown as ChromeClient["Runtime"];
+    const network = {
+      getCookies: vi.fn().mockResolvedValue({
+        cookies: [{ name: "__Secure-next-auth.session-token", value: "abc" }],
+      }),
+    } as unknown as ChromeClient["Network"];
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      url: "https://files.local/generated",
+      headers: { get: (name: string) => (name === "content-type" ? "image/png" : null) },
+      arrayBuffer: async () => Uint8Array.from([1, 2, 3]).buffer,
+    } as Response);
+
+    try {
+      const first = await collectGeneratedImageArtifacts({
+        Runtime: runtime,
+        Network: network,
+        answerText: "Generated image",
+      });
+      const second = await collectGeneratedImageArtifacts({
+        Runtime: runtime,
+        Network: network,
+        answerText: "Generated image",
+      });
+
+      expect(first.savedImages[0]?.path).not.toBe(second.savedImages[0]?.path);
+    } finally {
+      await fs.rm(tmpHome, { recursive: true, force: true });
+    }
+  });
 });
