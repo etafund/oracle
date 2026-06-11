@@ -32,18 +32,18 @@ export async function ensureModelSelection(
         status: "option-not-found";
         hint?: { temporaryChat?: boolean; availableOptions?: string[] };
       }
-    | { status: "button-missing"; hint?: { accountPlan?: string; composerSignal?: string } }
+    | { status: "button-missing" }
     | undefined;
 
   switch (result?.status) {
     case "already-selected":
     case "switched":
     case "switched-best-effort": {
-      const label = result.label ?? desiredModel;
+      const label = result.label?.trim() || (strategy === "current" ? null : desiredModel);
       if (strategy !== "current") {
-        assertResolvedModelSelection(desiredModel, label);
+        assertResolvedModelSelection(desiredModel, label ?? desiredModel);
       }
-      logger(`Model picker: ${label}`);
+      logger(`Model picker: ${label ?? "current model (label unavailable)"}`);
       return {
         requestedModel: desiredModel,
         resolvedLabel: label,
@@ -69,18 +69,8 @@ export async function ensureModelSelection(
     }
     default: {
       await logDomFailure(Runtime, logger, "model-switcher-button");
-      const accountPlan = result?.status === "button-missing" ? result.hint?.accountPlan : null;
-      const composerSignal =
-        result?.status === "button-missing" ? result.hint?.composerSignal : null;
-      const visibleState = [
-        accountPlan ? `account=${accountPlan}` : null,
-        composerSignal ? `composer=${composerSignal}` : null,
-      ]
-        .filter(Boolean)
-        .join("; ");
-      const stateHint = visibleState ? ` Visible state: ${visibleState}.` : "";
       throw new Error(
-        `Unable to locate the ChatGPT model selector button.${stateHint} If the desired model is already selected in the browser, retry with --browser-model-strategy current; otherwise retry with --browser-model-strategy ignore to skip model selection.`,
+        "Unable to locate the ChatGPT model selector button. If the desired model is already selected in the browser, retry with --browser-model-strategy current; otherwise retry with --browser-model-strategy ignore to skip model selection.",
       );
     }
   }
@@ -289,12 +279,6 @@ function buildModelSelectionExpression(
     const getButtonLabel = () => (findModelButton()?.textContent ?? '').trim();
     const getComposerModelLabel = () =>
       (document.querySelector(COMPOSER_MODEL_SIGNAL_SELECTOR)?.textContent ?? '').trim();
-    const getAccountPlanLabel = () => {
-      const labels = Array.from(document.querySelectorAll('[data-testid="accounts-profile-button"]'))
-        .map((node) => (node.getAttribute('aria-label') ?? node.textContent ?? '').trim())
-        .filter(Boolean);
-      return labels.find((label) => hasToken(label, 'pro')) ?? labels[0] ?? '';
-    };
     const readComposerModelSignal = () => normalizeText(getComposerModelLabel());
     const withProPillSignal = (label) => {
       const resolved = label || '';
@@ -310,7 +294,7 @@ function buildModelSelectionExpression(
     const isThinkingEffortLabel = (label) =>
       label === 'extended' || label === 'standard' || label === 'heavy' || label === 'light';
     if (MODEL_STRATEGY === 'current') {
-      const currentLabel = getResolvedLabel(PRIMARY_LABEL);
+      const currentLabel = getResolvedLabel('') || null;
       return {
         status: 'already-selected',
         label: currentLabel,
@@ -319,13 +303,7 @@ function buildModelSelectionExpression(
 
     const button = findModelButton();
     if (!button) {
-      return {
-        status: 'button-missing',
-        hint: {
-          accountPlan: getAccountPlanLabel(),
-          composerSignal: getComposerModelLabel(),
-        },
-      };
+      return { status: 'button-missing' };
     }
     const buttonMatchesTarget = () => {
       const normalizedLabel = normalizeText(getButtonLabel());

@@ -337,25 +337,17 @@ const evaluateComposerPillFallbackExpression = (
 const evaluateNoModelButtonExpression = (
   targetModel: string,
   strategy: "select" | "current" = "select",
+  composerLabel = "",
 ): unknown => {
   const expression = buildModelSelectionExpressionForTest(targetModel, strategy);
-  const accountNodes = [
-    {
-      textContent: "",
-      getAttribute: (name: string) => (name === "aria-label" ? "Open profile menu" : null),
-    },
-    {
-      textContent: "marc rousseau Pro",
-      getAttribute: (name: string) =>
-        name === "aria-label" ? "marc rousseau Pro, open profile menu" : null,
-    },
-  ];
   const documentStub = {
-    querySelector: () => null,
-    querySelectorAll: (selector: string) =>
-      selector.includes("accounts-profile-button") ? accountNodes : [],
+    querySelector: (selector: string) =>
+      selector.includes("composer-footer-actions") && composerLabel
+        ? { textContent: composerLabel }
+        : null,
+    querySelectorAll: () => [],
     title: "",
-    body: { innerText: "marc rousseau Pro Ready when you are." },
+    body: { innerText: "Ready when you are." },
     dispatchEvent: () => true,
   };
   const performanceStub = { now: () => 0 };
@@ -608,18 +600,17 @@ describe("browser model selection matchers", () => {
 
   it("allows the explicit current strategy when ChatGPT hides the model picker", () => {
     const result = evaluateNoModelButtonExpression("Pro", "current");
-    expect(result).toEqual({ status: "already-selected", label: "Pro" });
+    expect(result).toEqual({ status: "already-selected", label: null });
   });
 
-  it("reports visible account state when strict selection cannot find a picker", () => {
+  it("records a visible composer model label without requiring the picker", () => {
+    const result = evaluateNoModelButtonExpression("Pro", "current", "Thinking");
+    expect(result).toEqual({ status: "already-selected", label: "Thinking" });
+  });
+
+  it("keeps strict selection failed when ChatGPT hides the model picker", () => {
     const result = evaluateNoModelButtonExpression("Pro", "select");
-    expect(result).toEqual({
-      status: "button-missing",
-      hint: {
-        accountPlan: "marc rousseau Pro, open profile menu",
-        composerSignal: "",
-      },
-    });
+    expect(result).toEqual({ status: "button-missing" });
   });
 
   it("does not treat per-row thinking effort controls as model options", () => {
@@ -737,6 +728,26 @@ describe("browser model selection matchers", () => {
       verified: false,
     });
     expect(logger).toHaveBeenCalledWith("Model picker: Thinking 5.5 Heavy");
+  });
+
+  it("does not substitute the requested model when the current label is unavailable", async () => {
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: { value: { status: "already-selected", label: null } },
+      }),
+    };
+    const logger = vi.fn();
+
+    await expect(
+      ensureModelSelection(runtime as never, "gpt-5.5-pro", logger as never, "current"),
+    ).resolves.toMatchObject({
+      requestedModel: "gpt-5.5-pro",
+      resolvedLabel: null,
+      status: "already-selected",
+      strategy: "current",
+      verified: false,
+    });
+    expect(logger).toHaveBeenCalledWith("Model picker: current model (label unavailable)");
   });
 
   it("builds composer footer matchers for generic ChatGPT header states", () => {

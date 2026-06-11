@@ -74,17 +74,10 @@ describe("ensureModelSelection", () => {
 
   test("throws when button missing", async () => {
     const runtime = {
-      evaluate: vi.fn().mockResolvedValue({
-        result: {
-          value: {
-            status: "button-missing",
-            hint: { accountPlan: "marc rousseau Pro, open profile menu" },
-          },
-        },
-      }),
+      evaluate: vi.fn().mockResolvedValue({ result: { value: { status: "button-missing" } } }),
     } as unknown as ChromeClient["Runtime"];
     await expect(ensureModelSelection(runtime, "Instant", logger)).rejects.toThrow(
-      /Unable to locate the ChatGPT model selector button.*account=marc rousseau Pro.*--browser-model-strategy current/s,
+      /Unable to locate the ChatGPT model selector button.*--browser-model-strategy current.*--browser-model-strategy ignore/s,
     );
   });
 });
