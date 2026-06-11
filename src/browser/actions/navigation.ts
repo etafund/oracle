@@ -358,6 +358,17 @@ export async function ensurePromptReady(
 
 export interface ResumedConversationHydrationDeps {
   ensurePromptReady?: typeof ensurePromptReady;
+  requirePriorTurns?: boolean;
+  expectedConversationUrl?: string;
+}
+
+function conversationIdFromUrl(value: string | undefined): string | null {
+  if (!value) return null;
+  try {
+    return new URL(value).pathname.match(/(?:^|\/)c\/([^/]+)/)?.[1] ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -383,6 +394,7 @@ export async function waitForResumedConversationHydration(
   const hydrationDeadline = Date.now() + Math.min(timeoutMs || 30_000, 30_000);
   let priorTurns = 0;
   let stableChecks = 0;
+  let settled = false;
   while (Date.now() < hydrationDeadline) {
     let turns = 0;
     try {
@@ -398,7 +410,10 @@ export async function waitForResumedConversationHydration(
     }
     if (turns > 0 && turns === priorTurns) {
       stableChecks += 1;
-      if (stableChecks >= 3) break; // turn count steady ~750ms → hydration settled
+      if (stableChecks >= 3) {
+        settled = true;
+        break;
+      }
     } else {
       stableChecks = 0;
     }
@@ -407,6 +422,36 @@ export async function waitForResumedConversationHydration(
   }
   await delay(1_000); // final settle so React won't wipe the composer after we type
   await ensureReady(Runtime, timeoutMs, logger);
+  if ((deps.requirePriorTurns ?? false) && (!settled || priorTurns <= 0)) {
+    throw new BrowserAutomationError(
+      "Saved ChatGPT conversation did not load stable prior turns; refusing to submit follow-up as a fresh chat.",
+      {
+        stage: "resume-conversation",
+        priorTurns,
+        settled,
+      },
+    );
+  }
+  if (deps.expectedConversationUrl) {
+    const { result } = await Runtime.evaluate({
+      expression: "location.href",
+      returnByValue: true,
+    });
+    const actualUrl = typeof result?.value === "string" ? result.value : undefined;
+    const expectedConversationId = conversationIdFromUrl(deps.expectedConversationUrl);
+    const actualConversationId = conversationIdFromUrl(actualUrl);
+    if (!expectedConversationId || actualConversationId !== expectedConversationId) {
+      throw new BrowserAutomationError(
+        "Saved ChatGPT conversation redirected to a different thread; refusing to submit follow-up.",
+        {
+          stage: "resume-conversation",
+          expectedConversationId,
+          actualConversationId,
+          actualUrl,
+        },
+      );
+    }
+  }
   logger(`[browser] Resumed conversation hydrated (${priorTurns} prior turns); composer settled.`);
   return priorTurns;
 }

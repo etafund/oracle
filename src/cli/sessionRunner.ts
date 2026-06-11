@@ -507,8 +507,13 @@ export async function performSessionRun({
       userError?.category === "browser-automation" &&
       (userError.details as { stage?: string } | undefined)?.stage === "cloudflare-challenge";
     let reattachGuidanceLogged = false;
-    const logBrowserReattachGuidance = (): void => {
+    const logBrowserReattachGuidance = (
+      runtime: BrowserRuntimeMetadata | null | undefined,
+    ): void => {
       if (reattachGuidanceLogged || mode !== "browser") return;
+      if (!hasRecoverableChatGptConversation(runtime) && runtime?.promptSubmitted !== true) {
+        return;
+      }
       reattachGuidanceLogged = true;
       log(formatBrowserReattachGuidance(sessionMeta.id));
     };
@@ -553,7 +558,6 @@ export async function performSessionRun({
             details: userError.details,
           },
         });
-        logBrowserReattachGuidance();
         throw error;
       }
       log(dim("Chrome disconnected before completion; keeping session running for reattach."));
@@ -573,7 +577,7 @@ export async function performSessionRun({
         },
         response: { status: "running", incompleteReason: "chrome-disconnected" },
       });
-      logBrowserReattachGuidance();
+      logBrowserReattachGuidance(recoverableRuntime);
       return;
     }
     if (assistantTimeout && mode === "browser") {
@@ -624,7 +628,7 @@ export async function performSessionRun({
           return;
         }
       }
-      logBrowserReattachGuidance();
+      logBrowserReattachGuidance(runtime ?? sessionMeta.browser?.runtime);
       return;
     }
     if (cloudflareChallenge && mode === "browser") {
@@ -650,11 +654,13 @@ export async function performSessionRun({
     if (transportLine) {
       log(dim(`Transport: ${transportLine}`));
     }
-    logBrowserReattachGuidance();
     const browserRuntime =
       mode === "browser"
         ? (userError?.details as { runtime?: BrowserRuntimeMetadata } | undefined)?.runtime
         : undefined;
+    if (!cloudflareChallenge) {
+      logBrowserReattachGuidance(browserRuntime ?? sessionMeta.browser?.runtime);
+    }
     await sessionStore.updateSession(sessionMeta.id, {
       status: "error",
       completedAt: new Date().toISOString(),

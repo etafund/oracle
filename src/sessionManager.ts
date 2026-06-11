@@ -181,7 +181,7 @@ export interface StoredRunOptions {
   models?: ModelName[];
   /** Responses API chaining (maps to `previous_response_id`). */
   previousResponseId?: string;
-  /** Optional session slug that provided the parent response when using `--followup <sessionId>`. */
+  /** Optional parent session slug when using `--followup <sessionId>`. */
   followupSessionId?: string;
   /** Optional model selector used with --followup-model for multi-model parent sessions. */
   followupModel?: string;

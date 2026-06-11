@@ -877,9 +877,22 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     }
 
     if (config.browserTabRef) {
+      if (isResumingConversation) {
+        await raceWithDisconnect(
+          navigateToChatGPT(Page, Runtime, config.resumeConversationUrl as string, logger),
+        );
+      }
       await raceWithDisconnect(ensureNotBlocked(Runtime, config.headless, logger));
       await raceWithDisconnect(ensureLoggedIn(Runtime, logger));
       await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+      if (isResumingConversation) {
+        await raceWithDisconnect(
+          waitForResumedConversationHydration(Runtime, config.inputTimeoutMs, logger, {
+            requirePriorTurns: true,
+            expectedConversationUrl: config.resumeConversationUrl as string,
+          }),
+        );
+      }
     } else {
       const baseUrl = CHATGPT_URL;
       // First load the base ChatGPT homepage to satisfy potential interstitials,
@@ -899,11 +912,16 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         }),
       );
 
-      const targetUrl = config.resumeConversationUrl ?? config.url;
-      if (targetUrl !== baseUrl) {
+      if (isResumingConversation) {
+        await raceWithDisconnect(
+          navigateToChatGPT(Page, Runtime, config.resumeConversationUrl as string, logger),
+        );
+        await raceWithDisconnect(ensureNotBlocked(Runtime, config.headless, logger));
+        await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+      } else if (config.url !== baseUrl) {
         await raceWithDisconnect(
           navigateToPromptReadyWithFallback(Page, Runtime, {
-            url: targetUrl,
+            url: config.url,
             fallbackUrl: baseUrl,
             timeoutMs: config.inputTimeoutMs,
             headless: config.headless,
@@ -920,7 +938,10 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         // raceWithDisconnect so a dropped client aborts immediately instead of polling to the
         // hydration deadline. Shared with the remote path via the same helper.
         await raceWithDisconnect(
-          waitForResumedConversationHydration(Runtime, config.inputTimeoutMs, logger),
+          waitForResumedConversationHydration(Runtime, config.inputTimeoutMs, logger, {
+            requirePriorTurns: true,
+            expectedConversationUrl: config.resumeConversationUrl as string,
+          }),
         );
       }
     }
@@ -2398,20 +2419,19 @@ async function runRemoteBrowserMode(
     // Skip cookie sync for remote Chrome - it already has cookies
     logger("Skipping cookie sync for remote Chrome (using existing session)");
 
-    if (!attachedExistingTab) {
-      await navigateToChatGPT(Page, Runtime, config.resumeConversationUrl ?? config.url, logger);
-      await ensureNotBlocked(Runtime, config.headless, logger);
-      await ensureLoggedIn(Runtime, logger, { remoteSession: true });
-      await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
-      if (config.resumeConversationUrl) {
-        // Same prior-history hydration race as the local path: a resumed thread can wipe the
-        // composer mid-hydration. Wait for it to settle before this path types/submits.
-        await waitForResumedConversationHydration(Runtime, config.inputTimeoutMs, logger);
-      }
-    } else {
-      await ensureNotBlocked(Runtime, config.headless, logger);
-      await ensureLoggedIn(Runtime, logger, { remoteSession: true });
-      await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
+    if (config.resumeConversationUrl) {
+      await navigateToChatGPT(Page, Runtime, config.resumeConversationUrl, logger);
+    } else if (!attachedExistingTab) {
+      await navigateToChatGPT(Page, Runtime, config.url, logger);
+    }
+    await ensureNotBlocked(Runtime, config.headless, logger);
+    await ensureLoggedIn(Runtime, logger, { remoteSession: true });
+    await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
+    if (config.resumeConversationUrl) {
+      await waitForResumedConversationHydration(Runtime, config.inputTimeoutMs, logger, {
+        requirePriorTurns: true,
+        expectedConversationUrl: config.resumeConversationUrl,
+      });
     }
     logger(
       `Prompt textarea ready (initial focus, ${promptText.length.toLocaleString()} chars queued)`,

@@ -380,11 +380,11 @@ program
   .addOption(new Option("--message <text>", "Alias for --prompt.").hideHelp())
   .option(
     "--followup <sessionId|responseId>",
-    "Continue an OpenAI/Azure Responses API run from a stored response id (resp_...) or from a stored oracle session id.",
+    "Continue a stored ChatGPT browser conversation or an OpenAI/Azure Responses API run.",
   )
   .option(
     "--followup-model <model>",
-    "When following up a multi-model session, choose which model response to continue from.",
+    "For multi-model API sessions, choose which model response to continue from.",
   )
   .option(
     "-f, --file <paths...>",
@@ -2061,13 +2061,16 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     options.browserAttachmentTimeout = attachmentTimeoutEnv;
   }
 
+  let browserFollowup: Awaited<ReturnType<typeof resolveBrowserFollowupReference>> = null;
   if (options.followup) {
     if (normalizedMultiModels.length > 0) {
       throw new Error("--followup cannot be combined with --models.");
     }
-    const browserFollowup = await resolveBrowserFollowupReference(options.followup, sessionStore);
+    browserFollowup = await resolveBrowserFollowupReference(options.followup, sessionStore);
     if (browserFollowup) {
       engine = "browser";
+      resolvedOptions.model = browserFollowup.model;
+      resolvedOptions.effectiveModelId = browserFollowup.model;
       resolvedOptions.followupSessionId = browserFollowup.sessionId;
       resolvedOptions.browserResumeConversationUrl = browserFollowup.resumeConversationUrl;
     } else {
@@ -2083,6 +2086,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
       resolvedOptions.followupModel = options.followupModel;
     }
   }
+  const activeModel = resolvedOptions.model;
 
   const browserFollowUpCount =
     options.browserFollowUp?.filter((entry) => entry.trim().length > 0).length ?? 0;
@@ -2093,12 +2097,15 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   const sessionMode: SessionMode = engine === "browser" ? "browser" : "api";
   const browserConfig = await (async (): Promise<BrowserSessionConfig | undefined> => {
     if (sessionMode !== "browser") return undefined;
+    if (browserFollowup) {
+      return browserFollowup.browserConfig;
+    }
     const { buildBrowserConfig, resolveBrowserModelLabel } =
       await import("../src/cli/browserConfig.js");
     const config = await buildBrowserConfig({
       ...options,
-      model: resolvedModel,
-      browserModelLabel: resolveBrowserModelLabel(cliModelArg, resolvedModel),
+      model: activeModel,
+      browserModelLabel: resolveBrowserModelLabel(cliModelArg, activeModel),
     });
     return resolvedOptions.browserResumeConversationUrl
       ? { ...config, resumeConversationUrl: resolvedOptions.browserResumeConversationUrl }
@@ -2210,7 +2217,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
       executeBrowser: createRemoteBrowserExecutor({ host: remoteHost, token: remoteToken }),
     };
     console.log(chalk.dim(`Routing browser automation to remote host ${remoteHost}`));
-  } else if (browserConfig && resolvedModel.startsWith("gemini")) {
+  } else if (browserConfig && activeModel.startsWith("gemini")) {
     const { createGeminiWebExecutor } = await import("../src/gemini-web/index.js");
     browserDeps = {
       executeBrowser: createGeminiWebExecutor({
@@ -2255,7 +2262,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   // - otherwise block for fast models (gpt-5.1, browser) and detach by default for pro API runs
   let waitPreference = resolveWaitFlag({
     waitFlag: options.wait,
-    model: resolvedModel,
+    model: activeModel,
     engine,
   });
   if (remoteHost && waitPreference === false) {
@@ -2302,14 +2309,14 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   const liveRunOptions: RunOracleOptions = {
     ...baseRunOptions,
     sessionId: sessionMeta.id,
-    effectiveModelId,
+    effectiveModelId: resolvedOptions.effectiveModelId ?? effectiveModelId,
   };
   const disableDetachEnv = process.env.ORACLE_NO_DETACH === "1";
   const detachAllowed = remoteExecutionActive
     ? false
     : shouldDetachSession({
         engine,
-        model: resolvedModel,
+        model: activeModel,
         waitPreference,
         disableDetachEnv,
       });
