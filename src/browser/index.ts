@@ -275,9 +275,19 @@ async function collectChatGptUiWarnings(
         ];
         const isVisible = (element) => {
           if (!(element instanceof HTMLElement)) return false;
-          const style = window.getComputedStyle(element);
-          if (!style || style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
-            return false;
+          let current = element;
+          while (current) {
+            const currentStyle = window.getComputedStyle(current);
+            if (
+              !currentStyle ||
+              currentStyle.display === 'none' ||
+              currentStyle.visibility === 'hidden' ||
+              currentStyle.visibility === 'collapse' ||
+              Number.parseFloat(currentStyle.opacity || '1') === 0
+            ) {
+              return false;
+            }
+            current = current.parentElement;
           }
           const rect = element.getBoundingClientRect();
           return rect.width > 0 && rect.height > 0;

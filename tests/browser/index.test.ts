@@ -259,6 +259,8 @@ describe("ChatGPT UI warning detection", () => {
     expect(expression).not.toContain("createTreeWalker");
     expect(expression).not.toContain('[class*="error" i]');
     expect(expression).not.toContain('[class*="warning" i]');
+    expect(expression).toContain("current = current.parentElement");
+    expect(expression).toContain("Number.parseFloat(currentStyle.opacity || '1') === 0");
   });
 
   test("redacts account and token-like values from warning details", async () => {
