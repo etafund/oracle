@@ -220,6 +220,32 @@ describe("mapConsultToRunOptions", () => {
     }
   });
 
+  test("rejects a broken symlink at the requested output path", () => {
+    const home = mkdtempSync(path.join(tmpdir(), "oracle-home-"));
+    const outside = mkdtempSync(path.join(tmpdir(), "oracle-outside-"));
+    setOracleHomeDirOverrideForTest(home);
+    try {
+      const generated = path.join(home, "generated");
+      mkdirSync(generated);
+      const target = path.join(generated, "img.png");
+      symlinkSync(path.join(outside, "created.png"), target);
+      expect(() =>
+        mapConsultToRunOptions({
+          prompt: "x",
+          files: [],
+          model: "gpt-5.5-pro",
+          engine: "browser",
+          generateImage: target,
+          userConfig: undefined,
+          env: {},
+        }),
+      ).toThrow(/unresolved symlink/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
   test("canonicalizes a symlinked parent that stays within the generated directory", () => {
     const home = mkdtempSync(path.join(tmpdir(), "oracle-home-"));
     setOracleHomeDirOverrideForTest(home);

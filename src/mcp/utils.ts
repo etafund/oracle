@@ -35,7 +35,19 @@ function resolveThroughSymlinks(target: string): string {
     try {
       const real = fs.realpathSync(current);
       return tail.length ? path.join(real, ...tail) : real;
-    } catch {
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+      try {
+        if (fs.lstatSync(current).isSymbolicLink()) {
+          throw new Error(`MCP output path contains an unresolved symlink: ${current}`);
+        }
+      } catch (lstatError) {
+        if ((lstatError as NodeJS.ErrnoException).code !== "ENOENT") {
+          throw lstatError;
+        }
+      }
       const parent = path.dirname(current);
       if (parent === current) {
         return resolved;
