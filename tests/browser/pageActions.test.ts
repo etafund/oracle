@@ -445,7 +445,7 @@ describe("ensureLoggedIn", () => {
     });
   });
 
-  test("does not accept plain unauthorized backend responses with stale app DOM", async () => {
+  test("accepts plain unauthorized backend responses with authenticated app DOM", async () => {
     await expect(
       runLoginProbeForLabels([], {
         fetchStatus: 401,
@@ -453,7 +453,7 @@ describe("ensureLoggedIn", () => {
         appSignal: "profile",
       }),
     ).resolves.toMatchObject({
-      ok: false,
+      ok: true,
       status: 401,
       appAuthenticated: true,
     });
@@ -501,7 +501,7 @@ describe("ensureLoggedIn", () => {
     });
   });
 
-  test("does not accept plain forbidden backend responses without Cloudflare markers", async () => {
+  test("accepts plain forbidden backend responses with authenticated app DOM", async () => {
     await expect(
       runLoginProbeForLabels([], {
         fetchStatus: 403,
@@ -509,7 +509,7 @@ describe("ensureLoggedIn", () => {
         appSignal: "profile",
       }),
     ).resolves.toMatchObject({
-      ok: false,
+      ok: true,
       status: 403,
       cfBlocked: false,
       appAuthenticated: true,
@@ -559,7 +559,7 @@ describe("ensureLoggedIn", () => {
     });
   });
 
-  test("does not keep stale Cloudflare state after a later unauthorized response", async () => {
+  test("accepts a later unauthorized response when authenticated app DOM remains visible", async () => {
     await expect(
       runLoginProbeForLabels([], {
         fetchStatuses: [403, 401],
@@ -569,7 +569,7 @@ describe("ensureLoggedIn", () => {
         probeTimeoutMs: 500,
       }),
     ).resolves.toMatchObject({
-      ok: false,
+      ok: true,
       status: 401,
       cfBlocked: false,
       appAuthenticated: true,
