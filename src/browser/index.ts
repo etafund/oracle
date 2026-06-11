@@ -29,6 +29,7 @@ import {
   ensureNotBlocked,
   ensureLoggedIn,
   ensurePromptReady,
+  waitForResumedConversationHydration,
   installJavaScriptDialogAutoDismissal,
   ensureModelSelection,
   clearPromptComposer,
@@ -80,6 +81,7 @@ import {
   saveDeepResearchReportArtifact,
 } from "./artifacts.js";
 import { collectGeneratedImageArtifacts } from "./chatgptImages.js";
+import { collectChatGptFileArtifacts } from "./chatgptFiles.js";
 import { runProviderSubmissionFlow } from "./providerDomFlow.js";
 import { chatgptDomProvider } from "./providers/index.js";
 import { resolveAttachRunningConnection } from "./attachRunning.js";
@@ -717,6 +719,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
   const fallbackSubmission = options.fallbackSubmission;
 
   let config = resolveBrowserConfig(options.config);
+  const isResumingConversation = Boolean(config.resumeConversationUrl);
   const followUpPrompts = normalizeBrowserFollowUpPrompts(options.followUpPrompts);
   if (config.researchMode === "deep" && followUpPrompts.length > 0) {
     throw new BrowserAutomationError(
@@ -1044,9 +1047,22 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     }
 
     if (config.browserTabRef) {
+      if (isResumingConversation) {
+        await raceWithDisconnect(
+          navigateToChatGPT(Page, Runtime, config.resumeConversationUrl as string, logger),
+        );
+      }
       await raceWithDisconnect(ensureNotBlocked(Runtime, config.headless, logger));
       await raceWithDisconnect(ensureLoggedIn(Runtime, logger));
       await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+      if (isResumingConversation) {
+        await raceWithDisconnect(
+          waitForResumedConversationHydration(Runtime, config.inputTimeoutMs, logger, {
+            requirePriorTurns: true,
+            expectedConversationUrl: config.resumeConversationUrl as string,
+          }),
+        );
+      }
     } else {
       const baseUrl = CHATGPT_URL;
       // First load the base ChatGPT homepage to satisfy potential interstitials,
@@ -1066,7 +1082,13 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         }),
       );
 
-      if (config.url !== baseUrl) {
+      if (isResumingConversation) {
+        await raceWithDisconnect(
+          navigateToChatGPT(Page, Runtime, config.resumeConversationUrl as string, logger),
+        );
+        await raceWithDisconnect(ensureNotBlocked(Runtime, config.headless, logger));
+        await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+      } else if (config.url !== baseUrl) {
         await raceWithDisconnect(
           navigateToPromptReadyWithFallback(Page, Runtime, {
             url: config.url,
@@ -1078,6 +1100,19 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         );
       } else {
         await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+      }
+      if (isResumingConversation) {
+        // A resumed thread loads its prior history after navigation; ChatGPT can reset the
+        // composer mid-hydration and wipe a freshly-typed prompt. Wait for hydration to settle
+        // and re-confirm the composer before the prompt is typed/submitted below. Wrapped in
+        // raceWithDisconnect so a dropped client aborts immediately instead of polling to the
+        // hydration deadline. Shared with the remote path via the same helper.
+        await raceWithDisconnect(
+          waitForResumedConversationHydration(Runtime, config.inputTimeoutMs, logger, {
+            requirePriorTurns: true,
+            expectedConversationUrl: config.resumeConversationUrl as string,
+          }),
+        );
       }
     }
     logger(
@@ -1158,7 +1193,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     };
     await captureRuntimeSnapshot();
     const modelStrategy = config.modelStrategy ?? DEFAULT_MODEL_STRATEGY;
-    if (config.desiredModel && modelStrategy !== "ignore") {
+    if (config.desiredModel && modelStrategy !== "ignore" && !isResumingConversation) {
       modelSelectionEvidence = await raceWithDisconnect(
         withRetries(
           () => ensureModelSelection(Runtime, config.desiredModel as string, logger, modelStrategy),
@@ -1186,12 +1221,16 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       logger(
         `Prompt textarea ready (after model switch, ${promptText.length.toLocaleString()} chars queued)`,
       );
-    } else if (modelStrategy === "ignore") {
+    } else if (modelStrategy === "ignore" || isResumingConversation) {
       modelSelectionEvidence = buildSkippedModelSelectionEvidence(
         config.desiredModel,
         modelStrategy,
       );
-      logger("Model picker: skipped (strategy=ignore)");
+      logger(
+        isResumingConversation
+          ? "Model picker: skipped (resumed conversation)"
+          : "Model picker: skipped (strategy=ignore)",
+      );
     }
     const deepResearch = config.researchMode === "deep";
     // Handle thinking time selection if specified. Deep Research owns its own effort flow.
@@ -1859,7 +1898,19 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     if (imageArtifacts.markdownSuffix) {
       answerMarkdown += imageArtifacts.markdownSuffix;
     }
+    const fileArtifacts = await collectChatGptFileArtifacts({
+      Browser: client.Browser,
+      Client: client,
+      Page,
+      Runtime,
+      Network,
+      answerText: [answerText, answerMarkdown, answerHtml].filter(Boolean).join("\n"),
+      logger,
+      minTurnIndex: imageArtifactMinTurnIndex,
+      sessionId: options.sessionId,
+    });
     const savedImageArtifacts = appendArtifacts(undefined, imageArtifacts.savedImages);
+    const savedBrowserArtifacts = appendArtifacts(savedImageArtifacts, fileArtifacts.savedFiles);
     const transcriptArtifact = await saveOptionalArtifact(
       () =>
         saveBrowserTranscriptArtifact({
@@ -1867,12 +1918,12 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           prompt: promptText,
           answerMarkdown,
           conversationUrl: lastUrl,
-          artifacts: savedImageArtifacts,
+          artifacts: savedBrowserArtifacts,
           logger,
         }),
       logger,
     );
-    const savedArtifacts = appendArtifacts(savedImageArtifacts, [transcriptArtifact]);
+    const savedArtifacts = appendArtifacts(savedBrowserArtifacts, [transcriptArtifact]);
     const archive = await maybeArchiveCompletedConversation({
       Runtime,
       logger,
@@ -1881,7 +1932,8 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       followUpCount: followUpPrompts.length,
       requiredArtifactsSaved:
         Boolean(transcriptArtifact) &&
-        imageArtifacts.savedImages.length === imageArtifacts.imageCount,
+        imageArtifacts.savedImages.length === imageArtifacts.imageCount &&
+        fileArtifacts.savedFiles.length === fileArtifacts.fileCount,
     });
     runStatus = "complete";
     const durationMs = Date.now() - startedAt;
@@ -1894,6 +1946,8 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       artifacts: savedArtifacts,
       generatedImages: imageArtifacts.generatedImages,
       savedImages: imageArtifacts.savedImages,
+      downloadableFiles: fileArtifacts.files,
+      savedFiles: fileArtifacts.savedFiles,
       archive,
       modelSelection: modelSelectionEvidence,
       tookMs: durationMs,
@@ -2359,7 +2413,17 @@ async function maybeReuseRunningChrome(
   let pid = await readChromePid(userDataDir);
   if (!port) {
     const discovered = await findRunningChromeDebugTargetForProfile(userDataDir);
-    if (!discovered) return null;
+    if (!discovered) {
+      if (pid) {
+        logger(
+          `No reachable Chrome DevTools target found for ${userDataDir}; clearing stale profile state before launching new Chrome.`,
+        );
+        await cleanupStaleProfileState(userDataDir, logger, {
+          lockRemovalMode: "if_oracle_pid_dead",
+        });
+      }
+      return null;
+    }
     const discoveredProbe = await (options.probe ?? verifyDevToolsReachable)({
       port: discovered.port,
     });
@@ -2367,6 +2431,9 @@ async function maybeReuseRunningChrome(
       logger(
         `Discovered Chrome for ${userDataDir} on port ${discovered.port} but it was unreachable (${discoveredProbe.error}); launching new Chrome.`,
       );
+      await cleanupStaleProfileState(userDataDir, logger, {
+        lockRemovalMode: "if_oracle_pid_dead",
+      });
       return null;
     }
     await writeDevToolsActivePort(userDataDir, discovered.port);
@@ -2535,15 +2602,19 @@ async function runRemoteBrowserMode(
     // Skip cookie sync for remote Chrome - it already has cookies
     logger("Skipping cookie sync for remote Chrome (using existing session)");
 
-    if (!attachedExistingTab) {
+    if (config.resumeConversationUrl) {
+      await navigateToChatGPT(Page, Runtime, config.resumeConversationUrl, logger);
+    } else if (!attachedExistingTab) {
       await navigateToChatGPT(Page, Runtime, config.url, logger);
-      await ensureNotBlocked(Runtime, config.headless, logger);
-      await ensureLoggedIn(Runtime, logger, { remoteSession: true });
-      await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
-    } else {
-      await ensureNotBlocked(Runtime, config.headless, logger);
-      await ensureLoggedIn(Runtime, logger, { remoteSession: true });
-      await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
+    }
+    await ensureNotBlocked(Runtime, config.headless, logger);
+    await ensureLoggedIn(Runtime, logger, { remoteSession: true });
+    await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
+    if (config.resumeConversationUrl) {
+      await waitForResumedConversationHydration(Runtime, config.inputTimeoutMs, logger, {
+        requirePriorTurns: true,
+        expectedConversationUrl: config.resumeConversationUrl,
+      });
     }
     logger(
       `Prompt textarea ready (initial focus, ${promptText.length.toLocaleString()} chars queued)`,
@@ -2562,7 +2633,7 @@ async function runRemoteBrowserMode(
     }
 
     const modelStrategy = config.modelStrategy ?? DEFAULT_MODEL_STRATEGY;
-    if (config.desiredModel && modelStrategy !== "ignore") {
+    if (config.desiredModel && modelStrategy !== "ignore" && !config.resumeConversationUrl) {
       modelSelectionEvidence = await withRetries(
         () => ensureModelSelection(Runtime, config.desiredModel as string, logger, modelStrategy),
         {
@@ -2581,12 +2652,16 @@ async function runRemoteBrowserMode(
       logger(
         `Prompt textarea ready (after model switch, ${promptText.length.toLocaleString()} chars queued)`,
       );
-    } else if (modelStrategy === "ignore") {
+    } else if (modelStrategy === "ignore" || config.resumeConversationUrl) {
       modelSelectionEvidence = buildSkippedModelSelectionEvidence(
         config.desiredModel,
         modelStrategy,
       );
-      logger("Model picker: skipped (strategy=ignore)");
+      logger(
+        config.resumeConversationUrl
+          ? "Model picker: skipped (resumed conversation)"
+          : "Model picker: skipped (strategy=ignore)",
+      );
     }
     const deepResearch = config.researchMode === "deep";
     // Handle thinking time selection if specified. Deep Research owns its own effort flow.
@@ -3148,7 +3223,19 @@ async function runRemoteBrowserMode(
     if (imageArtifacts.markdownSuffix) {
       answerMarkdown += imageArtifacts.markdownSuffix;
     }
+    const fileArtifacts = await collectChatGptFileArtifacts({
+      Browser: client.Browser,
+      Client: client,
+      Page,
+      Runtime,
+      Network,
+      answerText: [answerText, answerMarkdown, answerHtml].filter(Boolean).join("\n"),
+      logger,
+      minTurnIndex: imageArtifactMinTurnIndex,
+      sessionId: options.sessionId,
+    });
     const savedImageArtifacts = appendArtifacts(undefined, imageArtifacts.savedImages);
+    const savedBrowserArtifacts = appendArtifacts(savedImageArtifacts, fileArtifacts.savedFiles);
     const transcriptArtifact = await saveOptionalArtifact(
       () =>
         saveBrowserTranscriptArtifact({
@@ -3156,12 +3243,12 @@ async function runRemoteBrowserMode(
           prompt: promptText,
           answerMarkdown,
           conversationUrl: lastUrl,
-          artifacts: savedImageArtifacts,
+          artifacts: savedBrowserArtifacts,
           logger,
         }),
       logger,
     );
-    const savedArtifacts = appendArtifacts(savedImageArtifacts, [transcriptArtifact]);
+    const savedArtifacts = appendArtifacts(savedBrowserArtifacts, [transcriptArtifact]);
     const archive = await maybeArchiveCompletedConversation({
       Runtime,
       logger,
@@ -3170,7 +3257,8 @@ async function runRemoteBrowserMode(
       followUpCount: followUpPrompts.length,
       requiredArtifactsSaved:
         Boolean(transcriptArtifact) &&
-        imageArtifacts.savedImages.length === imageArtifacts.imageCount,
+        imageArtifacts.savedImages.length === imageArtifacts.imageCount &&
+        fileArtifacts.savedFiles.length === fileArtifacts.fileCount,
     });
     const durationMs = Date.now() - startedAt;
     const answerChars = answerText.length;
@@ -3196,6 +3284,10 @@ async function runRemoteBrowserMode(
       conversationId: lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined,
       promptSubmitted,
       artifacts: savedArtifacts,
+      generatedImages: imageArtifacts.generatedImages,
+      savedImages: imageArtifacts.savedImages,
+      downloadableFiles: fileArtifacts.files,
+      savedFiles: fileArtifacts.savedFiles,
       archive,
       modelSelection: modelSelectionEvidence,
       controllerPid: process.pid,

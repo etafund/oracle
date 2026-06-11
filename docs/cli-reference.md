@@ -37,10 +37,10 @@ This is the curated cheatsheet. The authoritative source is always `oracle --hel
 
 ## Followup / lineage
 
-| Flag                            | Purpose                                       |
-| ------------------------------- | --------------------------------------------- |
-| `--followup <id\|slug\|resp_…>` | Continue an OpenAI/Azure Responses API run.   |
-| `--followup-model <model>`      | Pick lineage when the parent used `--models`. |
+| Flag                            | Purpose                                                                 |
+| ------------------------------- | ----------------------------------------------------------------------- |
+| `--followup <id\|slug\|resp_…>` | Continue a saved ChatGPT browser or OpenAI/Azure Responses API session. |
+| `--followup-model <model>`      | Pick API lineage when the parent used `--models`.                       |
 
 ## Run control
 
@@ -142,6 +142,7 @@ See [Browser Mode](browser-mode.md) for usage.
 | `ORACLE_BROWSER_COOKIES_JSON`       | Inline ChatGPT cookies (JSON / base64).                 |
 | `ORACLE_BROWSER_COOKIES_FILE`       | Path to cookies JSON.                                   |
 | `ORACLE_BROWSER_ATTACHMENT_TIMEOUT` | Attachment upload/readiness timeout for browser mode.   |
+| `ORACLE_CHATGPT_ACCOUNT_EMAIL`      | Exact saved account for the Welcome back picker.        |
 
 ## See also
 
