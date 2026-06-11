@@ -224,6 +224,10 @@ describe("ChatGPT UI warning detection", () => {
     ).toBe("rate_limit");
   });
 
+  test("classifies bare retry-later warnings as temporary unavailability", () => {
+    expect(__test__.classifyChatGptUiWarningText("Try again later.")).toBe("temporary_unavailable");
+  });
+
   test("collects visible warning candidates from the browser DOM", async () => {
     const Runtime = {
       evaluate: vi.fn().mockResolvedValue({

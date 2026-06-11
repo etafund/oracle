@@ -203,7 +203,7 @@ function classifyChatGptUiWarningText(text: string): ChatGptUiWarningType | null
     /\btemporarily unavailable\b/.test(normalized) ||
     /\bsomething went wrong\b/.test(normalized) ||
     /\bfailed to generate\b/.test(normalized) ||
-    /\bplease try again later\b/.test(normalized)
+    /\btry again later\b/.test(normalized)
   ) {
     return "temporary_unavailable";
   }
