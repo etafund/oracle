@@ -82,9 +82,14 @@ export interface FileContent {
 }
 
 export interface FileSection {
+  /** Legacy 1-based file number retained for callers that inspect createFileSections() output. */
   index: number;
   absolutePath: string;
   displayPath: string;
+  /**
+   * Legacy raw fenced section text using the historical `### File N:` heading.
+   * Generated model prompt context should render from displayPath/content instead.
+   */
   sectionText: string;
   content: string;
 }
@@ -182,6 +187,8 @@ export interface RunOracleOptions {
    * the same ChatGPT conversation.
    */
   browserFollowUps?: string[];
+  /** Browser-only: open this existing ChatGPT conversation before submitting the prompt. */
+  browserResumeConversationUrl?: string;
   background?: boolean;
   /** Optional absolute path to save only the assistant's final text output. */
   writeOutputPath?: string;

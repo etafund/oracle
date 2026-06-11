@@ -74,6 +74,50 @@ describe("runBrowserSessionExecution", () => {
     expect(log).toHaveBeenCalled();
   });
 
+  test("passes browser resume conversation URL to executeBrowser", async () => {
+    const executeBrowser = vi.fn(async () => ({
+      answerText: "ok",
+      answerMarkdown: "ok",
+      tookMs: 1000,
+      answerTokens: 12,
+      answerChars: 20,
+    }));
+
+    await runBrowserSessionExecution(
+      {
+        runOptions: {
+          ...baseRunOptions,
+          browserResumeConversationUrl: "https://chatgpt.com/c/resume-me",
+        },
+        browserConfig: {},
+        cwd: "/repo",
+        log: vi.fn(),
+      },
+      {
+        assemblePrompt: async () => ({
+          markdown: "prompt",
+          composerText: "prompt",
+          estimatedInputTokens: 42,
+          attachments: [],
+          inlineFileCount: 0,
+          tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: "auto",
+          attachmentMode: "inline",
+          fallback: null,
+        }),
+        executeBrowser,
+      },
+    );
+
+    expect(executeBrowser).toHaveBeenCalledWith(
+      expect.objectContaining({
+        config: expect.objectContaining({
+          resumeConversationUrl: "https://chatgpt.com/c/resume-me",
+        }),
+      }),
+    );
+  });
+
   test("logs and returns browser model selection evidence", async () => {
     const log = vi.fn();
     const result = await runBrowserSessionExecution(
@@ -121,6 +165,46 @@ describe("runBrowserSessionExecution", () => {
     });
     expect(log).toHaveBeenCalledWith(
       expect.stringContaining("[browser] Model selection evidence: requested=GPT-5.5 Pro"),
+    );
+  });
+
+  test("prints model-picker diagnostics without verbose mode", async () => {
+    const log = vi.fn();
+
+    await runBrowserSessionExecution(
+      {
+        runOptions: baseRunOptions,
+        browserConfig: baseConfig,
+        cwd: "/repo",
+        log,
+      },
+      {
+        assemblePrompt: async () => ({
+          markdown: "prompt",
+          composerText: "prompt",
+          estimatedInputTokens: 42,
+          attachments: [],
+          inlineFileCount: 0,
+          tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: "auto",
+          attachmentMode: "inline",
+          fallback: null,
+        }),
+        executeBrowser: vi.fn(async ({ log: browserLog }) => {
+          browserLog('[browser] Model picker diagnostic: {"targetLevel":"extended"}');
+          return {
+            answerText: "ok",
+            answerMarkdown: "ok",
+            tookMs: 1000,
+            answerTokens: 1,
+            answerChars: 2,
+          };
+        }),
+      },
+    );
+
+    expect(log).toHaveBeenCalledWith(
+      '[browser] Model picker diagnostic: {"targetLevel":"extended"}',
     );
   });
 

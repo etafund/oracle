@@ -4,13 +4,31 @@
 
 ### Added
 
+- Browser: `oracle --followup <browser-session> -p ...` now safely reopens the exact saved ChatGPT conversation, inherits its browser profile/configuration/model, and fails closed before submitting to the wrong thread; browser failures/timeouts print `--render`, `--live`, and `--harvest` reattach commands with the real session slug. Thanks @hbruceweaver and @pdurlej!
+- Browser: clean stale manual-login Chrome profile locks before relaunching browser and Project Sources runs, while preserving locks when the recorded Chrome process is still alive. Thanks @derekszen!
 - Browser: `oracle session <id> --harvest` and `--live` now auto-recover when the original Chrome has been closed by relaunching the manual-login profile and reopening the saved conversation URL, then retrying the harvest against the recovered tab. Resolves the failure mode where a long GPT-5 Pro Extended response completed in the background after the CLI's 20-minute wall expired and the conversation was archived. Recovery URL selection prefers `browser.harvest.url` over `browser.runtime.tabUrl` and is gated by a shared ChatGPT-conversation-URL check (rejects home, project shell, and external URLs so the persistent profile can't be navigated to the wrong page from stale metadata). Opt out with `--no-recover` on the `session` subcommand.
-- MCP: add a dedicated `chatgpt_image` tool plus `generateImage` / `outputPath` support in `consult` so agent callers can trigger the ChatGPT image-aware wait/download path used by CLI `--generate-image`; saved image artifacts now come back in `structuredContent.images`. The `chatgpt_image` output reuses the typed `consult` output contract (`images` / `artifacts` / `resolved`) and its default output path carries a random suffix so concurrent agent calls cannot collide.
+- Browser: persist ChatGPT-generated downloadable files such as CSV, PDF, ZIP, wheel, and source-distribution outputs beside the session transcript, limited to current-run assistant artifacts and known ChatGPT file endpoints. Fixes #244. Thanks @pdurlej!
+- MCP: add a dedicated `chatgpt_image` tool plus `generateImage` / `outputPath` support in `consult` so agent callers can trigger ChatGPT image generation and receive saved local artifacts in typed structured output. Thanks @umutkeltek!
+
+### Fixed
+
+- Browser: restore Deep Research report capture from ChatGPT's out-of-process report iframe, prefer completed page-scoped reads with legacy frame fallback, and bind/filter CDP auto-attach by the active page session so other tabs or unrelated iframes cannot be harvested. Thanks @umutkeltek!
+- API/OpenRouter: parse catalog prompt/completion prices as USD-per-token strings, preserving model/context metadata and accurate cost estimates while malformed prices fall back cleanly. Thanks @devYRPauli!
+- Browser: honor `--browser-model-strategy current` when ChatGPT exposes a usable composer without a model-picker button, record unavailable current-model labels honestly, and keep strict selection failures actionable. Thanks @m-rousseau!
+- Browser: select and verify requested thinking effort from ChatGPT's standalone Pro/Thinking composer pills and earlier Intelligence/per-model picker layouts, keep Pro Extended fail-closed when the selected effort cannot be confirmed, and ignore status-only assistant turns such as `Pro thinking` only while generation is active; picker failures now emit a bounded, redacted diagnostic in normal session logs. Thanks @umutkeltek!
+- Browser: surface visible ChatGPT rate-limit, temporary-unavailable, and authentication/challenge warnings in assistant-timeout errors and session metadata instead of reporting only a generic timeout. Thanks @derekszen!
+- Browser: verify ChatGPT login through the cookie-authenticated `/api/auth/session` endpoint before falling back to the legacy `/backend-api/me` probe and strong app-shell signals, avoiding false “session not detected” failures when the legacy endpoint requires bearer auth. Fixes #241. Thanks @hexsprite and @orbitingflea!
+- Browser: select ChatGPT “Welcome back” accounts only by exact configured email, keep the address out of logs, and fail closed on ambiguous saved accounts. Thanks @derekszen!
+- Browser: relax pre-send readiness for Oracle-generated `attachments-bundle.txt` and `.zip` uploads when ChatGPT exposes only the `attachments-bundle` stem, while keeping filename-boundary checks so unrelated attachment names do not satisfy the gate. Thanks @ig0rsky!
+
+### Changed
+
+- CLI/API/Browser: render generated prompt, inline, and text-bundle context with stable line numbers so model answers can cite source as `path:line` or `path:line-line`, while preserving indexed `buildPrompt(...)` headings, raw browser uploads, ZIP entries, `createFileSections().sectionText`, and the default `formatFileSection(...)` output. Callers can request numbered output directly with `formatFileSection(..., { lineNumbers: true })`. Thanks @tristanmanchester!
 
 ### Security
 
-- MCP: constrain agent-supplied `generateImage` / `outputPath` to the Oracle home directory (`ORACLE_HOME_DIR`) by default so an MCP caller cannot write generated images or saved responses to arbitrary host paths. `..` traversal is rejected, and the boundary check resolves symlinks in the existing path prefix (via `realpath`) so a symlinked parent under the Oracle home cannot smuggle a write outside it. Set `ORACLE_MCP_ALLOW_EXTERNAL_OUTPUT=1` to opt into external output paths as an explicit decision. CLI `--generate-image` / `--output` are unaffected.
-- MCP: `chatgpt_image` / `consult` image output fails closed when a remote browser service is configured (`ORACLE_REMOTE_HOST`), since the remote executor does not transfer image artifacts back and the `structuredContent.images` contract could not be fulfilled. The run is rejected with a clear error instead of silently returning no images.
+- MCP: constrain image output paths to a symlink-safe local boundary by default, with explicit opt-in required for external paths.
+- MCP: reject image output through the remote browser service until generated artifacts can be transferred back to the caller.
 
 ## 0.13.0 — 2026-05-22
 
