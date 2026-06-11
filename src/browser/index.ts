@@ -1,4 +1,4 @@
-import { mkdtemp, rm, mkdir, readFile } from "node:fs/promises";
+import { mkdtemp, rm, mkdir } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import net from "node:net";
@@ -11,8 +11,6 @@ import type {
   BrowserAttachment,
   ResolvedBrowserConfig,
   BrowserArchiveResult,
-  BrowserDownloadableFile,
-  SavedBrowserFile,
 } from "./types.js";
 import {
   launchChrome,
@@ -538,61 +536,6 @@ function buildSkippedModelSelectionEvidence(
     source: "config",
     capturedAt: new Date().toISOString(),
   };
-}
-
-type ChatGptFileArtifactCollection = Awaited<ReturnType<typeof collectChatGptFileArtifacts>>;
-
-function mergeChatGptFileArtifactCollections(
-  first: ChatGptFileArtifactCollection,
-  second: ChatGptFileArtifactCollection,
-): ChatGptFileArtifactCollection {
-  const files = new Map<string, BrowserDownloadableFile>();
-  for (const file of [...first.files, ...second.files]) {
-    files.set(file.downloadUrl ?? file.sandboxUrl ?? file.url ?? file.filename ?? "", file);
-  }
-  const savedFiles = new Map<string, SavedBrowserFile>();
-  for (const file of [...first.savedFiles, ...second.savedFiles]) {
-    savedFiles.set(file.path, file);
-  }
-  return {
-    files: [...files.values()],
-    savedFiles: [...savedFiles.values()],
-    fileCount: Math.max(first.fileCount, second.fileCount, files.size),
-  };
-}
-
-async function collectLateChatGptFileArtifactsFromTranscript(params: {
-  Browser?: ChromeClient["Browser"];
-  Client?: ChromeClient;
-  Page?: ChromeClient["Page"];
-  Runtime: ChromeClient["Runtime"];
-  Network: ChromeClient["Network"];
-  current: ChatGptFileArtifactCollection;
-  logger?: BrowserLogger;
-  minTurnIndex?: number | null;
-  sessionId?: string;
-  transcriptPath?: string;
-}): Promise<ChatGptFileArtifactCollection> {
-  if (params.current.savedFiles.length > 0 || !params.transcriptPath) {
-    return params.current;
-  }
-  const transcriptText = await readFile(params.transcriptPath, "utf8").catch(() => "");
-  if (!transcriptText.includes("sandbox:/mnt/data/") && !transcriptText.includes("/backend-api/")) {
-    return params.current;
-  }
-  params.logger?.("[browser] Retrying downloadable file collection from saved transcript.");
-  const recovered = await collectChatGptFileArtifacts({
-    Browser: params.Browser,
-    Client: params.Client,
-    Page: params.Page,
-    Runtime: params.Runtime,
-    Network: params.Network,
-    answerText: transcriptText,
-    logger: params.logger,
-    minTurnIndex: params.minTurnIndex,
-    sessionId: params.sessionId,
-  });
-  return mergeChatGptFileArtifactCollections(params.current, recovered);
 }
 
 export async function runBrowserMode(options: BrowserRunOptions): Promise<BrowserRunResult> {
@@ -1747,7 +1690,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     if (imageArtifacts.markdownSuffix) {
       answerMarkdown += imageArtifacts.markdownSuffix;
     }
-    let fileArtifacts = await collectChatGptFileArtifacts({
+    const fileArtifacts = await collectChatGptFileArtifacts({
       Browser: client.Browser,
       Client: client,
       Page,
@@ -1759,7 +1702,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       sessionId: options.sessionId,
     });
     const savedImageArtifacts = appendArtifacts(undefined, imageArtifacts.savedImages);
-    let savedBrowserArtifacts = appendArtifacts(savedImageArtifacts, fileArtifacts.savedFiles);
+    const savedBrowserArtifacts = appendArtifacts(savedImageArtifacts, fileArtifacts.savedFiles);
     const transcriptArtifact = await saveOptionalArtifact(
       () =>
         saveBrowserTranscriptArtifact({
@@ -1772,19 +1715,6 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         }),
       logger,
     );
-    fileArtifacts = await collectLateChatGptFileArtifactsFromTranscript({
-      Browser: client.Browser,
-      Client: client,
-      Page,
-      Runtime,
-      Network,
-      current: fileArtifacts,
-      logger,
-      minTurnIndex: imageArtifactMinTurnIndex,
-      sessionId: options.sessionId,
-      transcriptPath: transcriptArtifact?.path,
-    });
-    savedBrowserArtifacts = appendArtifacts(savedImageArtifacts, fileArtifacts.savedFiles);
     const savedArtifacts = appendArtifacts(savedBrowserArtifacts, [transcriptArtifact]);
     const archive = await maybeArchiveCompletedConversation({
       Runtime,
@@ -3064,7 +2994,7 @@ async function runRemoteBrowserMode(
     if (imageArtifacts.markdownSuffix) {
       answerMarkdown += imageArtifacts.markdownSuffix;
     }
-    let fileArtifacts = await collectChatGptFileArtifacts({
+    const fileArtifacts = await collectChatGptFileArtifacts({
       Browser: client.Browser,
       Client: client,
       Page,
@@ -3076,7 +3006,7 @@ async function runRemoteBrowserMode(
       sessionId: options.sessionId,
     });
     const savedImageArtifacts = appendArtifacts(undefined, imageArtifacts.savedImages);
-    let savedBrowserArtifacts = appendArtifacts(savedImageArtifacts, fileArtifacts.savedFiles);
+    const savedBrowserArtifacts = appendArtifacts(savedImageArtifacts, fileArtifacts.savedFiles);
     const transcriptArtifact = await saveOptionalArtifact(
       () =>
         saveBrowserTranscriptArtifact({
@@ -3089,19 +3019,6 @@ async function runRemoteBrowserMode(
         }),
       logger,
     );
-    fileArtifacts = await collectLateChatGptFileArtifactsFromTranscript({
-      Browser: client.Browser,
-      Client: client,
-      Page,
-      Runtime,
-      Network,
-      current: fileArtifacts,
-      logger,
-      minTurnIndex: imageArtifactMinTurnIndex,
-      sessionId: options.sessionId,
-      transcriptPath: transcriptArtifact?.path,
-    });
-    savedBrowserArtifacts = appendArtifacts(savedImageArtifacts, fileArtifacts.savedFiles);
     const savedArtifacts = appendArtifacts(savedBrowserArtifacts, [transcriptArtifact]);
     const archive = await maybeArchiveCompletedConversation({
       Runtime,
