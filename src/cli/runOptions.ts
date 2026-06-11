@@ -62,7 +62,6 @@ export function resolveRunOptionsFromConfig({
   const isCodex = apiModel.startsWith("gpt-5.1-codex");
   const isClaude = apiModel.startsWith("claude");
   const isGrok = apiModel.startsWith("grok");
-  const isGeminiApiOnly = apiModel === "gemini-3.1-pro";
 
   const engineWasBrowser = resolvedEngine === "browser";
   const allModels: ModelName[] =
@@ -71,13 +70,6 @@ export function resolveRunOptionsFromConfig({
       : [apiModel];
   const browserCompatibilityModels: ModelName[] =
     normalizedRequestedModels.length > 0 ? allModels : [browserModel];
-  const includesGeminiApiOnly = allModels.some((m) => m === "gemini-3.1-pro");
-  if (browserEngineRequested && includesGeminiApiOnly) {
-    throw new PromptValidationError(
-      "gemini-3.1-pro is API-only today. Use --engine api or switch to gemini-3-pro for Gemini web.",
-      { engine: "browser", models: allModels },
-    );
-  }
   const isBrowserCompatible = (m: string) => m.startsWith("gpt-") || m.startsWith("gemini");
   const hasNonBrowserCompatibleTarget =
     browserEngineRequested && browserCompatibilityModels.some((m) => !isBrowserCompatible(m));
@@ -93,15 +85,9 @@ export function resolveRunOptionsFromConfig({
     Boolean(azure?.endpoint) &&
     !browserEngineRequested &&
     allModels.some(isAzureOpenAICandidateModel);
-  const engineCoercedToApi =
-    engineWasBrowser && (isCodex || isClaude || isGrok || isGeminiApiOnly || azureAutoApi);
+  const engineCoercedToApi = engineWasBrowser && (isCodex || isClaude || isGrok || azureAutoApi);
   const fixedEngine: EngineMode =
-    isCodex ||
-    isClaude ||
-    isGrok ||
-    isGeminiApiOnly ||
-    azureAutoApi ||
-    normalizedRequestedModels.length > 0
+    isCodex || isClaude || isGrok || azureAutoApi || normalizedRequestedModels.length > 0
       ? "api"
       : resolvedEngine;
   // Browser runs use ChatGPT picker labels/aliases; API runs must keep API model ids intact.

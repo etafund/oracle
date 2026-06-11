@@ -400,13 +400,13 @@ module.exports = () => ({
           "--prompt",
           "Gemini browser route check",
           "--model",
-          "gemini-3-pro",
+          "gemini-3.1-pro",
         ],
         { env },
       );
 
       expect(stdout).toContain("[preview] Oracle");
-      expect(stdout).toContain("browser mode (gemini-3-pro)");
+      expect(stdout).toContain("browser mode (gemini-3.1-pro)");
 
       await rm(oracleHome, { recursive: true, force: true });
     },

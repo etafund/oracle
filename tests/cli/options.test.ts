@@ -207,6 +207,8 @@ describe("resolveApiModel", () => {
     expect(resolveApiModel("opus")).toBe("claude-4.1-opus");
     expect(resolveApiModel("CLAUDE")).toBe("claude-4.6-sonnet");
     expect(resolveApiModel("Gemini")).toBe("gemini-3-pro");
+    expect(resolveApiModel("Gemini 3.5 Flash")).toBe("gemini-3.5-flash");
+    expect(resolveApiModel("Gemini 3.1 Flash-Lite")).toBe("gemini-3.1-flash-lite");
     expect(resolveApiModel("gemini-3.1-pro")).toBe("gemini-3.1-pro");
     expect(resolveApiModel("Gemini 3.1 Pro")).toBe("gemini-3.1-pro");
     expect(resolveApiModel("grok")).toBe("grok-4.1");
@@ -247,6 +249,8 @@ describe("inferModelFromLabel", () => {
     expect(inferModelFromLabel("gpt-5.1")).toBe("gpt-5.1");
     expect(inferModelFromLabel("gpt-5.1-codex")).toBe("gpt-5.1-codex");
     expect(inferModelFromLabel("gemini-3.1-pro")).toBe("gemini-3.1-pro");
+    expect(inferModelFromLabel("gemini-3.5-flash")).toBe("gemini-3.5-flash");
+    expect(inferModelFromLabel("gemini-3.1-flash-lite")).toBe("gemini-3.1-flash-lite");
   });
 
   test("preserves provider-qualified ids instead of remapping them to built-ins", () => {
@@ -286,6 +290,8 @@ describe("inferModelFromLabel", () => {
 
   test("preserves Gemini 3.1 labels", () => {
     expect(inferModelFromLabel("Gemini 3.1 Pro")).toBe("gemini-3.1-pro");
+    expect(inferModelFromLabel("Gemini 3.5 Flash")).toBe("gemini-3.5-flash");
+    expect(inferModelFromLabel("Gemini 3.1 Flash-Lite")).toBe("gemini-3.1-flash-lite");
   });
 
   test("infers Codex labels", () => {
