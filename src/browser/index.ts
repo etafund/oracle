@@ -29,6 +29,7 @@ import {
   ensureNotBlocked,
   ensureLoggedIn,
   ensurePromptReady,
+  waitForResumedConversationHydration,
   installJavaScriptDialogAutoDismissal,
   ensureModelSelection,
   clearPromptComposer,
@@ -80,6 +81,7 @@ import {
   saveDeepResearchReportArtifact,
 } from "./artifacts.js";
 import { collectGeneratedImageArtifacts } from "./chatgptImages.js";
+import { collectChatGptFileArtifacts } from "./chatgptFiles.js";
 import { runProviderSubmissionFlow } from "./providerDomFlow.js";
 import { chatgptDomProvider } from "./providers/index.js";
 import { resolveAttachRunningConnection } from "./attachRunning.js";
@@ -169,6 +171,232 @@ export function classifyPreservedBrowserErrorForTest(
 // effort. This is wrong for lower-tier plans ($100/mo Pro) where selecting "Pro"
 // defaults to Standard effort. ensureThinkingTime() already handles the
 // "already-selected" case as a no-op, so always attempting it is safe.
+
+type ChatGptUiWarningType = "rate_limit" | "temporary_unavailable" | "auth_or_challenge";
+
+type ChatGptUiWarning = {
+  type: ChatGptUiWarningType;
+  message: string;
+  source?: string | null;
+  role?: string | null;
+  ariaLive?: string | null;
+  selector?: string | null;
+};
+
+const MAX_CHATGPT_UI_WARNING_CHARS = 300;
+const MAX_CHATGPT_UI_WARNINGS = 3;
+
+function classifyChatGptUiWarningText(text: string): ChatGptUiWarningType | null {
+  const normalized = text.toLowerCase();
+  if (
+    /\btoo many requests\b/.test(normalized) ||
+    /\bsending too many requests\b/.test(normalized) ||
+    /\btoo quickly\b/.test(normalized) ||
+    /\btemporarily limited access\b/.test(normalized) ||
+    /\bplease wait a few minutes\b/.test(normalized) ||
+    /\brate limit(?:ed)?\b/.test(normalized) ||
+    /\bslow down\b/.test(normalized)
+  ) {
+    return "rate_limit";
+  }
+  if (
+    /\btemporarily unavailable\b/.test(normalized) ||
+    /\bsomething went wrong\b/.test(normalized) ||
+    /\bfailed to generate\b/.test(normalized) ||
+    /\btry again later\b/.test(normalized)
+  ) {
+    return "temporary_unavailable";
+  }
+  if (
+    /\bverify you are human\b/.test(normalized) ||
+    /\bunusual activity\b/.test(normalized) ||
+    /\bcloudflare\b/.test(normalized) ||
+    /\bchallenge\b/.test(normalized) ||
+    /\blogin required\b/.test(normalized) ||
+    /\bsign in\b/.test(normalized)
+  ) {
+    return "auth_or_challenge";
+  }
+  return null;
+}
+
+function sanitizeChatGptUiWarningText(text: string): string {
+  return text
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[redacted-email]")
+    .replace(
+      /\b((?:access|auth|session)[-_ ]?token|token)\s*[:=]\s*["']?[^\s"',;]+/gi,
+      "$1=[redacted]",
+    )
+    .replace(/\b(?:sk-(?:ant-|or-)?|xai-)[A-Za-z0-9_-]{8,}\b/g, "[redacted-token]");
+}
+
+function normalizeUiWarningCandidate(value: unknown): {
+  text: string;
+  source?: string | null;
+  role?: string | null;
+  ariaLive?: string | null;
+  selector?: string | null;
+} | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Record<string, unknown>;
+  const text =
+    typeof candidate.text === "string"
+      ? sanitizeChatGptUiWarningText(candidate.text.replace(/\s+/g, " ").trim())
+      : "";
+  if (!text) return null;
+  return {
+    text: text.slice(0, MAX_CHATGPT_UI_WARNING_CHARS),
+    source: typeof candidate.source === "string" ? candidate.source : null,
+    role: typeof candidate.role === "string" ? candidate.role : null,
+    ariaLive: typeof candidate.ariaLive === "string" ? candidate.ariaLive : null,
+    selector: typeof candidate.selector === "string" ? candidate.selector : null,
+  };
+}
+
+async function collectChatGptUiWarnings(
+  Runtime: ChromeClient["Runtime"],
+): Promise<ChatGptUiWarning[]> {
+  try {
+    const { result } = await Runtime.evaluate({
+      awaitPromise: true,
+      returnByValue: true,
+      expression: `(() => {
+        const warningPattern = /too many requests|sending too many requests|too quickly|temporarily limited access|please wait a few minutes|rate limit|rate limited|slow down|try again later|temporarily unavailable|something went wrong|failed to generate|verify you are human|unusual activity|cloudflare|challenge|login required|sign in/i;
+        const selectors = [
+          '[role="alert"]',
+          '[role="status"]',
+          '[role="dialog"]',
+          '[aria-live]',
+          '[data-testid*="toast" i]',
+          '[data-testid*="banner" i]',
+          '[data-testid*="error" i]',
+          '[class*="toast" i]',
+          '[class*="banner" i]'
+        ];
+        const isVisible = (element) => {
+          if (!(element instanceof HTMLElement)) return false;
+          let current = element;
+          while (current) {
+            const currentStyle = window.getComputedStyle(current);
+            if (
+              !currentStyle ||
+              currentStyle.display === 'none' ||
+              currentStyle.visibility === 'hidden' ||
+              currentStyle.visibility === 'collapse' ||
+              Number.parseFloat(currentStyle.opacity || '1') === 0
+            ) {
+              return false;
+            }
+            current = current.parentElement;
+          }
+          const rect = element.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        };
+        const describe = (element, source, selector = null) => ({
+          text: (element.innerText || element.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 1000),
+          source,
+          selector,
+          role: element.getAttribute('role'),
+          ariaLive: element.getAttribute('aria-live')
+        });
+        const out = [];
+        const seen = new Set();
+        const warningContainers = [];
+        const overlapsWarningContainer = (element) => warningContainers.some((container) => (
+          container !== element && (container.contains(element) || element.contains(container))
+        ));
+        const add = (element, entry) => {
+          if (!entry.text || !warningPattern.test(entry.text)) return;
+          const key = entry.text + '|' + (entry.role || '') + '|' + (entry.ariaLive || '');
+          if (seen.has(key)) return;
+          seen.add(key);
+          warningContainers.push(element);
+          out.push(entry);
+        };
+        for (const selector of selectors) {
+          if (out.length >= 5) break;
+          let elements = [];
+          try {
+            elements = Array.from(document.querySelectorAll(selector));
+          } catch {
+            elements = [];
+          }
+          for (const element of elements) {
+            if (out.length >= 5) break;
+            if (overlapsWarningContainer(element)) continue;
+            if (isVisible(element)) add(element, describe(element, 'selector', selector));
+          }
+        }
+        return out.slice(0, 5);
+      })()`,
+    });
+    const rawWarnings = Array.isArray(result?.value) ? result.value : [];
+    const warnings: ChatGptUiWarning[] = [];
+    const seen = new Set<string>();
+    for (const raw of rawWarnings) {
+      const candidate = normalizeUiWarningCandidate(raw);
+      if (!candidate) continue;
+      const type = classifyChatGptUiWarningText(candidate.text);
+      if (!type) continue;
+      const key = `${type}:${candidate.text}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      warnings.push({
+        type,
+        message: candidate.text,
+        source: candidate.source,
+        role: candidate.role,
+        ariaLive: candidate.ariaLive,
+        selector: candidate.selector,
+      });
+      if (warnings.length >= MAX_CHATGPT_UI_WARNINGS) break;
+    }
+    return warnings;
+  } catch {
+    return [];
+  }
+}
+
+function formatChatGptUiWarningType(type: ChatGptUiWarningType): string {
+  switch (type) {
+    case "rate_limit":
+      return "rate-limit";
+    case "temporary_unavailable":
+      return "temporary-unavailable";
+    case "auth_or_challenge":
+      return "authentication/challenge";
+  }
+}
+
+async function createAssistantTimeoutError(params: {
+  Runtime: ChromeClient["Runtime"];
+  logger: BrowserLogger;
+  runtime: unknown;
+  diagnostics?: unknown;
+  cause: unknown;
+}): Promise<BrowserAutomationError> {
+  const [uiWarning] = await collectChatGptUiWarnings(params.Runtime);
+  if (!uiWarning) {
+    return new BrowserAutomationError(
+      "Assistant response timed out before completion; reattach later to capture the answer.",
+      { stage: "assistant-timeout", runtime: params.runtime, diagnostics: params.diagnostics },
+      params.cause,
+    );
+  }
+
+  params.logger(`[browser] ChatGPT UI warning detected (${uiWarning.type}): ${uiWarning.message}`);
+  return new BrowserAutomationError(
+    `ChatGPT displayed a ${formatChatGptUiWarningType(uiWarning.type)} warning while waiting for the assistant: ${uiWarning.message}`,
+    {
+      stage: "assistant-timeout",
+      code: "chatgpt-ui-warning",
+      uiWarning,
+      runtime: params.runtime,
+      diagnostics: params.diagnostics,
+    },
+    params.cause,
+  );
+}
 
 function listIgnoredRemoteChromeFlags(config: {
   attachRunning?: ResolvedBrowserConfig["attachRunning"];
@@ -547,6 +775,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
   const fallbackSubmission = options.fallbackSubmission;
 
   let config = resolveBrowserConfig(options.config);
+  const isResumingConversation = Boolean(config.resumeConversationUrl);
   const followUpPrompts = normalizeBrowserFollowUpPrompts(options.followUpPrompts);
   if (config.researchMode === "deep" && followUpPrompts.length > 0) {
     throw new BrowserAutomationError(
@@ -874,9 +1103,22 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     }
 
     if (config.browserTabRef) {
+      if (isResumingConversation) {
+        await raceWithDisconnect(
+          navigateToChatGPT(Page, Runtime, config.resumeConversationUrl as string, logger),
+        );
+      }
       await raceWithDisconnect(ensureNotBlocked(Runtime, config.headless, logger));
       await raceWithDisconnect(ensureLoggedIn(Runtime, logger));
       await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+      if (isResumingConversation) {
+        await raceWithDisconnect(
+          waitForResumedConversationHydration(Runtime, config.inputTimeoutMs, logger, {
+            requirePriorTurns: true,
+            expectedConversationUrl: config.resumeConversationUrl as string,
+          }),
+        );
+      }
     } else {
       const baseUrl = CHATGPT_URL;
       // First load the base ChatGPT homepage to satisfy potential interstitials,
@@ -896,7 +1138,13 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         }),
       );
 
-      if (config.url !== baseUrl) {
+      if (isResumingConversation) {
+        await raceWithDisconnect(
+          navigateToChatGPT(Page, Runtime, config.resumeConversationUrl as string, logger),
+        );
+        await raceWithDisconnect(ensureNotBlocked(Runtime, config.headless, logger));
+        await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+      } else if (config.url !== baseUrl) {
         await raceWithDisconnect(
           navigateToPromptReadyWithFallback(Page, Runtime, {
             url: config.url,
@@ -908,6 +1156,19 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         );
       } else {
         await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+      }
+      if (isResumingConversation) {
+        // A resumed thread loads its prior history after navigation; ChatGPT can reset the
+        // composer mid-hydration and wipe a freshly-typed prompt. Wait for hydration to settle
+        // and re-confirm the composer before the prompt is typed/submitted below. Wrapped in
+        // raceWithDisconnect so a dropped client aborts immediately instead of polling to the
+        // hydration deadline. Shared with the remote path via the same helper.
+        await raceWithDisconnect(
+          waitForResumedConversationHydration(Runtime, config.inputTimeoutMs, logger, {
+            requirePriorTurns: true,
+            expectedConversationUrl: config.resumeConversationUrl as string,
+          }),
+        );
       }
     }
     logger(
@@ -988,7 +1249,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     };
     await captureRuntimeSnapshot();
     const modelStrategy = config.modelStrategy ?? DEFAULT_MODEL_STRATEGY;
-    if (config.desiredModel && modelStrategy !== "ignore") {
+    if (config.desiredModel && modelStrategy !== "ignore" && !isResumingConversation) {
       modelSelectionEvidence = await raceWithDisconnect(
         withRetries(
           () => ensureModelSelection(Runtime, config.desiredModel as string, logger, modelStrategy),
@@ -1016,12 +1277,16 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       logger(
         `Prompt textarea ready (after model switch, ${promptText.length.toLocaleString()} chars queued)`,
       );
-    } else if (modelStrategy === "ignore") {
+    } else if (modelStrategy === "ignore" || isResumingConversation) {
       modelSelectionEvidence = buildSkippedModelSelectionEvidence(
         config.desiredModel,
         modelStrategy,
       );
-      logger("Model picker: skipped (strategy=ignore)");
+      logger(
+        isResumingConversation
+          ? "Model picker: skipped (resumed conversation)"
+          : "Model picker: skipped (strategy=ignore)",
+      );
     }
     const deepResearch = config.researchMode === "deep";
     // Handle thinking time selection if specified. Deep Research owns its own effort flow.
@@ -1455,11 +1720,13 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
               promptSubmitted,
               controllerPid: process.pid,
             };
-            throw new BrowserAutomationError(
-              "Assistant response timed out before completion; reattach later to capture the answer.",
-              { stage: "assistant-timeout", runtime, diagnostics },
-              error,
-            );
+            throw await createAssistantTimeoutError({
+              Runtime,
+              logger,
+              runtime,
+              diagnostics,
+              cause: error,
+            });
           }
         } else {
           throw error;
@@ -1693,7 +1960,19 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     if (imageArtifacts.markdownSuffix) {
       answerMarkdown += imageArtifacts.markdownSuffix;
     }
+    const fileArtifacts = await collectChatGptFileArtifacts({
+      Browser: client.Browser,
+      Client: client,
+      Page,
+      Runtime,
+      Network,
+      answerText: [answerText, answerMarkdown, answerHtml].filter(Boolean).join("\n"),
+      logger,
+      minTurnIndex: imageArtifactMinTurnIndex,
+      sessionId: options.sessionId,
+    });
     const savedImageArtifacts = appendArtifacts(undefined, imageArtifacts.savedImages);
+    const savedBrowserArtifacts = appendArtifacts(savedImageArtifacts, fileArtifacts.savedFiles);
     const transcriptArtifact = await saveOptionalArtifact(
       () =>
         saveBrowserTranscriptArtifact({
@@ -1701,12 +1980,12 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           prompt: promptText,
           answerMarkdown,
           conversationUrl: lastUrl,
-          artifacts: savedImageArtifacts,
+          artifacts: savedBrowserArtifacts,
           logger,
         }),
       logger,
     );
-    const savedArtifacts = appendArtifacts(savedImageArtifacts, [transcriptArtifact]);
+    const savedArtifacts = appendArtifacts(savedBrowserArtifacts, [transcriptArtifact]);
     const archive = await maybeArchiveCompletedConversation({
       Runtime,
       logger,
@@ -1715,7 +1994,8 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       followUpCount: followUpPrompts.length,
       requiredArtifactsSaved:
         Boolean(transcriptArtifact) &&
-        imageArtifacts.savedImages.length === imageArtifacts.imageCount,
+        imageArtifacts.savedImages.length === imageArtifacts.imageCount &&
+        fileArtifacts.savedFiles.length === fileArtifacts.fileCount,
     });
     runStatus = "complete";
     const durationMs = Date.now() - startedAt;
@@ -1728,6 +2008,8 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       artifacts: savedArtifacts,
       generatedImages: imageArtifacts.generatedImages,
       savedImages: imageArtifacts.savedImages,
+      downloadableFiles: fileArtifacts.files,
+      savedFiles: fileArtifacts.savedFiles,
       archive,
       modelSelection: modelSelectionEvidence,
       tookMs: durationMs,
@@ -2193,7 +2475,17 @@ async function maybeReuseRunningChrome(
   let pid = await readChromePid(userDataDir);
   if (!port) {
     const discovered = await findRunningChromeDebugTargetForProfile(userDataDir);
-    if (!discovered) return null;
+    if (!discovered) {
+      if (pid) {
+        logger(
+          `No reachable Chrome DevTools target found for ${userDataDir}; clearing stale profile state before launching new Chrome.`,
+        );
+        await cleanupStaleProfileState(userDataDir, logger, {
+          lockRemovalMode: "if_oracle_pid_dead",
+        });
+      }
+      return null;
+    }
     const discoveredProbe = await (options.probe ?? verifyDevToolsReachable)({
       port: discovered.port,
     });
@@ -2201,6 +2493,9 @@ async function maybeReuseRunningChrome(
       logger(
         `Discovered Chrome for ${userDataDir} on port ${discovered.port} but it was unreachable (${discoveredProbe.error}); launching new Chrome.`,
       );
+      await cleanupStaleProfileState(userDataDir, logger, {
+        lockRemovalMode: "if_oracle_pid_dead",
+      });
       return null;
     }
     await writeDevToolsActivePort(userDataDir, discovered.port);
@@ -2369,15 +2664,19 @@ async function runRemoteBrowserMode(
     // Skip cookie sync for remote Chrome - it already has cookies
     logger("Skipping cookie sync for remote Chrome (using existing session)");
 
-    if (!attachedExistingTab) {
+    if (config.resumeConversationUrl) {
+      await navigateToChatGPT(Page, Runtime, config.resumeConversationUrl, logger);
+    } else if (!attachedExistingTab) {
       await navigateToChatGPT(Page, Runtime, config.url, logger);
-      await ensureNotBlocked(Runtime, config.headless, logger);
-      await ensureLoggedIn(Runtime, logger, { remoteSession: true });
-      await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
-    } else {
-      await ensureNotBlocked(Runtime, config.headless, logger);
-      await ensureLoggedIn(Runtime, logger, { remoteSession: true });
-      await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
+    }
+    await ensureNotBlocked(Runtime, config.headless, logger);
+    await ensureLoggedIn(Runtime, logger, { remoteSession: true });
+    await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
+    if (config.resumeConversationUrl) {
+      await waitForResumedConversationHydration(Runtime, config.inputTimeoutMs, logger, {
+        requirePriorTurns: true,
+        expectedConversationUrl: config.resumeConversationUrl,
+      });
     }
     logger(
       `Prompt textarea ready (initial focus, ${promptText.length.toLocaleString()} chars queued)`,
@@ -2396,7 +2695,7 @@ async function runRemoteBrowserMode(
     }
 
     const modelStrategy = config.modelStrategy ?? DEFAULT_MODEL_STRATEGY;
-    if (config.desiredModel && modelStrategy !== "ignore") {
+    if (config.desiredModel && modelStrategy !== "ignore" && !config.resumeConversationUrl) {
       modelSelectionEvidence = await withRetries(
         () => ensureModelSelection(Runtime, config.desiredModel as string, logger, modelStrategy),
         {
@@ -2415,12 +2714,16 @@ async function runRemoteBrowserMode(
       logger(
         `Prompt textarea ready (after model switch, ${promptText.length.toLocaleString()} chars queued)`,
       );
-    } else if (modelStrategy === "ignore") {
+    } else if (modelStrategy === "ignore" || config.resumeConversationUrl) {
       modelSelectionEvidence = buildSkippedModelSelectionEvidence(
         config.desiredModel,
         modelStrategy,
       );
-      logger("Model picker: skipped (strategy=ignore)");
+      logger(
+        config.resumeConversationUrl
+          ? "Model picker: skipped (resumed conversation)"
+          : "Model picker: skipped (strategy=ignore)",
+      );
     }
     const deepResearch = config.researchMode === "deep";
     // Handle thinking time selection if specified. Deep Research owns its own effort flow.
@@ -2794,11 +3097,13 @@ async function runRemoteBrowserMode(
               promptSubmitted,
               controllerPid: process.pid,
             };
-            throw new BrowserAutomationError(
-              "Assistant response timed out before completion; reattach later to capture the answer.",
-              { stage: "assistant-timeout", runtime, diagnostics },
-              error,
-            );
+            throw await createAssistantTimeoutError({
+              Runtime,
+              logger,
+              runtime,
+              diagnostics,
+              cause: error,
+            });
           }
         } else {
           throw error;
@@ -2986,7 +3291,19 @@ async function runRemoteBrowserMode(
     if (imageArtifacts.markdownSuffix) {
       answerMarkdown += imageArtifacts.markdownSuffix;
     }
+    const fileArtifacts = await collectChatGptFileArtifacts({
+      Browser: client.Browser,
+      Client: client,
+      Page,
+      Runtime,
+      Network,
+      answerText: [answerText, answerMarkdown, answerHtml].filter(Boolean).join("\n"),
+      logger,
+      minTurnIndex: imageArtifactMinTurnIndex,
+      sessionId: options.sessionId,
+    });
     const savedImageArtifacts = appendArtifacts(undefined, imageArtifacts.savedImages);
+    const savedBrowserArtifacts = appendArtifacts(savedImageArtifacts, fileArtifacts.savedFiles);
     const transcriptArtifact = await saveOptionalArtifact(
       () =>
         saveBrowserTranscriptArtifact({
@@ -2994,12 +3311,12 @@ async function runRemoteBrowserMode(
           prompt: promptText,
           answerMarkdown,
           conversationUrl: lastUrl,
-          artifacts: savedImageArtifacts,
+          artifacts: savedBrowserArtifacts,
           logger,
         }),
       logger,
     );
-    const savedArtifacts = appendArtifacts(savedImageArtifacts, [transcriptArtifact]);
+    const savedArtifacts = appendArtifacts(savedBrowserArtifacts, [transcriptArtifact]);
     const archive = await maybeArchiveCompletedConversation({
       Runtime,
       logger,
@@ -3008,7 +3325,8 @@ async function runRemoteBrowserMode(
       followUpCount: followUpPrompts.length,
       requiredArtifactsSaved:
         Boolean(transcriptArtifact) &&
-        imageArtifacts.savedImages.length === imageArtifacts.imageCount,
+        imageArtifacts.savedImages.length === imageArtifacts.imageCount &&
+        fileArtifacts.savedFiles.length === fileArtifacts.fileCount,
     });
     const durationMs = Date.now() - startedAt;
     const answerChars = answerText.length;
@@ -3034,6 +3352,10 @@ async function runRemoteBrowserMode(
       conversationId: lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined,
       promptSubmitted,
       artifacts: savedArtifacts,
+      generatedImages: imageArtifacts.generatedImages,
+      savedImages: imageArtifacts.savedImages,
+      downloadableFiles: fileArtifacts.files,
+      savedFiles: fileArtifacts.savedFiles,
       archive,
       modelSelection: modelSelectionEvidence,
       controllerPid: process.pid,
@@ -3103,8 +3425,12 @@ export { resolveBrowserConfig, DEFAULT_BROWSER_CONFIG } from "./config.js";
 export const __test__ = {
   assertManualLoginProfileReadyForRun,
   closeRemoteConnectionAfterRun,
+  classifyChatGptUiWarningText,
+  collectChatGptUiWarnings,
+  createAssistantTimeoutError,
   detachKeptChromeProcess,
   formatManualLoginSetupCommand,
+  isAssistantResponseTimeoutError,
   isManualLoginProfileInitialized,
   isImageOnlyUiChromeText,
   listIgnoredRemoteChromeFlags,
@@ -3209,6 +3535,7 @@ function isAssistantResponseTimeoutError(error: unknown): boolean {
   const message = error.message.toLowerCase();
   if (!message) return false;
   return (
+    message === "response timeout" ||
     message.includes("assistant-response") ||
     message.includes("assistant response") ||
     message.includes("watchdog") ||

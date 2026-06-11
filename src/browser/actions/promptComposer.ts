@@ -461,6 +461,8 @@ function buildAttachmentReadyExpression(attachmentNames: AttachmentReadyInput[])
     };
     // Restrict to attachment affordances; never scan generic div/span nodes (prompt text can contain the file name).
     const attachmentSelectors = [
+      // Current ChatGPT file tiles expose the filename through a role-group aria label.
+      '[role="group"][aria-label]',
       '[data-testid*="chip"]',
       '[data-testid*="attachment"]',
       '[data-testid*="upload"]',

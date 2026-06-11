@@ -256,9 +256,8 @@ describe("prompt composer attachment expressions", () => {
   test("attachment ready check accepts generated bundle chips that expose only the bundle stem", () => {
     const document = new FakeDocument([
       new FakeElement("div", { "data-testid": "unified-composer" }, [
-        new FakeElement("div", { "data-testid": "attachment-chip" }, [
-          new FakeElement("span", {}, [], "attachments-bundle"),
-          new FakeElement("button", { "aria-label": "Remove file 1" }),
+        new FakeElement("div", { role: "group", "aria-label": "attachments-bundle" }, [
+          new FakeElement("span", {}, [], "Document"),
         ]),
       ]),
     ]);
@@ -274,8 +273,8 @@ describe("prompt composer attachment expressions", () => {
   test("attachment ready check keeps stem-only fallback off for user bundle-named files", () => {
     const document = new FakeDocument([
       new FakeElement("div", { "data-testid": "unified-composer" }, [
-        new FakeElement("div", { "data-testid": "attachment-chip" }, [
-          new FakeElement("span", {}, [], "attachments-bundle"),
+        new FakeElement("div", { role: "group", "aria-label": "attachments-bundle" }, [
+          new FakeElement("span", {}, [], "Document"),
           new FakeElement("button", { "aria-label": "Remove file 1" }),
         ]),
       ]),
