@@ -183,6 +183,9 @@ type ChatGptUiWarning = {
   selector?: string | null;
 };
 
+const MAX_CHATGPT_UI_WARNING_CHARS = 300;
+const MAX_CHATGPT_UI_WARNINGS = 3;
+
 function classifyChatGptUiWarningText(text: string): ChatGptUiWarningType | null {
   const normalized = text.toLowerCase();
   if (
@@ -217,6 +220,16 @@ function classifyChatGptUiWarningText(text: string): ChatGptUiWarningType | null
   return null;
 }
 
+function sanitizeChatGptUiWarningText(text: string): string {
+  return text
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[redacted-email]")
+    .replace(
+      /\b((?:access|auth|session)[-_ ]?token|token)\s*[:=]\s*["']?[^\s"',;]+/gi,
+      "$1=[redacted]",
+    )
+    .replace(/\b(?:sk-(?:ant-|or-)?|xai-)[A-Za-z0-9_-]{8,}\b/g, "[redacted-token]");
+}
+
 function normalizeUiWarningCandidate(value: unknown): {
   text: string;
   source?: string | null;
@@ -226,10 +239,13 @@ function normalizeUiWarningCandidate(value: unknown): {
 } | null {
   if (!value || typeof value !== "object") return null;
   const candidate = value as Record<string, unknown>;
-  const text = typeof candidate.text === "string" ? candidate.text.replace(/\s+/g, " ").trim() : "";
+  const text =
+    typeof candidate.text === "string"
+      ? sanitizeChatGptUiWarningText(candidate.text.replace(/\s+/g, " ").trim())
+      : "";
   if (!text) return null;
   return {
-    text: text.slice(0, 1000),
+    text: text.slice(0, MAX_CHATGPT_UI_WARNING_CHARS),
     source: typeof candidate.source === "string" ? candidate.source : null,
     role: typeof candidate.role === "string" ? candidate.role : null,
     ariaLive: typeof candidate.ariaLive === "string" ? candidate.ariaLive : null,
@@ -255,9 +271,7 @@ async function collectChatGptUiWarnings(
           '[data-testid*="banner" i]',
           '[data-testid*="error" i]',
           '[class*="toast" i]',
-          '[class*="banner" i]',
-          '[class*="error" i]',
-          '[class*="warning" i]'
+          '[class*="banner" i]'
         ];
         const isVisible = (element) => {
           if (!(element instanceof HTMLElement)) return false;
@@ -290,6 +304,7 @@ async function collectChatGptUiWarnings(
           out.push(entry);
         };
         for (const selector of selectors) {
+          if (out.length >= 5) break;
           let elements = [];
           try {
             elements = Array.from(document.querySelectorAll(selector));
@@ -297,23 +312,12 @@ async function collectChatGptUiWarnings(
             elements = [];
           }
           for (const element of elements) {
+            if (out.length >= 5) break;
             if (overlapsWarningContainer(element)) continue;
             if (isVisible(element)) add(element, describe(element, 'selector', selector));
           }
         }
-        const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_ELEMENT);
-        let node = walker.currentNode;
-        while (node && out.length < 20) {
-          const element = node;
-          if (isVisible(element) && !element.matches('textarea,input,[contenteditable="true"]')) {
-            const text = (element.innerText || element.textContent || '').replace(/\\s+/g, ' ').trim();
-            if (!overlapsWarningContainer(element) && text.length > 0 && text.length <= 500 && warningPattern.test(text)) {
-              add(element, describe(element, 'visible-warning-text'));
-            }
-          }
-          node = walker.nextNode();
-        }
-        return out.slice(0, 20);
+        return out.slice(0, 5);
       })()`,
     });
     const rawWarnings = Array.isArray(result?.value) ? result.value : [];
@@ -335,11 +339,53 @@ async function collectChatGptUiWarnings(
         ariaLive: candidate.ariaLive,
         selector: candidate.selector,
       });
+      if (warnings.length >= MAX_CHATGPT_UI_WARNINGS) break;
     }
     return warnings;
   } catch {
     return [];
   }
+}
+
+function formatChatGptUiWarningType(type: ChatGptUiWarningType): string {
+  switch (type) {
+    case "rate_limit":
+      return "rate-limit";
+    case "temporary_unavailable":
+      return "temporary-unavailable";
+    case "auth_or_challenge":
+      return "authentication/challenge";
+  }
+}
+
+async function createAssistantTimeoutError(params: {
+  Runtime: ChromeClient["Runtime"];
+  logger: BrowserLogger;
+  runtime: unknown;
+  diagnostics?: unknown;
+  cause: unknown;
+}): Promise<BrowserAutomationError> {
+  const [uiWarning] = await collectChatGptUiWarnings(params.Runtime);
+  if (!uiWarning) {
+    return new BrowserAutomationError(
+      "Assistant response timed out before completion; reattach later to capture the answer.",
+      { stage: "assistant-timeout", runtime: params.runtime, diagnostics: params.diagnostics },
+      params.cause,
+    );
+  }
+
+  params.logger(`[browser] ChatGPT UI warning detected (${uiWarning.type}): ${uiWarning.message}`);
+  return new BrowserAutomationError(
+    `ChatGPT displayed a ${formatChatGptUiWarningType(uiWarning.type)} warning while waiting for the assistant: ${uiWarning.message}`,
+    {
+      stage: "assistant-timeout",
+      code: "chatgpt-ui-warning",
+      uiWarning,
+      runtime: params.runtime,
+      diagnostics: params.diagnostics,
+    },
+    params.cause,
+  );
 }
 
 function listIgnoredRemoteChromeFlags(config: {
@@ -1660,11 +1706,13 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
               promptSubmitted,
               controllerPid: process.pid,
             };
-            throw new BrowserAutomationError(
-              "Assistant response timed out before completion; reattach later to capture the answer.",
-              { stage: "assistant-timeout", runtime, diagnostics },
-              error,
-            );
+            throw await createAssistantTimeoutError({
+              Runtime,
+              logger,
+              runtime,
+              diagnostics,
+              cause: error,
+            });
           }
         } else {
           throw error;
@@ -3031,11 +3079,13 @@ async function runRemoteBrowserMode(
               promptSubmitted,
               controllerPid: process.pid,
             };
-            throw new BrowserAutomationError(
-              "Assistant response timed out before completion; reattach later to capture the answer.",
-              { stage: "assistant-timeout", runtime, diagnostics },
-              error,
-            );
+            throw await createAssistantTimeoutError({
+              Runtime,
+              logger,
+              runtime,
+              diagnostics,
+              cause: error,
+            });
           }
         } else {
           throw error;
@@ -3359,6 +3409,7 @@ export const __test__ = {
   closeRemoteConnectionAfterRun,
   classifyChatGptUiWarningText,
   collectChatGptUiWarnings,
+  createAssistantTimeoutError,
   detachKeptChromeProcess,
   formatManualLoginSetupCommand,
   isManualLoginProfileInitialized,

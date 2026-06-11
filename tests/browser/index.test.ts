@@ -255,6 +255,105 @@ describe("ChatGPT UI warning detection", () => {
         selector: '[role="alert"]',
       },
     ]);
+    const expression = Runtime.evaluate.mock.calls[0]?.[0]?.expression;
+    expect(expression).not.toContain("createTreeWalker");
+    expect(expression).not.toContain('[class*="error" i]');
+    expect(expression).not.toContain('[class*="warning" i]');
+  });
+
+  test("redacts account and token-like values from warning details", async () => {
+    const Runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: [
+            {
+              text: "Sign in as private@example.test with session_token=secret-session-value",
+              source: "selector",
+              role: "dialog",
+              selector: '[role="dialog"]',
+            },
+          ],
+        },
+      }),
+    };
+
+    const warnings = await __test__.collectChatGptUiWarnings(Runtime as never);
+    expect(warnings).toEqual([
+      {
+        type: "auth_or_challenge",
+        message: "Sign in as [redacted-email] with session_token=[redacted]",
+        source: "selector",
+        role: "dialog",
+        ariaLive: null,
+        selector: '[role="dialog"]',
+      },
+    ]);
+    expect(JSON.stringify(warnings)).not.toContain("private@example.test");
+    expect(JSON.stringify(warnings)).not.toContain("secret-session-value");
+  });
+
+  test("builds a structured timeout error when ChatGPT shows a blocking warning", async () => {
+    const Runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: [
+            {
+              text: "You are sending too many requests too quickly. Please try again later.",
+              source: "selector",
+              role: "alert",
+              ariaLive: "assertive",
+              selector: '[role="alert"]',
+            },
+          ],
+        },
+      }),
+    };
+    const logger = vi.fn<(message: string) => void>();
+
+    const error = await __test__.createAssistantTimeoutError({
+      Runtime: Runtime as never,
+      logger: logger as never,
+      runtime: { chromePort: 9222 },
+      diagnostics: { domPath: "/tmp/assistant-timeout.dom.json" },
+      cause: new Error("timeout"),
+    });
+
+    expect(error.message).toContain("rate-limit warning");
+    expect(error.details).toMatchObject({
+      stage: "assistant-timeout",
+      code: "chatgpt-ui-warning",
+      runtime: { chromePort: 9222 },
+      diagnostics: { domPath: "/tmp/assistant-timeout.dom.json" },
+      uiWarning: {
+        type: "rate_limit",
+        message: "You are sending too many requests too quickly. Please try again later.",
+      },
+    });
+    expect(logger).toHaveBeenCalledWith(
+      "[browser] ChatGPT UI warning detected (rate_limit): You are sending too many requests too quickly. Please try again later.",
+    );
+  });
+
+  test("keeps the generic timeout error when no blocking warning is visible", async () => {
+    const Runtime = {
+      evaluate: vi.fn().mockResolvedValue({ result: { value: [] } }),
+    };
+
+    const error = await __test__.createAssistantTimeoutError({
+      Runtime: Runtime as never,
+      logger: vi.fn() as never,
+      runtime: { chromePort: 9222 },
+      cause: new Error("timeout"),
+    });
+
+    expect(error.message).toBe(
+      "Assistant response timed out before completion; reattach later to capture the answer.",
+    );
+    expect(error.details).toMatchObject({
+      stage: "assistant-timeout",
+      runtime: { chromePort: 9222 },
+    });
+    expect(error.details).not.toHaveProperty("uiWarning");
   });
 });
 
