@@ -81,6 +81,7 @@ import {
   saveDeepResearchReportArtifact,
 } from "./artifacts.js";
 import { collectGeneratedImageArtifacts } from "./chatgptImages.js";
+import { collectChatGptFileArtifacts } from "./chatgptFiles.js";
 import { runProviderSubmissionFlow } from "./providerDomFlow.js";
 import { chatgptDomProvider } from "./providers/index.js";
 import { resolveAttachRunningConnection } from "./attachRunning.js";
@@ -1706,7 +1707,19 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     if (imageArtifacts.markdownSuffix) {
       answerMarkdown += imageArtifacts.markdownSuffix;
     }
+    const fileArtifacts = await collectChatGptFileArtifacts({
+      Browser: client.Browser,
+      Client: client,
+      Page,
+      Runtime,
+      Network,
+      answerText: [answerText, answerMarkdown, answerHtml].filter(Boolean).join("\n"),
+      logger,
+      minTurnIndex: imageArtifactMinTurnIndex,
+      sessionId: options.sessionId,
+    });
     const savedImageArtifacts = appendArtifacts(undefined, imageArtifacts.savedImages);
+    const savedBrowserArtifacts = appendArtifacts(savedImageArtifacts, fileArtifacts.savedFiles);
     const transcriptArtifact = await saveOptionalArtifact(
       () =>
         saveBrowserTranscriptArtifact({
@@ -1714,12 +1727,12 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           prompt: promptText,
           answerMarkdown,
           conversationUrl: lastUrl,
-          artifacts: savedImageArtifacts,
+          artifacts: savedBrowserArtifacts,
           logger,
         }),
       logger,
     );
-    const savedArtifacts = appendArtifacts(savedImageArtifacts, [transcriptArtifact]);
+    const savedArtifacts = appendArtifacts(savedBrowserArtifacts, [transcriptArtifact]);
     const archive = await maybeArchiveCompletedConversation({
       Runtime,
       logger,
@@ -1728,7 +1741,8 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       followUpCount: followUpPrompts.length,
       requiredArtifactsSaved:
         Boolean(transcriptArtifact) &&
-        imageArtifacts.savedImages.length === imageArtifacts.imageCount,
+        imageArtifacts.savedImages.length === imageArtifacts.imageCount &&
+        fileArtifacts.savedFiles.length === fileArtifacts.fileCount,
     });
     runStatus = "complete";
     const durationMs = Date.now() - startedAt;
@@ -1741,6 +1755,8 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       artifacts: savedArtifacts,
       generatedImages: imageArtifacts.generatedImages,
       savedImages: imageArtifacts.savedImages,
+      downloadableFiles: fileArtifacts.files,
+      savedFiles: fileArtifacts.savedFiles,
       archive,
       modelSelection: modelSelectionEvidence,
       tookMs: durationMs,
@@ -3004,7 +3020,19 @@ async function runRemoteBrowserMode(
     if (imageArtifacts.markdownSuffix) {
       answerMarkdown += imageArtifacts.markdownSuffix;
     }
+    const fileArtifacts = await collectChatGptFileArtifacts({
+      Browser: client.Browser,
+      Client: client,
+      Page,
+      Runtime,
+      Network,
+      answerText: [answerText, answerMarkdown, answerHtml].filter(Boolean).join("\n"),
+      logger,
+      minTurnIndex: imageArtifactMinTurnIndex,
+      sessionId: options.sessionId,
+    });
     const savedImageArtifacts = appendArtifacts(undefined, imageArtifacts.savedImages);
+    const savedBrowserArtifacts = appendArtifacts(savedImageArtifacts, fileArtifacts.savedFiles);
     const transcriptArtifact = await saveOptionalArtifact(
       () =>
         saveBrowserTranscriptArtifact({
@@ -3012,12 +3040,12 @@ async function runRemoteBrowserMode(
           prompt: promptText,
           answerMarkdown,
           conversationUrl: lastUrl,
-          artifacts: savedImageArtifacts,
+          artifacts: savedBrowserArtifacts,
           logger,
         }),
       logger,
     );
-    const savedArtifacts = appendArtifacts(savedImageArtifacts, [transcriptArtifact]);
+    const savedArtifacts = appendArtifacts(savedBrowserArtifacts, [transcriptArtifact]);
     const archive = await maybeArchiveCompletedConversation({
       Runtime,
       logger,
@@ -3026,7 +3054,8 @@ async function runRemoteBrowserMode(
       followUpCount: followUpPrompts.length,
       requiredArtifactsSaved:
         Boolean(transcriptArtifact) &&
-        imageArtifacts.savedImages.length === imageArtifacts.imageCount,
+        imageArtifacts.savedImages.length === imageArtifacts.imageCount &&
+        fileArtifacts.savedFiles.length === fileArtifacts.fileCount,
     });
     const durationMs = Date.now() - startedAt;
     const answerChars = answerText.length;
@@ -3052,6 +3081,10 @@ async function runRemoteBrowserMode(
       conversationId: lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined,
       promptSubmitted,
       artifacts: savedArtifacts,
+      generatedImages: imageArtifacts.generatedImages,
+      savedImages: imageArtifacts.savedImages,
+      downloadableFiles: fileArtifacts.files,
+      savedFiles: fileArtifacts.savedFiles,
       archive,
       modelSelection: modelSelectionEvidence,
       controllerPid: process.pid,
