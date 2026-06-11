@@ -256,37 +256,45 @@ describe("resolveRunOptionsFromConfig", () => {
     expect(runOptions.model).toBe("gemini-3-pro");
   });
 
-  it("forces api engine for gemini-3.1-pro when browser would otherwise be auto-selected", () => {
+  it("keeps browser engine for gemini-3.1-pro when auto-detected without an API key", () => {
     const { runOptions, resolvedEngine, engineCoercedToApi } = resolveRunOptionsFromConfig({
       prompt: basePrompt,
       model: "gemini-3.1-pro",
       env: {},
     });
-    expect(resolvedEngine).toBe("api");
-    expect(engineCoercedToApi).toBe(true);
+    expect(resolvedEngine).toBe("browser");
+    expect(engineCoercedToApi).toBe(false);
     expect(runOptions.model).toBe("gemini-3.1-pro");
     expect(runOptions.effectiveModelId).toBe("gemini-3.1-pro-preview");
   });
 
-  it("rejects browser config defaults for gemini-3.1-pro", () => {
-    expect(() =>
-      resolveRunOptionsFromConfig({
+  it.each(["gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-3.1-pro"])(
+    "accepts browser engine explicitly set for %s",
+    (model) => {
+      const { resolvedEngine, runOptions } = resolveRunOptionsFromConfig({
         prompt: basePrompt,
-        model: "gemini-3.1-pro",
-        userConfig: { engine: "browser" },
-        env: {},
-      }),
-    ).toThrow("gemini-3.1-pro is API-only today");
-  });
-
-  it("rejects browser engine explicitly set for gemini-3.1-pro", () => {
-    expect(() =>
-      resolveRunOptionsFromConfig({
-        prompt: basePrompt,
-        model: "gemini-3.1-pro",
+        model,
         engine: "browser",
-      }),
-    ).toThrow("gemini-3.1-pro is API-only today");
+      });
+      expect(resolvedEngine).toBe("browser");
+      expect(runOptions.model).toBe(model);
+    },
+  );
+
+  it("uses the API model id for current Gemini API models", () => {
+    const flash = resolveRunOptionsFromConfig({
+      prompt: basePrompt,
+      model: "gemini-3.5-flash",
+      engine: "api",
+    });
+    const lite = resolveRunOptionsFromConfig({
+      prompt: basePrompt,
+      model: "gemini-3.1-flash-lite",
+      engine: "api",
+    });
+
+    expect(flash.runOptions.effectiveModelId).toBe("gemini-3.5-flash");
+    expect(lite.runOptions.effectiveModelId).toBe("gemini-3.1-flash-lite");
   });
 
   it("accepts browser engine explicitly set for gemini", () => {

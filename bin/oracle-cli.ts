@@ -431,7 +431,7 @@ program
   .option("-s, --slug <words>", "Custom session slug (3-5 words).")
   .option(
     "-m, --model <model>",
-    'Model to target (gpt-5.5-pro default). Also gpt-5.5, gpt-5.4-pro, gpt-5.4, gpt-5.1-pro, gpt-5-pro, gpt-5.1, gpt-5.1-codex API-only, gpt-5.2, gpt-5.2-instant, gpt-5.2-pro, gemini-3.1-pro API-only, gemini-3-pro, claude-4.6-sonnet, claude-4.1-opus, or ChatGPT labels like "5.5 Pro" / "5.2 Thinking" for browser runs).',
+    'Model to target (gpt-5.5-pro default). Also gpt-5.5, gpt-5.4-pro, gpt-5.4, gpt-5.1-pro, gpt-5-pro, gpt-5.1, gpt-5.1-codex API-only, gpt-5.2, gpt-5.2-instant, gpt-5.2-pro, gemini-3.1-flash-lite, gemini-3.5-flash, gemini-3.1-pro, legacy gemini-3-pro, claude-4.6-sonnet, claude-4.1-opus, or ChatGPT labels like "5.5 Pro" / "5.2 Thinking" for browser runs).',
     normalizeModelOption,
   )
   .addOption(
@@ -1943,18 +1943,6 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   }
   const resolvedModel: ModelName =
     normalizedMultiModels[0] ?? (isGemini ? resolveApiModel(cliModelArg) : resolvedModelCandidate);
-  const includesGeminiApiOnly = (
-    normalizedMultiModels.length > 0 ? normalizedMultiModels : [resolvedModel]
-  ).some((model) => model === "gemini-3.1-pro");
-  if (browserExplicitlyRequested && includesGeminiApiOnly) {
-    throw new Error(
-      "gemini-3.1-pro is API-only today. Use --engine api or switch to gemini-3-pro for Gemini web.",
-    );
-  }
-  if (engine === "browser" && includesGeminiApiOnly) {
-    console.log(chalk.dim("gemini-3.1-pro is API-only today; switching to API."));
-    engine = "api";
-  }
   const effectiveModelId = resolvedModel.startsWith("gemini")
     ? resolveGeminiModelId(resolvedModel)
     : isKnownModel(resolvedModel)
