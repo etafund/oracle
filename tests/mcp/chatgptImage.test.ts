@@ -55,7 +55,9 @@ describe("chatgpt_image MCP tool", () => {
     });
 
     expect(first.engine).toBe("browser");
-    expect(first.generateImage).toMatch(/generated\/chatgpt-image-[a-z0-9-]+\.png$/);
+    const generatedImage = first.generateImage ?? "";
+    expect(path.basename(path.dirname(generatedImage))).toBe("generated");
+    expect(path.basename(generatedImage)).toMatch(/^chatgpt-image-[a-z0-9-]+\.png$/);
     // Random suffix keeps concurrent default paths from colliding.
     expect(first.generateImage).not.toBe(second.generateImage);
     expect(first.browserAttachments).toBeUndefined();
