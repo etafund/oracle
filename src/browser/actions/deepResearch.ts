@@ -164,6 +164,7 @@ export async function waitForDeepResearchCompletion(
   minTurnIndex?: number | null,
   Page?: ChromeClient["Page"],
   client?: ChromeClient,
+  options?: { ignoredTargetKeys?: readonly string[] },
 ): Promise<{
   text: string;
   html?: string;
@@ -176,6 +177,8 @@ export async function waitForDeepResearchCompletion(
     typeof minTurnIndex === "number" && Number.isFinite(minTurnIndex) && minTurnIndex >= 0
       ? Math.floor(minTurnIndex)
       : -1;
+  const scopedToNewTurns = minTurnLiteral >= 0;
+  const ignoredTargetKeys = new Set(options?.ignoredTargetKeys ?? []);
 
   logger(`Monitoring Deep Research (timeout: ${Math.round(timeoutMs / 60_000)}min)...`);
 
@@ -202,6 +205,7 @@ export async function waitForDeepResearchCompletion(
         { stage: "chatgpt-account-blocked", code: "chatgpt-account-blocked" },
       );
     }
+    const activeScopedResearch = Boolean(val?.hasActiveScopedResearch);
 
     // ChatGPT renders the Deep Research report inside an out-of-process,
     // sandboxed iframe (connector_openai_deep_research.*.oaiusercontent.com),
@@ -212,7 +216,8 @@ export async function waitForDeepResearchCompletion(
     // walks its nested frames, so it CAN read the report. Prefer the target path
     // and fall back to the in-page frame path for legacy/inline rendering.
     const targetResult = client
-      ? await readDeepResearchTargetResult(client).catch(() => null)
+      ? ((await readDeepResearchTargetResult(client, ignoredTargetKeys).catch(() => null))?.read ??
+        null)
       : null;
     // A completed target read is authoritative. If the target read is missing or
     // only in-progress, still try the in-page frame path so an incomplete target
@@ -227,11 +232,10 @@ export async function waitForDeepResearchCompletion(
     // report lives entirely in the OOPIF). The main-DOM hasActiveScopedResearch
     // heuristic no longer holds in that case, so don't gate on it.
     const completedFromTarget = Boolean(targetResult?.completed);
-    const scopedToNewTurns = minTurnLiteral >= 0;
     if (
       read?.completed &&
       read.text &&
-      (completedFromTarget || !scopedToNewTurns || val?.hasActiveScopedResearch)
+      (completedFromTarget || !scopedToNewTurns || activeScopedResearch)
     ) {
       logger(`Deep Research completed (${Math.round((Date.now() - start) / 1000)}s elapsed)`);
       return {
@@ -343,6 +347,16 @@ interface DeepResearchFrameStatus {
   html?: string;
 }
 
+interface DeepResearchTargetScanResult {
+  read: DeepResearchFrameStatus | null;
+  targetKeys: string[];
+}
+
+interface DeepResearchTargetSessionResult {
+  confirmed: boolean;
+  read: DeepResearchFrameStatus | null;
+}
+
 /**
  * Choose the authoritative Deep Research read between the target-attach result
  * and the in-page frame result. A completed read wins (target preferred, since
@@ -412,7 +426,8 @@ async function readDeepResearchFrameResult(
 
 async function readDeepResearchTargetResult(
   client: ChromeClient,
-): Promise<DeepResearchFrameStatus | null> {
+  ignoredTargetKeys: ReadonlySet<string> = new Set(),
+): Promise<DeepResearchTargetScanResult | null> {
   const rawClient = client as ChromeClient & {
     send?: (
       method: string,
@@ -432,7 +447,7 @@ async function readDeepResearchTargetResult(
   // tab client this is undefined and `send` already defaults to the page session.
   const pageSessionId = rawClient.oraclePageSessionId;
 
-  const sessions = new Map<string, string>();
+  const sessions = new Map<string, { targetId?: string; url: string }>();
   const ownedSessionIds = new Set<string>();
   const onAttached = (params: unknown, parentSessionId?: string) => {
     // chrome-remote-interface emits flattened target events both on the
@@ -442,14 +457,15 @@ async function readDeepResearchTargetResult(
     if (pageSessionId && parentSessionId !== pageSessionId) {
       return;
     }
-    const targetInfo = (params as { targetInfo?: { url?: string; type?: string } } | undefined)
-      ?.targetInfo;
+    const targetInfo = (
+      params as { targetInfo?: { targetId?: string; url?: string; type?: string } } | undefined
+    )?.targetInfo;
     const eventSessionId =
       (params as { sessionId?: string } | undefined)?.sessionId ?? parentSessionId;
     const url = targetInfo?.url ?? "";
     const type = targetInfo?.type ?? "";
     if (eventSessionId && isDeepResearchTarget(url, type)) {
-      sessions.set(eventSessionId, url);
+      sessions.set(eventSessionId, { targetId: targetInfo?.targetId, url });
       ownedSessionIds.add(eventSessionId);
     }
   };
@@ -484,10 +500,22 @@ async function readDeepResearchTargetResult(
     // read; only fall back to the best in-progress/text-bearing read when no
     // session reports completion, so we never miss a later completed OOPIF.
     let best: DeepResearchFrameStatus | null = null;
-    for (const [sessionId, targetUrl] of sessions) {
-      const value = await readDeepResearchTargetSession(rawClient, sessionId, targetUrl);
+    let completed: DeepResearchFrameStatus | null = null;
+    const targetKeys: string[] = [];
+    for (const [sessionId, target] of sessions) {
+      const sessionResult = await readDeepResearchTargetSession(rawClient, sessionId, target.url);
+      if (!sessionResult.confirmed) {
+        continue;
+      }
+      if (target.targetId) {
+        targetKeys.push(target.targetId);
+      }
+      const value = sessionResult.read;
       if (value?.completed) {
-        return value;
+        if (!completed && (!target.targetId || !ignoredTargetKeys.has(target.targetId))) {
+          completed = value;
+        }
+        continue;
       }
       if (
         value &&
@@ -497,7 +525,7 @@ async function readDeepResearchTargetResult(
         best = value;
       }
     }
-    return best;
+    return { read: completed ?? best, targetKeys };
   } finally {
     await rawClient
       .send(
@@ -521,6 +549,10 @@ async function readDeepResearchTargetResult(
   }
 }
 
+export async function captureDeepResearchTargetKeys(client: ChromeClient): Promise<string[]> {
+  return (await readDeepResearchTargetResult(client))?.targetKeys ?? [];
+}
+
 async function readDeepResearchTargetSession(
   rawClient: {
     send: (
@@ -531,7 +563,7 @@ async function readDeepResearchTargetSession(
   },
   sessionId: string,
   targetUrl: string,
-): Promise<DeepResearchFrameStatus | null> {
+): Promise<DeepResearchTargetSessionResult> {
   await rawClient.send("Runtime.enable", {}, sessionId).catch(() => undefined);
   await rawClient.send("Page.enable", {}, sessionId).catch(() => undefined);
 
@@ -539,7 +571,7 @@ async function readDeepResearchTargetSession(
     .send("Page.getFrameTree", {}, sessionId)
     .catch(() => null)) as { frameTree?: DeepResearchFrameTree } | null;
   if (!isConfirmedDeepResearchTarget(targetUrl, frameTree?.frameTree)) {
-    return null;
+    return { confirmed: false, read: null };
   }
   const frameIds = collectDeepResearchFrameIds(frameTree?.frameTree);
   let best: DeepResearchFrameStatus | null = null;
@@ -565,7 +597,7 @@ async function readDeepResearchTargetSession(
       world.executionContextId,
     );
     if (value?.completed) {
-      return value;
+      return { confirmed: true, read: value };
     }
     if ((value?.textLength ?? 0) > (best?.textLength ?? 0) || value?.inProgress) {
       best = value;
@@ -574,13 +606,13 @@ async function readDeepResearchTargetSession(
 
   const topFrameValue = await evaluateDeepResearchFrameStatus(rawClient, sessionId);
   if (topFrameValue?.completed) {
-    return topFrameValue;
+    return { confirmed: true, read: topFrameValue };
   }
   if ((topFrameValue?.textLength ?? 0) > (best?.textLength ?? 0) || topFrameValue?.inProgress) {
     best = topFrameValue;
   }
 
-  return best;
+  return { confirmed: true, read: best };
 }
 
 async function evaluateDeepResearchFrameStatus(
