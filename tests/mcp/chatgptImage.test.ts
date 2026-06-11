@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -66,7 +66,7 @@ describe("chatgpt_image MCP tool", () => {
     setOracleHomeDirOverrideForTest(home);
     try {
       const handler = registerHandler();
-      const target = path.join(home, "product-mockup.png");
+      const target = path.join(home, "generated", "product-mockup.png");
       const result = (await handler({
         dryRun: true,
         prompt: "Create a small product mockup.",
@@ -80,13 +80,15 @@ describe("chatgpt_image MCP tool", () => {
       };
 
       expect(result.structuredContent.requestedOutputPath).toBe(target);
-      expect(result.structuredContent.resolved.browser?.imageOutputPath).toBe(target);
+      expect(result.structuredContent.resolved.browser?.imageOutputPath).toBe(
+        path.join(realpathSync(home), "generated", "product-mockup.png"),
+      );
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  test("rejects an output path outside the Oracle home", async () => {
+  test("rejects an output path outside the generated output directory without malformed structured output", async () => {
     const home = mkdtempSync(path.join(tmpdir(), "oracle-home-"));
     setOracleHomeDirOverrideForTest(home);
     try {
@@ -95,11 +97,24 @@ describe("chatgpt_image MCP tool", () => {
         dryRun: true,
         prompt: "Create a small product mockup.",
         outputPath: "/tmp/escape.png",
-      })) as { isError?: boolean };
+      })) as { isError?: boolean; structuredContent?: unknown };
 
       expect(result.isError).toBe(true);
+      expect(result.structuredContent).toBeUndefined();
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
+  });
+
+  test("rejects non-ChatGPT model families", async () => {
+    const handler = registerHandler();
+    const result = (await handler({
+      dryRun: true,
+      prompt: "Create a small product mockup.",
+      model: "gemini-3-pro",
+    })) as { isError?: boolean; content: Array<{ type: "text"; text: string }> };
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toMatch(/requires a ChatGPT\/GPT model/);
   });
 });

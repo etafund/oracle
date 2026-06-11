@@ -204,14 +204,13 @@ function resolveDefaultGeneratedImagePath(
   sessionId?: string,
 ): string {
   const primary = images[0];
-  // Random fallback token keeps concurrent session-less saves from colliding.
-  const uniqueFallback = `generated-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
-  const stemSource = primary?.fileId || primary?.alt || primary?.url || uniqueFallback;
-  const stem = sanitizeGeneratedImageStem(stemSource) || uniqueFallback;
+  const stemSource = primary?.fileId || primary?.alt || primary?.url || "generated";
+  const stem = sanitizeGeneratedImageStem(stemSource) || "generated";
   const baseDir = sessionId
     ? resolveSessionArtifactsDir(sessionId)
     : path.join(getOracleHomeDir(), ".temp");
-  return path.join(baseDir, `${stem}.png`);
+  const uniqueSuffix = sessionId ? "" : `-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
+  return path.join(baseDir, `${stem}${uniqueSuffix}.png`);
 }
 
 async function buildCookieHeader(Network: ChromeClient["Network"]): Promise<string> {

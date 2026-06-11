@@ -25,6 +25,9 @@ const chatGptImageInputShape = {
     .describe('Optional requested image aspect ratio, e.g. "1:1", "9:16", or "16:9".'),
   model: z
     .string()
+    .refine((value) => !/^(claude|gemini|grok)(?:[-\s]|$)/i.test(value.trim()), {
+      message: "chatgpt_image requires a ChatGPT/GPT model.",
+    })
     .optional()
     .describe("Optional ChatGPT/browser model label or alias. Defaults follow Oracle config."),
   browserModelLabel: z.string().optional().describe("Explicit ChatGPT UI model label to select."),
@@ -129,8 +132,11 @@ export function registerChatGptImageTool(server: McpServer): void {
       }
       const consultInput = buildChatGptImageConsultInput(parsed);
       const result = await runConsultTool(consultInput, { server: server.server });
+      if (result.isError || !result.structuredContent) {
+        return result;
+      }
       const structuredContent = {
-        ...(result.structuredContent ?? {}),
+        ...result.structuredContent,
         requestedOutputPath: consultInput.generateImage,
       };
       return {

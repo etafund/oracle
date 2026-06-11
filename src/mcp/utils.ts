@@ -8,23 +8,15 @@ import { getOracleHomeDir } from "../oracleHome.js";
 import { Launcher } from "chrome-launcher";
 
 const ALLOW_EXTERNAL_OUTPUT_ENV = "ORACLE_MCP_ALLOW_EXTERNAL_OUTPUT";
+const MCP_OUTPUT_DIRNAME = "generated";
 
 /**
- * Whether MCP callers may write generated images / saved responses outside the
- * Oracle home directory. Off by default: MCP clients are less trusted than the
- * CLI user, so an agent must not be able to write to arbitrary host paths.
+ * Whether MCP callers may write generated images outside the dedicated Oracle
+ * output directory. Off by default: MCP clients are less trusted than CLI users.
  */
 export function isExternalMcpOutputAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
   const raw = env[ALLOW_EXTERNAL_OUTPUT_ENV]?.trim().toLowerCase();
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
-}
-
-function realpathOrSelf(target: string): string {
-  try {
-    return fs.realpathSync(target);
-  } catch {
-    return path.resolve(target);
-  }
 }
 
 /**
@@ -42,25 +34,24 @@ function resolveThroughSymlinks(target: string): string {
   for (;;) {
     try {
       const real = fs.realpathSync(current);
-      return tail.length ? path.join(real, ...tail.toReversed()) : real;
+      return tail.length ? path.join(real, ...tail) : real;
     } catch {
       const parent = path.dirname(current);
       if (parent === current) {
         return resolved;
       }
-      tail.push(path.basename(current));
+      tail.unshift(path.basename(current));
       current = parent;
     }
   }
 }
 
 /**
- * Constrain an MCP-supplied output path to the Oracle home directory and return
- * its resolved absolute form. `path.resolve` collapses `..` (traversal escapes
- * are rejected) and the boundary check is performed after resolving symlinks in
- * the existing path prefix, so a symlinked parent cannot smuggle a write
- * outside the home. Set ORACLE_MCP_ALLOW_EXTERNAL_OUTPUT to opt into writing
- * outside the Oracle home as an explicit decision.
+ * Constrain an MCP-supplied output path to ORACLE_HOME_DIR/generated and return
+ * its canonical absolute form. This keeps agent writes away from Oracle config,
+ * session metadata, and browser profile state. Existing symlinks are resolved
+ * before the boundary check. Set ORACLE_MCP_ALLOW_EXTERNAL_OUTPUT to opt into
+ * arbitrary output paths as an explicit operator decision.
  */
 export function resolveMcpOutputPath(
   requestedPath: string,
@@ -71,13 +62,14 @@ export function resolveMcpOutputPath(
   if (isExternalMcpOutputAllowed(env)) {
     return resolved;
   }
-  const root = realpathOrSelf(getOracleHomeDir());
+  const oracleHome = resolveThroughSymlinks(getOracleHomeDir());
+  const root = path.join(oracleHome, MCP_OUTPUT_DIRNAME);
   const realTarget = resolveThroughSymlinks(resolved);
   if (realTarget === root || realTarget.startsWith(`${root}${path.sep}`)) {
-    return resolved;
+    return realTarget;
   }
   throw new Error(
-    `MCP "${field}" must resolve under the Oracle home directory (${root}); got "${realTarget}". ` +
+    `MCP "${field}" must resolve under the generated output directory (${root}); got "${realTarget}". ` +
       `Use a path under that directory, or set ${ALLOW_EXTERNAL_OUTPUT_ENV}=1 to allow external output paths.`,
   );
 }
@@ -152,6 +144,12 @@ export function mapConsultToRunOptions({
   const secondaryOutputPath = outputPath?.trim();
   if (secondaryOutputPath) {
     result.runOptions.outputPath = resolveMcpOutputPath(secondaryOutputPath, "outputPath", env);
+  }
+  if (
+    result.resolvedEngine !== "browser" &&
+    (result.runOptions.generateImage || result.runOptions.outputPath)
+  ) {
+    throw new Error('MCP image output requires engine:"browser".');
   }
   return result;
 }

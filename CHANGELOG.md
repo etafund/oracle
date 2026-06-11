@@ -27,7 +27,7 @@
 
 ### Security
 
-- MCP: constrain image output paths to a symlink-safe local boundary by default, with explicit opt-in required for external paths.
+- MCP: constrain image output paths to the symlink-safe `ORACLE_HOME_DIR/generated` directory by default, keeping agent writes away from Oracle config, session, and browser-profile state; explicit opt-in remains required for external paths.
 - MCP: reject image output through the remote browser service until generated artifacts can be transferred back to the caller.
 
 ## 0.13.0 — 2026-05-22

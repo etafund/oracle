@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -62,7 +62,7 @@ describe("mapConsultToRunOptions", () => {
     expect(runOptions.outputPath).toBe(path.resolve("/tmp/fallback.png"));
   });
 
-  test("rejects MCP output paths outside the Oracle home by default", () => {
+  test("rejects MCP output paths outside the generated output directory by default", () => {
     const home = mkdtempSync(path.join(tmpdir(), "oracle-home-"));
     setOracleHomeDirOverrideForTest(home);
     try {
@@ -76,13 +76,13 @@ describe("mapConsultToRunOptions", () => {
           userConfig: undefined,
           env: {},
         }),
-      ).toThrow(/Oracle home directory/);
+      ).toThrow(/generated output directory/);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  test("rejects traversal escapes from the Oracle home", () => {
+  test("rejects traversal escapes from the generated output directory", () => {
     const home = mkdtempSync(path.join(tmpdir(), "oracle-home-"));
     setOracleHomeDirOverrideForTest(home);
     try {
@@ -92,17 +92,17 @@ describe("mapConsultToRunOptions", () => {
           files: [],
           model: "gpt-5.5-pro",
           engine: "browser",
-          generateImage: path.join(home, "..", "escape.png"),
+          generateImage: path.join(home, "generated", "..", "escape.png"),
           userConfig: undefined,
           env: {},
         }),
-      ).toThrow(/Oracle home directory/);
+      ).toThrow(/generated output directory/);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  test("allows MCP output paths under the Oracle home without opt-in", () => {
+  test("allows MCP output paths under the generated output directory without opt-in", () => {
     const home = mkdtempSync(path.join(tmpdir(), "oracle-home-"));
     setOracleHomeDirOverrideForTest(home);
     try {
@@ -116,21 +116,47 @@ describe("mapConsultToRunOptions", () => {
         userConfig: undefined,
         env: {},
       });
-      expect(runOptions.generateImage).toBe(target);
+      expect(runOptions.generateImage).toBe(path.join(realpathSync(home), "generated", "img.png"));
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  test("rejects a symlinked parent that escapes the Oracle home (generateImage)", () => {
+  test("rejects writes into Oracle config and session state", () => {
+    const home = mkdtempSync(path.join(tmpdir(), "oracle-home-"));
+    setOracleHomeDirOverrideForTest(home);
+    try {
+      for (const target of [
+        path.join(home, "config.json"),
+        path.join(home, "sessions", "session-1", "meta.json"),
+        path.join(home, "browser-profile", "Preferences"),
+      ]) {
+        expect(() =>
+          mapConsultToRunOptions({
+            prompt: "x",
+            files: [],
+            model: "gpt-5.5-pro",
+            engine: "browser",
+            generateImage: target,
+            userConfig: undefined,
+            env: {},
+          }),
+        ).toThrow(/generated output directory/);
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects a symlinked parent that escapes the generated directory (generateImage)", () => {
     const home = mkdtempSync(path.join(tmpdir(), "oracle-home-"));
     const outside = mkdtempSync(path.join(tmpdir(), "oracle-outside-"));
     setOracleHomeDirOverrideForTest(home);
     try {
-      // ORACLE_HOME/escape -> /outside (a symlinked dir leaving the boundary).
-      // The target is lexically under home but really writes into `outside`.
-      symlinkSync(outside, path.join(home, "escape"));
-      const target = path.join(home, "escape", "img.png");
+      const generated = path.join(home, "generated");
+      mkdirSync(generated);
+      symlinkSync(outside, path.join(generated, "escape"));
+      const target = path.join(generated, "escape", "img.png");
       expect(() =>
         mapConsultToRunOptions({
           prompt: "x",
@@ -141,20 +167,22 @@ describe("mapConsultToRunOptions", () => {
           userConfig: undefined,
           env: {},
         }),
-      ).toThrow(/Oracle home directory/);
+      ).toThrow(/generated output directory/);
     } finally {
       rmSync(home, { recursive: true, force: true });
       rmSync(outside, { recursive: true, force: true });
     }
   });
 
-  test("rejects a symlinked parent that escapes the Oracle home (outputPath)", () => {
+  test("rejects a symlinked parent that escapes the generated directory (outputPath)", () => {
     const home = mkdtempSync(path.join(tmpdir(), "oracle-home-"));
     const outside = mkdtempSync(path.join(tmpdir(), "oracle-outside-"));
     setOracleHomeDirOverrideForTest(home);
     try {
-      symlinkSync(outside, path.join(home, "escape"));
-      const target = path.join(home, "escape", "answer.md");
+      const generated = path.join(home, "generated");
+      mkdirSync(generated);
+      symlinkSync(outside, path.join(generated, "escape"));
+      const target = path.join(generated, "escape", "image.png");
       expect(() =>
         mapConsultToRunOptions({
           prompt: "x",
@@ -165,22 +193,22 @@ describe("mapConsultToRunOptions", () => {
           userConfig: undefined,
           env: {},
         }),
-      ).toThrow(/Oracle home directory/);
+      ).toThrow(/generated output directory/);
     } finally {
       rmSync(home, { recursive: true, force: true });
       rmSync(outside, { recursive: true, force: true });
     }
   });
 
-  test("allows a symlinked parent that stays within the Oracle home", () => {
+  test("canonicalizes a symlinked parent that stays within the generated directory", () => {
     const home = mkdtempSync(path.join(tmpdir(), "oracle-home-"));
     setOracleHomeDirOverrideForTest(home);
     try {
-      // ORACLE_HOME/real exists; ORACLE_HOME/link -> ORACLE_HOME/real (still inside).
-      const realDir = path.join(home, "real");
-      mkdirSync(realDir);
-      symlinkSync(realDir, path.join(home, "link"));
-      const target = path.join(home, "link", "img.png");
+      const generated = path.join(home, "generated");
+      const realDir = path.join(generated, "real");
+      mkdirSync(realDir, { recursive: true });
+      symlinkSync(realDir, path.join(generated, "link"));
+      const target = path.join(generated, "link", "img.png");
       const { runOptions } = mapConsultToRunOptions({
         prompt: "x",
         files: [],
@@ -190,7 +218,54 @@ describe("mapConsultToRunOptions", () => {
         userConfig: undefined,
         env: {},
       });
-      expect(runOptions.generateImage).toBe(target);
+      expect(runOptions.generateImage).toBe(path.join(realpathSync(realDir), "img.png"));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("canonicalizes a non-existent Oracle home under a symlinked parent", () => {
+    const container = mkdtempSync(path.join(tmpdir(), "oracle-parent-"));
+    const realParent = path.join(container, "real");
+    const linkedParent = path.join(container, "linked");
+    mkdirSync(realParent);
+    symlinkSync(realParent, linkedParent);
+    const home = path.join(linkedParent, "oracle-home");
+    setOracleHomeDirOverrideForTest(home);
+    try {
+      const target = path.join(home, "generated", "img.png");
+      const { runOptions } = mapConsultToRunOptions({
+        prompt: "x",
+        files: [],
+        model: "gpt-5.5-pro",
+        engine: "browser",
+        generateImage: target,
+        userConfig: undefined,
+        env: {},
+      });
+      expect(runOptions.generateImage).toBe(
+        path.join(realpathSync(realParent), "oracle-home", "generated", "img.png"),
+      );
+    } finally {
+      rmSync(container, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects image output when the resolved engine is API", () => {
+    const home = mkdtempSync(path.join(tmpdir(), "oracle-home-"));
+    setOracleHomeDirOverrideForTest(home);
+    try {
+      expect(() =>
+        mapConsultToRunOptions({
+          prompt: "x",
+          files: [],
+          model: "gpt-5.5",
+          engine: "api",
+          generateImage: path.join(home, "generated", "img.png"),
+          userConfig: undefined,
+          env: { OPENAI_API_KEY: "test" },
+        }),
+      ).toThrow(/requires engine:"browser"/);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

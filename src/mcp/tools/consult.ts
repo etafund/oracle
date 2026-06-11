@@ -177,18 +177,15 @@ const consultModelSummaryShape = z.object({
 });
 
 const consultArtifactSummaryShape = z.object({
-  kind: z.string(),
+  kind: z.enum(["transcript", "deep-research-report", "image", "file"]),
   path: z.string(),
   label: z.string().optional(),
   mimeType: z.string().optional(),
   sizeBytes: z.number().optional(),
-  sourceUrl: z.string().optional(),
 });
 
 const consultImageSummaryShape = consultArtifactSummaryShape.extend({
   kind: z.literal("image"),
-  url: z.string().optional(),
-  finalUrl: z.string().optional(),
   alt: z.string().optional(),
   width: z.number().optional(),
   height: z.number().optional(),
@@ -289,7 +286,6 @@ export function summarizeArtifactsForConsult(
     label: artifact.label,
     mimeType: artifact.mimeType,
     sizeBytes: artifact.sizeBytes,
-    sourceUrl: artifact.sourceUrl,
   }));
 }
 
@@ -306,9 +302,6 @@ export function summarizeImageArtifactsForConsult(
         label: artifact.label,
         mimeType: artifact.mimeType,
         sizeBytes: artifact.sizeBytes,
-        sourceUrl: artifact.sourceUrl,
-        url: optionalString(image.url),
-        finalUrl: optionalString(image.finalUrl),
         alt: optionalString(image.alt),
         width: optionalNumber(image.width),
         height: optionalNumber(image.height),
@@ -571,6 +564,15 @@ export async function runConsultTool(
       .catch(() => {});
 
   const resolvedRemote = resolveRemoteServiceConfig({ userConfig, env: process.env });
+  const imageOutputPath = runOptions.generateImage ?? runOptions.outputPath;
+  if (resolvedEngine === "browser" && resolvedRemote.host && imageOutputPath) {
+    return {
+      isError: true,
+      content: textContent(
+        "ChatGPT image output is not supported with a remote browser service: generated files are not transferred back to the MCP caller. Unset ORACLE_REMOTE_HOST to generate images locally, or omit generateImage/outputPath.",
+      ),
+    };
+  }
 
   let browserConfig: BrowserSessionConfig | undefined;
   if (resolvedEngine === "browser") {
@@ -639,20 +641,6 @@ export async function runConsultTool(
         isError: true,
         content: textContent(
           `Remote host configured (${resolvedRemote.host}) but remote token is missing. Run \`oracle bridge client --connect <...>\` or set ORACLE_REMOTE_TOKEN.`,
-        ),
-      };
-    }
-    // Fail closed for image output over the remote browser service: the remote
-    // executor does not thread image artifacts back through the protocol, so the
-    // generated image would be written on the remote host and the promised
-    // structuredContent.images contract could not be fulfilled. Better to reject
-    // explicitly than silently return no images.
-    const imageOutputPath = runOptions.generateImage ?? runOptions.outputPath;
-    if (imageOutputPath) {
-      return {
-        isError: true,
-        content: textContent(
-          `ChatGPT image output is not supported with a remote browser service (ORACLE_REMOTE_HOST=${resolvedRemote.host}): generated images are written on the remote host and are not transferred back, so structuredContent.images cannot be returned. Unset the remote host to generate images on the local browser, or omit generateImage/outputPath.`,
         ),
       };
     }
