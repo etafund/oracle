@@ -356,6 +356,11 @@ function fallbackExtensionFromContentType(contentType?: string | null): string {
 
 function mimeTypeFromFilename(filename: string): string | undefined {
   const ext = path.extname(filename).toLowerCase();
+  if (ext === ".png") return "image/png";
+  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+  if (ext === ".webp") return "image/webp";
+  if (ext === ".gif") return "image/gif";
+  if (ext === ".svg") return "image/svg+xml";
   if (ext === ".csv") return "text/csv";
   if (ext === ".json") return "application/json";
   if (ext === ".zip") return "application/zip";
@@ -562,21 +567,26 @@ function buildClickAssistantDownloadButtonsExpression(
   })()`;
 }
 
-async function saveAssistantDownloadButtonArtifacts(params: {
+export async function saveAssistantDownloadButtonArtifacts(params: {
   Browser?: ChromeClient["Browser"];
   Client?: ChromeClient;
   Page?: ChromeClient["Page"];
   Runtime: ChromeClient["Runtime"];
   logger?: BrowserLogger;
-  files: BrowserDownloadableFile[];
+  files?: BrowserDownloadableFile[];
   allowGenericDownloadLabels?: boolean;
+  downloadPath?: string;
   minTurnIndex?: number | null;
   sessionId?: string;
 }): Promise<SavedBrowserFile[]> {
-  if (!params.sessionId || (!params.Browser && !params.Page)) {
+  if (
+    (!params.sessionId && !params.downloadPath) ||
+    (!params.Client && !params.Browser && !params.Page)
+  ) {
     return [];
   }
-  const artifactsDir = resolveSessionArtifactsDir(params.sessionId);
+  const artifactsDir =
+    params.downloadPath ?? resolveSessionArtifactsDir(params.sessionId as string);
   await fs.mkdir(artifactsDir, { recursive: true });
   const before = new Set(await fs.readdir(artifactsDir).catch(() => []));
   const configured = await configureBrowserDownloadPath({
@@ -600,7 +610,7 @@ async function saveAssistantDownloadButtonArtifacts(params: {
   let clicked: unknown[] = [];
   const expression = buildClickAssistantDownloadButtonsExpression(
     params.minTurnIndex,
-    resolveDownloadButtonLabels(params.files),
+    resolveDownloadButtonLabels(params.files ?? []),
     params.allowGenericDownloadLabels,
   );
   const deadline = Date.now() + DOWNLOAD_BUTTON_WAIT_MS;

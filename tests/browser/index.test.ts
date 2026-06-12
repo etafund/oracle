@@ -6,6 +6,7 @@ import {
   __test__,
   classifyPreservedBrowserErrorForTest,
   formatBrowserTurnTranscript,
+  isLocalChromeHostForTest,
   maybeArchiveCompletedConversationForTest,
   redactBrowserConfigForDebugLogForTest,
   resolveRemoteTabLeaseProfileDirForTest,
@@ -646,4 +647,20 @@ describe("resolveRemoteTabLeaseProfileDirForTest", () => {
     });
     expect(resolveRemoteTabLeaseProfileDirForTest(uncoordinated)).toBeNull();
   });
+});
+
+describe("isLocalChromeHostForTest", () => {
+  test.each(["localhost", "LOCALHOST", "127.0.0.1", "127.12.34.56", "::1", "[::1]"])(
+    "accepts loopback host %s",
+    (host) => {
+      expect(isLocalChromeHostForTest(host)).toBe(true);
+    },
+  );
+
+  test.each(["remote-host", "192.168.1.5", "10.0.0.2", "2001:db8::1"])(
+    "rejects remote host %s",
+    (host) => {
+      expect(isLocalChromeHostForTest(host)).toBe(false);
+    },
+  );
 });

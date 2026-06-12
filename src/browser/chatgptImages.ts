@@ -12,6 +12,7 @@ import { delay } from "./utils.js";
 import { readAssistantSnapshot } from "./pageActions.js";
 import { getOracleHomeDir } from "../oracleHome.js";
 import { resolveSessionArtifactsDir } from "./artifacts.js";
+import { saveAssistantDownloadButtonArtifacts } from "./chatgptFiles.js";
 
 const GENERATED_IMAGE_WAIT_MIN_MS = 15_000;
 const GENERATED_IMAGE_WAIT_MAX_MS = 15 * 60_000;
@@ -180,6 +181,34 @@ function contentTypeToExtension(contentType: string | null): string {
   return "bin";
 }
 
+function detectImageFile(buffer: Buffer): { extension: string; mimeType: string } | null {
+  if (
+    buffer.length >= 8 &&
+    buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+  ) {
+    return { extension: "png", mimeType: "image/png" };
+  }
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return { extension: "jpg", mimeType: "image/jpeg" };
+  }
+  if (
+    buffer.length >= 12 &&
+    buffer.subarray(0, 4).toString("ascii") === "RIFF" &&
+    buffer.subarray(8, 12).toString("ascii") === "WEBP"
+  ) {
+    return { extension: "webp", mimeType: "image/webp" };
+  }
+  const signature = buffer.subarray(0, 6).toString("ascii");
+  if (signature === "GIF87a" || signature === "GIF89a") {
+    return { extension: "gif", mimeType: "image/gif" };
+  }
+  const text = buffer.subarray(0, Math.min(buffer.length, 1024)).toString("utf8").trimStart();
+  if (/^(?:<\?xml[^>]*>\s*)?<svg[\s>]/i.test(text)) {
+    return { extension: "svg", mimeType: "image/svg+xml" };
+  }
+  return null;
+}
+
 function resolveSiblingImagePath(basePath: string, index: number, extension: string): string {
   const ext = path.extname(basePath);
   const dir = path.dirname(basePath);
@@ -298,7 +327,90 @@ export async function saveChatGptGeneratedImages(params: {
   };
 }
 
+async function saveGeneratedImageButtonArtifacts(params: {
+  Browser?: ChromeClient["Browser"];
+  Client?: ChromeClient;
+  Page?: ChromeClient["Page"];
+  Runtime: ChromeClient["Runtime"];
+  logger?: BrowserLogger;
+  minTurnIndex?: number | null;
+  targetPath: string;
+}): Promise<SavedBrowserImage[]> {
+  const buttonDownloads = await saveAssistantDownloadButtonArtifacts({
+    Browser: params.Browser,
+    Client: params.Client,
+    Page: params.Page,
+    Runtime: params.Runtime,
+    logger: params.logger,
+    files: [],
+    allowGenericDownloadLabels: true,
+    downloadPath: path.dirname(params.targetPath),
+    minTurnIndex: params.minTurnIndex,
+  });
+  const buttonImages: SavedBrowserImage[] = [];
+  for (const download of buttonDownloads) {
+    const contents = await fs.readFile(download.path);
+    const detected = detectImageFile(contents);
+    if (!detected) {
+      await fs.unlink(download.path).catch(() => undefined);
+      params.logger?.(`[browser] Ignored non-image assistant download: ${download.label}`);
+      continue;
+    }
+    const index = buttonImages.length;
+    const resolvedPath = resolveSiblingImagePath(params.targetPath, index, detected.extension);
+    if (path.resolve(download.path) !== resolvedPath) {
+      await fs.copyFile(download.path, resolvedPath);
+      await fs.unlink(download.path);
+    }
+    const stat = await fs.stat(resolvedPath);
+    buttonImages.push({
+      kind: "image",
+      path: resolvedPath,
+      label: index === 0 ? "Generated image" : `Generated image ${index + 1}`,
+      mimeType: detected.mimeType,
+      sizeBytes: stat.size,
+      sourceUrl: "browser-download",
+      url: "browser-download",
+      finalUrl: "browser-download",
+      alt: download.label,
+    });
+  }
+  if (buttonImages.length > 0) {
+    params.logger?.(`[browser] Saved ${buttonImages.length} generated image download artifact(s).`);
+  }
+  return buttonImages;
+}
+
+function formatButtonImageArtifacts(
+  buttonImages: SavedBrowserImage[],
+  answerText: string,
+): {
+  generatedImages: BrowserGeneratedImage[];
+  savedImages: SavedBrowserImage[];
+  imageCount: number;
+  markdownSuffix: string;
+  answerText: string;
+} {
+  const primaryPath = buttonImages[0]?.path ?? "";
+  return {
+    generatedImages: buttonImages.map((image) => ({
+      url: image.url,
+      alt: image.alt,
+    })),
+    savedImages: buttonImages,
+    imageCount: buttonImages.length,
+    markdownSuffix:
+      buttonImages.length > 1
+        ? `\n\n*Generated ${buttonImages.length} image(s). Saved ${buttonImages.length} file(s) starting at: ${primaryPath}*`
+        : `\n\n*Generated 1 image(s). Saved to: ${primaryPath}*`,
+    answerText,
+  };
+}
+
 export async function collectGeneratedImageArtifacts(params: {
+  Browser?: ChromeClient["Browser"];
+  Client?: ChromeClient;
+  Page?: ChromeClient["Page"];
   Runtime: ChromeClient["Runtime"];
   Network: ChromeClient["Network"];
   logger?: BrowserLogger;
@@ -323,6 +435,19 @@ export async function collectGeneratedImageArtifacts(params: {
   let latestAnswerText = params.answerText;
 
   if (explicitTargetPath && generatedImages.length === 0) {
+    const targetPath = path.resolve(explicitTargetPath);
+    const buttonImages = await saveGeneratedImageButtonArtifacts({
+      Browser: params.Browser,
+      Client: params.Client,
+      Page: params.Page,
+      Runtime: params.Runtime,
+      logger: params.logger,
+      minTurnIndex: params.minTurnIndex,
+      targetPath,
+    });
+    if (buttonImages.length > 0) {
+      return formatButtonImageArtifacts(buttonImages, latestAnswerText);
+    }
     const deadline = Date.now() + resolveGeneratedImageWaitTimeoutMs(params.waitTimeoutMs);
     while (Date.now() < deadline) {
       await delay(1500);
@@ -341,6 +466,20 @@ export async function collectGeneratedImageArtifacts(params: {
         typeof latestSnapshot?.text === "string" ? latestSnapshot.text.trim() : "";
       if (snapshotText) {
         latestAnswerText = snapshotText;
+      }
+    }
+    if (generatedImages.length === 0) {
+      const delayedButtonImages = await saveGeneratedImageButtonArtifacts({
+        Browser: params.Browser,
+        Client: params.Client,
+        Page: params.Page,
+        Runtime: params.Runtime,
+        logger: params.logger,
+        minTurnIndex: params.minTurnIndex,
+        targetPath,
+      });
+      if (delayedButtonImages.length > 0) {
+        return formatButtonImageArtifacts(delayedButtonImages, latestAnswerText);
       }
     }
   }
@@ -374,6 +513,20 @@ export async function collectGeneratedImageArtifacts(params: {
     logger: params.logger,
   });
   if (!saved.saved) {
+    if (explicitTargetPath) {
+      const buttonImages = await saveGeneratedImageButtonArtifacts({
+        Browser: params.Browser,
+        Client: params.Client,
+        Page: params.Page,
+        Runtime: params.Runtime,
+        logger: params.logger,
+        minTurnIndex: params.minTurnIndex,
+        targetPath: path.resolve(explicitTargetPath),
+      });
+      if (buttonImages.length > 0) {
+        return formatButtonImageArtifacts(buttonImages, latestAnswerText);
+      }
+    }
     const detail = saved.errors.length > 0 ? `\n${saved.errors.join("\n")}` : "";
     if (explicitTargetPath) {
       throw new Error(

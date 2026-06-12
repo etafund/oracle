@@ -270,6 +270,212 @@ describe("collectGeneratedImageArtifacts", () => {
     setOracleHomeDirOverrideForTest(null);
   });
 
+  test("saves current-turn ChatGPT behavior button image downloads", async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-chatgpt-image-button-"));
+    const outputPath = path.join(tmpDir, "generated.png");
+    const downloadedPath = path.join(tmpDir, "blue-circle.png");
+    const png = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x00,
+    ]);
+    const runtime = {
+      evaluate: vi.fn(async ({ expression }: { expression: string }) => {
+        if (expression.includes("behavior-btn")) {
+          await fs.writeFile(downloadedPath, png);
+          return {
+            result: {
+              value: [
+                {
+                  text: "Download the 1:1 blue circle image",
+                  ariaLabel: "",
+                  testId: "",
+                },
+              ],
+            },
+          };
+        }
+        return { result: { value: [] } };
+      }),
+    } as unknown as ChromeClient["Runtime"];
+    const client = {
+      send: vi.fn().mockResolvedValue({}),
+    } as unknown as ChromeClient;
+
+    try {
+      const result = await collectGeneratedImageArtifacts({
+        Client: client,
+        Runtime: runtime,
+        Network: {} as ChromeClient["Network"],
+        minTurnIndex: 0,
+        generateImagePath: outputPath,
+        answerText: "Here you go.",
+        waitTimeoutMs: 15_000,
+      });
+
+      expect(result.imageCount).toBe(1);
+      expect(result.savedImages[0]).toMatchObject({
+        kind: "image",
+        path: outputPath,
+        mimeType: "image/png",
+        sourceUrl: "browser-download",
+      });
+      await expect(fs.readFile(outputPath)).resolves.toEqual(png);
+      expect(client.send).toHaveBeenCalledWith("Browser.setDownloadBehavior", {
+        behavior: "allow",
+        downloadPath: tmpDir,
+      });
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("retries behavior button downloads after waiting for delayed image generation", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-12T00:00:00Z"));
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-chatgpt-image-delayed-"));
+    const outputPath = path.join(tmpDir, "generated.png");
+    const downloadedPath = path.join(tmpDir, "delayed.png");
+    const png = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x00,
+    ]);
+    const buttonAvailableAt = Date.now() + 10_000;
+    const runtime = {
+      evaluate: vi.fn(async ({ expression }: { expression: string }) => {
+        if (expression.includes("behavior-btn")) {
+          if (Date.now() < buttonAvailableAt) {
+            return { result: { value: [] } };
+          }
+          await fs.writeFile(downloadedPath, png);
+          return {
+            result: {
+              value: [
+                {
+                  text: "Download the delayed image",
+                  ariaLabel: "",
+                  testId: "",
+                },
+              ],
+            },
+          };
+        }
+        return { result: { value: [] } };
+      }),
+    } as unknown as ChromeClient["Runtime"];
+    const client = {
+      send: vi.fn().mockResolvedValue({}),
+    } as unknown as ChromeClient;
+
+    try {
+      const resultPromise = collectGeneratedImageArtifacts({
+        Client: client,
+        Runtime: runtime,
+        Network: {} as ChromeClient["Network"],
+        minTurnIndex: 0,
+        generateImagePath: outputPath,
+        answerText: "Working on it.",
+        waitTimeoutMs: 15_000,
+      });
+      let settled = false;
+      void resultPromise.finally(() => {
+        settled = true;
+      });
+      for (let index = 0; index < 30 && !settled; index += 1) {
+        await vi.advanceTimersByTimeAsync(1000);
+      }
+      const result = await resultPromise;
+
+      expect(result.imageCount).toBe(1);
+      expect(result.savedImages[0]).toMatchObject({
+        path: outputPath,
+        mimeType: "image/png",
+        sourceUrl: "browser-download",
+      });
+      await expect(fs.readFile(outputPath)).resolves.toEqual(png);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("falls back to a behavior button when the rendered image URL fails", async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-chatgpt-image-404-"));
+    const outputPath = path.join(tmpDir, "generated.png");
+    const downloadedPath = path.join(tmpDir, "downloaded.png");
+    const png = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x00,
+    ]);
+    const runtime = {
+      evaluate: vi.fn(async ({ expression }: { expression: string }) => {
+        if (expression.includes("behavior-btn")) {
+          await fs.writeFile(downloadedPath, png);
+          return {
+            result: {
+              value: [
+                {
+                  text: "Download the generated PNG",
+                  ariaLabel: "",
+                  testId: "",
+                },
+              ],
+            },
+          };
+        }
+        if (expression.includes("/backend-api/estuary/content?id=file_")) {
+          return {
+            result: {
+              value: [
+                {
+                  url: "https://chatgpt.com/backend-api/estuary/content?id=file_expired",
+                  alt: "generated image",
+                  width: 1254,
+                  height: 1254,
+                },
+              ],
+            },
+          };
+        }
+        return { result: { value: [] } };
+      }),
+    } as unknown as ChromeClient["Runtime"];
+    const network = {
+      getCookies: vi.fn().mockResolvedValue({
+        cookies: [{ name: "__Secure-next-auth.session-token", value: "abc" }],
+      }),
+    } as unknown as ChromeClient["Network"];
+    const client = {
+      send: vi.fn().mockResolvedValue({}),
+    } as unknown as ChromeClient;
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      statusText: "Not Found",
+      url: "https://chatgpt.com/backend-api/estuary/content?id=file_expired",
+      headers: { get: () => null },
+    } as unknown as Response);
+
+    try {
+      const result = await collectGeneratedImageArtifacts({
+        Client: client,
+        Runtime: runtime,
+        Network: network,
+        minTurnIndex: 0,
+        generateImagePath: outputPath,
+        answerText: "Preview",
+        waitTimeoutMs: 15_000,
+      });
+
+      expect(result.imageCount).toBe(1);
+      expect(result.savedImages[0]).toMatchObject({
+        kind: "image",
+        path: outputPath,
+        mimeType: "image/png",
+        sourceUrl: "browser-download",
+      });
+      await expect(fs.readFile(outputPath)).resolves.toEqual(png);
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   test("auto-saves generated images to the session artifacts directory when no explicit path is provided", async () => {
     const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-home-"));
     setOracleHomeDirOverrideForTest(tmpHome);

@@ -724,6 +724,21 @@ export function resolveRemoteTabLeaseProfileDirForTest(
   return resolveRemoteTabLeaseProfileDir(config);
 }
 
+function isLocalChromeHost(host: string): boolean {
+  const normalized = host
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "");
+  if (normalized === "localhost" || normalized === "::1") {
+    return true;
+  }
+  return net.isIPv4(normalized) && normalized.startsWith("127.");
+}
+
+export function isLocalChromeHostForTest(host: string): boolean {
+  return isLocalChromeHost(host);
+}
+
 async function closeRemoteConnectionAfterRun(options: {
   connectionClosedUnexpectedly: boolean;
   connection: { close: () => Promise<void> } | null;
@@ -1955,6 +1970,9 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       throw new Error("Chrome disconnected before completion");
     }
     const imageArtifacts = await collectGeneratedImageArtifacts({
+      Browser: client.Browser,
+      Client: client,
+      Page,
       Runtime,
       Network,
       logger,
@@ -3292,7 +3310,11 @@ async function runRemoteBrowserMode(
       answerMarkdown = formatted.answerMarkdown;
       answerHtml = "";
     }
+    const canSaveBrowserDownloadsLocally = isLocalChromeHost(host);
     const imageArtifacts = await collectGeneratedImageArtifacts({
+      Browser: canSaveBrowserDownloadsLocally ? client.Browser : undefined,
+      Client: canSaveBrowserDownloadsLocally ? client : undefined,
+      Page: canSaveBrowserDownloadsLocally ? Page : undefined,
       Runtime,
       Network,
       logger,
