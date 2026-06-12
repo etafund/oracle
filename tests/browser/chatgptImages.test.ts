@@ -378,8 +378,9 @@ describe("collectGeneratedImageArtifacts", () => {
       void resultPromise.finally(() => {
         settled = true;
       });
-      for (let index = 0; index < 30 && !settled; index += 1) {
-        await vi.advanceTimersByTimeAsync(1000);
+      for (let index = 0; index < 60 && !settled; index += 1) {
+        await vi.advanceTimersByTimeAsync(500);
+        await fs.readdir(tmpDir);
       }
       const result = await resultPromise;
 
