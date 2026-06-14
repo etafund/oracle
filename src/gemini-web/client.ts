@@ -10,12 +10,13 @@ import {
   isTrustedGeminiImageDownloadUrl,
 } from "./image_download_cookie.js";
 import { GeminiStreamCaptureError } from "./streamSafeguards.js";
+import {
+  buildGeminiWebModelHeader,
+  FALLBACK_GEMINI_WEB_MODEL,
+  type GeminiWebModelId,
+} from "./models.js";
 
-export type GeminiWebModelId =
-  | "gemini-3-pro"
-  | "gemini-3-pro-deep-think"
-  | "gemini-2.5-pro"
-  | "gemini-2.5-flash";
+export type { GeminiWebModelId } from "./models.js";
 
 export interface GeminiWebRunInput {
   prompt: string;
@@ -47,12 +48,6 @@ const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 const MODEL_HEADER_NAME = "x-goog-ext-525001261-jspb";
-const MODEL_HEADERS: Record<GeminiWebModelId, string> = {
-  "gemini-3-pro": '[1,null,null,null,"9d8ca3786ebdfbea",null,null,0,[4]]',
-  "gemini-3-pro-deep-think": '[1,null,null,null,"e6fa609c3fa255c0",null,null,0,[4],null,null,3]',
-  "gemini-2.5-pro": '[1,null,null,null,"4af6c7f5da75d65d",null,null,0,[4]]',
-  "gemini-2.5-flash": '[1,null,null,null,"9ec249fc9ad08861",null,null,0,[4]]',
-};
 
 const GEMINI_APP_URL = "https://gemini.google.com/app";
 const GEMINI_STREAM_GENERATE_URL =
@@ -235,7 +230,7 @@ export async function runGeminiWebOnce(input: GeminiWebRunInput): Promise<Gemini
       "x-same-domain": "1",
       "user-agent": USER_AGENT,
       cookie: cookieHeader,
-      [MODEL_HEADER_NAME]: MODEL_HEADERS[input.model],
+      [MODEL_HEADER_NAME]: buildGeminiWebModelHeader(input.model),
     },
     body: params.toString(),
   });
@@ -290,9 +285,9 @@ export async function runGeminiWebWithFallback(
   input: Omit<GeminiWebRunInput, "model"> & { model: GeminiWebModelId },
 ): Promise<GeminiWebRunOutput & { effectiveModel: GeminiWebModelId }> {
   const attempt = await runGeminiWebOnce(input);
-  if (isGeminiModelUnavailable(attempt.errorCode) && input.model !== "gemini-2.5-flash") {
-    const fallback = await runGeminiWebOnce({ ...input, model: "gemini-2.5-flash" });
-    return { ...fallback, effectiveModel: "gemini-2.5-flash" };
+  if (isGeminiModelUnavailable(attempt.errorCode) && input.model !== FALLBACK_GEMINI_WEB_MODEL) {
+    const fallback = await runGeminiWebOnce({ ...input, model: FALLBACK_GEMINI_WEB_MODEL });
+    return { ...fallback, effectiveModel: FALLBACK_GEMINI_WEB_MODEL };
   }
   return { ...attempt, effectiveModel: input.model };
 }

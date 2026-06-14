@@ -1,6 +1,6 @@
 {
   "name": "@steipete/oracle",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "CLI wrapper around OpenAI Responses API with GPT-5.5 Pro, GPT-5.5, GPT-5.4, GPT-5.2, GPT-5.1, and GPT-5.1 Codex high reasoning modes.",
   "keywords": [],
   "homepage": "https://askoracle.sh",
@@ -100,12 +100,12 @@
     "@types/chrome-remote-interface": "^0.34.0",
     "@types/inquirer": "^9.0.9",
     "@types/node": "^25.9.2",
-    "@typescript/native-preview": "7.0.0-dev.20260605.1",
+    "@typescript/native-preview": "7.0.0-dev.20260609.1",
     "@vitest/coverage-v8": "4.1.8",
-    "devtools-protocol": "0.0.1640722",
+    "devtools-protocol": "0.0.1643702",
     "es-toolkit": "^1.47.0",
     "esbuild": "^0.28.0",
-    "oxfmt": "0.53.0",
+    "oxfmt": "0.54.0",
     "oxlint": "^1.69.0",
     "puppeteer-core": "^25.1.0",
     "tsx": "^4.22.4",
@@ -123,14 +123,5 @@
   "engines": {
     "node": ">=24"
   },
-  "packageManager": "pnpm@10.33.2",
-  "pnpm": {
-    "overrides": {
-      "devtools-protocol": "0.0.1640722",
-      "vite": "7.3.2"
-    },
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ]
-  }
+  "packageManager": "pnpm@10.33.2"
 }

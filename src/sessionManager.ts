@@ -38,8 +38,6 @@ export interface BrowserSessionConfig {
   chromeCookiePath?: string | null;
   attachRunning?: boolean;
   browserTabRef?: string | null;
-  /** Existing ChatGPT conversation URL to continue without starting a new thread. */
-  resumeConversationUrl?: string | null;
   chatgptUrl?: string | null;
   url?: string;
   timeoutMs?: number;
@@ -89,6 +87,8 @@ export interface BrowserSessionConfig {
   researchMode?: BrowserResearchMode;
   /** Archive completed ChatGPT conversations after local artifacts are saved. */
   archiveConversations?: BrowserArchiveMode;
+  /** Browser-only: existing ChatGPT conversation URL to resume before submitting. */
+  resumeConversationUrl?: string | null;
 }
 
 export interface BrowserRuntimeMetadata {
@@ -203,7 +203,7 @@ export interface StoredRunOptions {
   models?: ModelName[];
   /** Responses API chaining (maps to `previous_response_id`). */
   previousResponseId?: string;
-  /** Optional session slug that provided the parent response when using `--followup <sessionId>`. */
+  /** Optional parent session slug when using `--followup <sessionId>`. */
   followupSessionId?: string;
   /** Optional model selector used with --followup-model for multi-model parent sessions. */
   followupModel?: string;

@@ -1,12 +1,16 @@
-import type { SessionMetadata } from "../sessionStore.js";
+import type { BrowserSessionConfig, SessionMetadata } from "../sessionStore.js";
 import { CHATGPT_URL } from "../browser/constants.js";
 import { buildConversationUrl } from "../browser/reattachHelpers.js";
 import { resolveRecoveryUrl } from "../browser/recoverConversation.js";
 import { isRecoverableChatGptConversationUrl } from "../browser/reattachability.js";
+import { DEFAULT_MODEL } from "../oracle/config.js";
+import type { ModelName } from "../oracle/types.js";
 
 export interface BrowserFollowupResolution {
   sessionId: string;
   resumeConversationUrl: string;
+  model: ModelName;
+  browserConfig: BrowserSessionConfig;
 }
 
 export interface FollowupSessionReader {
@@ -72,5 +76,25 @@ export async function resolveBrowserFollowupReference(
       `Session ${trimmed} is a browser session but does not contain a ChatGPT conversation URL. Run "oracle status --hours 72 --limit 20" to list recent sessions.`,
     );
   }
-  return { sessionId: metadata.id, resumeConversationUrl };
+  const parentBrowserConfig = metadata.options?.browserConfig ?? metadata.browser?.config;
+  if (!parentBrowserConfig) {
+    throw new Error(`Session ${trimmed} is missing its stored browser configuration.`);
+  }
+  const storedModel = metadata.options?.model ?? metadata.model;
+  const model =
+    typeof storedModel === "string" && storedModel.startsWith("gpt-")
+      ? (storedModel as ModelName)
+      : DEFAULT_MODEL;
+  return {
+    sessionId: metadata.id,
+    resumeConversationUrl,
+    model,
+    browserConfig: {
+      ...parentBrowserConfig,
+      browserTabRef: null,
+      resumeConversationUrl,
+      researchMode: "off",
+      archiveConversations: "never",
+    },
+  };
 }

@@ -195,6 +195,12 @@ export async function ensureNotBlocked(
 }
 
 const LOGIN_CHECK_TIMEOUT_MS = 5_000;
+const CHATGPT_ACCOUNT_EMAIL_ENV = "ORACLE_CHATGPT_ACCOUNT_EMAIL";
+
+function preferredChatGptAccountEmail(): string | null {
+  const email = process.env[CHATGPT_ACCOUNT_EMAIL_ENV]?.trim().toLowerCase();
+  return email ? email : null;
+}
 
 export async function ensureLoggedIn(
   Runtime: ChromeClient["Runtime"],
@@ -202,7 +208,7 @@ export async function ensureLoggedIn(
   options: { appliedCookies?: number | null; remoteSession?: boolean } = {},
 ) {
   // Learned: ChatGPT can render the UI (project view) while auth silently failed.
-  // A backend-api probe plus DOM login CTA check catches both cases.
+  // Session state plus DOM login signals catch both valid and stale app shells.
   const outcome = await Runtime.evaluate({
     expression: buildLoginProbeExpression(LOGIN_CHECK_TIMEOUT_MS),
     awaitPromise: true,
@@ -211,13 +217,17 @@ export async function ensureLoggedIn(
   const probe = normalizeLoginProbe(outcome.result?.value);
   if (probe.ok) {
     logger(
-      `Login check passed (status=${probe.status}, domLoginCta=${Boolean(probe.domLoginCta)}, appAuthenticated=${Boolean(probe.appAuthenticated)})`,
+      `Login check passed (sessionStatus=${probe.status}, sessionAuthenticated=${Boolean(probe.sessionAuthenticated)}, backendStatus=${probe.backendStatus ?? "n/a"}, domLoginCta=${Boolean(probe.domLoginCta)}, appAuthenticated=${Boolean(probe.appAuthenticated)})`,
     );
     return;
   }
 
-  const accepted = await attemptWelcomeBackLogin(Runtime, logger);
-  if (accepted) {
+  const welcomeBack = await attemptWelcomeBackLogin(
+    Runtime,
+    logger,
+    preferredChatGptAccountEmail(),
+  );
+  if (welcomeBack.accepted) {
     // Learned: "Welcome back" account picker needs a click even when cookies are valid,
     // and the redirect can lag, so re-probe before failing hard.
     await delay(1500);
@@ -232,16 +242,22 @@ export async function ensureLoggedIn(
       return;
     }
     logger(
-      `Login retry after Welcome back failed (status=${retryProbe.status}, domLoginCta=${Boolean(
+      `Login retry after Welcome back failed (sessionStatus=${retryProbe.status}, sessionAuthenticated=${Boolean(
+        retryProbe.sessionAuthenticated,
+      )}, backendStatus=${retryProbe.backendStatus ?? "n/a"}, domLoginCta=${Boolean(
         retryProbe.domLoginCta,
       )}, appAuthenticated=${Boolean(retryProbe.appAuthenticated)})`,
     );
   }
 
   logger(
-    `Login probe failed (status=${probe.status}, domLoginCta=${Boolean(probe.domLoginCta)}, onAuthPage=${Boolean(
-      probe.onAuthPage,
-    )}, appAuthenticated=${Boolean(probe.appAuthenticated)}, cfBlocked=${Boolean(probe.cfBlocked)}, url=${probe.pageUrl ?? "n/a"}, error=${probe.error ?? "none"})`,
+    `Login probe failed (sessionStatus=${probe.status}, sessionAuthenticated=${Boolean(
+      probe.sessionAuthenticated,
+    )}, sessionResolved=${Boolean(probe.sessionResolved)}, backendStatus=${probe.backendStatus ?? "n/a"}, domLoginCta=${Boolean(
+      probe.domLoginCta,
+    )}, onAuthPage=${Boolean(probe.onAuthPage)}, appAuthenticated=${Boolean(
+      probe.appAuthenticated,
+    )}, cfBlocked=${Boolean(probe.cfBlocked)}, url=${probe.pageUrl ?? "n/a"}, error=${probe.error ?? "none"})`,
   );
 
   const domLabel = probe.domLoginCta ? " Login button detected on page." : "";
@@ -251,41 +267,26 @@ export async function ensureLoggedIn(
       ? "No ChatGPT cookies were applied; sign in to chatgpt.com in Chrome or pass inline cookies (--browser-inline-cookies[(-file)] / ORACLE_BROWSER_COOKIES_JSON)."
       : "ChatGPT login appears missing; open chatgpt.com in Chrome to refresh the session or provide inline cookies (--browser-inline-cookies[(-file)] / ORACLE_BROWSER_COOKIES_JSON).";
 
-  throw new Error(`ChatGPT session not detected.${domLabel} ${cookieHint}`);
+  const accountHint = welcomeBack.hint ? ` ${welcomeBack.hint}` : "";
+  throw new Error(`ChatGPT session not detected.${domLabel}${accountHint} ${cookieHint}`);
+}
+
+interface WelcomeBackLoginAttempt {
+  accepted: boolean;
+  hint?: string;
 }
 
 async function attemptWelcomeBackLogin(
   Runtime: ChromeClient["Runtime"],
   logger: BrowserLogger,
-): Promise<boolean> {
+  preferredEmail: string | null = null,
+): Promise<WelcomeBackLoginAttempt> {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     let outcome;
     try {
       outcome = await Runtime.evaluate({
-        expression: `(() => {
-          // Learned: "Welcome back" shows as a modal with account chips; click the email chip.
-          const getLabel = (node) =>
-            (node?.textContent || node?.getAttribute?.('aria-label') || '').trim();
-          const isAccount = (label) =>
-            Boolean(label) &&
-            label.includes('@') &&
-            !/log in|sign up|create account|another account/i.test(label);
-          const candidates = Array.from(document.querySelectorAll('[role="button"],button,a'));
-          const account = candidates.find((node) => isAccount(getLabel(node))) || null;
-          if (!account) {
-            return { clicked: false, reason: 'not-found' };
-          }
-          const label = getLabel(account);
-          setTimeout(() => {
-            try {
-              account.click();
-            } catch {
-              // ignore; caller will re-probe login state
-            }
-          }, 0);
-          return { clicked: true, label };
-        })()`,
+        expression: buildWelcomeBackAccountPickerExpression(preferredEmail),
         awaitPromise: false,
         returnByValue: true,
       });
@@ -293,10 +294,10 @@ async function attemptWelcomeBackLogin(
       const message = error instanceof Error ? error.message : String(error);
       if (/navigated or closed|context was destroyed|target closed/i.test(message)) {
         logger("Welcome back account click triggered navigation.");
-        return true;
+        return { accepted: true };
       }
       logger(`Welcome back auto-select probe failed: ${message}`);
-      return false;
+      return { accepted: false };
     }
     if (outcome.exceptionDetails) {
       const details = outcome.exceptionDetails;
@@ -307,31 +308,107 @@ async function attemptWelcomeBackLogin(
         details.text ||
         "unknown error";
       logger(`Welcome back auto-select probe failed: ${description}`);
-      return false;
+      return { accepted: false };
     }
     const result = outcome.result?.value as
-      | { clicked?: boolean; reason?: string; label?: string }
+      | {
+          clicked?: boolean;
+          reason?: string;
+          selection?: "preferred" | "only-account";
+          accountCount?: number;
+        }
       | undefined;
     if (!result) {
       logger("Welcome back auto-select probe returned no result.");
-      return false;
+      return { accepted: false };
     }
     if (!("clicked" in result) && !("reason" in result)) {
       logger("Welcome back auto-select probe returned an unexpected result.");
-      return false;
+      return { accepted: false };
     }
     if (result.clicked) {
-      logger(`Welcome back modal detected; selected account ${result.label ?? "(unknown)"}`);
-      return true;
+      logger(
+        result.selection === "preferred"
+          ? "Welcome back modal detected; selected configured account."
+          : "Welcome back modal detected; selected only saved account.",
+      );
+      return { accepted: true };
+    }
+    if (result.reason === "preferred-not-found") {
+      logger(
+        `Welcome back modal present but ${CHATGPT_ACCOUNT_EMAIL_ENV} did not match any saved account (${result.accountCount ?? 0} account chips found).`,
+      );
+      return {
+        accepted: false,
+        hint: `${CHATGPT_ACCOUNT_EMAIL_ENV} did not match a saved account. Set it to the exact account email on the browser host or sign in manually.`,
+      };
+    }
+    if (result.reason === "multiple-accounts") {
+      logger(
+        `Welcome back modal present with multiple saved accounts; refusing to select one without ${CHATGPT_ACCOUNT_EMAIL_ENV}.`,
+      );
+      return {
+        accepted: false,
+        hint: `Multiple saved ChatGPT accounts were found. Set ${CHATGPT_ACCOUNT_EMAIL_ENV} to the exact account email on the browser host.`,
+      };
     }
     if (result.reason && result.reason !== "not-found") {
       logger(`Welcome back modal present but auto-select failed (${result.reason}).`);
-      return false;
+      return { accepted: false };
     }
     await delay(500);
   }
   logger("Welcome back modal not detected after login probe failure.");
-  return false;
+  return { accepted: false };
+}
+
+function buildWelcomeBackAccountPickerExpression(preferredEmail: string | null = null): string {
+  const normalizedPreferredEmail = preferredEmail?.trim().toLowerCase() || null;
+  return `(() => {
+    // Learned: "Welcome back" can list several saved accounts; substring matching can select the wrong identity.
+    const preferredEmail = ${JSON.stringify(normalizedPreferredEmail)};
+    const getLabel = (node) =>
+      [node?.textContent, node?.getAttribute?.('aria-label')]
+        .filter((value) => typeof value === 'string' && value.trim())
+        .join(' ')
+        .trim();
+    const extractEmails = (label) =>
+      String(label || '')
+        .toLowerCase()
+        .match(/[a-z0-9.!#$%&'*+/=?^_{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*/g) || [];
+    const isAccount = (label) => !/log in|sign up|create account|another account/i.test(label);
+    const candidates = Array.from(document.querySelectorAll('[role="button"],button,a'));
+    const accounts = candidates
+      .map((node) => {
+        const label = getLabel(node);
+        return { node, emails: isAccount(label) ? extractEmails(label) : [] };
+      })
+      .filter((entry) => entry.emails.length > 0);
+    if (!accounts.length) {
+      return { clicked: false, reason: 'not-found' };
+    }
+    const savedEmails = Array.from(new Set(accounts.flatMap((entry) => entry.emails)));
+    if (!preferredEmail && savedEmails.length !== 1) {
+      return { clicked: false, reason: 'multiple-accounts', accountCount: savedEmails.length };
+    }
+    const selectedEmail = preferredEmail || savedEmails[0];
+    const account = accounts.find((entry) => entry.emails.includes(selectedEmail));
+    if (!account) {
+      return { clicked: false, reason: 'preferred-not-found', accountCount: savedEmails.length };
+    }
+    setTimeout(() => {
+      try {
+        account.node.click();
+      } catch {
+        // ignore; caller will re-probe login state
+      }
+    }, 0);
+    return {
+      clicked: true,
+      selection: preferredEmail ? 'preferred' : 'only-account',
+      accountCount: savedEmails.length,
+    };
+  })()`;
 }
 
 export async function ensurePromptReady(
@@ -359,6 +436,16 @@ export async function ensurePromptReady(
 export interface ResumedConversationHydrationDeps {
   ensurePromptReady?: typeof ensurePromptReady;
   requirePriorTurns?: boolean;
+  expectedConversationUrl?: string;
+}
+
+function conversationIdFromUrl(value: string | undefined): string | null {
+  if (!value) return null;
+  try {
+    return new URL(value).pathname.match(/(?:^|\/)c\/([^/]+)/)?.[1] ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -373,7 +460,8 @@ export interface ResumedConversationHydrationDeps {
  * remote browser execution paths so neither loses the submitted prompt.
  *
  * When requirePriorTurns is set, fail closed if no prior turns hydrate rather
- * than submitting the follow-up as a fresh chat.
+ * than submitting the follow-up as a fresh chat. When expectedConversationUrl
+ * is set, also fail closed if ChatGPT redirects to a different conversation.
  *
  * Returns the number of prior turns observed once hydration settled.
  */
@@ -387,6 +475,7 @@ export async function waitForResumedConversationHydration(
   const hydrationDeadline = Date.now() + Math.min(timeoutMs || 30_000, 30_000);
   let priorTurns = 0;
   let stableChecks = 0;
+  let settled = false;
   while (Date.now() < hydrationDeadline) {
     let turns = 0;
     try {
@@ -403,7 +492,8 @@ export async function waitForResumedConversationHydration(
     if (turns > 0 && turns === priorTurns) {
       stableChecks += 1;
       if (stableChecks >= 3) {
-        break; // turn count steady ~750ms → hydration settled
+        settled = true;
+        break;
       }
     } else {
       stableChecks = 0;
@@ -413,14 +503,35 @@ export async function waitForResumedConversationHydration(
   }
   await delay(1_000); // final settle so React won't wipe the composer after we type
   await ensureReady(Runtime, timeoutMs, logger);
-  if ((deps.requirePriorTurns ?? false) && priorTurns <= 0) {
+  if ((deps.requirePriorTurns ?? false) && (!settled || priorTurns <= 0)) {
     throw new BrowserAutomationError(
-      "Saved ChatGPT conversation did not load prior turns; refusing to submit follow-up as a fresh chat.",
+      "Saved ChatGPT conversation did not load stable prior turns; refusing to submit follow-up as a fresh chat.",
       {
         stage: "resume-conversation",
         priorTurns,
+        settled,
       },
     );
+  }
+  if (deps.expectedConversationUrl) {
+    const { result } = await Runtime.evaluate({
+      expression: "location.href",
+      returnByValue: true,
+    });
+    const actualUrl = typeof result?.value === "string" ? result.value : undefined;
+    const expectedConversationId = conversationIdFromUrl(deps.expectedConversationUrl);
+    const actualConversationId = conversationIdFromUrl(actualUrl);
+    if (!expectedConversationId || actualConversationId !== expectedConversationId) {
+      throw new BrowserAutomationError(
+        "Saved ChatGPT conversation redirected to a different thread; refusing to submit follow-up.",
+        {
+          stage: "resume-conversation",
+          expectedConversationId,
+          actualConversationId,
+          actualUrl,
+        },
+      );
+    }
   }
   logger(`[browser] Resumed conversation hydrated (${priorTurns} prior turns); composer settled.`);
   return priorTurns;
@@ -533,13 +644,16 @@ type LoginProbeResult = {
   domLoginCta?: boolean;
   onAuthPage?: boolean;
   appAuthenticated?: boolean;
+  backendStatus?: number | null;
   cfBlocked?: boolean;
+  sessionAuthenticated?: boolean;
+  sessionResolved?: boolean;
 };
 
 function buildLoginProbeExpression(timeoutMs: number): string {
   return `(async () => {
-    // Learned: /backend-api/me is the most reliable "am I logged in" signal.
-    // Some UIs render without a session; use DOM + network for a robust answer.
+    // /api/auth/session remains cookie-authenticated and exposes user presence without
+    // requiring the bearer token used by /backend-api/*. Never return or log its token.
     const pageUrl = typeof location === 'object' && location?.href ? location.href : null;
     const onAuthPage =
       typeof location === 'object' &&
@@ -610,6 +724,68 @@ function buildLoginProbeExpression(timeoutMs: number): string {
         (head.includes('<style global>') && head.includes('scale-appear'))
       );
     };
+    const readSessionDetail = async () => {
+      try {
+        if (typeof fetch !== 'function') {
+          return { status: 0, resolved: false, authenticated: false, cfBlocked: false, error: null };
+        }
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), ${timeoutMs});
+        try {
+          const response = await fetch('/api/auth/session', {
+            cache: 'no-store',
+            credentials: 'include',
+            signal: controller.signal,
+          });
+          let cfBlocked = false;
+          if (response.status === 403 || response.status === 503 || response.status === 429) {
+            try {
+              const text = await response.clone().text();
+              cfBlocked = isCloudflareBody(text);
+            } catch {}
+          }
+          if (response.status !== 200) {
+            return {
+              status: response.status || 0,
+              resolved: false,
+              authenticated: false,
+              cfBlocked,
+              error: null,
+            };
+          }
+          try {
+            const body = await response.json();
+            const resolved =
+              Boolean(body) && typeof body === 'object' && !Array.isArray(body);
+            return {
+              status: response.status || 0,
+              resolved,
+              authenticated: resolved && Boolean(body.user),
+              cfBlocked,
+              error: null,
+            };
+          } catch {
+            return {
+              status: response.status || 0,
+              resolved: false,
+              authenticated: false,
+              cfBlocked,
+              error: null,
+            };
+          }
+        } finally {
+          clearTimeout(timeout);
+        }
+      } catch (err) {
+        return {
+          status: 0,
+          resolved: false,
+          authenticated: false,
+          cfBlocked: false,
+          error: err ? String(err) : 'unknown',
+        };
+      }
+    };
     const readBackendDetail = async () => {
       try {
         if (typeof fetch !== 'function') return { status: 0, cfBlocked: false, error: null };
@@ -636,6 +812,15 @@ function buildLoginProbeExpression(timeoutMs: number): string {
         return { status: 0, cfBlocked: false, error: err ? String(err) : 'unknown' };
       }
     };
+    const readAuthDetail = async () => {
+      const session = await readSessionDetail();
+      const sessionDenied =
+        !session.cfBlocked && (session.status === 401 || session.status === 403);
+      if (session.resolved || sessionDenied) {
+        return { session, backend: null };
+      }
+      return { session, backend: await readBackendDetail() };
+    };
 
     const hasAppAuthSignal = () => {
       // Composer must be present and visible — the auth/login page never renders one.
@@ -661,39 +846,58 @@ function buildLoginProbeExpression(timeoutMs: number): string {
       return Boolean(profileButton || historyItem);
     };
 
-    let backend = await readBackendDetail();
-    let status = backend.status;
-    let cfBlocked = backend.cfBlocked;
-    let error = backend.error;
+    const classifyAuth = (auth, appSignal) => {
+      const sessionResolved = auth.session.status === 200 && auth.session.resolved;
+      const sessionDenied =
+        !auth.session.cfBlocked &&
+        (auth.session.status === 401 || auth.session.status === 403);
+      const sessionUnavailable = !sessionResolved && !sessionDenied;
+      const backendStatus = auth.backend ? auth.backend.status : null;
+      const backendUnavailable =
+        Boolean(auth.backend) &&
+        (auth.backend.cfBlocked ||
+          backendStatus === 0 ||
+          backendStatus === 401 ||
+          backendStatus === 403 ||
+          backendStatus === 429 ||
+          backendStatus === 503);
+      return {
+        authenticated:
+          auth.session.authenticated ||
+          (sessionUnavailable &&
+            (backendStatus === 200 || (backendUnavailable && appSignal))),
+        sessionResolved,
+        sessionUnavailable,
+      };
+    };
+
+    let auth = await readAuthDetail();
     let domLoginCta = hasLoginCta();
     let appAuthenticated = hasAppAuthSignal();
-    const isRetryableStatus = () =>
-      status === 0 || status === 401 || status === 403 || status === 503 || status === 429;
+    let classification = classifyAuth(auth, appAuthenticated);
     const settleDeadline = Date.now() + Math.min(${timeoutMs}, 2500);
-    while (!domLoginCta && status !== 200 && isRetryableStatus() && Date.now() < settleDeadline) {
+    while (
+      !domLoginCta &&
+      !classification.authenticated &&
+      classification.sessionUnavailable &&
+      Date.now() < settleDeadline
+    ) {
       await new Promise((resolve) => setTimeout(resolve, 100));
       domLoginCta = hasLoginCta();
       appAuthenticated = hasAppAuthSignal();
-      backend = await readBackendDetail();
-      status = backend.status;
-      cfBlocked = backend.cfBlocked;
-      error = backend.error;
+      auth = await readAuthDetail();
+      classification = classifyAuth(auth, appAuthenticated);
     }
 
     const loginSignals = domLoginCta || onAuthPage;
-    // Accept the SPA-level signal only when the API path is blocked or unavailable
-    // (CF challenge, throttling, transient 5xx, network shaping) but the DOM shows
-    // an authenticated logged-in shell. Plain 401/403 remain authoritative because
-    // they can mean the ChatGPT session really expired.
-    const apiBlocked =
-      cfBlocked ||
-      status === 429 ||
-      status === 503 ||
-      status === 0;
-    const ok = !loginSignals && (status === 200 || (apiBlocked && appAuthenticated));
+    const backendStatus = auth.backend ? auth.backend.status : null;
+    const cfBlocked = auth.session.cfBlocked || Boolean(auth.backend?.cfBlocked);
+    const error = auth.session.error || auth.backend?.error || null;
+    const ok = !loginSignals && classification.authenticated;
     return {
       ok,
-      status,
+      status: auth.session.status,
+      backendStatus,
       redirected: false,
       url: pageUrl,
       pageUrl,
@@ -701,6 +905,8 @@ function buildLoginProbeExpression(timeoutMs: number): string {
       onAuthPage,
       appAuthenticated,
       cfBlocked,
+      sessionAuthenticated: auth.session.authenticated,
+      sessionResolved: classification.sessionResolved,
       error,
     };
   })()`;
@@ -729,10 +935,19 @@ function normalizeLoginProbe(raw: unknown): LoginProbeResult {
     domLoginCta: Boolean(value.domLoginCta),
     onAuthPage: Boolean(value.onAuthPage),
     appAuthenticated: Boolean(value.appAuthenticated),
+    backendStatus: typeof value.backendStatus === "number" ? value.backendStatus : null,
     cfBlocked: Boolean(value.cfBlocked),
+    sessionAuthenticated: Boolean(value.sessionAuthenticated),
+    sessionResolved: Boolean(value.sessionResolved),
   };
 }
 
 export function buildLoginProbeExpressionForTest(timeoutMs = LOGIN_CHECK_TIMEOUT_MS): string {
   return buildLoginProbeExpression(timeoutMs);
+}
+
+export function buildWelcomeBackAccountPickerExpressionForTest(
+  preferredEmail: string | null = null,
+): string {
+  return buildWelcomeBackAccountPickerExpression(preferredEmail);
 }

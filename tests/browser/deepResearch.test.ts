@@ -16,8 +16,11 @@ import {
   buildDeepResearchCompletionPollExpressionForTest,
   buildDeepResearchFrameStatusExpressionForTest,
   buildDeepResearchStatusExpressionForTest,
+  captureDeepResearchTargetKeys,
   findDeepResearchFrameIdForTest,
+  isConfirmedDeepResearchTargetForTest,
   isDeepResearchPlaceholderTextForTest,
+  pickPreferredDeepResearchReadForTest,
   waitForResearchPlanAutoConfirm,
   waitForDeepResearchCompletion,
   checkDeepResearchStatus,
@@ -150,6 +153,36 @@ describe("Deep Research iframe helpers", () => {
     ).toBe("deep");
   });
 
+  it("does not treat an unrelated root iframe as Deep Research", () => {
+    expect(
+      findDeepResearchFrameIdForTest({
+        frame: { id: "other", name: "root", url: "https://example.com/" },
+      }),
+    ).toBeNull();
+  });
+
+  it("confirms target sessions from target metadata or frame-tree evidence", () => {
+    expect(
+      isConfirmedDeepResearchTargetForTest(
+        "https://connector_openai_deep_research.web-sandbox.oaiusercontent.com/",
+        { frame: { id: "root", name: "root", url: "about:blank" } },
+      ),
+    ).toBe(true);
+    expect(
+      isConfirmedDeepResearchTargetForTest("", {
+        frame: {
+          id: "deep",
+          url: "https://connector_openai_deep_research.web-sandbox.oaiusercontent.com/",
+        },
+      }),
+    ).toBe(true);
+    expect(
+      isConfirmedDeepResearchTargetForTest("", {
+        frame: { id: "other", name: "root", url: "https://example.com/" },
+      }),
+    ).toBe(false);
+  });
+
   it("normalizes completed iframe report text", () => {
     const expression = buildDeepResearchFrameStatusExpressionForTest();
     expect(expression).toContain("deep research report");
@@ -184,6 +217,49 @@ describe("Deep Research iframe helpers", () => {
     expect(result.text).not.toContain("citations");
     expect(result.text).not.toContain("searches");
     expect(result.textLength).toBeGreaterThan(40);
+  });
+});
+
+describe("pickPreferredDeepResearchReadForTest", () => {
+  const completed = (text: string, len = 80) => ({
+    completed: true,
+    inProgress: false,
+    textLength: len,
+    text,
+  });
+  const inProgress = (len: number) => ({ completed: false, inProgress: true, textLength: len });
+
+  it("returns null when neither read exists", () => {
+    expect(pickPreferredDeepResearchReadForTest(null, null)).toBeNull();
+  });
+
+  it("prefers a completed target read over an in-progress in-page read", () => {
+    expect(pickPreferredDeepResearchReadForTest(completed("TARGET"), inProgress(10))?.text).toBe(
+      "TARGET",
+    );
+  });
+
+  it("prefers the target read when both are completed", () => {
+    expect(
+      pickPreferredDeepResearchReadForTest(completed("TARGET"), completed("FRAME"))?.text,
+    ).toBe("TARGET");
+  });
+
+  it("uses a completed in-page read when the target read is missing (legacy inline)", () => {
+    expect(pickPreferredDeepResearchReadForTest(null, completed("FRAME"))?.text).toBe("FRAME");
+  });
+
+  it("uses a completed in-page read when the target read is only in-progress", () => {
+    expect(pickPreferredDeepResearchReadForTest(inProgress(12), completed("FRAME"))?.text).toBe(
+      "FRAME",
+    );
+  });
+
+  it("keeps the best in-progress read for progress when none completed", () => {
+    expect(pickPreferredDeepResearchReadForTest(inProgress(12), inProgress(5))?.textLength).toBe(
+      12,
+    );
+    expect(pickPreferredDeepResearchReadForTest(null, inProgress(7))?.textLength).toBe(7);
   });
 });
 
@@ -263,6 +339,61 @@ describe("waitForDeepResearchCompletion", () => {
   beforeEach(() => {
     mockRuntime = createMockRuntime();
     mockLogger = createMockLogger();
+  });
+
+  it("captures only existing targets attached to the current page session", async () => {
+    const listeners = new Map<string, (params: unknown, sessionId?: string) => void>();
+    const deepResearchUrl =
+      "https://connector_openai_deep_research.web-sandbox.oaiusercontent.com/";
+    const mockClient = {
+      oraclePageSessionId: "page-session",
+      on: vi.fn((event: string, listener: (params: unknown, sessionId?: string) => void) => {
+        listeners.set(event, listener);
+      }),
+      removeListener: vi.fn(),
+      send: vi.fn(async (method: string, params?: unknown, sessionId?: string) => {
+        if (method === "Target.setAutoAttach" && (params as { autoAttach?: boolean })?.autoAttach) {
+          listeners.get("Target.attachedToTarget")?.(
+            {
+              sessionId: "foreign-session",
+              targetInfo: { targetId: "foreign-target", type: "iframe", url: deepResearchUrl },
+            },
+            "foreign-page-session",
+          );
+          listeners.get("Target.attachedToTarget")?.(
+            {
+              sessionId: "existing-session",
+              targetInfo: { targetId: "existing-target", type: "iframe", url: deepResearchUrl },
+            },
+            "page-session",
+          );
+          listeners.get("Target.attachedToTarget")?.(
+            {
+              sessionId: "unrelated-session",
+              targetInfo: { targetId: "unrelated-target", type: "iframe", url: "about:blank" },
+            },
+            "page-session",
+          );
+          return {};
+        }
+        if (method === "Page.getFrameTree") {
+          return {
+            frameTree: {
+              frame: {
+                id: `${sessionId}-frame`,
+                name: "root",
+                url: sessionId === "unrelated-session" ? "about:blank" : deepResearchUrl,
+              },
+            },
+          };
+        }
+        return {};
+      }),
+    };
+
+    await expect(captureDeepResearchTargetKeys(mockClient as never)).resolves.toEqual([
+      "existing-target",
+    ]);
   });
 
   it("detects completion via finished actions", async () => {
@@ -378,6 +509,867 @@ describe("waitForDeepResearchCompletion", () => {
         if (method === "Page.getFrameTree" && sessionId === "deep-session") {
           return {
             frameTree: {
+              frame: { id: "sandbox", name: "root", url: "about:blank" },
+            },
+          };
+        }
+        if (
+          method === "Runtime.evaluate" &&
+          sessionId === "deep-session" &&
+          typeof (params as { contextId?: number }).contextId !== "number"
+        ) {
+          return {
+            result: {
+              value: {
+                completed: true,
+                inProgress: false,
+                textLength: 80,
+                text: "CHECK_DEEP_OK https://example.com/report",
+              },
+            },
+          };
+        }
+        return {};
+      }),
+    };
+
+    const result = await waitForDeepResearchCompletion(
+      mockRuntime as never,
+      mockLogger,
+      60_000,
+      undefined,
+      undefined,
+      mockClient as never,
+    );
+
+    expect(result.text).toBe("CHECK_DEEP_OK https://example.com/report");
+    expect(mockClient.send).toHaveBeenCalledWith(
+      "Runtime.evaluate",
+      expect.objectContaining({ returnByValue: true }),
+      "deep-session",
+    );
+  });
+
+  it("does not return a foreign completed Deep Research report from another tab", async () => {
+    // Cross-tab isolation: a shared/persistent Chrome profile can hold another
+    // tab's COMPLETED Deep Research report. Target discovery must be scoped to the
+    // current Oracle-controlled page (via page-session auto-attach), so the
+    // foreign report is never read into this session — even though a browser-wide
+    // Target.getTargets scan would surface it.
+    mockRuntime.evaluate.mockResolvedValue({
+      result: {
+        value: {
+          finished: false,
+          stopVisible: false,
+          textLength: 0,
+          hasIframe: true,
+          hasActiveScopedResearch: false,
+        },
+      },
+    });
+
+    let getTargetsCalled = false;
+    let foreignAttachCalled = false;
+    const listeners = new Map<string, (params: unknown, sessionId?: string) => void>();
+    const deepResearchUrl =
+      "https://connector_openai_deep_research.web-sandbox.oaiusercontent.com/";
+
+    const mockClient = {
+      on: vi.fn((event: string, listener: (params: unknown, sessionId?: string) => void) => {
+        listeners.set(event, listener);
+      }),
+      removeListener: vi.fn(),
+      send: vi.fn(async (method: string, params?: unknown, sessionId?: string) => {
+        if (method === "Target.setAutoAttach" && (params as { autoAttach?: boolean })?.autoAttach) {
+          // Page-scoped auto-attach surfaces only THIS page's OOPIF — still in progress.
+          listeners.get("Target.attachedToTarget")?.({
+            sessionId: "current-session",
+            targetInfo: { type: "iframe", url: deepResearchUrl },
+          });
+          return {};
+        }
+        if (method === "Target.getTargets") {
+          // A foreign tab's COMPLETED report is visible browser-wide; it must be ignored.
+          getTargetsCalled = true;
+          return {
+            targetInfos: [{ targetId: "foreign-target", type: "iframe", url: deepResearchUrl }],
+          };
+        }
+        if (method === "Target.attachToTarget") {
+          foreignAttachCalled = true;
+          return { sessionId: "foreign-session" };
+        }
+        if (method === "Page.getFrameTree") {
+          return {
+            frameTree: { frame: { id: `${sessionId}-frame`, name: "root", url: deepResearchUrl } },
+          };
+        }
+        if (method === "Page.createIsolatedWorld") {
+          return { executionContextId: sessionId === "foreign-session" ? 99 : 50 };
+        }
+        if (method === "Runtime.evaluate" && sessionId === "foreign-session") {
+          return {
+            result: {
+              value: {
+                completed: true,
+                inProgress: false,
+                textLength: 80,
+                text: "FOREIGN_REPORT https://example.com/foreign",
+              },
+            },
+          };
+        }
+        if (method === "Runtime.evaluate" && sessionId === "current-session") {
+          return {
+            result: {
+              value: { completed: false, inProgress: true, textLength: 10, text: undefined },
+            },
+          };
+        }
+        return {};
+      }),
+    };
+
+    let nowCalls = 0;
+    const dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => {
+      nowCalls += 1;
+      return nowCalls < 8 ? 1_000 : 2_000;
+    });
+
+    try {
+      await expect(
+        waitForDeepResearchCompletion(
+          mockRuntime as never,
+          mockLogger,
+          100,
+          1,
+          undefined,
+          mockClient as never,
+        ),
+      ).rejects.toThrow(/did not complete/);
+      // The foreign target must never be reached, regardless of the browser-wide scan.
+      expect(foreignAttachCalled).toBe(false);
+      expect(getTargetsCalled).toBe(false);
+    } finally {
+      dateNowSpy.mockRestore();
+    }
+  });
+
+  it("binds Target.setAutoAttach to the page session on a session-bound wrapper client", async () => {
+    // On the browser-WSEndpoint path, `client` is a session-bound wrapper whose
+    // raw `send` is browser-level (only domain methods are session-bound). If
+    // auto-attach is issued without the page session id, it attaches browser-wide
+    // and a foreign completed Deep Research tab leaks into this session. The fix
+    // passes `oraclePageSessionId`; this test asserts every setAutoAttach call is
+    // bound to that page session.
+    mockRuntime.evaluate.mockResolvedValue({
+      result: {
+        value: {
+          finished: false,
+          stopVisible: false,
+          textLength: 0,
+          hasIframe: true,
+          hasActiveScopedResearch: false,
+        },
+      },
+    });
+
+    const setAutoAttachSessions: Array<string | undefined> = [];
+    const listeners = new Map<string, (params: unknown, sessionId?: string) => void>();
+    const deepResearchUrl =
+      "https://connector_openai_deep_research.web-sandbox.oaiusercontent.com/";
+
+    const mockClient = {
+      // Marks the session-bound wrapper (createSessionBoundChromeClient).
+      oraclePageSessionId: "page-session",
+      on: vi.fn((event: string, listener: (params: unknown, sessionId?: string) => void) => {
+        listeners.set(event, listener);
+      }),
+      removeListener: vi.fn(),
+      send: vi.fn(async (method: string, params?: unknown, sessionId?: string) => {
+        if (method === "Target.setAutoAttach" && (params as { autoAttach?: boolean })?.autoAttach) {
+          setAutoAttachSessions.push(sessionId);
+          // Page-session-scoped: only this page's OOPIF (in progress). If the call
+          // were browser-wide (sessionId !== page-session), a foreign completed
+          // report would also attach — which the assertions below forbid.
+          listeners.get("Target.attachedToTarget")?.({
+            sessionId: "current-session",
+            targetInfo: { type: "iframe", url: deepResearchUrl },
+          });
+          if (sessionId !== "page-session") {
+            listeners.get("Target.attachedToTarget")?.({
+              sessionId: "foreign-session",
+              targetInfo: { type: "iframe", url: deepResearchUrl },
+            });
+          }
+          return {};
+        }
+        if (method === "Page.getFrameTree") {
+          return {
+            frameTree: { frame: { id: `${sessionId}-frame`, name: "root", url: deepResearchUrl } },
+          };
+        }
+        if (method === "Page.createIsolatedWorld") {
+          return { executionContextId: sessionId === "foreign-session" ? 99 : 50 };
+        }
+        if (method === "Runtime.evaluate" && sessionId === "foreign-session") {
+          return {
+            result: {
+              value: { completed: true, inProgress: false, textLength: 80, text: "FOREIGN_REPORT" },
+            },
+          };
+        }
+        if (method === "Runtime.evaluate" && sessionId === "current-session") {
+          return {
+            result: {
+              value: { completed: false, inProgress: true, textLength: 10, text: undefined },
+            },
+          };
+        }
+        return {};
+      }),
+    };
+
+    let nowCalls = 0;
+    const dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => {
+      nowCalls += 1;
+      return nowCalls < 8 ? 1_000 : 2_000;
+    });
+
+    try {
+      await expect(
+        waitForDeepResearchCompletion(
+          mockRuntime as never,
+          mockLogger,
+          100,
+          1,
+          undefined,
+          mockClient as never,
+        ),
+      ).rejects.toThrow(/did not complete/);
+      // Every auto-attach was bound to the page session — never browser-wide.
+      expect(setAutoAttachSessions.length).toBeGreaterThan(0);
+      expect(setAutoAttachSessions.every((s) => s === "page-session")).toBe(true);
+    } finally {
+      dateNowSpy.mockRestore();
+    }
+  });
+
+  it("ignores target events from another page session on the shared browser client", async () => {
+    mockRuntime.evaluate.mockResolvedValue({
+      result: {
+        value: {
+          finished: false,
+          stopVisible: false,
+          textLength: 0,
+          hasIframe: true,
+          hasActiveScopedResearch: false,
+        },
+      },
+    });
+
+    const evaluatedSessions: string[] = [];
+    const listeners = new Map<string, (params: unknown, sessionId?: string) => void>();
+    const deepResearchUrl =
+      "https://connector_openai_deep_research.web-sandbox.oaiusercontent.com/";
+
+    const mockClient = {
+      oraclePageSessionId: "page-session",
+      on: vi.fn((event: string, listener: (params: unknown, sessionId?: string) => void) => {
+        listeners.set(event, listener);
+      }),
+      removeListener: vi.fn(),
+      send: vi.fn(async (method: string, params?: unknown, sessionId?: string) => {
+        if (method === "Target.setAutoAttach" && (params as { autoAttach?: boolean })?.autoAttach) {
+          // chrome-remote-interface emits every flattened session event to the
+          // base listener. Its second callback argument identifies the parent
+          // page session that produced the child target event.
+          listeners.get("Target.attachedToTarget")?.(
+            {
+              sessionId: "foreign-child-session",
+              targetInfo: { type: "iframe", url: deepResearchUrl },
+            },
+            "foreign-page-session",
+          );
+          listeners.get("Target.attachedToTarget")?.(
+            {
+              sessionId: "current-child-session",
+              targetInfo: { type: "iframe", url: deepResearchUrl },
+            },
+            "page-session",
+          );
+          return {};
+        }
+        if (method === "Page.getFrameTree") {
+          return {
+            frameTree: { frame: { id: `${sessionId}-frame`, name: "root", url: deepResearchUrl } },
+          };
+        }
+        if (method === "Page.createIsolatedWorld") {
+          return { executionContextId: sessionId === "foreign-child-session" ? 99 : 50 };
+        }
+        if (method === "Runtime.evaluate" && sessionId) {
+          evaluatedSessions.push(sessionId);
+          if (sessionId === "foreign-child-session") {
+            return {
+              result: {
+                value: {
+                  completed: true,
+                  inProgress: false,
+                  textLength: 80,
+                  text: "FOREIGN_REPORT https://example.com/foreign",
+                },
+              },
+            };
+          }
+          return {
+            result: {
+              value: { completed: false, inProgress: true, textLength: 10, text: undefined },
+            },
+          };
+        }
+        return {};
+      }),
+    };
+
+    let nowCalls = 0;
+    const dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => {
+      nowCalls += 1;
+      return nowCalls < 8 ? 1_000 : 2_000;
+    });
+
+    try {
+      await expect(
+        waitForDeepResearchCompletion(
+          mockRuntime as never,
+          mockLogger,
+          100,
+          1,
+          undefined,
+          mockClient as never,
+        ),
+      ).rejects.toThrow(/did not complete/);
+      expect(evaluatedSessions).not.toContain("foreign-child-session");
+      expect(evaluatedSessions).toContain("current-child-session");
+    } finally {
+      dateNowSpy.mockRestore();
+    }
+  });
+
+  it("ignores pre-submit targets while accepting an OOPIF-only current report", async () => {
+    mockRuntime.evaluate
+      .mockResolvedValueOnce({
+        result: {
+          value: {
+            finished: false,
+            stopVisible: true,
+            textLength: 11,
+            hasIframe: true,
+            hasActiveScopedResearch: false,
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        result: {
+          value: {
+            finished: false,
+            stopVisible: false,
+            textLength: 0,
+            hasIframe: true,
+            hasActiveScopedResearch: false,
+          },
+        },
+      });
+
+    let attachPoll = 0;
+    const evaluatedSessions: string[] = [];
+    const listeners = new Map<string, (params: unknown, sessionId?: string) => void>();
+    const deepResearchUrl =
+      "https://connector_openai_deep_research.web-sandbox.oaiusercontent.com/";
+    const mockClient = {
+      oraclePageSessionId: "page-session",
+      on: vi.fn((event: string, listener: (params: unknown, sessionId?: string) => void) => {
+        listeners.set(event, listener);
+      }),
+      removeListener: vi.fn(),
+      send: vi.fn(async (method: string, params?: unknown, sessionId?: string) => {
+        if (method === "Target.setAutoAttach" && (params as { autoAttach?: boolean })?.autoAttach) {
+          attachPoll += 1;
+          listeners.get("Target.attachedToTarget")?.(
+            {
+              sessionId: "old-session",
+              targetInfo: { targetId: "old-target", type: "iframe", url: deepResearchUrl },
+            },
+            "page-session",
+          );
+          listeners.get("Target.attachedToTarget")?.(
+            {
+              sessionId: "current-session",
+              targetInfo: { targetId: "current-target", type: "iframe", url: deepResearchUrl },
+            },
+            "page-session",
+          );
+          return {};
+        }
+        if (method === "Page.getFrameTree") {
+          return {
+            frameTree: {
+              frame: { id: `${sessionId}-frame`, name: "root", url: deepResearchUrl },
+            },
+          };
+        }
+        if (method === "Page.createIsolatedWorld") {
+          return { executionContextId: sessionId === "old-session" ? 10 : 20 };
+        }
+        if (method === "Runtime.evaluate" && sessionId) {
+          evaluatedSessions.push(sessionId);
+          if (sessionId === "old-session") {
+            return {
+              result: {
+                value: {
+                  completed: true,
+                  inProgress: false,
+                  textLength: 80,
+                  text: "OLD_REPORT https://example.com/old",
+                },
+              },
+            };
+          }
+          return {
+            result: {
+              value:
+                attachPoll >= 2
+                  ? {
+                      completed: true,
+                      inProgress: false,
+                      textLength: 90,
+                      text: "CURRENT_REPORT https://example.com/current",
+                    }
+                  : {
+                      completed: false,
+                      inProgress: true,
+                      textLength: 12,
+                    },
+            },
+          };
+        }
+        return {};
+      }),
+    };
+
+    const result = await waitForDeepResearchCompletion(
+      mockRuntime as never,
+      mockLogger,
+      60_000,
+      1,
+      undefined,
+      mockClient as never,
+      { ignoredTargetKeys: ["old-target"] },
+    );
+
+    expect(result.text).toBe("CURRENT_REPORT https://example.com/current");
+    expect(evaluatedSessions).toContain("old-session");
+    expect(evaluatedSessions).toContain("current-session");
+  });
+
+  it("scopes reattached OOPIF reports to their owning conversation turn", async () => {
+    mockRuntime.evaluate.mockResolvedValue({
+      result: {
+        value: {
+          finished: false,
+          stopVisible: false,
+          textLength: 0,
+          hasIframe: true,
+          hasActiveScopedResearch: false,
+        },
+      },
+    });
+
+    const listeners = new Map<string, (params: unknown, sessionId?: string) => void>();
+    const deepResearchUrl =
+      "https://connector_openai_deep_research.web-sandbox.oaiusercontent.com/";
+    const mockClient = {
+      oraclePageSessionId: "page-session",
+      on: vi.fn((event: string, listener: (params: unknown, sessionId?: string) => void) => {
+        listeners.set(event, listener);
+      }),
+      removeListener: vi.fn(),
+      send: vi.fn(async (method: string, params?: unknown, sessionId?: string) => {
+        if (method === "Target.setAutoAttach" && (params as { autoAttach?: boolean })?.autoAttach) {
+          // Emit the current report first so target order alone would incorrectly
+          // let the later stale completion win.
+          listeners.get("Target.attachedToTarget")?.(
+            {
+              sessionId: "current-session",
+              targetInfo: { targetId: "current-target", type: "iframe", url: deepResearchUrl },
+            },
+            "page-session",
+          );
+          listeners.get("Target.attachedToTarget")?.(
+            {
+              sessionId: "old-session",
+              targetInfo: { targetId: "old-target", type: "iframe", url: deepResearchUrl },
+            },
+            "page-session",
+          );
+          return {};
+        }
+        if (method === "Page.getFrameTree") {
+          return {
+            frameTree: { frame: { id: `${sessionId}-frame`, name: "root", url: deepResearchUrl } },
+          };
+        }
+        if (method === "DOM.getFrameOwner") {
+          const frameId = (params as { frameId?: string }).frameId;
+          return { backendNodeId: frameId === "current-session-frame" ? 20 : 10 };
+        }
+        if (method === "DOM.resolveNode") {
+          const backendNodeId = (params as { backendNodeId?: number }).backendNodeId;
+          return { object: { objectId: backendNodeId === 20 ? "current-owner" : "old-owner" } };
+        }
+        if (method === "Runtime.callFunctionOn" && sessionId === "page-session") {
+          const objectId = (params as { objectId?: string }).objectId;
+          return { result: { value: objectId === "current-owner" ? 2 : 0 } };
+        }
+        if (method === "Runtime.evaluate" && sessionId) {
+          return {
+            result: {
+              value: {
+                completed: true,
+                inProgress: false,
+                textLength: 80,
+                text:
+                  sessionId === "current-session"
+                    ? "CURRENT_REPORT https://example.com/current"
+                    : "OLD_REPORT https://example.com/old",
+              },
+            },
+          };
+        }
+        return {};
+      }),
+    };
+
+    const result = await waitForDeepResearchCompletion(
+      mockRuntime as never,
+      mockLogger,
+      60_000,
+      1,
+      undefined,
+      mockClient as never,
+      { requireScopedTargetOwner: true },
+    );
+
+    expect(result.text).toBe("CURRENT_REPORT https://example.com/current");
+    expect(mockClient.send).toHaveBeenCalledWith(
+      "DOM.getFrameOwner",
+      { frameId: "current-session-frame" },
+      "page-session",
+    );
+  });
+
+  it("prefers a completed page target over an earlier in-progress one", async () => {
+    // A page can expose more than one Deep Research iframe target (e.g. a stale
+    // in-progress one attached before the completed report). Scanning must not
+    // return the first in-progress target and miss the later completed OOPIF.
+    mockRuntime.evaluate.mockResolvedValue({
+      result: {
+        value: {
+          finished: false,
+          stopVisible: false,
+          textLength: 0,
+          hasIframe: true,
+          hasActiveScopedResearch: false,
+        },
+      },
+    });
+
+    const listeners = new Map<string, (params: unknown, sessionId?: string) => void>();
+    const deepResearchUrl =
+      "https://connector_openai_deep_research.web-sandbox.oaiusercontent.com/";
+
+    const mockClient = {
+      on: vi.fn((event: string, listener: (params: unknown, sessionId?: string) => void) => {
+        listeners.set(event, listener);
+      }),
+      removeListener: vi.fn(),
+      send: vi.fn(async (method: string, params?: unknown, sessionId?: string) => {
+        if (method === "Target.setAutoAttach" && (params as { autoAttach?: boolean })?.autoAttach) {
+          // In-progress target attaches FIRST, completed target SECOND.
+          listeners.get("Target.attachedToTarget")?.({
+            sessionId: "incomplete-session",
+            targetInfo: { type: "iframe", url: deepResearchUrl },
+          });
+          listeners.get("Target.attachedToTarget")?.({
+            sessionId: "complete-session",
+            targetInfo: { type: "iframe", url: deepResearchUrl },
+          });
+          return {};
+        }
+        if (method === "Page.getFrameTree") {
+          return {
+            frameTree: { frame: { id: `${sessionId}-frame`, name: "root", url: deepResearchUrl } },
+          };
+        }
+        if (method === "Page.createIsolatedWorld") {
+          return { executionContextId: sessionId === "complete-session" ? 22 : 11 };
+        }
+        if (method === "Runtime.evaluate" && sessionId === "complete-session") {
+          return {
+            result: {
+              value: {
+                completed: true,
+                inProgress: false,
+                textLength: 80,
+                text: "REPORT_OK https://example.com/report",
+              },
+            },
+          };
+        }
+        if (method === "Runtime.evaluate" && sessionId === "incomplete-session") {
+          return {
+            result: {
+              value: { completed: false, inProgress: true, textLength: 12, text: undefined },
+            },
+          };
+        }
+        return {};
+      }),
+    };
+
+    // Bound the loop so a future regression (returning the in-progress target)
+    // fails fast via timeout instead of spinning.
+    let nowCalls = 0;
+    const dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => {
+      nowCalls += 1;
+      return nowCalls < 12 ? 1_000 : 2_000;
+    });
+    try {
+      const result = await waitForDeepResearchCompletion(
+        mockRuntime as never,
+        mockLogger,
+        100,
+        1,
+        undefined,
+        mockClient as never,
+      );
+      expect(result.text).toBe("REPORT_OK https://example.com/report");
+    } finally {
+      dateNowSpy.mockRestore();
+    }
+  });
+
+  it.each([
+    ["empty", { completed: false, inProgress: false, textLength: 0 }],
+    ["in-progress", { completed: false, inProgress: true, textLength: 12 }],
+  ])("does not let a later %s target mask a completed report", async (_label, laterStatus) => {
+    mockRuntime.evaluate.mockResolvedValue({
+      result: {
+        value: {
+          finished: false,
+          stopVisible: false,
+          textLength: 0,
+          hasIframe: true,
+          hasActiveScopedResearch: false,
+        },
+      },
+    });
+
+    const listeners = new Map<string, (params: unknown, sessionId?: string) => void>();
+    const deepResearchUrl =
+      "https://connector_openai_deep_research.web-sandbox.oaiusercontent.com/";
+    const mockClient = {
+      on: vi.fn((event: string, listener: (params: unknown, sessionId?: string) => void) => {
+        listeners.set(event, listener);
+      }),
+      removeListener: vi.fn(),
+      send: vi.fn(async (method: string, params?: unknown, sessionId?: string) => {
+        if (method === "Target.setAutoAttach" && (params as { autoAttach?: boolean })?.autoAttach) {
+          listeners.get("Target.attachedToTarget")?.({
+            sessionId: "complete-session",
+            targetInfo: { targetId: "complete-target", type: "iframe", url: deepResearchUrl },
+          });
+          listeners.get("Target.attachedToTarget")?.({
+            sessionId: "empty-session",
+            targetInfo: { targetId: "empty-target", type: "iframe", url: deepResearchUrl },
+          });
+          return {};
+        }
+        if (method === "Page.getFrameTree") {
+          return {
+            frameTree: { frame: { id: `${sessionId}-frame`, name: "root", url: deepResearchUrl } },
+          };
+        }
+        if (method === "Runtime.evaluate" && sessionId === "complete-session") {
+          return {
+            result: {
+              value: {
+                completed: true,
+                inProgress: false,
+                textLength: 80,
+                text: "REPORT_OK https://example.com/report",
+              },
+            },
+          };
+        }
+        if (method === "Runtime.evaluate" && sessionId === "empty-session") {
+          return { result: { value: laterStatus } };
+        }
+        return {};
+      }),
+    };
+
+    const result = await waitForDeepResearchCompletion(
+      mockRuntime as never,
+      mockLogger,
+      60_000,
+      1,
+      undefined,
+      mockClient as never,
+    );
+
+    expect(result.text).toBe("REPORT_OK https://example.com/report");
+  });
+
+  it("falls back to a completed in-page frame when the target read is only in-progress", async () => {
+    // Legacy/inline rendering: the target-attach read is in-progress, but the
+    // in-page frame path has a completed report. An incomplete target read must
+    // not suppress the frame fallback.
+    mockRuntime.evaluate.mockImplementation(async (params?: { contextId?: number }) => {
+      if (params?.contextId === 77) {
+        return {
+          result: {
+            value: {
+              completed: true,
+              inProgress: false,
+              textLength: 80,
+              text: "FRAME_REPORT https://example.com/report",
+            },
+          },
+        };
+      }
+      return {
+        result: {
+          value: { finished: false, stopVisible: false, textLength: 0, hasIframe: true },
+        },
+      };
+    });
+
+    const listeners = new Map<string, (params: unknown, sessionId?: string) => void>();
+    const deepResearchUrl =
+      "https://connector_openai_deep_research.web-sandbox.oaiusercontent.com/";
+
+    // Target-attach path returns an in-progress read (no completed target).
+    const mockClient = {
+      on: vi.fn((event: string, listener: (params: unknown, sessionId?: string) => void) => {
+        listeners.set(event, listener);
+      }),
+      removeListener: vi.fn(),
+      send: vi.fn(async (method: string, params?: unknown, sessionId?: string) => {
+        if (method === "Target.setAutoAttach" && (params as { autoAttach?: boolean })?.autoAttach) {
+          listeners.get("Target.attachedToTarget")?.({
+            sessionId: "t-session",
+            targetInfo: { type: "iframe", url: deepResearchUrl },
+          });
+          return {};
+        }
+        if (method === "Page.getFrameTree") {
+          return {
+            frameTree: { frame: { id: "t-frame", name: "root", url: deepResearchUrl } },
+          };
+        }
+        if (method === "Page.createIsolatedWorld") {
+          return { executionContextId: 33 };
+        }
+        if (method === "Runtime.evaluate" && sessionId === "t-session") {
+          return {
+            result: {
+              value: { completed: false, inProgress: true, textLength: 15, text: undefined },
+            },
+          };
+        }
+        return {};
+      }),
+    };
+
+    // In-page frame path has the completed report (isolated world contextId 77).
+    const mockPage = {
+      getFrameTree: vi.fn().mockResolvedValue({
+        frameTree: {
+          frame: { id: "root", url: "https://chatgpt.com/" },
+          childFrames: [{ frame: { id: "deep-frame", url: deepResearchUrl } }],
+        },
+      }),
+      createIsolatedWorld: vi.fn().mockResolvedValue({ executionContextId: 77 }),
+    };
+
+    // Unscoped run so the frame-completed result is not gated by the main-DOM
+    // hasActiveScopedResearch heuristic (this is the legacy inline path).
+    // Date.now bound so a future regression (frame fallback suppressed) fails
+    // fast via timeout instead of spinning.
+    let nowCalls = 0;
+    const dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => {
+      nowCalls += 1;
+      return nowCalls < 12 ? 1_000 : 2_000;
+    });
+    try {
+      const result = await waitForDeepResearchCompletion(
+        mockRuntime as never,
+        mockLogger,
+        100,
+        undefined,
+        mockPage as never,
+        mockClient as never,
+      );
+      expect(result.text).toBe("FRAME_REPORT https://example.com/report");
+    } finally {
+      dateNowSpy.mockRestore();
+    }
+  });
+
+  it("returns an OOPIF report via the target path during a scoped run when the main DOM has no assistant turn", async () => {
+    // Regression: ChatGPT renders the Deep Research report inside an
+    // out-of-process iframe that is invisible to the main page's frame tree.
+    // The main-DOM poll therefore shows no assistant turn and
+    // hasActiveScopedResearch=false, while the target-attach path reads the
+    // completed report directly. Both Page and client are passed (production
+    // shape) and the run is scoped (minTurnIndex>=0). The target-confirmed
+    // completion must be returned instead of hanging until timeout.
+    mockRuntime.evaluate.mockResolvedValue({
+      result: {
+        value: {
+          finished: false,
+          stopVisible: false,
+          textLength: 0,
+          hasIframe: true,
+          hasActiveScopedResearch: false,
+        },
+      },
+    });
+
+    const listeners = new Map<string, (params: unknown, sessionId?: string) => void>();
+    const mockClient = {
+      on: vi.fn((event: string, listener: (params: unknown, sessionId?: string) => void) => {
+        listeners.set(event, listener);
+      }),
+      removeListener: vi.fn(),
+      send: vi.fn(async (method: string, params?: unknown, sessionId?: string) => {
+        if (method === "Target.setAutoAttach") {
+          listeners.get("Target.attachedToTarget")?.({
+            sessionId: "deep-session",
+            targetInfo: {
+              type: "iframe",
+              url: "https://connector_openai_deep_research.web-sandbox.oaiusercontent.com/",
+            },
+          });
+          return {};
+        }
+        if (method === "Target.getTargets") {
+          return { targetInfos: [] };
+        }
+        if (method === "Page.getFrameTree" && sessionId === "deep-session") {
+          return {
+            frameTree: {
               frame: {
                 id: "sandbox",
                 url: "https://connector_openai_deep_research.web-sandbox.oaiusercontent.com/",
@@ -410,7 +1402,7 @@ describe("waitForDeepResearchCompletion", () => {
                 completed: true,
                 inProgress: false,
                 textLength: 80,
-                text: "CHECK_DEEP_OK https://example.com/report",
+                text: "OOPIF_REPORT https://example.com/report",
               },
             },
           };
@@ -419,21 +1411,28 @@ describe("waitForDeepResearchCompletion", () => {
       }),
     };
 
+    // Main page frame tree exposes no Deep Research frame (the OOPIF is hidden),
+    // so the in-page frame path can never find the report on its own.
+    const mockPage = {
+      getFrameTree: vi.fn().mockResolvedValue({
+        frameTree: {
+          frame: { id: "root", url: "https://chatgpt.com/" },
+          childFrames: [{ frame: { id: "blank", url: "about:blank" } }],
+        },
+      }),
+      createIsolatedWorld: vi.fn(),
+    };
+
     const result = await waitForDeepResearchCompletion(
       mockRuntime as never,
       mockLogger,
       60_000,
-      undefined,
-      undefined,
+      1,
+      mockPage as never,
       mockClient as never,
     );
 
-    expect(result.text).toBe("CHECK_DEEP_OK https://example.com/report");
-    expect(mockClient.send).toHaveBeenCalledWith(
-      "Runtime.evaluate",
-      expect.objectContaining({ contextId: 12, returnByValue: true }),
-      "deep-session",
-    );
+    expect(result.text).toBe("OOPIF_REPORT https://example.com/report");
   });
 
   it("does not complete from an unscoped frame result during a scoped run", async () => {

@@ -164,6 +164,10 @@ export async function waitForDeepResearchCompletion(
   minTurnIndex?: number | null,
   Page?: ChromeClient["Page"],
   client?: ChromeClient,
+  options?: {
+    ignoredTargetKeys?: readonly string[];
+    requireScopedTargetOwner?: boolean;
+  },
 ): Promise<{
   text: string;
   html?: string;
@@ -176,6 +180,9 @@ export async function waitForDeepResearchCompletion(
     typeof minTurnIndex === "number" && Number.isFinite(minTurnIndex) && minTurnIndex >= 0
       ? Math.floor(minTurnIndex)
       : -1;
+  const scopedToNewTurns = minTurnLiteral >= 0;
+  const ignoredTargetKeys = new Set(options?.ignoredTargetKeys ?? []);
+  const requireScopedTargetOwner = options?.requireScopedTargetOwner === true;
 
   logger(`Monitoring Deep Research (timeout: ${Math.round(timeoutMs / 60_000)}min)...`);
 
@@ -202,22 +209,47 @@ export async function waitForDeepResearchCompletion(
         { stage: "chatgpt-account-blocked", code: "chatgpt-account-blocked" },
       );
     }
+    const activeScopedResearch = Boolean(val?.hasActiveScopedResearch);
 
-    const frameResult = Page
-      ? await readDeepResearchFrameResult(Runtime, Page).catch(() => null)
-      : client
-        ? await readDeepResearchTargetResult(client).catch(() => null)
+    // ChatGPT renders the Deep Research report inside an out-of-process,
+    // sandboxed iframe (connector_openai_deep_research.*.oaiusercontent.com),
+    // doubly nested and same-origin. That OOPIF does NOT appear in the main
+    // page's frame tree, so the in-page isolated-world path
+    // (readDeepResearchFrameResult) can never see it. The target-attach path
+    // (readDeepResearchTargetResult) attaches to the iframe's own CDP target and
+    // walks its nested frames, so it CAN read the report. Prefer the target path
+    // and fall back to the in-page frame path for legacy/inline rendering.
+    const targetResult = client
+      ? ((
+          await readDeepResearchTargetResult(
+            client,
+            ignoredTargetKeys,
+            requireScopedTargetOwner ? minTurnLiteral : -1,
+          ).catch(() => null)
+        )?.read ?? null)
+      : null;
+    // A completed target read is authoritative. If the target read is missing or
+    // only in-progress, still try the in-page frame path so an incomplete target
+    // read does not suppress a completed report there (legacy/inline rendering).
+    const inPageResult =
+      !targetResult?.completed && Page
+        ? await readDeepResearchFrameResult(Runtime, Page).catch(() => null)
         : null;
-    const scopedToNewTurns = minTurnLiteral >= 0;
+    const read = pickPreferredDeepResearchRead(targetResult, inPageResult);
+    // A target-confirmed completion read the live connector iframe directly, so
+    // it is authoritative even when the main DOM exposes no assistant turn (the
+    // report lives entirely in the OOPIF). The main-DOM hasActiveScopedResearch
+    // heuristic no longer holds in that case, so don't gate on it.
+    const completedFromTarget = Boolean(targetResult?.completed);
     if (
-      frameResult?.completed &&
-      frameResult.text &&
-      (!scopedToNewTurns || val?.hasActiveScopedResearch)
+      read?.completed &&
+      read.text &&
+      (completedFromTarget || !scopedToNewTurns || activeScopedResearch)
     ) {
       logger(`Deep Research completed (${Math.round((Date.now() - start) / 1000)}s elapsed)`);
       return {
-        text: frameResult.text,
-        html: frameResult.html,
+        text: read.text,
+        html: read.html,
         meta: { turnId: null, messageId: null },
       };
     }
@@ -232,9 +264,9 @@ export async function waitForDeepResearchCompletion(
     const now = Date.now();
     if (now - lastLogTime >= 60_000) {
       const elapsed = Math.round((now - start) / 1000);
-      const chars = Math.max(val?.textLength ?? 0, frameResult?.textLength ?? 0);
+      const chars = Math.max(val?.textLength ?? 0, read?.textLength ?? 0);
       const phase =
-        frameResult?.inProgress || val?.hasIframe
+        read?.inProgress || val?.hasIframe
           ? "researching"
           : val?.stopVisible
             ? "generating"
@@ -243,7 +275,7 @@ export async function waitForDeepResearchCompletion(
       lastLogTime = now;
     }
 
-    lastTextLength = Math.max(val?.textLength ?? 0, frameResult?.textLength ?? 0, lastTextLength);
+    lastTextLength = Math.max(val?.textLength ?? 0, read?.textLength ?? 0, lastTextLength);
     await delay(DEEP_RESEARCH_POLL_INTERVAL_MS);
   }
 
@@ -324,6 +356,45 @@ interface DeepResearchFrameStatus {
   html?: string;
 }
 
+interface DeepResearchTargetScanResult {
+  read: DeepResearchFrameStatus | null;
+  targetKeys: string[];
+}
+
+interface DeepResearchTargetSessionResult {
+  confirmed: boolean;
+  read: DeepResearchFrameStatus | null;
+  frameId?: string;
+}
+
+/**
+ * Choose the authoritative Deep Research read between the target-attach result
+ * and the in-page frame result. A completed read wins (target preferred, since
+ * it reads the live OOPIF directly); otherwise the best in-progress/text-bearing
+ * read is kept so progress logging still advances. This preserves the legacy
+ * Page-first inline behaviour: when the target read is missing or incomplete,
+ * a completed in-page result is still returned.
+ */
+function pickPreferredDeepResearchRead(
+  targetResult: DeepResearchFrameStatus | null,
+  inPageResult: DeepResearchFrameStatus | null,
+): DeepResearchFrameStatus | null {
+  if (targetResult?.completed) {
+    return targetResult;
+  }
+  if (inPageResult?.completed) {
+    return inPageResult;
+  }
+  return targetResult ?? inPageResult;
+}
+
+export function pickPreferredDeepResearchReadForTest(
+  targetResult: DeepResearchFrameStatus | null,
+  inPageResult: DeepResearchFrameStatus | null,
+): DeepResearchFrameStatus | null {
+  return pickPreferredDeepResearchRead(targetResult, inPageResult);
+}
+
 async function readDeepResearchFrameResult(
   Runtime: ChromeClient["Runtime"],
   Page: ChromeClient["Page"],
@@ -365,83 +436,132 @@ async function readDeepResearchFrameResult(
 
 async function readDeepResearchTargetResult(
   client: ChromeClient,
-): Promise<DeepResearchFrameStatus | null> {
+  ignoredTargetKeys: ReadonlySet<string> = new Set(),
+  minTurnIndex = -1,
+): Promise<DeepResearchTargetScanResult | null> {
   const rawClient = client as ChromeClient & {
     send?: (
       method: string,
       params?: Record<string, unknown>,
       sessionId?: string,
     ) => Promise<unknown>;
+    oraclePageSessionId?: string;
   };
   if (typeof rawClient.send !== "function") {
     return null;
   }
 
-  const sessionIds = new Set<string>();
+  // On the browser-WSEndpoint path, `client` is a session-bound wrapper whose
+  // domain methods target the page session but whose raw `send` is the
+  // browser-level send. We must therefore pass the page session id explicitly so
+  // Target.setAutoAttach binds to THIS page (not the whole browser). For a direct
+  // tab client this is undefined and `send` already defaults to the page session.
+  const pageSessionId = rawClient.oraclePageSessionId;
+
+  const sessions = new Map<string, { targetId?: string; url: string }>();
   const ownedSessionIds = new Set<string>();
-  const onAttached = (params: unknown, sessionId?: string) => {
-    const targetInfo = (params as { targetInfo?: { url?: string; type?: string } } | undefined)
-      ?.targetInfo;
-    const eventSessionId = (params as { sessionId?: string } | undefined)?.sessionId ?? sessionId;
+  const onAttached = (params: unknown, parentSessionId?: string) => {
+    // chrome-remote-interface emits flattened target events both on the
+    // session-specific event name and on the shared base event. The second
+    // callback argument identifies the parent page session; ignore events from
+    // other tabs when this client wraps a shared browser WebSocket.
+    if (pageSessionId && parentSessionId !== pageSessionId) {
+      return;
+    }
+    const targetInfo = (
+      params as { targetInfo?: { targetId?: string; url?: string; type?: string } } | undefined
+    )?.targetInfo;
+    const eventSessionId =
+      (params as { sessionId?: string } | undefined)?.sessionId ?? parentSessionId;
     const url = targetInfo?.url ?? "";
     const type = targetInfo?.type ?? "";
     if (eventSessionId && isDeepResearchTarget(url, type)) {
-      sessionIds.add(eventSessionId);
+      sessions.set(eventSessionId, { targetId: targetInfo?.targetId, url });
       ownedSessionIds.add(eventSessionId);
     }
   };
 
   client.on?.("Target.attachedToTarget", onAttached as never);
   try {
-    await rawClient.send("Target.setDiscoverTargets", { discover: true }).catch(() => undefined);
+    // Scope discovery to the current Oracle-controlled page. `client` is
+    // connected to the conversation page target, so enabling auto-attach on this
+    // session only attaches THIS page's related targets (its Deep Research OOPIF
+    // subframe) and emits Target.attachedToTarget for them.
+    //
+    // We deliberately do NOT enumerate Target.getTargets / attachToTarget here:
+    // that scan is browser-wide, and in a shared/persistent Chrome profile it
+    // would surface another tab's completed Deep Research report and let it be
+    // saved into the current session (cross-tab leak). Only auto-attached,
+    // page-scoped sessions are treated as belonging to this run.
     await rawClient
-      .send("Target.setAutoAttach", {
-        autoAttach: true,
-        waitForDebuggerOnStart: false,
-        flatten: true,
-      })
+      .send(
+        "Target.setAutoAttach",
+        {
+          autoAttach: true,
+          waitForDebuggerOnStart: false,
+          flatten: true,
+        },
+        pageSessionId,
+      )
       .catch(() => undefined);
     await delay(100);
 
-    const targets = (await rawClient.send("Target.getTargets", {})) as
-      | {
-          targetInfos?: Array<{
-            targetId?: string;
-            type?: string;
-            url?: string;
-          }>;
-        }
-      | undefined;
-    for (const target of targets?.targetInfos ?? []) {
-      if (!target.targetId || !isDeepResearchTarget(target.url ?? "", target.type ?? "")) {
-        continue;
-      }
-      const attached = (await rawClient
-        .send("Target.attachToTarget", { targetId: target.targetId, flatten: true })
-        .catch(() => null)) as { sessionId?: string } | null;
-      if (attached?.sessionId) {
-        sessionIds.add(attached.sessionId);
-        ownedSessionIds.add(attached.sessionId);
-      }
+    if (minTurnIndex >= 0) {
+      await rawClient.send("DOM.enable", {}, pageSessionId).catch(() => undefined);
+      await rawClient.send("Runtime.enable", {}, pageSessionId).catch(() => undefined);
     }
 
-    for (const sessionId of sessionIds) {
-      const value = await readDeepResearchTargetSession(rawClient, sessionId);
-      if (value?.completed) {
-        return value;
+    // Baseline targets and owner turns before the submitted prompt are removed
+    // first. Among remaining targets, a completed report is authoritative;
+    // otherwise retain the newest meaningful progress read for status logging.
+    let completed: DeepResearchFrameStatus | null = null;
+    let latestProgress: DeepResearchFrameStatus | null = null;
+    const targetKeys: string[] = [];
+    for (const [sessionId, target] of sessions) {
+      const sessionResult = await readDeepResearchTargetSession(rawClient, sessionId, target.url);
+      if (!sessionResult.confirmed) {
+        continue;
       }
-      if (value?.inProgress || value?.textLength) {
-        return value;
+      if (target.targetId) {
+        targetKeys.push(target.targetId);
+      }
+      if (target.targetId && ignoredTargetKeys.has(target.targetId)) {
+        continue;
+      }
+      if (minTurnIndex >= 0) {
+        const ownerTurnIndex = sessionResult.frameId
+          ? await readDeepResearchTargetOwnerTurnIndex(
+              rawClient,
+              sessionResult.frameId,
+              pageSessionId,
+            )
+          : null;
+        if (ownerTurnIndex === null || ownerTurnIndex < minTurnIndex) {
+          continue;
+        }
+      }
+      const value = sessionResult.read;
+      if (value?.completed) {
+        completed = value;
+      } else if (value && (value.inProgress || value.textLength > 0)) {
+        latestProgress = value;
       }
     }
-    return null;
+    return {
+      read: completed ?? latestProgress,
+      targetKeys,
+    };
   } finally {
     await rawClient
-      .send("Target.setAutoAttach", {
-        autoAttach: false,
-        waitForDebuggerOnStart: false,
-        flatten: true,
-      })
+      .send(
+        "Target.setAutoAttach",
+        {
+          autoAttach: false,
+          waitForDebuggerOnStart: false,
+          flatten: true,
+        },
+        pageSessionId,
+      )
       .catch(() => undefined);
     await Promise.all(
       Array.from(ownedSessionIds, (sessionId) =>
@@ -454,6 +574,61 @@ async function readDeepResearchTargetResult(
   }
 }
 
+export async function captureDeepResearchTargetKeys(client: ChromeClient): Promise<string[]> {
+  return (await readDeepResearchTargetResult(client))?.targetKeys ?? [];
+}
+
+async function readDeepResearchTargetOwnerTurnIndex(
+  rawClient: {
+    send: (
+      method: string,
+      params?: Record<string, unknown>,
+      sessionId?: string,
+    ) => Promise<unknown>;
+  },
+  frameId: string,
+  pageSessionId?: string,
+): Promise<number | null> {
+  const owner = (await rawClient
+    .send("DOM.getFrameOwner", { frameId }, pageSessionId)
+    .catch(() => null)) as { backendNodeId?: number } | null;
+  if (typeof owner?.backendNodeId !== "number") {
+    return null;
+  }
+  const resolved = (await rawClient
+    .send("DOM.resolveNode", { backendNodeId: owner.backendNodeId }, pageSessionId)
+    .catch(() => null)) as { object?: { objectId?: string } } | null;
+  const objectId = resolved?.object?.objectId;
+  if (!objectId) {
+    return null;
+  }
+  try {
+    const response = (await rawClient
+      .send(
+        "Runtime.callFunctionOn",
+        {
+          objectId,
+          functionDeclaration: `function() {
+            const selector = ${JSON.stringify(CONVERSATION_TURN_SELECTOR)};
+            const turn = this.closest(selector);
+            return turn ? Array.from(document.querySelectorAll(selector)).indexOf(turn) : null;
+          }`,
+          returnByValue: true,
+        },
+        pageSessionId,
+      )
+      .catch(() => null)) as { result?: { value?: unknown } } | null;
+    const value = response?.result?.value;
+    return typeof value === "number" && Number.isFinite(value) && value >= 0
+      ? Math.floor(value)
+      : null;
+  } finally {
+    await rawClient
+      .send("Runtime.releaseObject", { objectId }, pageSessionId)
+      .catch(() => undefined);
+  }
+}
+
 async function readDeepResearchTargetSession(
   rawClient: {
     send: (
@@ -463,13 +638,18 @@ async function readDeepResearchTargetSession(
     ) => Promise<unknown>;
   },
   sessionId: string,
-): Promise<DeepResearchFrameStatus | null> {
+  targetUrl: string,
+): Promise<DeepResearchTargetSessionResult> {
   await rawClient.send("Runtime.enable", {}, sessionId).catch(() => undefined);
   await rawClient.send("Page.enable", {}, sessionId).catch(() => undefined);
 
   const frameTree = (await rawClient
     .send("Page.getFrameTree", {}, sessionId)
     .catch(() => null)) as { frameTree?: DeepResearchFrameTree } | null;
+  const frameId = frameTree?.frameTree?.frame?.id;
+  if (!isConfirmedDeepResearchTarget(targetUrl, frameTree?.frameTree)) {
+    return { confirmed: false, read: null };
+  }
   const frameIds = collectDeepResearchFrameIds(frameTree?.frameTree);
   let best: DeepResearchFrameStatus | null = null;
 
@@ -494,7 +674,7 @@ async function readDeepResearchTargetSession(
       world.executionContextId,
     );
     if (value?.completed) {
-      return value;
+      return { confirmed: true, read: value, frameId };
     }
     if ((value?.textLength ?? 0) > (best?.textLength ?? 0) || value?.inProgress) {
       best = value;
@@ -503,13 +683,13 @@ async function readDeepResearchTargetSession(
 
   const topFrameValue = await evaluateDeepResearchFrameStatus(rawClient, sessionId);
   if (topFrameValue?.completed) {
-    return topFrameValue;
+    return { confirmed: true, read: topFrameValue, frameId };
   }
   if ((topFrameValue?.textLength ?? 0) > (best?.textLength ?? 0) || topFrameValue?.inProgress) {
     best = topFrameValue;
   }
 
-  return best;
+  return { confirmed: true, read: best, frameId };
 }
 
 async function evaluateDeepResearchFrameStatus(
@@ -538,12 +718,20 @@ async function evaluateDeepResearchFrameStatus(
 }
 
 function isDeepResearchTarget(url: string, type: string): boolean {
-  const lowerUrl = url.toLowerCase();
-  const lowerType = type.toLowerCase();
+  return type.toLowerCase() === "iframe" || isDeepResearchFrameDescriptor(url);
+}
+
+function isConfirmedDeepResearchTarget(
+  targetUrl: string,
+  tree: DeepResearchFrameTree | undefined,
+): boolean {
+  return isDeepResearchFrameDescriptor(targetUrl) || Boolean(findDeepResearchFrameId(tree));
+}
+
+function isDeepResearchFrameDescriptor(url: string, name = ""): boolean {
+  const descriptor = `${url}\n${name}`.toLowerCase();
   return (
-    lowerType === "iframe" ||
-    lowerUrl.includes("connector_openai_deep_research") ||
-    lowerUrl.includes("deep-research")
+    descriptor.includes("connector_openai_deep_research") || descriptor.includes("deep-research")
   );
 }
 
@@ -553,11 +741,7 @@ function findDeepResearchFrameId(tree: DeepResearchFrameTree | undefined): strin
   }
   const url = tree.frame.url ?? "";
   const name = tree.frame.name ?? "";
-  if (
-    url.includes("connector_openai_deep_research") ||
-    url.includes("deep-research") ||
-    name.includes("deep-research")
-  ) {
+  if (isDeepResearchFrameDescriptor(url, name)) {
     return tree.frame.id ?? null;
   }
   for (const child of tree.childFrames ?? []) {
@@ -648,6 +832,13 @@ export function findDeepResearchFrameIdForTest(
   tree: DeepResearchFrameTree | undefined,
 ): string | null {
   return findDeepResearchFrameId(tree);
+}
+
+export function isConfirmedDeepResearchTargetForTest(
+  targetUrl: string,
+  tree: DeepResearchFrameTree | undefined,
+): boolean {
+  return isConfirmedDeepResearchTarget(targetUrl, tree);
 }
 
 export function buildDeepResearchFrameStatusExpressionForTest(): string {

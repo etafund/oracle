@@ -1221,6 +1221,7 @@ describe("performSessionRun", () => {
     // PR 243 gates reattach guidance on a recoverable ChatGPT runtime; this
     // failure path has none, so no guidance is logged (covered positively by
     // the recoverable-runtime cases below).
+    expect(logLines).not.toContain("This run did not return cleanly");
   });
 
   test("keeps session running when browser connection is lost", async () => {
@@ -1321,14 +1322,26 @@ describe("performSessionRun", () => {
   });
 
   test("marks browser capture incomplete when assistant response times out", async () => {
-    const automationError = new BrowserAutomationError("assistant timed out", {
-      stage: "assistant-timeout",
-      runtime: { chromePort: 9222, chromeHost: "127.0.0.1", tabUrl: "https://chatgpt.com/c/demo" },
-      diagnostics: {
-        domPath: "/tmp/.oracle/sessions/sess-1/artifacts/assistant-timeout.dom.json",
-        screenshotPath: "/tmp/.oracle/sessions/sess-1/artifacts/assistant-timeout.png",
+    const automationError = new BrowserAutomationError(
+      "ChatGPT displayed a rate-limit warning while waiting for the assistant: Too many requests.",
+      {
+        stage: "assistant-timeout",
+        code: "chatgpt-ui-warning",
+        uiWarning: {
+          type: "rate_limit",
+          message: "Too many requests.",
+        },
+        runtime: {
+          chromePort: 9222,
+          chromeHost: "127.0.0.1",
+          tabUrl: "https://chatgpt.com/c/demo",
+        },
+        diagnostics: {
+          domPath: "/tmp/.oracle/sessions/sess-1/artifacts/assistant-timeout.dom.json",
+          screenshotPath: "/tmp/.oracle/sessions/sess-1/artifacts/assistant-timeout.png",
+        },
       },
-    });
+    );
     vi.mocked(runBrowserSessionExecution).mockRejectedValueOnce(automationError);
 
     await performSessionRun({
@@ -1349,6 +1362,11 @@ describe("performSessionRun", () => {
       browser: expect.objectContaining({ runtime: expect.objectContaining({ chromePort: 9222 }) }),
       error: expect.objectContaining({
         details: expect.objectContaining({
+          code: "chatgpt-ui-warning",
+          uiWarning: {
+            type: "rate_limit",
+            message: "Too many requests.",
+          },
           diagnostics: expect.objectContaining({
             domPath: "/tmp/.oracle/sessions/sess-1/artifacts/assistant-timeout.dom.json",
             screenshotPath: "/tmp/.oracle/sessions/sess-1/artifacts/assistant-timeout.png",
@@ -1373,6 +1391,9 @@ describe("performSessionRun", () => {
       }),
     );
     const logLines = log.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(logLines).toContain(
+      "ERROR: ChatGPT displayed a rate-limit warning while waiting for the assistant: Too many requests.",
+    );
     expect(logLines).toContain(
       "Assistant response timed out; marking capture incomplete for reattach.",
     );
@@ -1436,6 +1457,7 @@ describe("performSessionRun", () => {
       "Reuse this browser profile with: oracle --engine browser --browser-manual-login",
     );
     expect(logLines).not.toContain("This run did not return cleanly");
+    expect(logLines).not.toContain("oracle session sess-1 --render");
   });
 
   test("auto-reattaches after assistant timeout when configured", async () => {

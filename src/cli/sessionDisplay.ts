@@ -862,8 +862,7 @@ async function buildSessionChainLine(metadata: SessionMetadata): Promise<string 
     return `root -> ${metadata.id}`;
   }
   if (lineageWithoutLookup.parentSessionId) {
-    const parentLabel = formatLineageParentLabel(lineageWithoutLookup);
-    return `${parentLabel} -> ${metadata.id}`;
+    return `${formatLineageParentLabel(lineageWithoutLookup)} -> ${metadata.id}`;
   }
   if (!lineageWithoutLookup.parentResponseId) {
     return `root -> ${metadata.id}`;
@@ -872,8 +871,7 @@ async function buildSessionChainLine(metadata: SessionMetadata): Promise<string 
   const responseOwners = buildResponseOwnerIndex(sessions);
   const lineage = resolveSessionLineage(metadata, responseOwners) ?? lineageWithoutLookup;
   if (lineage.parentSessionId) {
-    const parentLabel = formatLineageParentLabel(lineage);
-    return `${parentLabel} -> ${metadata.id}`;
+    return `${formatLineageParentLabel(lineage)} -> ${metadata.id}`;
   }
   if (!lineage.parentResponseId) {
     return `root -> ${metadata.id}`;

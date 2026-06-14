@@ -122,6 +122,7 @@ describe("sessionDisplay helpers", () => {
         prompt: "child",
         parentSessionId: "browser-parent",
         followUpOfSessionId: "browser-parent",
+        followupSessionId: "browser-parent",
       },
     };
     mockSessionStore.listSessions.mockResolvedValue([child, parent]);

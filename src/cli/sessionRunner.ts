@@ -657,12 +657,13 @@ export async function performSessionRun({
     if (transportLine) {
       log(dim(`Transport: ${transportLine}`));
     }
-    logBrowserReattachGuidance();
     const browserRuntime =
       mode === "browser"
         ? (userError?.details as { runtime?: BrowserRuntimeMetadata } | undefined)?.runtime
         : undefined;
-    logBrowserReattachGuidance(browserRuntime);
+    if (!cloudflareChallenge) {
+      logBrowserReattachGuidance(browserRuntime ?? sessionMeta.browser?.runtime);
+    }
     await sessionStore.updateSession(sessionMeta.id, {
       status: "error",
       completedAt: new Date().toISOString(),

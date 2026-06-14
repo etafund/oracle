@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { getCliVersion } from "../version.js";
+import { registerChatGptImageTool } from "./tools/chatgptImage.js";
 import { registerConsultTool } from "./tools/consult.js";
 import { registerFollowUpTool } from "./tools/followUp.js";
 import { registerProjectSourcesTool } from "./tools/projectSources.js";
@@ -26,6 +27,7 @@ export async function startMcpServer(): Promise<void> {
 
   registerConsultTool(server);
   registerFollowUpTool(server);
+  registerChatGptImageTool(server);
   registerProjectSourcesTool(server);
   registerSessionsTool(server);
   registerSessionResources(server);

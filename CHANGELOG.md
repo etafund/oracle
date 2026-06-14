@@ -1,13 +1,39 @@
 # Changelog
 
-## 0.13.1 — Unreleased
+## 0.14.1 — Unreleased
+
+## 0.14.0 — 2026-06-12
 
 ### Added
 
-- Browser: `oracle --followup <browser-session> -p ...` now reopens the saved ChatGPT conversation and submits the prompt as the next turn, and browser failures/timeouts print `--render`, `--live`, and `--harvest` reattach commands with the real session slug.
+- Browser: `oracle --followup <browser-session> -p ...` now safely reopens the exact saved ChatGPT conversation, inherits its browser profile/configuration/model, fails closed before submitting to the wrong thread, and prints `--render`, `--live`, and `--harvest` reattach commands with the real session slug when browser runs fail or time out. Thanks @hbruceweaver and @pdurlej!
 - Browser: add `oracle follow-up <parentSessionId> [prompt]` (and an MCP `follow_up` tool) that continues a saved ChatGPT browser conversation in a new child session without mutating the parent. Prompt-only in v1 (`-p`/`--prompt`, `-s`/`--slug`, `--wait`/`--no-wait`, `--no-recover`; file attachments are rejected). Child sessions copy the parent browser config, force Deep Research off, do not inherit the parent's wait preference unless `--wait` is explicit, and record parent/child lineage that `oracle status`/`session` render even for browser children without Responses API ids. Long browser runs now survive client/MCP timeouts via a detached runner plus a browser-only finalizer that keeps polling and finalizes session metadata/artifacts after the foreground controller exits, and a new `oracle-await <slug-or-id>` helper (shipped as a package bin) renders/recovers a long session and recovers stale `running` sessions whose ChatGPT tab already completed. Local browser `consult` blocks by default again; opt into detached background runs with MCP `browserDetached: true` or `ORACLE_MCP_BROWSER_DETACHED=1`.
-- Browser: save ChatGPT-generated downloadable files (CSV/JSON/ZIP/PDF/…) as `kind: "file"` session artifacts under `~/.oracle/sessions/<id>/artifacts/`, discovered from assistant message anchors, answer text, and a late transcript-recovery pass and scoped to the relevant assistant turn. Authenticated downloads are intentionally narrow: cookies are sent only to known ChatGPT file endpoints on `chatgpt.com`/`*.chatgpt.com`/`chat.openai.com`; `sandbox:/mnt/data/...` links are treated as hints and converted only through the validated ChatGPT sandbox download endpoint; and external, non-HTTPS, `blob:`, `/backend-api/me`, conversation, non-`file_` estuary, and traversal/unsafe-sandbox URLs are rejected before any cookie is sent. Oracle does not fetch arbitrary external links from ChatGPT answers. Archiving waits until the transcript and all detected images and files are saved.
+- Browser: clean stale manual-login Chrome profile locks before relaunching browser and Project Sources runs, while preserving locks when the recorded Chrome process is still alive. Thanks @derekszen!
+- Browser: save ChatGPT-generated downloadable files (CSV/JSON/ZIP/PDF/...) as `kind: "file"` session artifacts under `~/.oracle/sessions/<id>/artifacts/`, discovered from assistant message anchors, answer text, and a late transcript-recovery pass and scoped to the relevant assistant turn. Authenticated downloads are intentionally narrow: cookies are sent only to known ChatGPT file endpoints on `chatgpt.com`/`*.chatgpt.com`/`chat.openai.com`; `sandbox:/mnt/data/...` links are treated as hints and converted only through the validated ChatGPT sandbox download endpoint; and external, non-HTTPS, `blob:`, `/backend-api/me`, conversation, non-`file_` estuary, and traversal/unsafe-sandbox URLs are rejected before any cookie is sent. Oracle does not fetch arbitrary external links from ChatGPT answers. Archiving waits until the transcript and all detected images and files are saved. Fixes #244. Thanks @pdurlej!
 - Browser: `oracle session <id> --harvest` and `--live` now auto-recover when the original Chrome has been closed by relaunching the manual-login profile and reopening the saved conversation URL, then retrying the harvest against the recovered tab. Resolves the failure mode where a long GPT-5 Pro Extended response completed in the background after the CLI's 20-minute wall expired and the conversation was archived. Recovery URL selection prefers `browser.harvest.url` over `browser.runtime.tabUrl` and is gated by a shared ChatGPT-conversation-URL check (rejects home, project shell, and external URLs so the persistent profile can't be navigated to the wrong page from stale metadata). Opt out with `--no-recover` on the `session` subcommand.
+- MCP: add a dedicated `chatgpt_image` tool plus `generateImage` / `outputPath` support in `consult` so agent callers can trigger ChatGPT image generation and receive saved local artifacts in typed structured output. Thanks @umutkeltek!
+
+### Fixed
+
+- Browser/MCP: save ChatGPT image-generation responses delivered as current-turn “Download…” behavior buttons, validating downloaded bytes as real images before returning typed artifacts instead of waiting for an inline image until timeout.
+- Gemini: refresh browser mappings for Gemini 3.1 Flash-Lite, Gemini 3.5 Flash, Gemini 3.1 Pro, and Pro Deep Think; add current Flash API model configs; keep legacy browser aliases working; and make the live text smoke fail on stale mappings instead of skipping. Fixes #242. Thanks @goldengrape!
+- Browser: restore Deep Research report capture from ChatGPT's out-of-process report iframe, prefer completed page-scoped reads with legacy frame fallback, and bind/filter CDP auto-attach by the active page session so other tabs or unrelated iframes cannot be harvested. Thanks @umutkeltek!
+- API/OpenRouter: parse catalog prompt/completion prices as USD-per-token strings, preserving model/context metadata and accurate cost estimates while malformed prices fall back cleanly. Thanks @devYRPauli!
+- Browser: honor `--browser-model-strategy current` when ChatGPT exposes a usable composer without a model-picker button, record unavailable current-model labels honestly, and keep strict selection failures actionable. Thanks @m-rousseau!
+- Browser: select and verify requested thinking effort from ChatGPT's standalone Pro/Thinking composer pills and earlier Intelligence/per-model picker layouts, keep Pro Extended fail-closed when the selected effort cannot be confirmed, and ignore status-only assistant turns such as `Pro thinking` only while generation is active; picker failures now emit a bounded, redacted diagnostic in normal session logs. Thanks @umutkeltek!
+- Browser: surface visible ChatGPT rate-limit, temporary-unavailable, and authentication/challenge warnings in assistant-timeout errors and session metadata instead of reporting only a generic timeout. Thanks @derekszen!
+- Browser: verify ChatGPT login through the cookie-authenticated `/api/auth/session` endpoint before falling back to the legacy `/backend-api/me` probe and strong app-shell signals, avoiding false “session not detected” failures when the legacy endpoint requires bearer auth. Fixes #241. Thanks @hexsprite and @orbitingflea!
+- Browser: select ChatGPT “Welcome back” accounts only by exact configured email, keep the address out of logs, and fail closed on ambiguous saved accounts. Thanks @derekszen!
+- Browser: relax pre-send readiness for Oracle-generated `attachments-bundle.txt` and `.zip` uploads when ChatGPT exposes only the `attachments-bundle` stem, while keeping filename-boundary checks so unrelated attachment names do not satisfy the gate. Thanks @ig0rsky!
+
+### Changed
+
+- CLI/API/Browser: render generated prompt, inline, and text-bundle context with stable line numbers so model answers can cite source as `path:line` or `path:line-line`, while preserving indexed `buildPrompt(...)` headings, raw browser uploads, ZIP entries, `createFileSections().sectionText`, and the default `formatFileSection(...)` output. Callers can request numbered output directly with `formatFileSection(..., { lineNumbers: true })`. Thanks @tristanmanchester!
+
+### Security
+
+- MCP: constrain image output paths to the symlink-safe `ORACLE_HOME_DIR/generated` directory by default, keeping agent writes away from Oracle config, session, and browser-profile state; explicit opt-in remains required for external paths.
+- MCP: reject image output through the remote browser service until generated artifacts can be transferred back to the caller.
 
 ### Changed
 

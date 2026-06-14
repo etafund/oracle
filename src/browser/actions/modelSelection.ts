@@ -50,11 +50,11 @@ export async function ensureModelSelection(
     case "already-selected":
     case "switched":
     case "switched-best-effort": {
-      const label = result.label ?? desiredModel;
+      const label = result.label?.trim() || (strategy === "current" ? null : desiredModel);
       if (strategy !== "current") {
-        assertResolvedModelSelection(desiredModel, label);
+        assertResolvedModelSelection(desiredModel, label ?? desiredModel);
       }
-      logger(`Model picker: ${label}`);
+      logger(`Model picker: ${label ?? "current model (label unavailable)"}`);
       return {
         requestedModel: desiredModel,
         resolvedLabel: label,
@@ -80,7 +80,9 @@ export async function ensureModelSelection(
     }
     default: {
       await logDomFailure(Runtime, logger, "model-switcher-button");
-      throw new Error("Unable to locate the ChatGPT model selector button.");
+      throw new Error(
+        "Unable to locate the ChatGPT model selector button. If the desired model is already selected in the browser, retry with --browser-model-strategy current; otherwise retry with --browser-model-strategy ignore to skip model selection.",
+      );
     }
   }
 }
@@ -324,12 +326,9 @@ function buildModelSelectionExpression(
       return Array.from(document.querySelectorAll('button.__composer-pill')).find(looksLikeModelPill) ?? null;
     };
 
-    const button = findModelButton();
-    if (!button) {
-      return { status: 'button-missing' };
-    }
-
     const closeMenu = () => {
+      const button = findModelButton();
+      if (!button) return;
       try {
         if (dispatchClickSequence(button)) {
           lastPointerClick = performance.now();
@@ -349,7 +348,7 @@ function buildModelSelectionExpression(
       } catch {}
     };
 
-    const getButtonLabel = () => (button.textContent ?? '').trim();
+    const getButtonLabel = () => (findModelButton()?.textContent ?? '').trim();
     const getComposerModelLabel = () =>
       (document.querySelector(COMPOSER_MODEL_SIGNAL_SELECTOR)?.textContent ?? '').trim();
     const readComposerModelSignal = () => normalizeText(getComposerModelLabel());
@@ -367,11 +366,16 @@ function buildModelSelectionExpression(
     const isThinkingEffortLabel = (label) =>
       label === 'extended' || label === 'standard' || label === 'heavy' || label === 'light';
     if (MODEL_STRATEGY === 'current') {
-      const currentLabel = getResolvedLabel(PRIMARY_LABEL);
+      const currentLabel = getResolvedLabel('') || null;
       return {
         status: 'already-selected',
         label: currentLabel,
       };
+    }
+
+    const button = findModelButton();
+    if (!button) {
+      return { status: 'button-missing' };
     }
     const buttonMatchesTarget = () => {
       const normalizedLabel = normalizeText(getButtonLabel());

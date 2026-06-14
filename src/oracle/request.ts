@@ -11,7 +11,7 @@ import type {
 } from "./types.js";
 import { DEFAULT_SYSTEM_PROMPT } from "./config.js";
 import { createFileSections, readFiles } from "./files.js";
-import { formatFileSection } from "./markdown.js";
+import { formatFileSections } from "./markdown.js";
 import { createFsAdapter } from "./fsAdapter.js";
 import {
   attachPromptTransportMetadata,
@@ -50,7 +50,7 @@ export function buildPrompt(basePrompt: string, files: FileContent[], cwd = proc
     return basePrompt;
   }
   const sections = createFileSections(files, cwd);
-  const sectionText = sections.map((section) => section.sectionText).join("\n\n");
+  const sectionText = formatFileSections(sections, { includeFileIndex: true });
   if (!basePrompt) {
     return sectionText;
   }
@@ -194,9 +194,7 @@ export async function renderPromptMarkdown(
   const userPrompt = (options.prompt ?? "").trim();
   const lines = ["[SYSTEM]", systemPrompt, ""];
   lines.push("[USER]", userPrompt, "");
-  sections.forEach((section) => {
-    lines.push(formatFileSection(section.displayPath, section.content));
-  });
+  lines.push(formatFileSections(sections));
   return lines
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")

@@ -71,7 +71,10 @@ export function resolveSessionLineage(
   if (parentSessionId === meta.id) {
     parentSessionId = undefined;
   }
-  return { parentResponseId: previous || undefined, parentSessionId };
+  return {
+    parentResponseId: previous || undefined,
+    parentSessionId,
+  };
 }
 
 export function abbreviateResponseId(responseId: string, max = 18): string {

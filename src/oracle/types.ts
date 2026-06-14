@@ -12,7 +12,9 @@ export type KnownModelName =
   | "gpt-5.2"
   | "gpt-5.2-instant"
   | "gpt-5.2-pro"
+  | "gemini-3.1-flash-lite"
   | "gemini-3.1-pro"
+  | "gemini-3.5-flash"
   | "gemini-3-pro"
   | "claude-4.6-sonnet"
   | "claude-4.1-opus"
@@ -82,9 +84,14 @@ export interface FileContent {
 }
 
 export interface FileSection {
+  /** Legacy 1-based file number retained for callers that inspect createFileSections() output. */
   index: number;
   absolutePath: string;
   displayPath: string;
+  /**
+   * Legacy raw fenced section text using the historical `### File N:` heading.
+   * Generated model prompt context should render from displayPath/content instead.
+   */
   sectionText: string;
   content: string;
 }

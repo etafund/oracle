@@ -43,7 +43,15 @@ describe("browser follow-up resolution", () => {
       ...baseMetadata,
       id: "browser-slug",
       mode: "browser",
+      model: "gpt-5.5-pro",
       browser: {
+        config: {
+          manualLogin: true,
+          manualLoginProfileDir: "/tmp/oracle-profile",
+          browserTabRef: "stale-tab",
+          researchMode: "deep",
+          archiveConversations: "auto",
+        },
         runtime: { conversationId: "resume-me" },
       },
     };
@@ -52,6 +60,15 @@ describe("browser follow-up resolution", () => {
     await expect(resolveBrowserFollowupReference("browser-slug", store)).resolves.toEqual({
       sessionId: "browser-slug",
       resumeConversationUrl: "https://chatgpt.com/c/resume-me",
+      model: "gpt-5.5-pro",
+      browserConfig: {
+        manualLogin: true,
+        manualLoginProfileDir: "/tmp/oracle-profile",
+        browserTabRef: null,
+        researchMode: "off",
+        archiveConversations: "never",
+        resumeConversationUrl: "https://chatgpt.com/c/resume-me",
+      },
     });
   });
 
@@ -141,5 +158,19 @@ describe("browser follow-up resolution", () => {
 
     // conversationId would rebuild against the stored base; the gate must reject a non-ChatGPT host.
     expect(resolveBrowserResumeConversationUrl(metadata)).toBeNull();
+  });
+
+  test("rejects insecure or non-default-port conversation URLs", () => {
+    for (const tabUrl of [
+      "http://chatgpt.com/c/insecure",
+      "https://chatgpt.com:444/c/wrong-port",
+    ]) {
+      const metadata: SessionMetadata = {
+        ...baseMetadata,
+        mode: "browser",
+        browser: { runtime: { tabUrl } },
+      };
+      expect(resolveBrowserResumeConversationUrl(metadata)).toBeNull();
+    }
   });
 });

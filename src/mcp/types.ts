@@ -21,6 +21,8 @@ export const consultInputSchema = z
     browserFollowUps: z.array(z.string()).optional(),
     browserKeepBrowser: z.boolean().optional(),
     browserDetached: z.boolean().optional(),
+    generateImage: z.string().optional(),
+    outputPath: z.string().optional(),
     dryRun: z.boolean().optional(),
     run_in_background: z.never().optional(),
     runInBackground: z.never().optional(),

@@ -11,7 +11,10 @@ import {
   ensureNotBlocked,
   ensureLoggedIn,
 } from "../../src/browser/pageActions.js";
-import { buildLoginProbeExpressionForTest } from "../../src/browser/actions/navigation.js";
+import {
+  buildLoginProbeExpressionForTest,
+  buildWelcomeBackAccountPickerExpressionForTest,
+} from "../../src/browser/actions/navigation.js";
 import * as attachments from "../../src/browser/actions/attachments.js";
 import * as attachmentDataTransfer from "../../src/browser/actions/attachmentDataTransfer.js";
 import type { ChromeClient } from "../../src/browser/types.js";
@@ -21,6 +24,10 @@ const logger = vi.fn();
 
 beforeEach(() => {
   logger.mockClear();
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe("ensureModelSelection", () => {
@@ -70,7 +77,7 @@ describe("ensureModelSelection", () => {
       evaluate: vi.fn().mockResolvedValue({ result: { value: { status: "button-missing" } } }),
     } as unknown as ChromeClient["Runtime"];
     await expect(ensureModelSelection(runtime, "Instant", logger)).rejects.toThrow(
-      /Unable to locate the ChatGPT model selector button/,
+      /Unable to locate the ChatGPT model selector button.*--browser-model-strategy current.*--browser-model-strategy ignore/s,
     );
   });
 
@@ -205,29 +212,86 @@ describe("waitForResumedConversationHydration", () => {
     }
   });
 
-  test("rejects resumed conversations with zero prior turns when required", async () => {
+  test("waits for stable prior turns and verifies the expected conversation", async () => {
+    vi.useFakeTimers();
+    try {
+      const runtime = {
+        evaluate: vi
+          .fn()
+          .mockResolvedValueOnce({ result: { value: 2 } })
+          .mockResolvedValueOnce({ result: { value: 2 } })
+          .mockResolvedValueOnce({ result: { value: 2 } })
+          .mockResolvedValueOnce({ result: { value: 2 } })
+          .mockResolvedValueOnce({
+            result: { value: "https://chatgpt.com/c/expected-thread" },
+          }),
+      } as unknown as ChromeClient["Runtime"];
+      const ensurePromptReadyMock = vi.fn().mockResolvedValue(undefined);
+
+      const promise = waitForResumedConversationHydration(runtime, 5_000, logger, {
+        ensurePromptReady: ensurePromptReadyMock,
+        requirePriorTurns: true,
+        expectedConversationUrl: "https://chatgpt.com/g/project/c/expected-thread",
+      });
+      await vi.runAllTimersAsync();
+
+      await expect(promise).resolves.toBe(2);
+      expect(ensurePromptReadyMock).toHaveBeenCalledWith(runtime, 5_000, logger);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("fails closed when no prior turns hydrate", async () => {
     vi.useFakeTimers();
     try {
       const runtime = {
         evaluate: vi.fn().mockResolvedValue({ result: { value: 0 } }),
       } as unknown as ChromeClient["Runtime"];
-      const ensurePromptReadyMock = vi.fn().mockResolvedValue(undefined);
-
       const promise = waitForResumedConversationHydration(runtime, 1_000, logger, {
-        ensurePromptReady: ensurePromptReadyMock,
+        ensurePromptReady: vi.fn().mockResolvedValue(undefined),
         requirePriorTurns: true,
       });
       const assertion = expect(promise).rejects.toMatchObject({
-        message: expect.stringMatching(/did not load prior turns/i),
         details: {
           stage: "resume-conversation",
           priorTurns: 0,
+          settled: false,
         },
       });
       await vi.runAllTimersAsync();
-
       await assertion;
-      expect(ensurePromptReadyMock).toHaveBeenCalledWith(runtime, 1_000, logger);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("fails closed when navigation lands on a different conversation", async () => {
+    vi.useFakeTimers();
+    try {
+      const runtime = {
+        evaluate: vi
+          .fn()
+          .mockResolvedValueOnce({ result: { value: 1 } })
+          .mockResolvedValueOnce({ result: { value: 1 } })
+          .mockResolvedValueOnce({ result: { value: 1 } })
+          .mockResolvedValueOnce({ result: { value: 1 } })
+          .mockResolvedValueOnce({ result: { value: "https://chatgpt.com/c/other-thread" } }),
+      } as unknown as ChromeClient["Runtime"];
+      const promise = waitForResumedConversationHydration(runtime, 5_000, logger, {
+        ensurePromptReady: vi.fn().mockResolvedValue(undefined),
+        requirePriorTurns: true,
+        expectedConversationUrl: "https://chatgpt.com/c/expected-thread",
+      });
+      const assertion = expect(promise).rejects.toMatchObject({
+        details: {
+          stage: "resume-conversation",
+          expectedConversationId: "expected-thread",
+          actualConversationId: "other-thread",
+        },
+      });
+      await vi.runAllTimersAsync();
+      await assertion;
     } finally {
       vi.useRealTimers();
     }
@@ -286,13 +350,43 @@ describe("ensureNotBlocked", () => {
 });
 
 describe("ensureLoggedIn", () => {
+  function runWelcomeBackPickerForLabels(labels: string[], preferredEmail: string | null = null) {
+    const clicked: string[] = [];
+    const nodes = labels.map((label) => ({
+      textContent: label,
+      getAttribute: vi.fn((name: string) => (name === "aria-label" ? label : "")),
+      click: vi.fn(() => clicked.push(label)),
+    }));
+    const document = { querySelectorAll: vi.fn(() => nodes) };
+    const setTimeout = vi.fn((callback: () => void) => {
+      callback();
+      return 0;
+    });
+    const expression = buildWelcomeBackAccountPickerExpressionForTest(preferredEmail);
+    const evaluate = new Function("document", "setTimeout", `return ${expression};`) as (
+      document: unknown,
+      setTimeout: unknown,
+    ) => {
+      clicked?: boolean;
+      selection?: "preferred" | "only-account";
+      reason?: string;
+      accountCount?: number;
+    };
+
+    return { result: evaluate(document, setTimeout), clicked };
+  }
+
   async function runLoginProbeForLabels(
     labels: string[],
     options: {
-      fetchStatus?: number;
-      fetchStatuses?: number[];
-      fetchBody?: string;
-      fetchBodies?: string[];
+      backendStatus?: number;
+      backendStatuses?: number[];
+      backendBody?: string;
+      backendBodies?: string[];
+      sessionStatus?: number;
+      sessionStatuses?: number[];
+      sessionBody?: unknown;
+      sessionBodies?: unknown[];
       pathname?: string;
       composerVisible?: boolean;
       appSignal?: "profile" | "history" | "model" | null;
@@ -300,10 +394,14 @@ describe("ensureLoggedIn", () => {
     } = {},
   ) {
     const {
-      fetchStatus = 200,
-      fetchStatuses,
-      fetchBody = "",
-      fetchBodies,
+      backendStatus = 200,
+      backendStatuses,
+      backendBody = "",
+      backendBodies,
+      sessionStatus = 200,
+      sessionStatuses,
+      sessionBody = { user: { id: "test-user" }, accessToken: "do-not-expose" },
+      sessionBodies,
       pathname = "/",
       composerVisible = false,
       appSignal = null,
@@ -361,13 +459,21 @@ describe("ensureLoggedIn", () => {
     const window = {
       getComputedStyle: vi.fn(() => ({ display: "block", visibility: "visible" })),
     };
-    const statuses = [...(fetchStatuses ?? [fetchStatus])];
-    const bodies = [...(fetchBodies ?? [fetchBody])];
-    const fetch = vi.fn().mockImplementation(() => {
-      const status = statuses.length > 1 ? statuses.shift() : statuses[0];
-      const body = bodies.length > 1 ? bodies.shift() : bodies[0];
+    const backendStatusQueue = [...(backendStatuses ?? [backendStatus])];
+    const backendBodyQueue = [...(backendBodies ?? [backendBody])];
+    const sessionStatusQueue = [...(sessionStatuses ?? [sessionStatus])];
+    const sessionBodyQueue = [...(sessionBodies ?? [sessionBody])];
+    const next = <T>(queue: T[]): T | undefined => (queue.length > 1 ? queue.shift() : queue[0]);
+    const fetch = vi.fn().mockImplementation((url: string) => {
+      const sessionRequest = url === "/api/auth/session";
+      const status = next(sessionRequest ? sessionStatusQueue : backendStatusQueue);
+      const body = next(sessionRequest ? sessionBodyQueue : backendBodyQueue);
       return Promise.resolve({
         status,
+        json: vi.fn().mockImplementation(async () => {
+          if (body instanceof Error) throw body;
+          return body;
+        }),
         clone: () => ({ text: vi.fn().mockResolvedValue(body) }),
       });
     });
@@ -386,7 +492,14 @@ describe("ensureLoggedIn", () => {
       HTMLElement: typeof FakeHTMLElement,
       fetch: unknown,
       location: unknown,
-    ) => Promise<{ ok: boolean; domLoginCta: boolean; status: number }>;
+    ) => Promise<{
+      ok: boolean;
+      domLoginCta: boolean;
+      status: number;
+      backendStatus: number | null;
+      sessionAuthenticated: boolean;
+      sessionResolved: boolean;
+    }>;
 
     return evaluate(document, window, FakeHTMLElement, fetch, location);
   }
@@ -420,96 +533,129 @@ describe("ensureLoggedIn", () => {
     });
   });
 
-  test("accepts a blocked backend probe when authenticated app DOM is visible", async () => {
+  test("accepts a valid cookie-authenticated session without consulting the legacy probe", async () => {
     await expect(
       runLoginProbeForLabels([], {
-        fetchStatus: 429,
+        backendStatus: 401,
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      status: 200,
+      backendStatus: null,
+      sessionAuthenticated: true,
+      sessionResolved: true,
+      domLoginCta: false,
+    });
+  });
+
+  test("falls back to authenticated app DOM when the session and legacy probes are unavailable", async () => {
+    await expect(
+      runLoginProbeForLabels([], {
+        sessionStatus: 503,
+        backendStatus: 401,
         composerVisible: true,
         appSignal: "profile",
       }),
     ).resolves.toMatchObject({
       ok: true,
-      status: 429,
-      appAuthenticated: true,
-      domLoginCta: false,
-    });
-  });
-
-  test("does not accept plain unauthorized backend responses with stale app DOM", async () => {
-    await expect(
-      runLoginProbeForLabels([], {
-        fetchStatus: 401,
-        composerVisible: true,
-        appSignal: "profile",
-      }),
-    ).resolves.toMatchObject({
-      ok: false,
-      status: 401,
+      status: 503,
+      backendStatus: 401,
+      sessionAuthenticated: false,
+      sessionResolved: false,
       appAuthenticated: true,
     });
   });
 
-  test("retries transient unauthorized backend responses before failing", async () => {
+  test("retries a transient session failure and accepts the resolved user", async () => {
     await expect(
       runLoginProbeForLabels([], {
-        fetchStatuses: [401, 200],
-        composerVisible: true,
-        appSignal: "profile",
+        sessionStatuses: [503, 200],
+        sessionBodies: [{}, { user: { id: "test-user" }, accessToken: "do-not-expose" }],
+        backendStatus: 401,
         probeTimeoutMs: 500,
       }),
     ).resolves.toMatchObject({
       ok: true,
       status: 200,
-      appAuthenticated: true,
+      backendStatus: null,
+      sessionAuthenticated: true,
+      sessionResolved: true,
     });
   });
 
-  test("does not accept blocked backend probe with only a model pill", async () => {
+  test("does not accept unavailable probes with only a model pill", async () => {
     await expect(
       runLoginProbeForLabels([], {
-        fetchStatus: 401,
+        sessionStatus: 503,
+        backendStatus: 401,
         composerVisible: true,
         appSignal: "model",
       }),
     ).resolves.toMatchObject({
       ok: false,
-      status: 401,
+      status: 503,
+      backendStatus: 401,
       appAuthenticated: false,
     });
   });
 
-  test("does not accept blocked backend probe with only a composer", async () => {
+  test("does not accept unavailable probes with only a composer", async () => {
     await expect(
       runLoginProbeForLabels([], {
-        fetchStatus: 401,
+        sessionStatus: 503,
+        backendStatus: 401,
         composerVisible: true,
       }),
     ).resolves.toMatchObject({
       ok: false,
-      status: 401,
+      status: 503,
+      backendStatus: 401,
       appAuthenticated: false,
     });
   });
 
-  test("does not accept plain forbidden backend responses without Cloudflare markers", async () => {
+  test("treats a resolved session without a user as logged out despite stale app DOM", async () => {
     await expect(
       runLoginProbeForLabels([], {
-        fetchStatus: 403,
+        sessionBody: {},
+        backendStatus: 200,
         composerVisible: true,
         appSignal: "profile",
       }),
     ).resolves.toMatchObject({
       ok: false,
-      status: 403,
+      status: 200,
+      backendStatus: null,
       cfBlocked: false,
+      sessionAuthenticated: false,
+      sessionResolved: true,
       appAuthenticated: true,
     });
+  });
+
+  test("keeps plain session 401/403 responses authoritative", async () => {
+    for (const sessionStatus of [401, 403]) {
+      await expect(
+        runLoginProbeForLabels([], {
+          sessionStatus,
+          backendStatus: 200,
+          composerVisible: true,
+          appSignal: "profile",
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        status: sessionStatus,
+        backendStatus: null,
+        sessionAuthenticated: false,
+        sessionResolved: false,
+        appAuthenticated: true,
+      });
+    }
   });
 
   test("keeps auth pages and visible login CTAs authoritative", async () => {
     await expect(
       runLoginProbeForLabels([], {
-        fetchStatus: 401,
         pathname: "/auth/login",
         composerVisible: true,
         appSignal: "profile",
@@ -522,7 +668,6 @@ describe("ensureLoggedIn", () => {
 
     await expect(
       runLoginProbeForLabels(["Log in"], {
-        fetchStatus: 401,
         composerVisible: true,
         appSignal: "history",
       }),
@@ -536,34 +681,130 @@ describe("ensureLoggedIn", () => {
   test("detects Cloudflare-blocked backend probes and falls back to app DOM", async () => {
     await expect(
       runLoginProbeForLabels([], {
-        fetchStatus: 403,
-        fetchBody: "<html><body>cf-mitigated challenge from Cloudflare</body></html>",
+        sessionStatus: 503,
+        backendStatus: 403,
+        backendBody: "<html><body>cf-mitigated challenge from Cloudflare</body></html>",
         composerVisible: true,
         appSignal: "profile",
       }),
     ).resolves.toMatchObject({
       ok: true,
-      status: 403,
+      status: 503,
+      backendStatus: 403,
       cfBlocked: true,
       appAuthenticated: true,
     });
   });
 
-  test("does not keep stale Cloudflare state after a later unauthorized response", async () => {
+  test("does not expose session response fields in the probe result", async () => {
+    const result = await runLoginProbeForLabels([], {
+      sessionBody: {
+        user: { id: "test-user", email: "private@example.test" },
+        accessToken: "secret-access-token",
+        sessionToken: "secret-session-token",
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      sessionAuthenticated: true,
+      sessionResolved: true,
+    });
+    expect(JSON.stringify(result)).not.toContain("private@example.test");
+    expect(JSON.stringify(result)).not.toContain("secret-access-token");
+    expect(JSON.stringify(result)).not.toContain("secret-session-token");
+  });
+
+  test("does not keep stale Cloudflare state after the session resolves logged out", async () => {
     await expect(
       runLoginProbeForLabels([], {
-        fetchStatuses: [403, 401],
-        fetchBodies: ["<html><body>cf-mitigated challenge from Cloudflare</body></html>", ""],
+        sessionStatuses: [503, 200],
+        sessionBodies: [{}, {}],
+        backendStatus: 403,
+        backendBody: "<html><body>cf-mitigated challenge from Cloudflare</body></html>",
         composerVisible: true,
-        appSignal: "profile",
         probeTimeoutMs: 500,
       }),
     ).resolves.toMatchObject({
       ok: false,
-      status: 401,
+      status: 200,
+      backendStatus: null,
       cfBlocked: false,
-      appAuthenticated: true,
+      sessionAuthenticated: false,
+      sessionResolved: true,
     });
+  });
+
+  test("selects the configured welcome-back account by exact email", () => {
+    const { result, clicked } = runWelcomeBackPickerForLabels(
+      ["Continue as steipete@example.test", "Continue as pete@example.test"],
+      "pete@example.test",
+    );
+
+    expect(result).toEqual({ clicked: true, selection: "preferred", accountCount: 2 });
+    expect(clicked).toEqual(["Continue as pete@example.test"]);
+  });
+
+  test("does not click a fallback welcome-back account when configured account is missing", () => {
+    const { result, clicked } = runWelcomeBackPickerForLabels(
+      ["old@example.test"],
+      "missing@example.test",
+    );
+
+    expect(result).toMatchObject({
+      clicked: false,
+      reason: "preferred-not-found",
+      accountCount: 1,
+    });
+    expect(clicked).toEqual([]);
+  });
+
+  test("normalizes the configured account without exposing it in errors or logs", async () => {
+    vi.stubEnv("ORACLE_CHATGPT_ACCOUNT_EMAIL", " PETE@EXAMPLE.TEST ");
+    const runtime = {
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({
+          result: { value: { ok: false, status: 401, url: "/backend-api/me" } },
+        })
+        .mockImplementationOnce(async ({ expression }: { expression: string }) => {
+          expect(expression).toContain('const preferredEmail = "pete@example.test"');
+          return {
+            result: {
+              value: { clicked: false, reason: "preferred-not-found", accountCount: 2 },
+            },
+          };
+        }),
+    } as unknown as ChromeClient["Runtime"];
+
+    const error = await ensureLoggedIn(runtime, logger, { appliedCookies: 2 }).catch(
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("ORACLE_CHATGPT_ACCOUNT_EMAIL did not match");
+    expect((error as Error).message).not.toContain("pete@example.test");
+    expect(logger.mock.calls.flat().join(" ")).not.toContain("pete@example.test");
+  });
+
+  test("does not guess when several saved accounts exist without configuration", () => {
+    const { result, clicked } = runWelcomeBackPickerForLabels([
+      "one@example.test",
+      "two@example.test",
+    ]);
+
+    expect(result).toEqual({
+      clicked: false,
+      reason: "multiple-accounts",
+      accountCount: 2,
+    });
+    expect(clicked).toEqual([]);
+  });
+
+  test("selects the only saved account without configuration", () => {
+    const { result, clicked } = runWelcomeBackPickerForLabels(["only@example.test"]);
+
+    expect(result).toEqual({ clicked: true, selection: "only-account", accountCount: 1 });
+    expect(clicked).toEqual(["only@example.test"]);
   });
 
   test("throws with cookie guidance when cookies missing", async () => {
