@@ -82,6 +82,18 @@ describe("remote browser service", () => {
               tabUrl: "https://chatgpt.com/c/remote-conversation",
               conversationId: "remote-conversation",
               controllerPid: 4321,
+              modelSelection: {
+                requestedModel: "Pro",
+                resolvedLabel: "Extended Pro",
+                strategy: "select",
+                status: "already-selected",
+                verified: true,
+                source: "chatgpt-model-picker",
+                capturedAt: "2026-06-14T00:00:00.000Z",
+              },
+              warnings: [
+                { code: "test-warning", severity: "warning", message: "remote warning survived" },
+              ],
             };
             return result;
           },
@@ -126,6 +138,22 @@ describe("remote browser service", () => {
       expect(result.chromeTargetId).toBeUndefined();
       expect(result.controllerPid).toBeUndefined();
       expect(runLog).toEqual(["remote"]);
+      // Regression: model-selection evidence + warnings must survive the remote
+      // boundary. sanitizeResult() previously dropped them, which made the local
+      // session runner fabricate resolved=(unavailable) / verified=no even when
+      // the host actually selected and verified the model.
+      expect(result.modelSelection).toEqual({
+        requestedModel: "Pro",
+        resolvedLabel: "Extended Pro",
+        strategy: "select",
+        status: "already-selected",
+        verified: true,
+        source: "chatgpt-model-picker",
+        capturedAt: "2026-06-14T00:00:00.000Z",
+      });
+      expect(result.warnings).toEqual([
+        { code: "test-warning", severity: "warning", message: "remote warning survived" },
+      ]);
 
       const healthUnauthorized = await httpGetJson({
         hostname: "127.0.0.1",

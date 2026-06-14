@@ -421,6 +421,14 @@ function sanitizeResult(result: BrowserRunResult): BrowserRunResult {
     tabUrl: result.tabUrl,
     conversationId: result.conversationId,
     controllerPid: undefined,
+    // Preserve model-selection evidence + warnings across the remote boundary.
+    // Without these the local session runner fabricates `resolved=(unavailable)`
+    // / `verified=no` even when the host actually selected and verified the model.
+    // The Chrome pid/port/ws-endpoint/profile fields above stay redacted — those
+    // are genuine host secrets; modelSelection/warnings carry only model labels,
+    // strategy, status, source, timestamp, and non-sensitive warning text.
+    modelSelection: result.modelSelection,
+    warnings: result.warnings,
   };
 }
 

@@ -15,6 +15,7 @@
 
 ### Fixed
 
+- Remote: preserve `modelSelection` and `warnings` across the remote `serve` → client boundary. `sanitizeResult()` previously stripped them, so completed remote browser runs reported `resolved=(unavailable); status=unavailable; verified=no` even when the host had actually selected and verified the requested model (e.g. Pro resolving to `Extended Pro`, `already-selected`) — which blocked verified-Pro remote consultations. Chrome host secrets (pid/port/ws-endpoint/profile paths) stay redacted; only the non-sensitive model-selection evidence and warnings now pass through. Added a remote round-trip regression test.
 - Browser: wait for ChatGPT's model picker/composer pill to hydrate after the prompt textarea before failing model selection, and avoid the misleading no-cookies hint for manual-login profile runs.
 
 ## 0.13.0 — 2026-05-22
