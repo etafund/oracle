@@ -1,10 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.14.1 — 2026-06-15
+
+### Changed
+
+- Dependencies: update sweet-cookie, Markdansi, osc-progress, esbuild, TypeScript native preview, es-toolkit, and related Node/Inquirer type packages.
 
 ### Fixed
 
 - Browser: retry manual-login DevTools tab creation on fresh Chrome launches, recover ChatGPT generated-image downloads through the authenticated browser context when Node-side fetch fails, and keep generated-image artifact waits fail-fast on visible ChatGPT warnings. Thanks @derekszen!
+- Browser: support ChatGPT's updated Intelligence model picker and Pro effort submenu, and accept `instant`, `medium`, `high`, and `extra-high` as thinking-time aliases while preserving existing Oracle names. Thanks @orbitingflea!
 
 ## 0.14.0 — 2026-06-12
 
@@ -19,7 +24,6 @@
 
 ### Fixed
 
-- Browser: support ChatGPT's updated Intelligence model picker and Pro effort submenu, and accept `instant`, `medium`, `high`, and `extra-high` as thinking-time aliases while preserving existing Oracle names. Thanks @orbitingflea!
 - Browser/MCP: save ChatGPT image-generation responses delivered as current-turn “Download…” behavior buttons, validating downloaded bytes as real images before returning typed artifacts instead of waiting for an inline image until timeout.
 - Gemini: refresh browser mappings for Gemini 3.1 Flash-Lite, Gemini 3.5 Flash, Gemini 3.1 Pro, and Pro Deep Think; add current Flash API model configs; keep legacy browser aliases working; and make the live text smoke fail on stale mappings instead of skipping. Fixes #242. Thanks @goldengrape!
 - Browser: restore Deep Research report capture from ChatGPT's out-of-process report iframe, prefer completed page-scoped reads with legacy frame fallback, and bind/filter CDP auto-attach by the active page session so other tabs or unrelated iframes cannot be harvested. Thanks @umutkeltek!
