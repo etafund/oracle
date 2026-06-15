@@ -317,7 +317,19 @@ function buildModelSelectionExpression(
       );
       if (!label) return false;
       if (label.includes('click to remove')) return false;
-      const modelTokens = ['chatgpt', 'gpt', 'instant', 'thinking', 'pro', 'extended', 'standard', 'heavy', 'light'];
+      const modelTokens = [
+        'chatgpt',
+        'gpt',
+        'instant',
+        'thinking',
+        'pro',
+        'extended',
+        'standard',
+        'medium',
+        'high',
+        'heavy',
+        'light',
+      ];
       return modelTokens.some((token) => hasToken(label, token));
     };
     const findModelButton = () => {
@@ -352,6 +364,24 @@ function buildModelSelectionExpression(
     const getComposerModelLabel = () =>
       (document.querySelector(COMPOSER_MODEL_SIGNAL_SELECTOR)?.textContent ?? '').trim();
     const readComposerModelSignal = () => normalizeText(getComposerModelLabel());
+    const isIntelligenceEffortLabel = (label) =>
+      label === 'instant' ||
+      label === 'medium' ||
+      label === 'high' ||
+      label === 'extra high' ||
+      label === 'extended' ||
+      label === 'standard' ||
+      label === 'heavy' ||
+      label === 'light';
+    const formatModelOptionLabel = (label) => {
+      const normalized = normalizeText(label ?? '');
+      if (normalized === '5 5' || normalized === 'gpt 5 5') return 'GPT-5.5';
+      if (normalized === '5 4' || normalized === 'gpt 5 4') return 'GPT-5.4';
+      if (normalized === '5 2' || normalized === 'gpt 5 2') return 'GPT-5.2';
+      if (normalized === '5 1' || normalized === 'gpt 5 1') return 'GPT-5.1';
+      if (normalized === '5 0' || normalized === 'gpt 5 0') return 'GPT-5.0';
+      return label || '';
+    };
     const withProPillSignal = (label) => {
       const resolved = label || '';
       if (!wantsPro || !hasProComposerPill()) return resolved;
@@ -361,10 +391,25 @@ function buildModelSelectionExpression(
       if (normalized.includes('pro')) return resolved;
       return resolved + ' + Pro';
     };
-    const getResolvedLabel = (fallback) =>
-      withProPillSignal(getComposerModelLabel() || getButtonLabel() || fallback);
+    const getResolvedLabel = (fallback) => {
+      const composerLabel = getComposerModelLabel();
+      if (composerLabel) return withProPillSignal(composerLabel);
+      const buttonLabel = getButtonLabel();
+      const normalizedButton = normalizeText(buttonLabel);
+      const fallbackLabel = formatModelOptionLabel(fallback);
+      if (fallbackLabel && !wantsPro && isIntelligenceEffortLabel(normalizedButton)) {
+        return fallbackLabel;
+      }
+      return withProPillSignal(buttonLabel || fallbackLabel || fallback);
+    };
     const isThinkingEffortLabel = (label) =>
-      label === 'extended' || label === 'standard' || label === 'heavy' || label === 'light';
+      label === 'extended' ||
+      label === 'standard' ||
+      label === 'heavy' ||
+      label === 'light' ||
+      label === 'medium' ||
+      label === 'high' ||
+      label === 'extra high';
     if (MODEL_STRATEGY === 'current') {
       const currentLabel = getResolvedLabel('') || null;
       return {
@@ -573,9 +618,18 @@ function buildModelSelectionExpression(
         }
       }
       const candidateGpt55VisibleAlias = isTargetGpt55VisibleAlias(normalizedText);
+      const candidateIsGpt55ThinkingFamily =
+        wantsThinking &&
+        desiredVersion === '5-5' &&
+        (normalizedText === 'gpt 5 5' ||
+          normalizedText === '5 5' ||
+          normalizedTestId.includes('gpt-5-5') ||
+          normalizedTestId.includes('gpt-5.5') ||
+          normalizedTestId.includes('gpt55'));
       const candidateHasThinking =
         normalizedText.includes('thinking') ||
         normalizedTestId.includes('thinking') ||
+        candidateIsGpt55ThinkingFamily ||
         (wantsThinking && desiredVersion === '5-4' && exactTestIdMatch);
       const candidateHasLegacyProVersion = labelHasLegacyProVersion(normalizedText);
       const candidateHasPro =
@@ -602,6 +656,9 @@ function buildModelSelectionExpression(
       }
       if (candidateGpt55VisibleAlias) {
         score += 900;
+      }
+      if (candidateIsGpt55ThinkingFamily) {
+        score += 260;
       }
       if (normalizedText && normalizedTarget) {
         if (normalizedText === normalizedTarget) {
@@ -638,7 +695,11 @@ function buildModelSelectionExpression(
       }
       // Similarly for Thinking variant
       if (wantsThinking) {
-        if (!normalizedText.includes('thinking') && !normalizedTestId.includes('thinking')) {
+        if (
+          !candidateIsGpt55ThinkingFamily &&
+          !normalizedText.includes('thinking') &&
+          !normalizedTestId.includes('thinking')
+        ) {
           score -= 80;
         }
       } else if (normalizedText.includes('thinking') || normalizedTestId.includes('thinking')) {
@@ -693,9 +754,12 @@ function buildModelSelectionExpression(
           const text = option.textContent ?? '';
           const normalizedText = normalizeText(text);
           const testid = option.getAttribute('data-testid') ?? '';
-          const score = scoreOption(normalizedText, testid);
+          let score = scoreOption(normalizedText, testid);
           if (score <= 0) {
             continue;
+          }
+          if (optionIsSelected(option)) {
+            score += 1000;
           }
           const label = getOptionLabel(option);
           if (!bestMatch || score > bestMatch.score) {
@@ -734,6 +798,32 @@ function buildModelSelectionExpression(
       };
       check();
     });
+    const isSubmenuOption = (node, testid) =>
+      (testid ?? '').toLowerCase().includes('submenu') ||
+      node?.getAttribute?.('aria-haspopup') === 'menu' ||
+      node?.getAttribute?.('data-has-submenu') !== null;
+    const dispatchHoverSequence = (target) => {
+      if (!target || !(target instanceof EventTarget)) return false;
+      const types = ['pointerover', 'pointerenter', 'mouseover', 'mouseenter', 'pointermove', 'mousemove'];
+      for (const type of types) {
+        try {
+          const common = { bubbles: true, cancelable: true, view: window };
+          const event =
+            type.startsWith('pointer') && 'PointerEvent' in window
+              ? new PointerEvent(type, { ...common, pointerId: 1, pointerType: 'mouse' })
+              : new MouseEvent(type, common);
+          target.dispatchEvent(event);
+        } catch {}
+      }
+      try {
+        target.focus?.();
+      } catch {}
+      return true;
+    };
+    const openSubmenuOption = (node) => {
+      dispatchHoverSequence(node);
+      dispatchClickSequence(node);
+    };
 
     return new Promise((resolve) => {
       const start = performance.now();
@@ -786,8 +876,9 @@ function buildModelSelectionExpression(
           dispatchClickSequence(match.node);
           // Submenus (e.g. "Legacy models") need a second pass to pick the actual model option.
           // Keep scanning once the submenu opens instead of treating the submenu click as a final switch.
-          const isSubmenu = (match.testid ?? '').toLowerCase().includes('submenu');
+          const isSubmenu = isSubmenuOption(match.node, match.testid);
           if (isSubmenu) {
+            openSubmenuOption(match.node);
             setTimeout(attempt, REOPEN_INTERVAL_MS / 2);
             return;
           }

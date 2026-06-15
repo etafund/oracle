@@ -113,12 +113,13 @@ async function readSessionLogTail(sessionId: string, maxBytes: number): Promise<
 import { performSessionRun } from "../../cli/sessionRunner.js";
 import { runDryRunSummary } from "../../cli/dryRun.js";
 import { CHATGPT_URL } from "../../browser/constants.js";
-import { CONSULT_PRESETS, consultInputSchema } from "../types.js";
+import { CONSULT_PRESETS, browserThinkingTimeRawSchema, consultInputSchema } from "../types.js";
 import { applyConsultPreset } from "../consultPresets.js";
 import { loadUserConfig, type UserConfig } from "../../config.js";
 import { resolveNotificationSettings } from "../../cli/notifier.js";
 import { mapModelToBrowserLabel, resolveBrowserModelLabel } from "../../cli/browserConfig.js";
 import type { BrowserModelStrategy } from "../../browser/types.js";
+import { normalizeThinkingTimeLevel } from "../../oracle/thinkingTime.js";
 
 // Use raw shapes so the MCP SDK (with its bundled Zod) wraps them and emits valid JSON Schema.
 const consultInputShape = {
@@ -173,8 +174,7 @@ const consultInputShape = {
     .describe(
       'Browser-only: bundle upload format when browserBundleFiles is true or auto-bundling is needed. Defaults to "text"; "zip" preserves individual file names in one uploaded archive.',
     ),
-  browserThinkingTime: z
-    .enum(["light", "standard", "extended", "heavy"])
+  browserThinkingTime: browserThinkingTimeRawSchema
     .optional()
     .describe("Browser-only: set ChatGPT thinking time when supported by the chosen model."),
   browserModelStrategy: z
@@ -449,6 +449,7 @@ export function buildConsultBrowserConfig({
   const manualLogin = hasProfileDir
     ? true
     : (configuredBrowser.manualLogin ?? process.platform === "win32");
+  const configuredThinkingTime = normalizeThinkingTimeLevel(configuredBrowser.thinkingTime);
 
   return {
     ...configuredBrowser,
@@ -462,7 +463,7 @@ export function buildConsultBrowserConfig({
     manualLoginProfileDir: manualLogin
       ? ((envProfileDir || configuredBrowser.manualLoginProfileDir) ?? null)
       : null,
-    thinkingTime: browserThinkingTime ?? configuredBrowser.thinkingTime,
+    thinkingTime: browserThinkingTime ?? configuredThinkingTime ?? undefined,
     modelStrategy: browserModelStrategy ?? configuredBrowser.modelStrategy,
     researchMode: browserResearchMode ?? configuredBrowser.researchMode,
     archiveConversations: browserArchive ?? configuredBrowser.archiveConversations,
