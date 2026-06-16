@@ -214,6 +214,7 @@ const evaluateMenuModelSelectionExpression = async (
 
 const evaluateIntelligenceModelSelectionExpression = async (
   targetModel: string,
+  initialButtonLabel = "Extra High",
 ): Promise<unknown> => {
   class FakeEventTarget {
     dispatchEvent(_event: unknown): boolean {
@@ -233,6 +234,8 @@ const evaluateIntelligenceModelSelectionExpression = async (
 
   let intelligenceMenuOpen = false;
   let gpt55SubmenuOpen = false;
+  let modelButton: FakeElement;
+  let proPillActive = initialButtonLabel.toLowerCase().includes("pro");
 
   class FakeElement extends FakeEventTarget {
     constructor(
@@ -269,10 +272,13 @@ const evaluateIntelligenceModelSelectionExpression = async (
     }
 
     matches(selector: string): boolean {
-      return selector.includes("__composer-pill") &&
+      if (
+        selector.includes("__composer-pill") &&
         this.attributes.class?.includes("__composer-pill")
-        ? true
-        : selector.includes("aria-haspopup") && this.attributes["aria-haspopup"] === "menu";
+      ) {
+        return true;
+      }
+      return selector.includes("aria-haspopup") && this.attributes["aria-haspopup"] === "menu";
     }
 
     getBoundingClientRect(): { width: number; height: number } {
@@ -285,12 +291,31 @@ const evaluateIntelligenceModelSelectionExpression = async (
     }
   }
 
-  const fiveFive = new FakeElement("5.5", {
-    role: "menuitemradio",
-    "aria-checked": "true",
-    "data-state": "checked",
-  });
-  const gpt55Submenu = new FakeElement("5.55.45.34.5o3", { role: "menu" }, [fiveFive]);
+  const fiveFive = new FakeElement(
+    "5.5",
+    {
+      role: "menuitemradio",
+      "aria-checked": "true",
+      "data-state": "checked",
+    },
+    [],
+    () => {
+      modelButton.textContent = "GPT-5.5";
+    },
+  );
+  const fiveFour = new FakeElement(
+    "5.4",
+    {
+      role: "menuitemradio",
+      "aria-checked": "false",
+      "data-state": "unchecked",
+    },
+    [],
+    () => {
+      modelButton.textContent = "GPT-5.4";
+    },
+  );
+  const gpt55Submenu = new FakeElement("5.55.45.34.5o3", { role: "menu" }, [fiveFive, fiveFour]);
   const gpt55Trigger = new FakeElement(
     "GPT-5.5",
     {
@@ -304,6 +329,7 @@ const evaluateIntelligenceModelSelectionExpression = async (
       gpt55SubmenuOpen = true;
     },
   );
+  const initialIsPro = initialButtonLabel.toLowerCase().includes("pro");
   const intelligenceMenu = new FakeElement(
     "IntelligenceInstantMediumHighExtra HighPro ExtendedGPT-5.5",
     { role: "menu", "data-testid": "composer-intelligence-picker-content" },
@@ -311,19 +337,42 @@ const evaluateIntelligenceModelSelectionExpression = async (
       new FakeElement("Instant", { role: "menuitemradio", "aria-checked": "false" }),
       new FakeElement("Medium", { role: "menuitemradio", "aria-checked": "false" }),
       new FakeElement("High", { role: "menuitemradio", "aria-checked": "false" }),
-      new FakeElement("Extra High", { role: "menuitemradio", "aria-checked": "true" }),
-      new FakeElement("Pro Extended", { role: "menuitemradio", "aria-checked": "false" }),
+      new FakeElement(
+        "Extra High",
+        { role: "menuitemradio", "aria-checked": initialIsPro ? "false" : "true" },
+        [],
+        () => {
+          proPillActive = false;
+          modelButton.textContent = "Extra High";
+        },
+      ),
+      new FakeElement(
+        "Pro Extended",
+        {
+          role: "menuitemradio",
+          "aria-checked": initialIsPro ? "true" : "false",
+        },
+        [],
+        () => {
+          proPillActive = true;
+          modelButton.textContent = "Pro Extended";
+        },
+      ),
       gpt55Trigger,
     ],
   );
-  const modelButton = new FakeElement(
-    "Extra High",
+  modelButton = new FakeElement(
+    initialButtonLabel,
     { class: "__composer-pill", "aria-haspopup": "menu", "aria-expanded": "false" },
     [],
     () => {
       intelligenceMenuOpen = true;
     },
   );
+  const proPill = new FakeElement("Pro Extended", {
+    class: "__composer-pill",
+    "aria-label": "Pro Extended",
+  });
 
   const expression = buildModelSelectionExpressionForTest(targetModel);
   const documentStub = {
@@ -338,7 +387,7 @@ const evaluateIntelligenceModelSelectionExpression = async (
     },
     querySelectorAll: (selector: string) => {
       if (selector.includes("button.__composer-pill")) {
-        return [modelButton];
+        return proPillActive ? [modelButton, proPill] : [modelButton];
       }
       if (selector.includes('role="menu"') || selector.includes("data-radix")) {
         return [
@@ -396,6 +445,247 @@ const evaluateIntelligenceModelSelectionExpression = async (
   );
 };
 
+const evaluateConfiguredModelSelectionExpression = async (
+  targetModel: string,
+  initialVariant = "Thinking",
+): Promise<unknown> => {
+  class FakeEventTarget {
+    dispatchEvent(_event: unknown): boolean {
+      return true;
+    }
+  }
+
+  class FakeMouseEvent {
+    constructor(
+      readonly type: string,
+      readonly init?: unknown,
+    ) {}
+  }
+
+  let topMenuOpen = false;
+  let configurationOpen = false;
+  let versionListOpen = false;
+  let selectedVersion = "5.5";
+  let selectedVariant = initialVariant;
+
+  type AttributeValue = string | (() => string);
+  class FakeElement extends FakeEventTarget {
+    constructor(
+      public textContent: string,
+      private readonly attributes: Readonly<Record<string, AttributeValue>> = {},
+      private readonly children: readonly FakeElement[] = [],
+      private readonly onDispatch?: () => void,
+    ) {
+      super();
+    }
+
+    getAttribute(name: string): string | null {
+      const value = this.attributes[name];
+      return typeof value === "function" ? value() : (value ?? null);
+    }
+
+    querySelector(selector: string): FakeElement | null {
+      if (selector.includes("model-switcher-")) {
+        return (
+          this.children.find((child) =>
+            child.getAttribute("data-testid")?.startsWith("model-switcher-"),
+          ) ?? null
+        );
+      }
+      if (selector.includes("model-selection-label")) {
+        return (
+          this.children.find(
+            (child) => child.getAttribute("aria-labelledby") === "model-selection-label",
+          ) ?? null
+        );
+      }
+      if (selector.includes("Model options") && selector.includes('aria-checked="true"')) {
+        return (
+          this.children.find(
+            (child) =>
+              child.getAttribute("role") === "radio" &&
+              child.getAttribute("aria-checked") === "true",
+          ) ?? null
+        );
+      }
+      if (selector.includes("close-button")) {
+        return (
+          this.children.find((child) => child.getAttribute("data-testid") === "close-button") ??
+          null
+        );
+      }
+      return null;
+    }
+
+    querySelectorAll(_selector: string): FakeElement[] {
+      return [...this.children];
+    }
+
+    closest(_selector: string): FakeElement | null {
+      return null;
+    }
+
+    override dispatchEvent(event: unknown): boolean {
+      this.onDispatch?.();
+      return super.dispatchEvent(event);
+    }
+  }
+
+  const modelButton = new FakeElement(
+    "ChatGPT",
+    { "data-testid": "model-switcher-dropdown-button" },
+    [],
+    () => {
+      topMenuOpen = true;
+    },
+  );
+  const currentThinking = new FakeElement("ThinkingFor complex questions", {
+    role: "menuitemradio",
+    "data-testid": "model-switcher-gpt-5-5-thinking",
+    "aria-checked": "true",
+  });
+  const configure = new FakeElement(
+    "Configure...",
+    { role: "menuitem", "data-testid": "model-configure-modal" },
+    [],
+    () => {
+      topMenuOpen = false;
+      configurationOpen = true;
+    },
+  );
+  const topMenu = new FakeElement("Latest 5.5 Thinking Configure", { role: "menu" }, [
+    currentThinking,
+    configure,
+  ]);
+  const closeButton = new FakeElement("", { "data-testid": "close-button" }, [], () => {
+    configurationOpen = false;
+    versionListOpen = false;
+  });
+  const versionCombobox = new FakeElement(
+    selectedVersion,
+    {
+      role: "combobox",
+      "aria-labelledby": "model-selection-label",
+      "aria-expanded": () => String(versionListOpen),
+    },
+    [],
+    () => {
+      versionListOpen = true;
+    },
+  );
+  const variantRadio = (variant: string, description: string) =>
+    new FakeElement(
+      `${variant}${description}`,
+      {
+        role: "radio",
+        "aria-checked": () => String(selectedVariant === variant),
+      },
+      [],
+      () => {
+        selectedVariant = variant;
+      },
+    );
+  const instantRadio = variantRadio("Instant", "For everyday chats");
+  const thinkingRadio = variantRadio("Thinking", "For complex questions");
+  const proRadio = variantRadio("Pro", "Research-grade intelligence");
+  const configurationDialog = new FakeElement("Intelligence Model Thinking", { role: "dialog" }, [
+    closeButton,
+    versionCombobox,
+    instantRadio,
+    thinkingRadio,
+    proRadio,
+  ]);
+  const versionOption = (version: string) =>
+    new FakeElement(
+      version,
+      {
+        role: "option",
+        "aria-selected": () => String(selectedVersion === version),
+        "data-state": () => (selectedVersion === version ? "checked" : "unchecked"),
+      },
+      [],
+      () => {
+        selectedVersion = version;
+        versionCombobox.textContent = version;
+        versionListOpen = false;
+      },
+    );
+  const versionList = new FakeElement("5.5 5.4 5.3 5.2", { role: "listbox" }, [
+    versionOption("5.5"),
+    versionOption("5.4"),
+    versionOption("5.3"),
+    versionOption("5.2"),
+  ]);
+
+  const expression = buildModelSelectionExpressionForTest(targetModel);
+  const documentStub = {
+    querySelector: (selector: string) => {
+      if (selector.includes("close-button")) {
+        return configurationOpen ? closeButton : null;
+      }
+      if (selector === '[role="dialog"]') {
+        return configurationOpen ? configurationDialog : null;
+      }
+      if (selector.includes("model-switcher-dropdown-button")) {
+        return modelButton;
+      }
+      return null;
+    },
+    querySelectorAll: (selector: string) => {
+      if (selector.includes("button.__composer-pill")) {
+        return [];
+      }
+      if (selector.includes('role="menu"') || selector.includes("data-radix")) {
+        return [
+          ...(topMenuOpen ? [topMenu] : []),
+          ...(configurationOpen ? [configurationDialog] : []),
+          ...(versionListOpen ? [versionList] : []),
+        ];
+      }
+      return [];
+    },
+    title: "",
+    body: { innerText: "" },
+    dispatchEvent: () => true,
+  };
+  let now = 0;
+  const performanceStub = { now: () => (now += 100) };
+  const immediateSetTimeout = (handler: TimerHandler): number => {
+    if (typeof handler === "function") handler();
+    return 0;
+  };
+  const evaluate = new Function(
+    "document",
+    "performance",
+    "setTimeout",
+    "window",
+    "EventTarget",
+    "MouseEvent",
+    "HTMLElement",
+    `return ${expression};`,
+  ) as (
+    document: unknown,
+    performance: unknown,
+    setTimeout: unknown,
+    window: unknown,
+    EventTarget: unknown,
+    MouseEvent: unknown,
+    HTMLElement: unknown,
+  ) => unknown;
+
+  return await Promise.resolve(
+    evaluate(
+      documentStub,
+      performanceStub,
+      immediateSetTimeout,
+      { location: { href: "https://chatgpt.com/" } },
+      FakeEventTarget,
+      FakeMouseEvent,
+      FakeElement,
+    ),
+  );
+};
+
 const createNonPickerMenuForTest = (labels: string[]): unknown => {
   class FakeEventTarget {
     dispatchEvent(_event: unknown): boolean {
@@ -441,6 +731,45 @@ const createNonPickerMenuForTest = (labels: string[]): unknown => {
     { "data-radix-collection-root": "" },
     labels.map((label) => new FakeElement(label)),
   );
+};
+
+const createDetachedProEffortMenuForTest = (): unknown => {
+  class FakeEventTarget {
+    dispatchEvent(_event: unknown): boolean {
+      return true;
+    }
+  }
+
+  class FakeElement extends FakeEventTarget {
+    constructor(
+      public textContent: string,
+      private readonly attributes: Readonly<Record<string, string>> = {},
+      private readonly children: readonly FakeElement[] = [],
+    ) {
+      super();
+    }
+
+    getAttribute(name: string): string | null {
+      return this.attributes[name] ?? null;
+    }
+
+    querySelector(_selector: string): FakeElement | null {
+      return null;
+    }
+
+    querySelectorAll(_selector: string): FakeElement[] {
+      return [...this.children];
+    }
+
+    closest(_selector: string): FakeElement | null {
+      return null;
+    }
+  }
+
+  return new FakeElement("Pro Standard Pro Extended", { role: "menu" }, [
+    new FakeElement("Pro Standard", { role: "menuitemradio", "aria-checked": "false" }),
+    new FakeElement("Pro Extended", { role: "menuitemradio", "aria-checked": "true" }),
+  ]);
 };
 
 const evaluateComposerPillFallbackExpression = (
@@ -588,6 +917,12 @@ describe("browser model selection matchers", () => {
     );
   });
 
+  it("includes explicit 5.3 tokens for browser model overrides", () => {
+    const { labelTokens, testIdTokens } = buildModelMatchersLiteralForTest("Thinking 5.3");
+    expect(labelTokens).toContain("5.3");
+    expect(testIdTokens).toContain("model-switcher-gpt-5-3-thinking");
+  });
+
   it("includes rich tokens for gpt-5.1", () => {
     const { labelTokens, testIdTokens } = buildModelMatchersLiteralForTest("gpt-5.1");
     expectContains(labelTokens, "gpt-5.1");
@@ -650,7 +985,9 @@ describe("browser model selection matchers", () => {
   it("hard-rejects non-Instant candidates when targeting Instant", () => {
     const expression = buildModelSelectionExpressionForTest("GPT-5.5 Instant");
     expect(expression).toContain("const candidateHasInstant =");
-    expect(expression).toContain("if (wantsInstant && !candidateHasInstant) return 0;");
+    expect(expression).toContain(
+      "if (wantsInstant && !candidateHasInstant && !candidateSelectsDesiredVersion) return 0;",
+    );
   });
 
   it("selects the observed bare GPT-5.5 row when its label is Instant", async () => {
@@ -740,12 +1077,16 @@ describe("browser model selection matchers", () => {
     const expression = buildModelSelectionExpressionForTest("gpt-5.5-pro");
     expect(expression).toContain("const candidateHasThinking =");
     expect(expression).toContain("if (wantsPro && candidateHasThinking) return 0;");
-    expect(expression).toContain("if (wantsPro && !candidateHasPro) return 0;");
+    expect(expression).toContain(
+      "if (wantsPro && !candidateHasPro && !candidateSelectsDesiredVersion) return 0;",
+    );
   });
 
   it("hard-rejects non-Thinking candidates when targeting Thinking", () => {
     const expression = buildModelSelectionExpressionForTest("Thinking 5.5");
-    expect(expression).toContain("if (wantsThinking && !candidateHasThinking) return 0;");
+    expect(expression).toContain(
+      "if (wantsThinking && !candidateHasThinking && !candidateSelectsDesiredVersion) return 0;",
+    );
     expect(expression).not.toContain("candidateGpt55VisibleAlias ||\n        labelHasProWord");
   });
 
@@ -805,9 +1146,18 @@ describe("browser model selection matchers", () => {
 
   it("does not treat per-row thinking effort controls as model options", () => {
     const expression = buildModelSelectionExpressionForTest("gpt-5.5-pro");
-    expect(expression).toContain("const isThinkingEffortControl = (node) =>");
+    expect(expression).toContain("const isNestedEffortControl = (node, menu) =>");
     expect(expression).toContain("data-model-picker-thinking-effort-action");
-    expect(expression).toContain("if (isThinkingEffortControl(option))");
+    expect(expression).toContain("data-composer-intelligence-pro-effort-action");
+    expect(expression).toContain("if (isNestedEffortControl(option, menu))");
+  });
+
+  it("ignores detached Pro effort submenus when selecting the Pro model row", async () => {
+    await expect(
+      evaluateMenuModelSelectionExpression("Pro", { label: "Pro" }, [
+        createDetachedProEffortMenuForTest(),
+      ]),
+    ).resolves.toEqual({ status: "switched", label: "Pro" });
   });
 
   it("scopes model option scans to actual model picker menus", () => {
@@ -864,8 +1214,9 @@ describe("browser model selection matchers", () => {
     expect(expression).toContain("resolve('changed')");
     expect(expression).toContain("if (selectionSettled === 'target')");
     expect(expression).toContain(
-      "if (optionIsSelected(match.node) || activeSelectionMatchesTarget())",
+      "canTrustSelectedOption(match.node, match.normalizedText, match.testid)",
     );
+    expect(expression).not.toContain("switched-best-effort");
   });
 
   it("fails loudly if post-selection state resolves to Thinking instead of Pro", () => {
@@ -989,7 +1340,68 @@ describe("browser model selection matchers", () => {
   it("recognizes GPT-5.5 from the new Intelligence submenu while the button shows effort", async () => {
     await expect(evaluateIntelligenceModelSelectionExpression("Thinking 5.5")).resolves.toEqual({
       status: "already-selected",
-      label: "GPT-5.5",
+      label: "Thinking 5.5",
     });
+  });
+
+  it("uses the non-Pro Intelligence effort row when switching from Pro to Thinking 5.5", async () => {
+    await expect(
+      evaluateIntelligenceModelSelectionExpression("Thinking 5.5", "Pro Extended"),
+    ).resolves.toEqual({
+      status: "switched",
+      label: "Extra High",
+    });
+  });
+
+  it("opens the GPT-5.5 submenu to select hidden Thinking 5.4", async () => {
+    await expect(
+      evaluateIntelligenceModelSelectionExpression("Thinking 5.4", "Extra High"),
+    ).resolves.toEqual({
+      status: "switched",
+      label: "GPT-5.4",
+    });
+  });
+
+  it("uses Configure to select Thinking 5.4 in the current picker", async () => {
+    await expect(evaluateConfiguredModelSelectionExpression("Thinking 5.4")).resolves.toEqual({
+      status: "switched",
+      label: "Thinking GPT-5.4",
+    });
+  });
+
+  it("selects the requested variant after changing Configure versions", async () => {
+    await expect(evaluateConfiguredModelSelectionExpression("GPT-5.2 Instant")).resolves.toEqual({
+      status: "switched",
+      label: "Instant GPT-5.2",
+    });
+    await expect(evaluateConfiguredModelSelectionExpression("Pro 5.4")).resolves.toEqual({
+      status: "switched",
+      label: "Pro GPT-5.4",
+    });
+    await expect(evaluateConfiguredModelSelectionExpression("Thinking 5.3")).resolves.toEqual({
+      status: "switched",
+      label: "Thinking GPT-5.3",
+    });
+  });
+
+  it("does not accept a generic Thinking label for an explicit 5.4 request", () => {
+    const result = evaluateImmediateModelSelectionExpression("Thinking 5.4", "Thinking");
+    expect(result).toBeInstanceOf(Promise);
+  });
+
+  it("clears Pro thinking before selecting hidden Thinking 5.4", async () => {
+    await expect(
+      evaluateIntelligenceModelSelectionExpression("Thinking 5.4", "Pro Extended"),
+    ).resolves.toEqual({
+      status: "switched",
+      label: "GPT-5.4",
+    });
+  });
+
+  it("does not treat a checked GPT-5.5 submenu row as a match for Thinking 5.4", () => {
+    const expression = buildModelSelectionExpressionForTest("Thinking 5.4");
+    expect(expression).toContain("normalizedText === 'gpt 5 5'");
+    expect(expression).toContain("candidateTextVersion !== desiredVersion");
+    expect(expression).toContain("canTrustSelectedOption(option, normalizedText, testid)");
   });
 });
