@@ -34,3 +34,9 @@ oracle-*.tgz.sha256
 
 # Local /goal instruction file (not part of the repo)
 /GOAL.md
+
+# Local scratch / planning / task-graph artifacts — keep out of the public fork
+scratch/
+.beads/
+/MERGE-RESOLUTION-CHARTER.md
+steipete-*.tgz
