@@ -40,3 +40,7 @@ scratch/
 .beads/
 /MERGE-RESOLUTION-CHARTER.md
 steipete-*.tgz
+
+# Oracle fleet routing (LB) configs render real box IPs + serve tokens — keep them out of this public fork.
+# Durable sanitized (placeholder) templates + the router README live in a separate private infra repo.
+/fleet/
