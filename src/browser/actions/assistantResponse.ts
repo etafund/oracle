@@ -80,6 +80,58 @@ export function buildActiveThinkingStatusPredicateJsForTest(fnName: string): str
   return buildActiveThinkingStatusPredicateJs(fnName);
 }
 
+type AssistantCompletionState = {
+  stopVisible: boolean;
+  completionVisible: boolean;
+  currentLength: number;
+  stableCycles: number;
+  requiredStableCycles: number;
+  completionStableTarget: number;
+  stableMs: number;
+  minStableMs: number;
+};
+
+function shouldAcceptStableAssistantSnapshot({
+  stopVisible,
+  completionVisible,
+  currentLength,
+  stableCycles,
+  requiredStableCycles,
+  completionStableTarget,
+  stableMs,
+  minStableMs,
+}: AssistantCompletionState): boolean {
+  const shortAnswer = currentLength > 0 && currentLength < 16;
+  const mediumAnswer = currentLength >= 16 && currentLength < 40;
+  const stableEnough = stableCycles >= requiredStableCycles && stableMs >= minStableMs;
+  const completionEnough =
+    completionVisible && stableCycles >= completionStableTarget && stableMs >= minStableMs;
+
+  if (!stopVisible) {
+    return completionEnough || stableEnough;
+  }
+
+  if (completionEnough) {
+    return true;
+  }
+
+  // ChatGPT can leave a live stop-button node after a short answer is already
+  // rendered. Keep the normal anti-truncation guard, then accept only compact
+  // stable answers so long Pro/thinking pauses still wait for real completion.
+  const staleStopStableMs = 12_000;
+  return (
+    (shortAnswer || mediumAnswer) &&
+    stableCycles >= requiredStableCycles &&
+    stableMs >= Math.max(minStableMs, staleStopStableMs)
+  );
+}
+
+export function shouldAcceptStableAssistantSnapshotForTest(
+  state: AssistantCompletionState,
+): boolean {
+  return shouldAcceptStableAssistantSnapshot(state);
+}
+
 export async function waitForAssistantResponse(
   Runtime: ChromeClient["Runtime"],
   timeoutMs: number,
@@ -525,14 +577,19 @@ async function pollAssistantCompletion(
       const requiredStableCycles = shortAnswer ? 12 : mediumAnswer ? 8 : longAnswer ? 8 : 10;
       const stableMs = Date.now() - lastChangeAt;
       const minStableMs = shortAnswer ? 8000 : mediumAnswer ? 1200 : longAnswer ? 2000 : 3000;
-      // Require stop button to disappear before treating completion as final.
-      if (!stopVisible) {
-        const stableEnough = stableCycles >= requiredStableCycles && stableMs >= minStableMs;
-        const completionEnough =
-          completionVisible && stableCycles >= completionStableTarget && stableMs >= minStableMs;
-        if (completionEnough || stableEnough) {
-          return normalized;
-        }
+      if (
+        shouldAcceptStableAssistantSnapshot({
+          stopVisible,
+          completionVisible,
+          currentLength,
+          stableCycles,
+          requiredStableCycles,
+          completionStableTarget,
+          stableMs,
+          minStableMs,
+        })
+      ) {
+        return normalized;
       }
     } else {
       previousLength = 0;

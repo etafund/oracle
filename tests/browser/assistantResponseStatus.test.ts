@@ -4,6 +4,7 @@ import {
   buildActiveThinkingStatusPredicateJsForTest,
   buildAssistantSnapshotExpressionForTest,
   matchesThinkingStatusLabelForTest,
+  shouldAcceptStableAssistantSnapshotForTest,
 } from "../../src/browser/actions/assistantResponse.js";
 
 function evaluatePredicate(text: string, generating: boolean): boolean {
@@ -47,5 +48,50 @@ describe("assistant thinking-status capture", () => {
     expect(expression).toContain("isActiveThinkingStatus");
     expect(expression).toContain('data-testid=\\"stop-button\\"');
     expect(expression).toContain("const fallback = extractFallback();");
+  });
+
+  test("accepts compact stable answers when a stale stop button remains", () => {
+    expect(
+      shouldAcceptStableAssistantSnapshotForTest({
+        stopVisible: true,
+        completionVisible: false,
+        currentLength: "CHECK_REMOTE_GPT55_OK done".length,
+        stableCycles: 30,
+        requiredStableCycles: 8,
+        completionStableTarget: 8,
+        stableMs: 12_500,
+        minStableMs: 1200,
+      }),
+    ).toBe(true);
+  });
+
+  test("keeps waiting on long answers with only a stop button", () => {
+    expect(
+      shouldAcceptStableAssistantSnapshotForTest({
+        stopVisible: true,
+        completionVisible: false,
+        currentLength: 600,
+        stableCycles: 30,
+        requiredStableCycles: 10,
+        completionStableTarget: 8,
+        stableMs: 45_000,
+        minStableMs: 3000,
+      }),
+    ).toBe(false);
+  });
+
+  test("accepts finished action controls even if the stop button lingers", () => {
+    expect(
+      shouldAcceptStableAssistantSnapshotForTest({
+        stopVisible: true,
+        completionVisible: true,
+        currentLength: 600,
+        stableCycles: 8,
+        requiredStableCycles: 10,
+        completionStableTarget: 8,
+        stableMs: 3000,
+        minStableMs: 3000,
+      }),
+    ).toBe(true);
   });
 });

@@ -270,6 +270,8 @@ function buildModelSelectionExpression(
     const wantsPro = normalizedTarget.includes(' pro') || normalizedTarget.endsWith(' pro') || normalizedTokens.includes('pro');
     const wantsInstant = normalizedTarget.includes('instant');
     const wantsThinking = normalizedTarget.includes('thinking');
+    const wantsPlainGpt55 =
+      desiredVersion === '5-5' && !wantsPro && !wantsInstant && !wantsThinking;
     const targetUsesCurrentGpt55Alias =
       desiredVersion === '5-5' || normalizedTarget === 'pro' || normalizedTarget === 'chatgpt pro';
     const labelHasProWord = (label) => label === 'pro' || label.startsWith('pro ') || label.includes(' pro ') || label.endsWith(' pro');
@@ -501,6 +503,14 @@ function buildModelSelectionExpression(
       if (!normalizedLabel) return false;
       if (wantsThinking && !wantsPro && hasProComposerPill()) return false;
       if (isTargetGpt55VisibleAlias(normalizedLabel)) return true;
+      if (
+        wantsPlainGpt55 &&
+        !hasProComposerPill() &&
+        isNonProIntelligenceThinkingLabel(normalizedLabel) &&
+        (isTargetGpt55VisibleAlias(readComposerModelSignal()) || normalizedLabel === 'extra high')
+      ) {
+        return true;
+      }
       if (
         wantsThinking &&
         desiredVersion === '5-5' &&
@@ -746,6 +756,9 @@ function buildModelSelectionExpression(
         wantsThinking && desiredVersion === '5-5' && candidateIsNonProThinkingEffort;
       const candidateClearsProForThinking =
         wantsThinking && !wantsPro && hasActiveProPill && candidateIsNonProThinkingEffort;
+      const candidateIsPlainGpt55Effort = wantsPlainGpt55 && candidateIsNonProThinkingEffort;
+      const candidateClearsProForPlainGpt55 =
+        wantsPlainGpt55 && hasActiveProPill && candidateIsNonProThinkingEffort;
       const candidateOpensVersionSubmenu =
         wantsThinking &&
         desiredVersion !== '5-5' &&
@@ -774,6 +787,8 @@ function buildModelSelectionExpression(
         normalizedTestId.includes('thinking') ||
         candidateIsNonProGpt55Thinking ||
         candidateClearsProForThinking ||
+        candidateIsPlainGpt55Effort ||
+        candidateClearsProForPlainGpt55 ||
         candidateOpensVersionSubmenu ||
         candidateIsGpt55ThinkingFamily ||
         (wantsThinking && desiredVersion && (exactTestIdMatch || candidateSelectsDesiredVersion));
@@ -822,6 +837,12 @@ function buildModelSelectionExpression(
       }
       if (candidateClearsProForThinking) {
         score += scoreNonProGpt55ThinkingLabel(normalizedText) + 600;
+      }
+      if (candidateIsPlainGpt55Effort) {
+        score += scoreNonProGpt55ThinkingLabel(normalizedText) + 1200;
+      }
+      if (candidateClearsProForPlainGpt55) {
+        score += scoreNonProGpt55ThinkingLabel(normalizedText) + 1800;
       }
       if (
         desiredVersion &&
@@ -882,7 +903,9 @@ function buildModelSelectionExpression(
           score -= 80;
         }
       } else if (normalizedText.includes('thinking') || normalizedTestId.includes('thinking')) {
-        score -= 40;
+        if (!wantsPlainGpt55 || !candidateIsNonProThinkingEffort) {
+          score -= 40;
+        }
       }
       // Similarly for Instant variant
       if (wantsInstant) {
@@ -1071,6 +1094,16 @@ function buildModelSelectionExpression(
           // Keep scanning once the submenu opens instead of treating the submenu click as a final switch.
           const isSubmenu = isSubmenuOption(match.node, match.testid);
           if (isSubmenu) {
+            if (performance.now() - start > MAX_WAIT_MS) {
+              resolve({
+                status: 'option-not-found',
+                hint: {
+                  temporaryChat: detectTemporaryChat(),
+                  availableOptions: collectAvailableOptions(),
+                },
+              });
+              return;
+            }
             openSubmenuOption(match.node);
             setTimeout(attempt, REOPEN_INTERVAL_MS / 2);
             return;

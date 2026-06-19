@@ -1353,6 +1353,22 @@ describe("browser model selection matchers", () => {
     });
   });
 
+  it("uses the non-Pro Intelligence effort row when switching from Pro to plain GPT-5.5", async () => {
+    await expect(
+      evaluateIntelligenceModelSelectionExpression("GPT-5.5", "Pro Extended"),
+    ).resolves.toEqual({
+      status: "switched",
+      label: "Extra High",
+    });
+  });
+
+  it("bounds submenu retry loops when a submenu wrapper stays the best match", () => {
+    const expression = buildModelSelectionExpressionForTest("GPT-5.5");
+    expect(expression).toContain("if (isSubmenu) {");
+    expect(expression).toContain("performance.now() - start > MAX_WAIT_MS");
+    expect(expression).toContain("availableOptions: collectAvailableOptions()");
+  });
+
   it("opens the GPT-5.5 submenu to select hidden Thinking 5.4", async () => {
     await expect(
       evaluateIntelligenceModelSelectionExpression("Thinking 5.4", "Extra High"),
