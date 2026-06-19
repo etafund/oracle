@@ -354,7 +354,7 @@ describe("saveChatGptGeneratedImages", () => {
     });
 
     expect(result.saved).toBe(false);
-    expect(result.errors[0]).toContain("rejected non-ChatGPT generated image URL");
+    expect(result.errors[0]).toContain("is not trusted");
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 });
