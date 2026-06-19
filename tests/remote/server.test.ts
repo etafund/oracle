@@ -94,6 +94,36 @@ describe("remote browser service", () => {
               warnings: [
                 { code: "test-warning", severity: "warning", message: "remote warning survived" },
               ],
+              artifacts: [
+                {
+                  kind: "file",
+                  path: "/remote/session/artifacts/report.csv",
+                  label: "report.csv",
+                  mimeType: "text/csv",
+                  sizeBytes: 3,
+                },
+              ],
+              downloadableFiles: [
+                {
+                  url: "sandbox:/mnt/data/report.csv",
+                  sandboxUrl: "sandbox:/mnt/data/report.csv",
+                  filename: "report.csv",
+                  label: "report.csv",
+                  mimeType: "text/csv",
+                },
+              ],
+              savedFiles: [
+                {
+                  kind: "file",
+                  path: "/remote/session/artifacts/report.csv",
+                  url: "https://chatgpt.com/backend-api/sandbox/download?path=%2Fmnt%2Fdata%2Freport.csv",
+                  sandboxUrl: "sandbox:/mnt/data/report.csv",
+                  filename: "report.csv",
+                  label: "report.csv",
+                  mimeType: "text/csv",
+                  sizeBytes: 3,
+                },
+              ],
             };
             return result;
           },
@@ -153,6 +183,26 @@ describe("remote browser service", () => {
       });
       expect(result.warnings).toEqual([
         { code: "test-warning", severity: "warning", message: "remote warning survived" },
+      ]);
+      expect(result.artifacts).toEqual([
+        expect.objectContaining({
+          kind: "file",
+          path: "/remote/session/artifacts/report.csv",
+          label: "report.csv",
+        }),
+      ]);
+      expect(result.downloadableFiles).toEqual([
+        expect.objectContaining({
+          filename: "report.csv",
+          sandboxUrl: "sandbox:/mnt/data/report.csv",
+        }),
+      ]);
+      expect(result.savedFiles).toEqual([
+        expect.objectContaining({
+          kind: "file",
+          path: "/remote/session/artifacts/report.csv",
+          filename: "report.csv",
+        }),
       ]);
 
       const healthUnauthorized = await httpGetJson({

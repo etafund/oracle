@@ -2,7 +2,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import net from "node:net";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import chalk from "chalk";
@@ -82,193 +82,203 @@ export async function createRemoteServer(
     });
   }
 
-  server.on("request", async (req, res) => {
-    if (req.method === "GET" && req.url === "/status") {
-      logger("[serve] Health check /status");
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: true }));
-      return;
-    }
-    if (req.method === "GET" && req.url === "/health") {
-      const authHeader = req.headers.authorization ?? "";
-      if (authHeader !== `Bearer ${authToken}`) {
+  server.on("request", (req, res) => {
+    void (async () => {
+      if (req.method === "GET" && req.url === "/status") {
+        logger("[serve] Health check /status");
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+      if (req.method === "GET" && req.url === "/health") {
+        if (!isAuthorizedBearer(req.headers.authorization, authToken)) {
+          if (verbose) {
+            logger(
+              `[serve] Unauthorized /health attempt from ${formatSocket(req)} (missing/invalid token)`,
+            );
+          }
+          res.writeHead(401, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "unauthorized" }));
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            ok: true,
+            version: getCliVersion(),
+            uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
+          }),
+        );
+        return;
+      }
+      if (req.method !== "POST" || req.url !== "/runs") {
+        res.statusCode = 404;
+        res.end();
+        return;
+      }
+
+      if (!isAuthorizedBearer(req.headers.authorization, authToken)) {
         if (verbose) {
           logger(
-            `[serve] Unauthorized /health attempt from ${formatSocket(req)} (missing/invalid token)`,
+            `[serve] Unauthorized /runs attempt from ${formatSocket(req)} (missing/invalid token)`,
           );
         }
         res.writeHead(401, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "unauthorized" }));
         return;
       }
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
-          ok: true,
-          version: getCliVersion(),
-          uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
-        }),
-      );
-      return;
-    }
-    if (req.method !== "POST" || req.url !== "/runs") {
-      res.statusCode = 404;
-      res.end();
-      return;
-    }
-
-    const authHeader = req.headers.authorization ?? "";
-    if (authHeader !== `Bearer ${authToken}`) {
-      if (verbose) {
-        logger(
-          `[serve] Unauthorized /runs attempt from ${formatSocket(req)} (missing/invalid token)`,
-        );
-      }
-      res.writeHead(401, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "unauthorized" }));
-      return;
-    }
-    if (busy) {
-      if (verbose) {
-        logger(
-          `[serve] Busy: rejecting new run from ${formatSocket(req)} while another run is active`,
-        );
-      }
-      res.writeHead(409, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "busy" }));
-      return;
-    }
-    busy = true;
-    const runStartedAt = Date.now();
-
-    let payload: RemoteRunPayload | null = null;
-    try {
-      const body = await readRequestBody(req);
-      payload = sanitizeRemoteRunPayloadForHost(JSON.parse(body) as RemoteRunPayload);
-      if (payload?.browserConfig) {
-        payload.browserConfig.url = normalizeChatgptUrl(payload.browserConfig.url, CHATGPT_URL);
-      }
-    } catch {
-      busy = false;
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "invalid_request" }));
-      return;
-    }
-
-    res.writeHead(200, { "Content-Type": "application/x-ndjson" });
-
-    const runId = randomUUID();
-    logger(
-      `[serve] Accepted run ${runId} from ${formatSocket(req)} (prompt ${payload?.prompt?.length ?? 0} chars)`,
-    );
-    // Each run gets an isolated temp dir so attachments/logs don't collide.
-    const runDir = await mkdtemp(path.join(os.tmpdir(), `oracle-serve-${runId}-`));
-    const attachmentDir = path.join(runDir, "attachments");
-    await mkdir(attachmentDir, { recursive: true });
-
-    const sendEvent = (event: RemoteRunEvent) => {
-      res.write(`${JSON.stringify(event)}\n`);
-    };
-
-    const attachments: BrowserAttachment[] = [];
-    let fallbackSubmission:
-      | {
-          prompt: string;
-          attachments: BrowserAttachment[];
+      if (busy) {
+        if (verbose) {
+          logger(
+            `[serve] Busy: rejecting new run from ${formatSocket(req)} while another run is active`,
+          );
         }
-      | undefined;
-    try {
-      const attachmentsPayload = Array.isArray(payload.attachments) ? payload.attachments : [];
-      for (const [index, attachment] of attachmentsPayload.entries()) {
-        const safeName = sanitizeName(attachment.fileName ?? `attachment-${index + 1}`);
-        const filePath = path.join(attachmentDir, safeName);
-        await writeFile(filePath, Buffer.from(attachment.contentBase64, "base64"));
-        attachments.push({
-          path: filePath,
-          displayPath: attachment.displayPath,
-          sizeBytes: attachment.sizeBytes,
-        });
+        res.writeHead(409, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "busy" }));
+        return;
+      }
+      busy = true;
+      const runStartedAt = Date.now();
+
+      let payload: RemoteRunPayload | null = null;
+      try {
+        const body = await readRequestBody(req);
+        payload = sanitizeRemoteRunPayloadForHost(JSON.parse(body) as RemoteRunPayload);
+        if (payload?.browserConfig) {
+          payload.browserConfig.url = normalizeChatgptUrl(payload.browserConfig.url, CHATGPT_URL);
+        }
+      } catch {
+        busy = false;
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid_request" }));
+        return;
       }
 
-      if (payload.fallbackSubmission) {
-        const fallbackAttachmentDir = path.join(runDir, "fallback-attachments");
-        await mkdir(fallbackAttachmentDir, { recursive: true });
-        const fallbackAttachments: BrowserAttachment[] = [];
-        const fallbackPayload = Array.isArray(payload.fallbackSubmission.attachments)
-          ? payload.fallbackSubmission.attachments
-          : [];
-        for (const [index, attachment] of fallbackPayload.entries()) {
-          const safeName = sanitizeName(attachment.fileName ?? `fallback-attachment-${index + 1}`);
-          const filePath = path.join(fallbackAttachmentDir, safeName);
+      res.writeHead(200, { "Content-Type": "application/x-ndjson" });
+
+      const runId = randomUUID();
+      logger(
+        `[serve] Accepted run ${runId} from ${formatSocket(req)} (prompt ${payload?.prompt?.length ?? 0} chars)`,
+      );
+      // Each run gets an isolated temp dir so attachments/logs don't collide.
+      const runDir = await mkdtemp(path.join(os.tmpdir(), `oracle-serve-${runId}-`));
+      const attachmentDir = path.join(runDir, "attachments");
+      await mkdir(attachmentDir, { recursive: true });
+
+      const sendEvent = (event: RemoteRunEvent) => {
+        res.write(`${JSON.stringify(event)}\n`);
+      };
+
+      const attachments: BrowserAttachment[] = [];
+      let fallbackSubmission:
+        | {
+            prompt: string;
+            attachments: BrowserAttachment[];
+          }
+        | undefined;
+      try {
+        const attachmentsPayload = Array.isArray(payload.attachments) ? payload.attachments : [];
+        for (const [index, attachment] of attachmentsPayload.entries()) {
+          const safeName = sanitizeName(attachment.fileName ?? `attachment-${index + 1}`);
+          const filePath = path.join(attachmentDir, safeName);
           await writeFile(filePath, Buffer.from(attachment.contentBase64, "base64"));
-          fallbackAttachments.push({
+          attachments.push({
             path: filePath,
             displayPath: attachment.displayPath,
             sizeBytes: attachment.sizeBytes,
           });
         }
-        fallbackSubmission = {
-          prompt: payload.fallbackSubmission.prompt,
-          attachments: fallbackAttachments,
-        };
-      }
 
-      // Reuse the existing browser logger surface so clients see the same log stream.
-      const automationLogger: BrowserLogger = ((message?: string) => {
-        if (typeof message === "string") {
-          sendEvent({ type: "log", message });
+        if (payload.fallbackSubmission) {
+          const fallbackAttachmentDir = path.join(runDir, "fallback-attachments");
+          await mkdir(fallbackAttachmentDir, { recursive: true });
+          const fallbackAttachments: BrowserAttachment[] = [];
+          const fallbackPayload = Array.isArray(payload.fallbackSubmission.attachments)
+            ? payload.fallbackSubmission.attachments
+            : [];
+          for (const [index, attachment] of fallbackPayload.entries()) {
+            const safeName = sanitizeName(
+              attachment.fileName ?? `fallback-attachment-${index + 1}`,
+            );
+            const filePath = path.join(fallbackAttachmentDir, safeName);
+            await writeFile(filePath, Buffer.from(attachment.contentBase64, "base64"));
+            fallbackAttachments.push({
+              path: filePath,
+              displayPath: attachment.displayPath,
+              sizeBytes: attachment.sizeBytes,
+            });
+          }
+          fallbackSubmission = {
+            prompt: payload.fallbackSubmission.prompt,
+            attachments: fallbackAttachments,
+          };
         }
-      }) as BrowserLogger;
-      automationLogger.verbose = Boolean(payload.options.verbose);
 
-      // Remote runs always rely on the host's own Chrome profile; ignore any inline cookie transfer.
-      if (payload.browserConfig) {
-        payload.browserConfig.inlineCookies = null;
-        payload.browserConfig.inlineCookiesSource = null;
-        payload.browserConfig.cookieSync = true;
-      } else {
-        payload.browserConfig = {} as typeof payload.browserConfig;
-      }
+        // Reuse the existing browser logger surface so clients see the same log stream.
+        const automationLogger: BrowserLogger = ((message?: string) => {
+          if (typeof message === "string") {
+            sendEvent({ type: "log", message });
+          }
+        }) as BrowserLogger;
+        automationLogger.verbose = Boolean(payload.options.verbose);
 
-      // Enforce manual-login profile when cookie sync is unavailable (e.g., Windows/WSL).
-      if (options.manualLoginDefault) {
-        payload.browserConfig.manualLogin = true;
-        payload.browserConfig.manualLoginProfileDir = options.manualLoginProfileDir;
-        payload.browserConfig.keepBrowser = true;
-        if (verbose) {
-          logger(
-            `[serve] Enforcing manual-login profile at ${options.manualLoginProfileDir ?? "default"} for remote run ${runId}`,
-          );
+        // Remote runs always rely on the host's own Chrome profile; ignore any inline cookie transfer.
+        if (payload.browserConfig) {
+          payload.browserConfig.inlineCookies = null;
+          payload.browserConfig.inlineCookiesSource = null;
+          payload.browserConfig.cookieSync = true;
+        } else {
+          payload.browserConfig = {} as typeof payload.browserConfig;
+        }
+
+        // Enforce manual-login profile when cookie sync is unavailable (e.g., Windows/WSL).
+        if (options.manualLoginDefault) {
+          payload.browserConfig.manualLogin = true;
+          payload.browserConfig.manualLoginProfileDir = options.manualLoginProfileDir;
+          payload.browserConfig.keepBrowser = true;
+          if (verbose) {
+            logger(
+              `[serve] Enforcing manual-login profile at ${options.manualLoginProfileDir ?? "default"} for remote run ${runId}`,
+            );
+          }
+        }
+
+        const result = await runBrowser({
+          prompt: payload.prompt,
+          attachments,
+          fallbackSubmission,
+          config: payload.browserConfig,
+          log: automationLogger,
+          heartbeatIntervalMs: payload.options.heartbeatIntervalMs,
+          verbose: payload.options.verbose,
+          sessionId: payload.options.sessionId,
+          followUpPrompts: payload.options.followUpPrompts,
+        });
+
+        sendEvent({ type: "result", result: sanitizeResult(result) });
+        logger(`[serve] Run ${runId} completed in ${Date.now() - runStartedAt}ms`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        sendEvent({ type: "error", message });
+        logger(`[serve] Run ${runId} failed after ${Date.now() - runStartedAt}ms: ${message}`);
+      } finally {
+        busy = false;
+        res.end();
+        try {
+          await rm(runDir, { recursive: true, force: true });
+        } catch {
+          // ignore cleanup errors
         }
       }
-
-      const result = await runBrowser({
-        prompt: payload.prompt,
-        attachments,
-        fallbackSubmission,
-        config: payload.browserConfig,
-        log: automationLogger,
-        heartbeatIntervalMs: payload.options.heartbeatIntervalMs,
-        verbose: payload.options.verbose,
-        sessionId: payload.options.sessionId,
-        followUpPrompts: payload.options.followUpPrompts,
-      });
-
-      sendEvent({ type: "result", result: sanitizeResult(result) });
-      logger(`[serve] Run ${runId} completed in ${Date.now() - runStartedAt}ms`);
-    } catch (error) {
+    })().catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
-      sendEvent({ type: "error", message });
-      logger(`[serve] Run ${runId} failed after ${Date.now() - runStartedAt}ms: ${message}`);
-    } finally {
-      busy = false;
-      res.end();
-      try {
-        await rm(runDir, { recursive: true, force: true });
-      } catch {
-        // ignore cleanup errors
+      logger(`[serve] Unhandled request failure from ${formatSocket(req)}: ${message}`);
+      if (!res.headersSent) {
+        res.writeHead(500, { "Content-Type": "application/json" });
       }
-    }
+      res.end(JSON.stringify({ error: "internal_error" }));
+      busy = false;
+    });
   });
 
   await new Promise<void>((resolve) => {
@@ -397,6 +407,14 @@ async function readRequestBody(req: http.IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+function isAuthorizedBearer(authHeader: string | undefined, authToken: string): boolean {
+  try {
+    return timingSafeEqual(Buffer.from(authHeader ?? ""), Buffer.from(`Bearer ${authToken}`));
+  } catch {
+    return false;
+  }
+}
+
 function sanitizeName(raw: string): string {
   return raw.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
@@ -406,6 +424,11 @@ function sanitizeResult(result: BrowserRunResult): BrowserRunResult {
     answerText: result.answerText,
     answerMarkdown: result.answerMarkdown,
     answerHtml: result.answerHtml,
+    artifacts: result.artifacts,
+    generatedImages: result.generatedImages,
+    savedImages: result.savedImages,
+    downloadableFiles: result.downloadableFiles,
+    savedFiles: result.savedFiles,
     archive: result.archive,
     tookMs: result.tookMs,
     answerTokens: result.answerTokens,
