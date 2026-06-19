@@ -8,9 +8,27 @@ import { PROVIDER_BOUNDARY_PAV_SCHEMA_VERSION } from "../src/oracle/provider_bou
 
 type SessionModule = typeof import("../src/sessionManager.ts");
 type SessionMetadata = Awaited<ReturnType<SessionModule["initializeSession"]>>;
+type StoredSessionJson = SessionMetadata & {
+  evidence: NonNullable<SessionMetadata["evidence"]>;
+};
+type StoredModelJson = {
+  status?: string;
+  evidence: NonNullable<SessionMetadata["evidence"]>;
+  error: { category?: string; message?: string };
+};
 
 let sessionModule: SessionModule;
 let oracleHomeDir: string;
+
+async function readJsonFixture<T>(targetPath: string): Promise<T> {
+  const raw = await readFile(targetPath, "utf8");
+  try {
+    return JSON.parse(raw) as T;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to parse JSON fixture ${targetPath}: ${message}`);
+  }
+}
 
 beforeAll(async () => {
   oracleHomeDir = await mkdtemp(path.join(os.tmpdir(), "oracle-session-tests-"));
@@ -113,12 +131,12 @@ describe("session lifecycle", () => {
     });
 
     const baseDir = path.join(sessionModule.getSessionsDir(), metadata.id);
-    const storedMeta = JSON.parse(await readFile(path.join(baseDir, "meta.json"), "utf8"));
+    const storedMeta = await readJsonFixture<StoredSessionJson>(path.join(baseDir, "meta.json"));
     expect(storedMeta.options.prompt).toBe(prompt);
     expect(storedMeta.evidence.prompt_sha256).toBe(expectedSha);
 
-    const modelMeta = JSON.parse(
-      await readFile(path.join(baseDir, "models", "gpt-5.2-pro.json"), "utf8"),
+    const modelMeta = await readJsonFixture<StoredModelJson>(
+      path.join(baseDir, "models", "gpt-5.2-pro.json"),
     );
     expect(modelMeta.evidence).toEqual(storedMeta.evidence);
 
@@ -171,11 +189,11 @@ describe("session lifecycle", () => {
     expect(JSON.stringify(boundary)).not.toContain("unique-session-boundary-prompt");
 
     const baseDir = path.join(sessionModule.getSessionsDir(), metadata.id);
-    const storedMeta = JSON.parse(await readFile(path.join(baseDir, "meta.json"), "utf8"));
+    const storedMeta = await readJsonFixture<StoredSessionJson>(path.join(baseDir, "meta.json"));
     expect(storedMeta.evidence.provider_boundary_pav).toEqual(boundary);
 
-    const modelMeta = JSON.parse(
-      await readFile(path.join(baseDir, "models", "gpt-5.2-pro.json"), "utf8"),
+    const modelMeta = await readJsonFixture<StoredModelJson>(
+      path.join(baseDir, "models", "gpt-5.2-pro.json"),
     );
     expect(modelMeta.evidence.provider_boundary_pav).toEqual(boundary);
   });
@@ -203,7 +221,7 @@ describe("session lifecycle", () => {
     );
     vi.useRealTimers();
     const baseDir = path.join(sessionModule.getSessionsDir(), metadata.id);
-    const storedMeta = JSON.parse(await readFile(path.join(baseDir, "meta.json"), "utf8"));
+    const storedMeta = await readJsonFixture<StoredSessionJson>(path.join(baseDir, "meta.json"));
     expect(storedMeta.options.file).toEqual(["notes.md"]);
     expect(storedMeta.options.maxFileSizeBytes).toBe(2_097_152);
     expect(storedMeta.options.previousResponseId).toBe("resp-parent-123");
@@ -214,8 +232,8 @@ describe("session lifecycle", () => {
       "summarize final recommendation",
     ]);
     await expect(readFile(path.join(baseDir, "request.json"), "utf8")).rejects.toThrow();
-    const modelMeta = JSON.parse(
-      await readFile(path.join(baseDir, "models", "gpt-5.2-pro.json"), "utf8"),
+    const modelMeta = await readJsonFixture<StoredModelJson>(
+      path.join(baseDir, "models", "gpt-5.2-pro.json"),
     );
     expect(modelMeta.status).toBe("pending");
     const perModelLog = await readFile(path.join(baseDir, "models", "gpt-5.2-pro.log"), "utf8");
@@ -238,6 +256,65 @@ describe("session lifecycle", () => {
     expect(updated?.status).toBe("complete");
     expect(updated?.promptPreview).toBe("value");
   });
+
+  test.each([
+    {
+      name: "upload-timeout",
+      message: "Attachments did not finish uploading before timeout.",
+    },
+    {
+      name: "model-selection",
+      message:
+        'Unable to find model option matching "Thinking 5.5" in the model switcher. Available: Instant, GPT-5.5.',
+    },
+  ])(
+    "updateSessionMetadata propagates browser automation $name errors to in-flight model rows",
+    async ({ message }) => {
+      const meta = await sessionModule.initializeSession(
+        { prompt: "Browser failure", model: "gpt-5.2-pro", mode: "browser" },
+        "/tmp/cwd",
+      );
+      await sessionModule.updateModelRunMetadata(meta.id, "gpt-5.2-pro", {
+        status: "running",
+        startedAt: "2026-06-19T00:00:00.000Z",
+      });
+
+      await sessionModule.updateSessionMetadata(meta.id, {
+        status: "error",
+        mode: "browser",
+        completedAt: "2026-06-19T00:01:00.000Z",
+        errorMessage: message,
+        error: {
+          category: "browser-automation",
+          message,
+          details: { stage: "execute-browser" },
+        },
+      });
+
+      const updated = await sessionModule.readSessionMetadata(meta.id);
+      expect(updated?.status).toBe("error");
+      expect(updated?.models?.[0]).toMatchObject({
+        model: "gpt-5.2-pro",
+        status: "error",
+        completedAt: "2026-06-19T00:01:00.000Z",
+        error: {
+          category: "browser-automation",
+          message,
+        },
+      });
+
+      const storedModel = await readJsonFixture<StoredModelJson>(
+        path.join(sessionModule.getSessionsDir(), meta.id, "models", "gpt-5.2-pro.json"),
+      );
+      expect(storedModel).toMatchObject({
+        status: "error",
+        error: {
+          category: "browser-automation",
+          message,
+        },
+      });
+    },
+  );
 
   test("createSessionLogWriter appends logs and supports chunk writes", async () => {
     const meta = await sessionModule.initializeSession(
@@ -344,16 +421,23 @@ describe("session lifecycle", () => {
       startedAt: staleStarted,
     });
     const listed = await sessionModule.listSessionsMetadata();
-    const zombie = listed.find((m) => m.id === meta.id);
+    const zombie = listed.find((m) => Object.is(m.id, meta.id));
     expect(zombie?.status).toBe("error");
     expect(zombie?.errorMessage).toMatch(/zombie/i);
+    expect(zombie?.models?.[0]?.status).toBe("error");
     const persisted = await sessionModule.readSessionMetadata(meta.id);
     expect(persisted?.status).toBe("error");
-    const storedRaw = JSON.parse(
-      await readFile(path.join(sessionModule.getSessionsDir(), meta.id, "meta.json"), "utf8"),
+    expect(persisted?.models?.[0]?.status).toBe("error");
+    const storedRaw = await readJsonFixture<StoredSessionJson>(
+      path.join(sessionModule.getSessionsDir(), meta.id, "meta.json"),
     );
     expect(storedRaw.status).toBe("error");
     expect(storedRaw.errorMessage).toMatch(/zombie/i);
+    const storedModel = await readJsonFixture<StoredModelJson>(
+      path.join(sessionModule.getSessionsDir(), meta.id, "models", "gpt-5.2-pro.json"),
+    );
+    expect(storedModel.status).toBe("error");
+    expect(storedModel.error.message).toMatch(/zombie/i);
   });
 
   test("keeps running browser sessions when Chrome runtime is reachable", async () => {
@@ -393,16 +477,28 @@ describe("session lifecycle", () => {
     const refreshed = await sessionModule.readSessionMetadata(meta.id);
     expect(refreshed?.status).toBe("error");
     expect(refreshed?.errorMessage).toMatch(/chrome/i);
-    const rawBeforeList = JSON.parse(
-      await readFile(path.join(sessionModule.getSessionsDir(), meta.id, "meta.json"), "utf8"),
+    expect(refreshed?.models?.[0]).toMatchObject({
+      model: "gpt-5.2-pro",
+      status: "error",
+      error: {
+        message: "Browser session ended (Chrome is no longer reachable)",
+      },
+    });
+    const rawBeforeList = await readJsonFixture<StoredSessionJson>(
+      path.join(sessionModule.getSessionsDir(), meta.id, "meta.json"),
     );
     expect(rawBeforeList.status).toBe("running");
     await sessionModule.listSessionsMetadata();
-    const rawAfterList = JSON.parse(
-      await readFile(path.join(sessionModule.getSessionsDir(), meta.id, "meta.json"), "utf8"),
+    const rawAfterList = await readJsonFixture<StoredSessionJson>(
+      path.join(sessionModule.getSessionsDir(), meta.id, "meta.json"),
     );
     expect(rawAfterList.status).toBe("error");
     expect(rawAfterList.errorMessage).toMatch(/chrome/i);
+    const rawModelAfterList = await readJsonFixture<StoredModelJson>(
+      path.join(sessionModule.getSessionsDir(), meta.id, "models", "gpt-5.2-pro.json"),
+    );
+    expect(rawModelAfterList.status).toBe("error");
+    expect(rawModelAfterList.error.message).toMatch(/chrome/i);
   });
 });
 

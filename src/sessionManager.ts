@@ -350,6 +350,17 @@ const DEFAULT_SLUG = "session";
 const MAX_SLUG_WORDS = 5;
 const MIN_CUSTOM_SLUG_WORDS = 3;
 const MAX_SLUG_WORD_LENGTH = 10;
+const ALREADY_EXISTS_ERROR_CODES = new Set(["EEXIST"]);
+const BROWSER_SESSION_MODES = new Set<SessionMode>(["browser"]);
+const RUNNING_SESSION_STATUSES = new Set<string>(["running"]);
+const TERMINAL_MODEL_RUN_STATUSES = new Set<SessionModelRun["status"]>([
+  "completed",
+  "partial",
+  "error",
+  "cancelled",
+]);
+const ERROR_MODEL_RUN_STATUSES = new Set<SessionModelRun["status"]>(["error"]);
+const CANCELLED_MODEL_RUN_STATUSES = new Set<SessionModelRun["status"]>(["cancelled"]);
 
 async function ensureDir(dirPath: string): Promise<void> {
   await fs.mkdir(dirPath, { recursive: true });
@@ -467,9 +478,8 @@ async function fileExists(targetPath: string): Promise<boolean> {
 }
 
 function isAlreadyExistsError(error: unknown): boolean {
-  return Boolean(
-    error && typeof error === "object" && (error as { code?: string }).code === "EEXIST",
-  );
+  const record = error as { code?: unknown } | null | undefined;
+  return ALREADY_EXISTS_ERROR_CODES.has(`${record?.code ?? ""}`);
 }
 
 async function createUniqueSessionDir(
@@ -685,9 +695,9 @@ export async function updateSessionMetadata(
     (await readModernSessionMetadata(sessionId, { reconcile: false, persist: false })) ??
     (await readLegacySessionMetadata(sessionId, { reconcile: false, persist: false })) ??
     ({ id: sessionId } as SessionMetadata);
-  const next = { ...existing, ...updates };
-  await fs.writeFile(metaPath(sessionId), JSON.stringify(next, null, 2), "utf8");
-  return next;
+  const next = normalizeTerminalModelRuns({ ...existing, ...updates });
+  await persistSessionMetadata(next.metadata, next.modelRunsChanged);
+  return next.metadata;
 }
 
 interface ReadSessionMetadataOptions {
@@ -738,7 +748,12 @@ async function reconcileSessionMetadata(
   { persist }: { persist: boolean },
 ): Promise<SessionMetadata> {
   const runtimeChecked = await markDeadBrowser(meta, { persist });
-  return await markZombie(runtimeChecked, { persist });
+  const zombieChecked = await markZombie(runtimeChecked, { persist });
+  const normalized = normalizeTerminalModelRuns(zombieChecked);
+  if (persist && normalized.modelRunsChanged) {
+    await persistSessionMetadata(normalized.metadata, true);
+  }
+  return normalized.metadata;
 }
 
 function isSessionMetadataRecord(value: unknown): value is SessionMetadata {
@@ -753,6 +768,89 @@ async function attachModelRuns(meta: SessionMetadata, sessionId: string): Promis
     return meta;
   }
   return { ...meta, models: runs };
+}
+
+const IN_FLIGHT_MODEL_STATUSES = new Set<SessionModelRun["status"]>(["pending", "running"]);
+
+function terminalModelRunPatch(meta: SessionMetadata): Partial<SessionModelRun> | null {
+  const status = meta.status as SessionModelRun["status"];
+  if (!TERMINAL_MODEL_RUN_STATUSES.has(status)) {
+    return null;
+  }
+  const patch: Partial<SessionModelRun> = { status };
+  if (meta.completedAt) {
+    patch.completedAt = meta.completedAt;
+  }
+  if (meta.response) {
+    patch.response = meta.response;
+  }
+  if (ERROR_MODEL_RUN_STATUSES.has(status)) {
+    patch.response = patch.response ?? { status: "error" };
+  }
+  if (
+    (ERROR_MODEL_RUN_STATUSES.has(status) || CANCELLED_MODEL_RUN_STATUSES.has(status)) &&
+    meta.error
+  ) {
+    patch.error = meta.error;
+  } else if (
+    (ERROR_MODEL_RUN_STATUSES.has(status) || CANCELLED_MODEL_RUN_STATUSES.has(status)) &&
+    meta.errorMessage
+  ) {
+    patch.error = {
+      category: "session",
+      message: meta.errorMessage,
+    };
+  }
+  return patch;
+}
+
+function normalizeTerminalModelRuns(meta: SessionMetadata): {
+  metadata: SessionMetadata;
+  modelRunsChanged: boolean;
+} {
+  const patch = terminalModelRunPatch(meta);
+  if (!patch || !Array.isArray(meta.models) || meta.models.length === 0) {
+    return { metadata: meta, modelRunsChanged: false };
+  }
+  let modelRunsChanged = false;
+  const models = meta.models.map((run) => {
+    if (!IN_FLIGHT_MODEL_STATUSES.has(run.status)) {
+      return run;
+    }
+    modelRunsChanged = true;
+    return ensureModelLogReference(meta.id, {
+      ...run,
+      ...patch,
+    });
+  });
+  if (!modelRunsChanged) {
+    return { metadata: meta, modelRunsChanged: false };
+  }
+  return {
+    metadata: { ...meta, models },
+    modelRunsChanged,
+  };
+}
+
+async function persistSessionMetadata(
+  meta: SessionMetadata,
+  persistModelRuns = false,
+): Promise<void> {
+  await fs.writeFile(metaPath(meta.id), JSON.stringify(meta, null, 2), "utf8");
+  if (!persistModelRuns || !Array.isArray(meta.models)) {
+    return;
+  }
+  await ensureDir(modelsDir(meta.id));
+  await Promise.all(
+    meta.models.map(async (run) => {
+      const record = ensureModelLogReference(meta.id, run);
+      await fs.writeFile(
+        modelJsonPath(meta.id, run.model),
+        JSON.stringify(record, null, 2),
+        "utf8",
+      );
+    }),
+  );
 }
 
 export function createSessionLogWriter(sessionId: string, model?: string): SessionLogWriter {
@@ -900,7 +998,7 @@ export async function deleteSessionsOlderThan({
         createdMs = parsed;
       }
     }
-    if (createdMs == null) {
+    if (createdMs === undefined) {
       try {
         const stats = await fs.stat(dir);
         createdMs = stats.birthtimeMs || stats.mtimeMs;
@@ -908,7 +1006,7 @@ export async function deleteSessionsOlderThan({
         continue;
       }
     }
-    if (includeAll || (createdMs != null && createdMs < cutoff)) {
+    if (includeAll || (createdMs !== undefined && createdMs < cutoff)) {
       await fs.rm(dir, { recursive: true, force: true });
       deleted += 1;
     }
@@ -957,7 +1055,7 @@ async function markZombie(
   if (!(await isZombie(meta))) {
     return meta;
   }
-  if (meta.mode === "browser") {
+  if (BROWSER_SESSION_MODES.has(meta.mode as SessionMode)) {
     const runtime = meta.browser?.runtime;
     if (runtime) {
       const signals: boolean[] = [];
@@ -990,7 +1088,10 @@ async function markDeadBrowser(
   meta: SessionMetadata,
   { persist }: { persist: boolean },
 ): Promise<SessionMetadata> {
-  if (meta.status !== "running" || meta.mode !== "browser") {
+  if (
+    !RUNNING_SESSION_STATUSES.has(meta.status) ||
+    !BROWSER_SESSION_MODES.has(meta.mode as SessionMode)
+  ) {
     return meta;
   }
   const runtime = meta.browser?.runtime;
@@ -1029,7 +1130,7 @@ async function markDeadBrowser(
 }
 
 async function isZombie(meta: SessionMetadata): Promise<boolean> {
-  if (meta.status !== "running") {
+  if (!RUNNING_SESSION_STATUSES.has(meta.status)) {
     return false;
   }
   const reference = meta.startedAt ?? meta.createdAt;
@@ -1071,7 +1172,7 @@ async function getLastActivityMs(meta: SessionMetadata): Promise<number | null> 
   const candidates = new Set<string>();
   candidates.add(logPath(meta.id));
   const modelNames = new Set<string>();
-  if (typeof meta.model === "string" && meta.model.length > 0) {
+  if (meta.model) {
     modelNames.add(meta.model);
   }
   if (Array.isArray(meta.models)) {
