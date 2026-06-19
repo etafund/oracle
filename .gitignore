@@ -37,10 +37,14 @@ oracle-*.tgz.sha256
 
 # Local scratch / planning / task-graph artifacts — keep out of the public fork
 scratch/
-.beads/
 /MERGE-RESOLUTION-CHARTER.md
 steipete-*.tgz
 
 # Oracle fleet routing (LB) configs render real box IPs + serve tokens — keep them out of this public fork.
 # Durable sanitized (placeholder) templates + the router README live in a separate private infra repo.
 /fleet/
+# br doctor per-run artifacts
+.doctor/
+
+# Beads compliance audit dir (managed by /beads-compliance-and-completion-verification skill)
+/beads_compliance_audit/
