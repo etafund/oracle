@@ -792,13 +792,14 @@ export async function runConsultTool(
 
   try {
     const detachedBrowser =
-      browserDetached ?? deps.browserDetached ?? resolveBooleanEnv("ORACLE_MCP_BROWSER_DETACHED", false);
+      browserDetached ??
+      deps.browserDetached ??
+      resolveBooleanEnv("ORACLE_MCP_BROWSER_DETACHED", false);
 
     if (resolvedEngine === "browser" && !browserDeps && detachedBrowser) {
       const cliEntrypoint = deps.cliEntrypoint ?? resolveMcpCliEntrypoint();
       const launchRunner = deps.launchDetachedSessionRunner ?? launchDetachedSessionRunner;
-      const launchFinalizer =
-        deps.launchDetachedSessionFinalizer ?? launchDetachedSessionFinalizer;
+      const launchFinalizer = deps.launchDetachedSessionFinalizer ?? launchDetachedSessionFinalizer;
       await sessionStore.updateSession(sessionMeta.id, {
         lifecycle: buildSessionLifecycle({
           engine: resolvedEngine,

@@ -33,6 +33,11 @@ describe("buildBrowserConfig", () => {
     expect(config.desiredModel).toBe("GPT-5.5 Instant");
   });
 
+  test("maps gpt-5.5 browser runs to the current visible picker label", async () => {
+    const config = await buildBrowserConfig({ model: "gpt-5.5" });
+    expect(config.desiredModel).toBe("GPT-5.5");
+  });
+
   test("sets model strategy when provided", async () => {
     const config = await buildBrowserConfig({
       model: "gpt-5.2-pro",
@@ -351,7 +356,7 @@ describe("resolveBrowserModelLabel", () => {
   test("returns canonical ChatGPT label when CLI value matches API model", () => {
     expect(resolveBrowserModelLabel("gpt-5.5-pro", "gpt-5.5-pro")).toBe("Pro");
     expect(resolveBrowserModelLabel("gpt-5.5-instant", "gpt-5.5-instant")).toBe("GPT-5.5 Instant");
-    expect(resolveBrowserModelLabel("gpt-5.5", "gpt-5.5")).toBe("Thinking 5.5");
+    expect(resolveBrowserModelLabel("gpt-5.5", "gpt-5.5")).toBe("GPT-5.5");
     expect(resolveBrowserModelLabel("gpt-5.4-pro", "gpt-5.4-pro")).toBe("Pro");
     expect(resolveBrowserModelLabel("gpt-5.4", "gpt-5.4")).toBe("Thinking 5.4");
     expect(resolveBrowserModelLabel("gpt-5-pro", "gpt-5-pro")).toBe("Pro");

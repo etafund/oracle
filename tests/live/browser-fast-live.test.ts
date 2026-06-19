@@ -13,7 +13,7 @@ const LONG_MIN_MS = Number.parseInt(
   process.env.ORACLE_LIVE_TEST_LONG_MIN_MS ?? String(10 * 60_000),
   10,
 );
-const LONG_MODEL_LABEL = process.env.ORACLE_LIVE_TEST_FAST_MODEL_LABEL ?? "Thinking 5.5";
+const LONG_MODEL_LABEL = process.env.ORACLE_LIVE_TEST_FAST_MODEL_LABEL ?? "GPT-5.5";
 const LONG_THINKING_TIME =
   (process.env.ORACLE_LIVE_TEST_FAST_THINKING_TIME as
     | "light"
