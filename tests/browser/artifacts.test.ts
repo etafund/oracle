@@ -107,6 +107,33 @@ describe("browser session artifacts", () => {
     await expect(fs.readFile(artifact!.path)).resolves.toEqual(Buffer.from([1, 2, 3]));
   });
 
+  test("keeps same-filename file artifacts unique on collision", async () => {
+    const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-file-artifact-collision-"));
+    setOracleHomeDirOverrideForTest(tmpHome);
+
+    const first = await writeBinaryBrowserArtifact({
+      sessionId: "browser-files",
+      kind: "file",
+      filename: "report.csv",
+      contents: Buffer.from("first"),
+    });
+    const second = await writeBinaryBrowserArtifact({
+      sessionId: "browser-files",
+      kind: "file",
+      filename: "report.csv",
+      contents: Buffer.from("second"),
+    });
+
+    expect(first?.path).toBe(
+      path.join(tmpHome, "sessions", "browser-files", "artifacts", "report.csv"),
+    );
+    expect(second?.path).toBe(
+      path.join(tmpHome, "sessions", "browser-files", "artifacts", "report-2.csv"),
+    );
+    await expect(fs.readFile(first!.path, "utf8")).resolves.toBe("first");
+    await expect(fs.readFile(second!.path, "utf8")).resolves.toBe("second");
+  });
+
   test("dedupes artifact lists by kind and path", () => {
     const artifact = { kind: "transcript" as const, path: "/tmp/transcript.md" };
     expect(appendArtifacts([artifact], [artifact, null, undefined])).toEqual([artifact]);
