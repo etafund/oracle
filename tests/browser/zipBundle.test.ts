@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { __test__, createStoredZip } from "../../src/browser/zipBundle.js";
+import { __test__, createStoredZip, estimateStoredZipSize } from "../../src/browser/zipBundle.js";
 
 const LOCAL_FILE_HEADER = 0x04034b50;
 const CENTRAL_DIRECTORY_HEADER = 0x02014b50;
@@ -114,5 +114,23 @@ describe("createStoredZip", () => {
     expect(() => createStoredZip([{ path: tooLongName, content: "" }])).toThrow(
       /file name exceeds ZIP16/i,
     );
+  });
+
+  test("estimates stored ZIP size exactly without reading contents", () => {
+    const entries = [
+      { path: "../secret.txt", content: "secret" },
+      { path: "C:/repo/same.txt", content: Buffer.from([0, 1, 2]) },
+      { path: "C:\\repo\\same.txt", content: "duplicate" },
+    ];
+    const zip = createStoredZip(entries);
+
+    expect(
+      estimateStoredZipSize(
+        entries.map((entry) => ({
+          path: entry.path,
+          sizeBytes: Buffer.byteLength(entry.content),
+        })),
+      ),
+    ).toBe(zip.length);
   });
 });

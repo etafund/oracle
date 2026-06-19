@@ -59,7 +59,7 @@ import { buildMarkdownBundle } from "../src/cli/markdownBundle.js";
 import { shouldDetachSession, shouldLaunchDetachedSessionFinalizer } from "../src/cli/detach.js";
 import { applyHiddenAliases } from "../src/cli/hiddenAliases.js";
 import type { BrowserSessionRunnerDeps } from "../src/browser/sessionRunner.js";
-import { isMediaFile } from "../src/browser/prompt.js";
+import { isRawUploadFile } from "../src/browser/prompt.js";
 import { formatCompactNumber } from "../src/cli/format.js";
 import { formatIntroLine } from "../src/cli/tagline.js";
 import { warnIfOversizeBundle } from "../src/cli/bundleWarnings.js";
@@ -2392,7 +2392,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   if (options.file && options.file.length > 0) {
     const isBrowserMode = engine === "browser" || userForcedBrowser;
     const filesToValidate = isBrowserMode
-      ? options.file.filter((f: string) => !isMediaFile(f))
+      ? options.file.filter((f: string) => !isRawUploadFile(f))
       : options.file;
     if (filesToValidate.length > 0) {
       const { readFiles } = await import("../src/oracle/files.js");
@@ -2771,7 +2771,7 @@ async function restartSession(sessionId: string, options: RestartCommandOptions)
   if (runOptions.file && runOptions.file.length > 0) {
     const isBrowserMode = engine === "browser";
     const filesToValidate = isBrowserMode
-      ? runOptions.file.filter((f) => !isMediaFile(f))
+      ? runOptions.file.filter((f) => !isRawUploadFile(f))
       : runOptions.file;
     if (filesToValidate.length > 0) {
       const { readFiles } = await import("../src/oracle/files.js");

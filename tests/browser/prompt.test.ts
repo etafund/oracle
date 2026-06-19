@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
+import { MAX_DATA_TRANSFER_BYTES } from "../../src/browser/actions/attachmentDataTransfer.js";
 import { assembleBrowserPrompt, isRawUploadFile } from "../../src/browser/prompt.js";
 import { createStoredZip } from "../../src/browser/zipBundle.js";
 import { DEFAULT_SYSTEM_PROMPT, type MODEL_CONFIGS } from "../../src/oracle.js";
@@ -330,12 +331,12 @@ describe("assembleBrowserPrompt", () => {
     }
   });
 
-  test("rejects oversized in-memory ZIP bundles before reading source bytes", async () => {
+  test("rejects ZIP bundles that would exceed the DataTransfer upload limit before reading source bytes", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-zip-memory-limit-"));
     try {
       const archivePath = path.join(tempDir, "archive.zip");
       await fs.writeFile(archivePath, "");
-      await fs.truncate(archivePath, 128 * 1024 * 1024 + 1);
+      await fs.truncate(archivePath, MAX_DATA_TRANSFER_BYTES + 1);
       await expect(
         assembleBrowserPrompt(
           buildOptions({
@@ -345,7 +346,7 @@ describe("assembleBrowserPrompt", () => {
           }),
           { cwd: tempDir, tokenizeImpl: fastTokenizer },
         ),
-      ).rejects.toThrow(/in-memory limit/i);
+      ).rejects.toThrow(/DataTransfer upload limit/i);
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }

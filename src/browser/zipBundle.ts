@@ -9,6 +9,11 @@ export interface ZipBundleEntry {
   content: string | Buffer;
 }
 
+export interface ZipBundleSizeEntry {
+  path: string;
+  sizeBytes: number;
+}
+
 interface PreparedZipEntry {
   name: Buffer;
   content: Buffer;
@@ -16,17 +21,13 @@ interface PreparedZipEntry {
   localHeaderOffset: number;
 }
 
-const CRC32_TABLE = (() => {
-  const table = new Uint32Array(256);
-  for (let i = 0; i < table.length; i += 1) {
-    let value = i;
-    for (let bit = 0; bit < 8; bit += 1) {
-      value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
-    }
-    table[i] = value >>> 0;
+const CRC32_TABLE = Uint32Array.from({ length: 256 }, (_, index) => {
+  let value = index;
+  for (let bit = 0; bit < 8; bit += 1) {
+    value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
   }
-  return table;
-})();
+  return value >>> 0;
+});
 
 function crc32(buffer: Buffer): number {
   let crc = 0xffffffff;
@@ -72,6 +73,33 @@ function assertZip16(value: number, label: string): void {
   if (!Number.isSafeInteger(value) || value < 0 || value > 0xffff) {
     throw new Error(`${label} exceeds ZIP16 limits.`);
   }
+}
+
+export function estimateStoredZipSize(entries: ZipBundleSizeEntry[]): number {
+  if (entries.length > 0xffff) {
+    throw new Error("Too many files for a ZIP32 browser bundle.");
+  }
+  assertZip16(entries.length, "ZIP entry count");
+  const seen = new Set<string>();
+  let localSize = 0;
+  let centralSize = 0;
+
+  entries.forEach((entry, index) => {
+    const name = Buffer.from(uniqueZipPath(entry.path, index, seen), "utf8");
+    assertZip16(name.length, "ZIP file name");
+    assertZip32(entry.sizeBytes, "ZIP entry size");
+    assertZip32(localSize, "ZIP local header offset");
+    localSize += 30 + name.length + entry.sizeBytes;
+    centralSize += 46 + name.length;
+    assertZip32(localSize, "ZIP local data size");
+    assertZip32(centralSize, "ZIP central directory size");
+  });
+
+  const totalSize = localSize + centralSize + 22;
+  assertZip32(localSize, "ZIP central directory offset");
+  assertZip32(centralSize, "ZIP central directory size");
+  assertZip32(totalSize, "ZIP total size");
+  return totalSize;
 }
 
 function localFileHeader(entry: PreparedZipEntry): Buffer {

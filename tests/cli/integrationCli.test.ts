@@ -1764,4 +1764,46 @@ module.exports = () => ({
     },
     INTEGRATION_TIMEOUT,
   );
+
+  test(
+    "skips text-file preflight for raw browser uploads before remote browser dispatch",
+    async () => {
+      const oracleHome = await mkdtemp(path.join(os.tmpdir(), "oracle-raw-preflight-"));
+      const archivePath = path.join(oracleHome, "archive.zip");
+      await writeFile(archivePath, Buffer.alloc(1_100_000));
+
+      const env = {
+        ...process.env,
+        ORACLE_HOME_DIR: oracleHome,
+        ORACLE_DISABLE_KEYTAR: "1",
+        ORACLE_NO_DETACH: "1",
+      };
+
+      const result = await execCli(
+        [
+          "--engine",
+          "browser",
+          "--remote-host",
+          "http://127.0.0.1:9",
+          "--remote-token",
+          "test-token",
+          "--browser-attachments",
+          "always",
+          "--prompt",
+          "Raw preflight browser upload check",
+          "--file",
+          archivePath,
+        ],
+        { env, timeout: INTEGRATION_TIMEOUT },
+      );
+
+      const output = `${result.stdout}\n${result.stderr}`;
+      expect(result.code).toBe(1);
+      expect(output).not.toMatch(/exceed the 1 MB limit|file-validation/i);
+      expect(output).toMatch(/127\.0\.0\.1:9|fetch failed|ECONNREFUSED/i);
+
+      await rm(oracleHome, { recursive: true, force: true });
+    },
+    INTEGRATION_TIMEOUT,
+  );
 });

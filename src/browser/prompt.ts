@@ -14,11 +14,12 @@ import { isKnownModel } from "../oracle/modelResolver.js";
 import { buildPromptMarkdown } from "../oracle/promptAssembly.js";
 import type { BrowserAttachment } from "./types.js";
 import { buildAttachmentPlan } from "./policies.js";
-import { createStoredZip } from "./zipBundle.js";
+import { MAX_DATA_TRANSFER_BYTES } from "./actions/attachmentDataTransfer.js";
+import { createStoredZip, estimateStoredZipSize } from "./zipBundle.js";
 
 const DEFAULT_BROWSER_INLINE_CHAR_BUDGET = 60_000;
 const MAX_BROWSER_ATTACHMENTS = 10;
-const MAX_BROWSER_ZIP_BUNDLE_BYTES = 128 * 1024 * 1024;
+const MAX_BROWSER_ZIP_BUNDLE_BYTES = MAX_DATA_TRANSFER_BYTES;
 
 const MEDIA_EXTENSIONS = new Set([
   ".mp4",
@@ -204,10 +205,12 @@ async function writeBrowserBundle(
     lineNumbers: format === "text",
   });
   if (format === "zip") {
-    const totalSourceBytes = sources.reduce((total, source) => total + source.sizeBytes, 0);
-    if (totalSourceBytes > MAX_BROWSER_ZIP_BUNDLE_BYTES) {
+    const estimatedBundleBytes = estimateStoredZipSize(
+      sources.map((source) => ({ path: source.displayPath, sizeBytes: source.sizeBytes })),
+    );
+    if (estimatedBundleBytes > MAX_BROWSER_ZIP_BUNDLE_BYTES) {
       throw new Error(
-        `Browser ZIP bundle inputs exceed the ${MAX_BROWSER_ZIP_BUNDLE_BYTES}-byte in-memory limit.`,
+        `Browser ZIP bundle would be ${estimatedBundleBytes} bytes, exceeding the ${MAX_BROWSER_ZIP_BUNDLE_BYTES}-byte DataTransfer upload limit.`,
       );
     }
     const bundlePath = path.join(bundleDir, "attachments-bundle.zip");
@@ -219,6 +222,11 @@ async function writeBrowserBundle(
         })),
       ),
     );
+    if (buffer.length > MAX_BROWSER_ZIP_BUNDLE_BYTES) {
+      throw new Error(
+        `Browser ZIP bundle is ${buffer.length} bytes, exceeding the ${MAX_BROWSER_ZIP_BUNDLE_BYTES}-byte DataTransfer upload limit.`,
+      );
+    }
     await fs.writeFile(bundlePath, buffer);
     return {
       attachment: {

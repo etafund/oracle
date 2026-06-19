@@ -8,6 +8,7 @@
 - Browser: target ChatGPT's current `GPT-5.5` picker label for `--model gpt-5.5`, while keeping explicit thinking-time selection on the separate Intelligence effort control.
 - Browser: switch plain `--model gpt-5.5` away from an active Pro picker state by selecting the non-Pro Extra High Intelligence row before submitting.
 - Browser: complete compact answers when ChatGPT leaves a stale stop button after the assistant text has stabilized, while preserving longer waits for active Pro/thinking responses.
+- Browser: treat archive, office, package, and media files consistently as raw uploads during normal and restart preflight, and cap generated ZIP bundles at the browser DataTransfer upload ceiling before writing oversized bundles.
 
 ## 0.14.1 — 2026-06-15
 
