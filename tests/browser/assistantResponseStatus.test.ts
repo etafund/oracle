@@ -55,6 +55,7 @@ describe("assistant thinking-status capture", () => {
       shouldAcceptStableAssistantSnapshotForTest({
         stopVisible: true,
         completionVisible: false,
+        thinkingActive: false,
         currentLength: "CHECK_REMOTE_GPT55_OK done".length,
         stableCycles: 30,
         requiredStableCycles: 8,
@@ -70,6 +71,7 @@ describe("assistant thinking-status capture", () => {
       shouldAcceptStableAssistantSnapshotForTest({
         stopVisible: true,
         completionVisible: false,
+        thinkingActive: false,
         currentLength: 600,
         stableCycles: 30,
         requiredStableCycles: 10,
@@ -85,12 +87,101 @@ describe("assistant thinking-status capture", () => {
       shouldAcceptStableAssistantSnapshotForTest({
         stopVisible: true,
         completionVisible: true,
+        thinkingActive: false,
         currentLength: 600,
         stableCycles: 8,
         requiredStableCycles: 10,
         completionStableTarget: 8,
         stableMs: 3000,
         minStableMs: 3000,
+      }),
+    ).toBe(true);
+  });
+
+  test("never accepts a snapshot while a Pro thinking indicator is active", () => {
+    expect(
+      shouldAcceptStableAssistantSnapshotForTest({
+        // Stop button gone + finished controls visible + stable, but thinking is
+        // still active — the real answer has not finished, so keep waiting.
+        stopVisible: false,
+        completionVisible: true,
+        thinkingActive: true,
+        currentLength: 600,
+        stableCycles: 30,
+        requiredStableCycles: 8,
+        completionStableTarget: 6,
+        stableMs: 60_000,
+        minStableMs: 2000,
+      }),
+    ).toBe(false);
+  });
+
+  test("does not accept a substantial preamble on bare stop-button absence", () => {
+    // Regression for the Pro-thinking truncation: a ~150-char streamed preamble
+    // is stable and the stop button has disappeared (thinking pause), but no
+    // finished-action controls exist yet. We must keep waiting rather than
+    // capture the preamble as the final answer.
+    expect(
+      shouldAcceptStableAssistantSnapshotForTest({
+        stopVisible: false,
+        completionVisible: false,
+        thinkingActive: false,
+        currentLength: 152,
+        stableCycles: 8,
+        requiredStableCycles: 8,
+        completionStableTarget: 6,
+        stableMs: 3200,
+        minStableMs: 2000,
+      }),
+    ).toBe(false);
+  });
+
+  test("accepts a substantial answer once finished-action controls render", () => {
+    expect(
+      shouldAcceptStableAssistantSnapshotForTest({
+        stopVisible: false,
+        completionVisible: true,
+        thinkingActive: false,
+        currentLength: 600,
+        stableCycles: 8,
+        requiredStableCycles: 8,
+        completionStableTarget: 6,
+        stableMs: 3000,
+        minStableMs: 2000,
+      }),
+    ).toBe(true);
+  });
+
+  test("accepts a substantial idle answer after a long stable window", () => {
+    // Fallback when ChatGPT never renders a copy button: trust stop-button
+    // absence only after a much longer idle period.
+    expect(
+      shouldAcceptStableAssistantSnapshotForTest({
+        stopVisible: false,
+        completionVisible: false,
+        thinkingActive: false,
+        currentLength: 600,
+        stableCycles: 60,
+        requiredStableCycles: 10,
+        completionStableTarget: 8,
+        stableMs: 22_000,
+        minStableMs: 3000,
+      }),
+    ).toBe(true);
+  });
+
+  test("still accepts compact answers on bare stop-button absence", () => {
+    expect(
+      shouldAcceptStableAssistantSnapshotForTest({
+        stopVisible: false,
+        completionVisible: false,
+        thinkingActive: false,
+        currentLength: 30,
+        stableCycles: 8,
+        requiredStableCycles: 8,
+        completionStableTarget: 8,
+        stableMs: 2000,
+        minStableMs: 1200,
       }),
     ).toBe(true);
   });

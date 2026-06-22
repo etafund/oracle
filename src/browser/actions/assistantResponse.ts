@@ -83,6 +83,13 @@ export function buildActiveThinkingStatusPredicateJsForTest(fnName: string): str
 type AssistantCompletionState = {
   stopVisible: boolean;
   completionVisible: boolean;
+  /**
+   * True when a ChatGPT "Pro thinking" / reasoning indicator is active for the
+   * latest assistant turn. During Pro thinking the stop button legitimately
+   * disappears while a short streamed preamble is visible, so stop-button
+   * absence alone must NOT be treated as completion.
+   */
+  thinkingActive: boolean;
   currentLength: number;
   stableCycles: number;
   requiredStableCycles: number;
@@ -91,9 +98,17 @@ type AssistantCompletionState = {
   minStableMs: number;
 };
 
+// When generation looks idle (no stop button, no finished-action controls) but
+// the answer is substantial, ChatGPT Pro may simply be between a streamed
+// preamble and the real answer ("Pro thinking"). Require a much longer
+// stability window before trusting bare stop-button absence for such answers so
+// we never accept a mid-stream fragment as the final response.
+const PRO_IDLE_NO_COMPLETION_STABLE_MS = 20_000;
+
 function shouldAcceptStableAssistantSnapshot({
   stopVisible,
   completionVisible,
+  thinkingActive,
   currentLength,
   stableCycles,
   requiredStableCycles,
@@ -103,16 +118,33 @@ function shouldAcceptStableAssistantSnapshot({
 }: AssistantCompletionState): boolean {
   const shortAnswer = currentLength > 0 && currentLength < 16;
   const mediumAnswer = currentLength >= 16 && currentLength < 40;
+  const compactAnswer = shortAnswer || mediumAnswer;
   const stableEnough = stableCycles >= requiredStableCycles && stableMs >= minStableMs;
   const completionEnough =
     completionVisible && stableCycles >= completionStableTarget && stableMs >= minStableMs;
 
-  if (!stopVisible) {
-    return completionEnough || stableEnough;
+  // A live "Pro thinking" indicator is authoritative: the real answer has not
+  // finished regardless of stop-button / stability heuristics. Keep waiting.
+  if (thinkingActive) {
+    return false;
   }
 
+  // The finished-action controls (copy / thumbs / share) only render once the
+  // turn is fully complete. They are the single reliable completion signal, so
+  // honour them whether or not a stale stop button lingers.
   if (completionEnough) {
     return true;
+  }
+
+  if (!stopVisible) {
+    // No stop button and no finished-action controls. For compact answers this
+    // is the normal fast path. For substantial answers, bare stop-button
+    // absence is unreliable (the Pro thinking gate hides it mid-turn), so demand
+    // a much longer stable window before trusting it.
+    if (compactAnswer) {
+      return stableEnough;
+    }
+    return stableEnough && stableMs >= PRO_IDLE_NO_COMPLETION_STABLE_MS;
   }
 
   // ChatGPT can leave a live stop-button node after a short answer is already
@@ -120,7 +152,7 @@ function shouldAcceptStableAssistantSnapshot({
   // stable answers so long Pro/thinking pauses still wait for real completion.
   const staleStopStableMs = 12_000;
   return (
-    (shortAnswer || mediumAnswer) &&
+    compactAnswer &&
     stableCycles >= requiredStableCycles &&
     stableMs >= Math.max(minStableMs, staleStopStableMs)
   );
@@ -560,9 +592,10 @@ async function pollAssistantCompletion(
       } else {
         stableCycles += 1;
       }
-      const [stopVisible, completionVisible] = await Promise.all([
+      const [stopVisible, completionVisible, thinkingActive] = await Promise.all([
         isStopButtonVisible(Runtime),
         isCompletionVisible(Runtime),
+        isThinkingActive(Runtime),
       ]);
       if (isGeneratedImageAssistantAnswer(normalized)) {
         return normalized;
@@ -581,6 +614,7 @@ async function pollAssistantCompletion(
         shouldAcceptStableAssistantSnapshot({
           stopVisible,
           completionVisible,
+          thinkingActive,
           currentLength,
           stableCycles,
           requiredStableCycles,
@@ -604,6 +638,79 @@ async function isStopButtonVisible(Runtime: ChromeClient["Runtime"]): Promise<bo
   try {
     const { result } = await Runtime.evaluate({
       expression: `Boolean(document.querySelector('${STOP_BUTTON_SELECTOR}'))`,
+      returnByValue: true,
+    });
+    return Boolean(result?.value);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Detect an active ChatGPT "Pro thinking" / reasoning indicator.
+ *
+ * During a Pro thinking pause the stop button disappears while a short streamed
+ * preamble may already be on screen. Relying on stop-button absence alone then
+ * accepts the preamble as the final answer (truncation). A visible thinking /
+ * reasoning indicator is an authoritative "still generating" signal, so callers
+ * keep waiting while it is present. Mirrors the visibility-scoped detection in
+ * thinkingStatus.ts but is intentionally lightweight for the hot poll loop.
+ */
+async function isThinkingActive(Runtime: ChromeClient["Runtime"]): Promise<boolean> {
+  try {
+    const { result } = await Runtime.evaluate({
+      expression: `(() => {
+        const selectors = [
+          'span.loading-shimmer',
+          '[data-testid*="thinking"]',
+          '[data-testid*="reasoning"]',
+          '[role="status"]',
+          '[aria-live="polite"]',
+        ];
+        const normalize = (value) =>
+          String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+        const isVisible = (node) => {
+          if (!(node instanceof HTMLElement)) return false;
+          const rect = node.getBoundingClientRect();
+          if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+          const style = window.getComputedStyle(node);
+          if (style.display === 'none' || style.visibility === 'hidden') return false;
+          if (style.opacity !== '' && Number(style.opacity) === 0) return false;
+          return true;
+        };
+        const looksLikeThinking = (node) => {
+          const label = normalize([
+            node.textContent,
+            node.getAttribute?.('aria-label'),
+            node.getAttribute?.('data-testid'),
+          ].filter(Boolean).join(' '));
+          return (
+            label.includes('thinking') ||
+            label.includes('reasoning') ||
+            label.includes('finalizing answer') ||
+            label.includes('working on it')
+          );
+        };
+        const isComposerAdjacent = (node) =>
+          Boolean(node.closest?.('[contenteditable="true"], textarea, [data-testid*="composer"], [id*="composer"]'));
+        for (const selector of selectors) {
+          const nodes = Array.from(document.querySelectorAll(selector));
+          for (const node of nodes) {
+            if (!(node instanceof HTMLElement)) continue;
+            // loading-shimmer is itself an active-generation marker (it has no
+            // text), so accept it on visibility alone; other nodes must read as
+            // a thinking/reasoning status and not belong to the composer.
+            if (selector === 'span.loading-shimmer') {
+              if (isVisible(node) && !isComposerAdjacent(node)) return true;
+              continue;
+            }
+            if (isVisible(node) && !isComposerAdjacent(node) && looksLikeThinking(node)) {
+              return true;
+            }
+          }
+        }
+        return false;
+      })()`,
       returnByValue: true,
     });
     return Boolean(result?.value);
@@ -936,6 +1043,58 @@ function buildResponseObserverExpression(
       return Array.from(markdowns).some((n) => (n.textContent || '').trim() === 'Done');
     };
 
+    // A visible "Pro thinking" / reasoning indicator (or a loading shimmer) is an
+    // authoritative "still generating" signal: during a Pro thinking pause the
+    // stop button disappears while a short streamed preamble is visible, so
+    // breaking on bare stop-button absence would capture that preamble as the
+    // final answer. While this returns true we must keep waiting.
+    const isThinkingIndicatorActive = () => {
+      const indicatorSelectors = [
+        'span.loading-shimmer',
+        '[data-testid*="thinking"]',
+        '[data-testid*="reasoning"]',
+        '[role="status"]',
+        '[aria-live="polite"]',
+      ];
+      const norm = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+      const visible = (node) => {
+        if (!(node instanceof HTMLElement)) return false;
+        const rect = node.getBoundingClientRect();
+        if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+        const style = window.getComputedStyle(node);
+        if (style.display === 'none' || style.visibility === 'hidden') return false;
+        if (style.opacity !== '' && Number(style.opacity) === 0) return false;
+        return true;
+      };
+      const composerAdjacent = (node) =>
+        Boolean(node.closest && node.closest('[contenteditable="true"], textarea, [data-testid*="composer"], [id*="composer"]'));
+      const thinkingLabel = (node) => {
+        const label = norm([
+          node.textContent,
+          node.getAttribute && node.getAttribute('aria-label'),
+          node.getAttribute && node.getAttribute('data-testid'),
+        ].filter(Boolean).join(' '));
+        return (
+          label.includes('thinking') ||
+          label.includes('reasoning') ||
+          label.includes('finalizing answer') ||
+          label.includes('working on it')
+        );
+      };
+      for (const selector of indicatorSelectors) {
+        const nodes = Array.from(document.querySelectorAll(selector));
+        for (const node of nodes) {
+          if (!(node instanceof HTMLElement)) continue;
+          if (selector === 'span.loading-shimmer') {
+            if (visible(node) && !composerAdjacent(node)) return true;
+            continue;
+          }
+          if (visible(node) && !composerAdjacent(node) && thinkingLabel(node)) return true;
+        }
+      }
+      return false;
+    };
+
     const waitForSettle = async (snapshot) => {
       if (String(snapshot?.html ?? '').includes('/backend-api/estuary/content?id=file_')) {
         return snapshot;
@@ -947,12 +1106,21 @@ function buildResponseObserverExpression(
       const shortAnswer = initialLength > 0 && initialLength < 16;
       const mediumAnswer = initialLength >= 16 && initialLength < 40;
       const longAnswer = initialLength >= 40 && initialLength < 500;
-      const settleWindowMs = shortAnswer ? 12_000 : mediumAnswer ? 5_000 : longAnswer ? 8_000 : 10_000;
+      const compactAnswer = shortAnswer || mediumAnswer;
+      // Substantial answers get a longer settle window: bare stop-button absence
+      // is unreliable for them (the Pro thinking gate hides it mid-turn), so we
+      // wait for the finished-action controls or a long idle period before
+      // trusting the snapshot. Compact answers keep their original windows.
+      const settleWindowMs = shortAnswer ? 12_000 : mediumAnswer ? 5_000 : longAnswer ? 24_000 : 30_000;
+      // For substantial answers, require this much idle time before accepting on
+      // stop-button absence when the finished-action controls never appear.
+      const idleNoCompletionMs = 20_000;
       const settleIntervalMs = 400;
       const deadline = Date.now() + settleWindowMs;
       let latest = snapshot;
       let lastLength = snapshot?.text?.length ?? 0;
       let stableCycles = 0;
+      let lastChangeAt = Date.now();
       const stableTarget = shortAnswer ? 6 : mediumAnswer ? 3 : longAnswer ? 5 : 6;
       while (Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, settleIntervalMs));
@@ -981,14 +1149,31 @@ function buildResponseObserverExpression(
         if (nextLength > lastLength) {
           lastLength = nextLength;
           stableCycles = 0;
+          lastChangeAt = Date.now();
         } else {
           stableCycles += 1;
         }
         const stopVisible = Boolean(document.querySelector(STOP_SELECTOR));
         const finishedVisible = isLastAssistantTurnFinished();
+        const thinkingActive = isThinkingIndicatorActive();
+        const idleMs = Date.now() - lastChangeAt;
 
-        if (finishedVisible || (!stopVisible && stableCycles >= stableTarget)) {
+        // The finished-action controls are the single reliable completion
+        // signal; honour them immediately.
+        if (finishedVisible) {
           break;
+        }
+        // Never accept while a Pro thinking / reasoning indicator is active.
+        if (thinkingActive) {
+          continue;
+        }
+        if (!stopVisible && stableCycles >= stableTarget) {
+          // Compact answers may never render a copy button promptly; accept them
+          // on stop-button absence + stability. Substantial answers must instead
+          // wait out a long idle period to avoid capturing a mid-stream preamble.
+          if (compactAnswer || idleMs >= idleNoCompletionMs) {
+            break;
+          }
         }
       }
       return latest ?? snapshot;
