@@ -13,6 +13,8 @@
 
 Oracle bundles your prompt and files so another AI can answer with real context. It speaks GPT-5.5 Pro (default), GPT-5.5, GPT-5.4 Pro, GPT-5.4, GPT-5.1 Pro, GPT-5.1 Codex (API-only), GPT-5.1, GPT-5.2, Gemini 3.1 Pro, Gemini 3.5 Flash, Gemini 3.1 Flash-Lite, Claude Sonnet 4.6, Claude Opus 4.1, and more—and it can ask one or multiple models in a single run. Browser automation is available; use `--browser-model-strategy current` to keep the active ChatGPT model (or `ignore` to skip the picker). API remains the most reliable path, and `--copy` is an easy manual fallback.
 
+> **ℹ️ This is a fork.** `etafund/oracle` tracks upstream [`steipete/oracle`](https://github.com/steipete/oracle), merges it regularly, and keeps the package name (`@steipete/oracle`), the `oracle` CLI, and all API-mode behavior identical. On top of that it layers reliability, in-session verification, recovery, and audit features for **browser-mode** consults — most importantly long-running **ChatGPT Pro (extended reasoning)** and **Gemini Deep Think** sessions that drive the official web apps in your own signed-in browser profile. Everything upstream still works as documented; the additions are opt-in commands/flags or automatic safety/quality improvements on browser runs. See **[What this fork adds over upstream](#what-this-fork-adds-over-upstream)** for the full, detailed breakdown.
+
 ## Setting up (macOS Browser Mode)
 
 Browser mode lets you use GPT-5.5 Pro without any API keys — it automates your Chrome browser directly.
@@ -191,6 +193,125 @@ npx -y @steipete/oracle oracle-mcp
 - File safety: globs/excludes, size guards, `--files-report`.
 - Sessions you can replay (`oracle status`, `oracle session <id> --render`).
 - Session logs and bundles live in `~/.oracle/sessions` (override with `ORACLE_HOME_DIR`).
+
+## What this fork adds over upstream
+
+`etafund/oracle` is a fork of upstream [`steipete/oracle`](https://github.com/steipete/oracle). It merges upstream regularly and keeps the package name (`@steipete/oracle`), the `oracle` CLI, and all API-mode behavior identical. On top of that baseline it adds a focused layer of **reliability, in-session verification, recovery, auditability, and privacy hardening** for **browser-mode** consults — the path that drives the official ChatGPT and Gemini web apps inside your own signed-in browser profile. This matters most for **long-running reasoning sessions** (ChatGPT Pro with extended reasoning, and Gemini Deep Think), where a single run can think for many minutes and a dropped tab or a mis-captured answer is costly.
+
+This section is meant to be self-contained: you should be able to understand what the fork does, and why, without reading the source.
+
+> Browser mode automates web apps you are already signed into; use it in accordance with each provider's terms of service.
+
+### Compare against upstream yourself
+
+```bash
+git remote add upstream https://github.com/steipete/oracle.git
+git fetch upstream
+git log --oneline upstream/main..HEAD   # commits this fork carries on top of upstream
+git diff --stat upstream/main...HEAD    # files and size of the divergence
+```
+
+### Design principles
+
+Everything below follows the same handful of rules:
+
+- **Fail closed, never fake success.** If the fork can't confirm the right model/mode, or can't capture a complete answer, it returns a typed, recoverable error — not a guess dressed up as a result.
+- **Verify in the same session, before submitting.** For protected routes, the requested model and the highest visible reasoning control are confirmed in the live tab *before* the prompt is sent.
+- **Capture the whole answer.** Output capture waits for genuinely long reasoning to finish, then checks the captured text for truncation.
+- **Recover, don't duplicate.** A dropped connection or a client timeout becomes a resumable session (`oracle session <id> --render`), not a lost run or an accidental second submission.
+- **Privacy by default.** Cookies, tokens, emails, raw prompts/outputs, and page DOM are never written to logs or artifacts — only hashes and structural metadata.
+- **Machine-readable everything.** New commands emit a uniform JSON envelope with `blocked_reason` / `next_command` / `fix_command` / `retry_safe`, so an agent or MCP driver can branch on results without scraping prose.
+- **Attest locally, don't overclaim.** Verification and evidence describe what the web UI showed and what was captured on *your* machine. They are a local confidence check for you; they make no claim about a provider's backend.
+
+### 1) Same-session model & reasoning-effort verification (browser mode)
+
+On protected browser routes (ChatGPT Pro, Gemini Deep Think), Oracle confirms — in the same browser tab, before sending your prompt — that the intended model is actually selected and that the **highest reasoning control the web UI currently exposes for your account** is engaged (extended reasoning for ChatGPT Pro; Deep Think / highest thinking level for Gemini). It reads the visible picker/composer labels and ranks them against a small, **rename-tolerant** table of known tiers, so a provider relabelling a control does not silently downgrade your run. If the controls aren't where they should be, Oracle reports `ui_drift_suspected` and stops instead of submitting against an unverified UI. Upstream submits without this same-session gate.
+
+### 2) Capturing the complete answer
+
+Long reasoning runs are exactly where naive capture goes wrong. The fork adds:
+
+- **Turn binding** — the captured answer is bound to the turn you submitted, so a previous round's answer is never returned as the current one.
+- **A long-reasoning wait controller** — waits out genuinely long ChatGPT Pro / Deep Think responses with periodic heartbeats, and never short-circuits a run that is still thinking.
+- **Truncation detection** — captured Markdown is checked for balance (e.g. unclosed code fences) so a half-streamed answer is flagged rather than shipped as final.
+- **"Still thinking" vs "final answer" detection** — streamed reasoning/preamble is not mistaken for the final response.
+
+### 3) Long-run resilience & recovery
+
+- **Reconnect / auto-reattach** — if the browser connection drops mid-run, Oracle decides between waiting, reattaching, backgrounding, or giving up, with bounded backoff. Exhausting retries yields a *recoverable* session, never a fabricated "no answer."
+- **Detached finalizer** — a background worker re-renders/attaches a long run until a real transcript is captured, rescuing sessions that would otherwise be left in an error/partial state after a client timeout.
+- **`oracle-await`** (shipped helper) — polls a session to completion with structured exit codes (ready / still-running / errored / unknown), so wrappers and agents can wait safely instead of re-running.
+- **Remote-run snapshots & heartbeats** — a long run delegated to `oracle serve` survives network drops as a typed, replayable snapshot, with one-JSON-line-per-beat liveness.
+
+### 4) Same-thread follow-ups & detached sessions
+
+**`oracle follow-up <parentSessionId> [prompt]`** (and an MCP `follow_up` tool) continue an existing ChatGPT browser conversation **in the same thread**, inheriting the parent's profile/model, so the model keeps the context it already has instead of re-establishing it. The run is detached (it survives a client disconnect) and returns a reattach command, and it fails closed if it can't confirm the saved thread.
+
+### 5) Local evidence & audit trail (opt-in, fully redacted)
+
+- **`oracle evidence show|verify <session>`** and **`oracle evidence ledger show|verify|export <session>`** inspect a redacted record of what a browser run did.
+- The ledger is **append-only and hash-chained**, so reordering or editing is detectable, and `verify` re-hashes the stored artifacts to confirm they weren't altered.
+- This is a **local** confidence tool: it lets *you* confirm a run selected the model/effort you asked for and captured the answer intact. **Redaction is always on** — no cookies, tokens, emails, raw prompts/outputs, or DOM are ever stored, only hashes and structural metadata. `export` produces a sanitized, still-verifiable snapshot for handoff.
+
+### 6) Browser-profile leases (single-flight)
+
+**`oracle browser leases plan|status|acquire|release|recover`** coordinate a single-flight lock over a signed-in browser profile, so two concurrent Oracle runs don't drive the same profile at once. Locks are reclaimed automatically when a holder dies; `recover` never silently steals a live peer's lock.
+
+### 7) Remote-browser hardening
+
+**`oracle remote doctor|status|attach`** and **`oracle bridge doctor --json`** diagnose a remote `oracle serve` endpoint. Access tokens are read from a **named environment variable** (`--token-env`), never passed on the command line, and the host is shown only as a short hash. The remote service uses constant-time token comparison, an allowlist for wire payloads (your local cookies/profile are never shipped to the host, which uses its own signed-in profile), and preserves model-selection metadata end-to-end so remote runs report the same evidence as local ones.
+
+### 8) Diagnostics & agent ergonomics
+
+All read-only, no provider calls, JSON-first:
+
+- **`oracle doctor`** (aggregate) and **`oracle doctor chatgpt|gemini`** — preflight whether the protected route and the highest reasoning controls are available and logged-in, without submitting a prompt.
+- **`oracle capabilities`** — a static matrix of what's usable right now vs. needs configuration vs. unsupported.
+- **`oracle robot-docs`** — emits the full command registry (purpose, whether a command makes paid/live calls, required env, output schema) so an agent can discover the surface without parsing `--help`.
+- **`oracle preview`** and **`oracle visibility-status`** — estimate what a run would do and roll up readiness, again with zero provider calls.
+- **Structured errors** — even top-level crashes/usage errors are emitted as a JSON envelope in `--json` mode (no raw stack traces for an agent to parse).
+
+### 9) Security & privacy hardening
+
+- **SSRF-safe downloads** — image/file downloads from ChatGPT/Gemini are restricted to specific allowlisted hosts and paths, re-validated on every redirect hop.
+- **Strict tab/URL checks** — exact host matching for ChatGPT tabs; look-alike or credential-embedded URLs are rejected.
+- **Secret hygiene** — a redaction layer plus a leak detector keep credentials and PII out of logs, evidence, and artifacts.
+- **ChatGPT file artifacts** — files a run generates (CSV/JSON/ZIP/PDF) are saved as session artifacts through a narrow authenticated-download allowlist.
+- **Operational papercuts fixed** — actionable guidance when the native keychain module needs a rebuild; accurate upload-size pre-checks with byte-exact bundle preservation.
+
+### 10) Gemini web-mode hardening
+
+Useful even outside Deep Think: the Gemini cookie/web client reassembles JSON that arrives split across stream frames (so a chunk boundary mid-object can't drop the answer), verifies the streamed answer belongs to your conversation, converts silent empty/truncated captures into retry-safe typed errors, and downloads generated images with your cookies through an allowlist.
+
+### 11) Protected-route planning command
+
+**`oracle run --chatgpt-pro --extended-reasoning`** (or **`--gemini-deep-think`**) is a **no-submission** planner: it validates the route, refuses to plan a downgraded or API-substituted protected route, and prints the exact `doctor` / `lease` / run commands to execute. Add `--dry-run` / `--json` for agent preflight. (Your everyday Pro consult is still just `oracle --engine browser -m <pro-model> -p "…"`; the verification and capture hardening above apply automatically.)
+
+### 12) Quality & process apparatus
+
+The fork carries a contracts-first spec bundle (under `PLAN/`) plus several test suites upstream doesn't have — conformance (wire-contract checks), metamorphic (property/invariant checks such as redaction idempotency and hash determinism), premortem failure-mode tests, fuzzing, filesystem-safety, and secret-leak regression — gated in CI by `pnpm run release:readiness`. Merge-discipline notes (`MERGE-RESOLUTION-CHARTER.md`, `MERGE-RESOLUTION-LOG.md`) document how upstream is absorbed without dropping fork features.
+
+### New commands & key flags (quick reference)
+
+| Command / flag | What it does | Calls a provider? |
+| --- | --- | --- |
+| `oracle doctor [--json]` | Aggregate preflight diagnostics | No |
+| `oracle doctor chatgpt --pro --extended-reasoning [--json]` | ChatGPT Pro route readiness | No |
+| `oracle doctor gemini --deep-think [--json]` | Gemini Deep Think route readiness | No |
+| `oracle capabilities [--json]` | Static capability matrix | No |
+| `oracle robot-docs [--json]` | Machine-readable command registry | No |
+| `oracle preview` / `oracle visibility-status` | Estimate / roll-up before a run | No |
+| `oracle run --chatgpt-pro --extended-reasoning [--dry-run] [--json]` | Plan a protected route (no submit) | No |
+| `oracle browser leases plan\|status\|acquire\|release\|recover` | Single-flight profile locks | No |
+| `oracle evidence show\|verify <session>` | Inspect / verify redacted run evidence | No |
+| `oracle evidence ledger show\|verify\|export <session>` | Hash-chained audit ledger | No |
+| `oracle remote doctor\|status\|attach` | Diagnose remote `serve` endpoint | Network probe only |
+| `oracle follow-up <parentSessionId> [prompt]` | Continue a saved ChatGPT thread | Yes (browser) |
+| `--gemini-deep-think`, `--evidence redacted` (on the main run) | Protected Gemini Deep Think browser route | Yes (browser) |
+
+### What this fork does NOT change
+
+The package name (`@steipete/oracle`), the `oracle` command, API-mode behavior and model routing, and all upstream flags are unchanged. Everything above is additive: existing upstream workflows keep working exactly as documented, and the new behavior is either opt-in (new commands/flags) or an automatic safety/quality improvement on browser runs.
 
 ## API provider checks
 
