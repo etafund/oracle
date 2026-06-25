@@ -163,7 +163,15 @@ export const CHATGPT_SELECTOR_MANIFEST: readonly ChatGptSelectorEntry[] = Object
       'button[data-testid="model-switcher-dropdown-button"]',
       'button[data-testid="__composer-pill"]',
     ],
-    fallback: ['button[aria-haspopup="menu"][aria-label*="model" i]'],
+    // `:not([aria-label*="conversation"])` excludes sidebar conversation
+    // option buttons whose aria-label reads "Open conversation options for
+    // <title>". When a chat title contains the word "model" (e.g.
+    // "Coordination model critique"), that sidebar menu button otherwise
+    // matches this fallback; because the sidebar precedes the composer in DOM
+    // order the Pro probe's firstText() returns the bogus label and the run
+    // fails with chatgpt_pro_unverified. The real model picker button never
+    // carries "conversation" in its aria-label.
+    fallback: ['button[aria-haspopup="menu"][aria-label*="model" i]:not([aria-label*="conversation" i])'],
     labelExpectations: { ariaLabel: ["model", "switch model", "current model"] },
     confidence: "high",
     rank: 50,
