@@ -52,6 +52,15 @@ export async function runRemoteDoctor(options: RemoteDoctorCliOptions): Promise<
     if (probe.health.ok) {
       const v = probe.health.version ? `oracle ${probe.health.version}` : "ok";
       lines.push(`Auth (/health): ${chalk.green(v)}`);
+    } else if (probe.health.busy) {
+      const detail = probe.health.error ?? "remote host is busy";
+      const suffix = probe.health.statusCode ? `HTTP ${probe.health.statusCode}` : "busy";
+      const v = probe.health.version ? `oracle ${probe.health.version}` : "ok";
+      lines.push(`Auth (/health): ${chalk.green(v)}`);
+      lines.push(`Run availability: ${chalk.yellow(`${suffix} (${detail})`)}`);
+      if (probe.health.activeRun) {
+        lines.push(chalk.dim(`Active run: ${formatActiveRun(probe.health.activeRun)}`));
+      }
     } else {
       const detail = probe.health.error ?? "unknown";
       const suffix = probe.health.statusCode ? `HTTP ${probe.health.statusCode}` : "network";
@@ -68,6 +77,14 @@ export async function runRemoteDoctor(options: RemoteDoctorCliOptions): Promise<
 
 function formatStatus(status: string): string {
   if (status === "healthy" || status === "not_configured") return chalk.green(status);
-  if (status === "unknown") return chalk.yellow(status);
+  if (status === "unknown" || status === "busy") return chalk.yellow(status);
   return chalk.red(status);
+}
+
+function formatActiveRun(activeRun: {
+  id: string;
+  ageSeconds: number;
+  clientConnected: boolean;
+}): string {
+  return `${activeRun.id} age=${activeRun.ageSeconds}s client=${activeRun.clientConnected ? "connected" : "disconnected"}`;
 }

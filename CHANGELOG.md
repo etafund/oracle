@@ -9,6 +9,7 @@
 - Browser: switch plain `--model gpt-5.5` away from an active Pro picker state by selecting the non-Pro Extra High Intelligence row before submitting.
 - Browser: complete compact answers when ChatGPT leaves a stale stop button after the assistant text has stabilized, while preserving longer waits for active Pro/thinking responses.
 - Browser: treat archive, office, package, and media files consistently as raw uploads during normal and restart preflight, and cap generated ZIP bundles at the browser DataTransfer upload ceiling before writing oversized bundles.
+- Remote: report occupied `oracle serve` lanes as `busy` instead of auth failures. Authenticated `/health` and `/runs` 409 responses now include active-run metadata, and `oracle remote doctor` / `oracle bridge doctor` surface the run id, age, and client connection state for stale-busy diagnosis.
 
 ## 0.14.1 — 2026-06-15
 

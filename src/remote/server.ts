@@ -9,7 +9,7 @@ import chalk from "chalk";
 import type { BrowserAttachment, BrowserLogger, CookieParam } from "../browser/types.js";
 import { runBrowserMode } from "../browserMode.js";
 import type { BrowserRunResult } from "../browserMode.js";
-import type { RemoteRunPayload, RemoteRunEvent } from "./types.js";
+import type { RemoteActiveRunInfo, RemoteRunPayload, RemoteRunEvent } from "./types.js";
 import { getCookies, type Cookie } from "@steipete/sweet-cookie";
 import { CHATGPT_URL } from "../browser/constants.js";
 import { getCliVersion } from "../version.js";
@@ -40,6 +40,15 @@ interface RemoteServerInstance {
   port: number;
   token: string;
   close(): Promise<void>;
+}
+
+interface ActiveRunState {
+  id: string;
+  startedAtMs: number;
+  clientConnected: boolean;
+  promptChars: number;
+  sessionId?: string;
+  desiredModel?: string;
 }
 
 async function findAvailablePort(): Promise<number> {
@@ -73,6 +82,7 @@ export async function createRemoteServer(
     : (_formatter: (msg: string) => string, msg: string) => msg;
   // Single-flight guard: remote Chrome can only host one run at a time, so we serialize requests.
   let busy = false;
+  let activeRun: ActiveRunState | null = null;
 
   if (!process.listenerCount("unhandledRejection")) {
     process.on("unhandledRejection", (reason) => {
@@ -101,14 +111,13 @@ export async function createRemoteServer(
           res.end(JSON.stringify({ error: "unauthorized" }));
           return;
         }
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(
-          JSON.stringify({
-            ok: true,
-            version: getCliVersion(),
-            uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
-          }),
-        );
+        const health = buildHealthResponse({
+          startedAt,
+          busy,
+          activeRun,
+        });
+        res.writeHead(busy ? 409 : 200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(health));
         return;
       }
       if (req.method !== "POST" || req.url !== "/runs") {
@@ -134,7 +143,13 @@ export async function createRemoteServer(
           );
         }
         res.writeHead(409, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "busy" }));
+        res.end(
+          JSON.stringify({
+            error: "busy",
+            busy: true,
+            ...(activeRun ? { activeRun: serializeActiveRun(activeRun) } : {}),
+          }),
+        );
         return;
       }
       busy = true;
@@ -157,6 +172,26 @@ export async function createRemoteServer(
       res.writeHead(200, { "Content-Type": "application/x-ndjson" });
 
       const runId = randomUUID();
+      activeRun = {
+        id: runId,
+        startedAtMs: runStartedAt,
+        clientConnected: true,
+        promptChars: payload?.prompt?.length ?? 0,
+        sessionId: payload.options?.sessionId,
+        desiredModel:
+          typeof payload.browserConfig?.desiredModel === "string"
+            ? payload.browserConfig.desiredModel
+            : undefined,
+      };
+      let responseCompleted = false;
+      res.once("close", () => {
+        if (!responseCompleted && activeRun?.id === runId) {
+          activeRun.clientConnected = false;
+          if (verbose) {
+            logger(`[serve] Client disconnected while run ${runId} is still active`);
+          }
+        }
+      });
       logger(
         `[serve] Accepted run ${runId} from ${formatSocket(req)} (prompt ${payload?.prompt?.length ?? 0} chars)`,
       );
@@ -166,6 +201,9 @@ export async function createRemoteServer(
       await mkdir(attachmentDir, { recursive: true });
 
       const sendEvent = (event: RemoteRunEvent) => {
+        if (res.destroyed || res.writableEnded) {
+          return;
+        }
         res.write(`${JSON.stringify(event)}\n`);
       };
 
@@ -263,7 +301,13 @@ export async function createRemoteServer(
         logger(`[serve] Run ${runId} failed after ${Date.now() - runStartedAt}ms: ${message}`);
       } finally {
         busy = false;
-        res.end();
+        if (activeRun?.id === runId) {
+          activeRun = null;
+        }
+        responseCompleted = true;
+        if (!res.destroyed && !res.writableEnded) {
+          res.end();
+        }
         try {
           await rm(runDir, { recursive: true, force: true });
         } catch {
@@ -278,6 +322,7 @@ export async function createRemoteServer(
       }
       res.end(JSON.stringify({ error: "internal_error" }));
       busy = false;
+      activeRun = null;
     });
   });
 
@@ -305,6 +350,44 @@ export async function createRemoteServer(
         server.close((err) => (err ? reject(err) : resolve()));
       });
     },
+  };
+}
+
+function buildHealthResponse({
+  startedAt,
+  busy,
+  activeRun,
+}: {
+  startedAt: number;
+  busy: boolean;
+  activeRun: ActiveRunState | null;
+}): {
+  ok: boolean;
+  version: string;
+  uptimeSeconds: number;
+  busy: boolean;
+  activeRun?: RemoteActiveRunInfo;
+  error?: string;
+} {
+  return {
+    ok: !busy,
+    version: getCliVersion(),
+    uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
+    busy,
+    ...(activeRun ? { activeRun: serializeActiveRun(activeRun) } : {}),
+    ...(busy ? { error: "busy" } : {}),
+  };
+}
+
+function serializeActiveRun(run: ActiveRunState): RemoteActiveRunInfo {
+  return {
+    id: run.id,
+    startedAt: new Date(run.startedAtMs).toISOString(),
+    ageSeconds: Math.max(0, Math.round((Date.now() - run.startedAtMs) / 1000)),
+    clientConnected: run.clientConnected,
+    promptChars: run.promptChars,
+    ...(run.sessionId ? { sessionId: run.sessionId } : {}),
+    ...(run.desiredModel ? { desiredModel: run.desiredModel } : {}),
   };
 }
 

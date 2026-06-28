@@ -31,6 +31,16 @@ interface MockHealth {
   ok: boolean;
   statusCode?: number;
   error?: string;
+  busy?: boolean;
+  activeRun?: {
+    id: string;
+    startedAt: string;
+    ageSeconds: number;
+    clientConnected: boolean;
+    promptChars: number;
+    sessionId?: string;
+    desiredModel?: string;
+  };
   version?: string;
   uptimeSeconds?: number;
   authProfileIdHash?: string;
@@ -144,6 +154,38 @@ describe("runRemoteDoctor --json", () => {
     const out = JSON.parse(logSpy.mock.calls[0][0] as string);
     expect(out.status).toBe("auth_failed");
     expect(out.error).toBe("HTTP 401 (Unauthorized)");
+    expect(process.exitCode).toBe(1);
+  });
+
+  test("busy emits active-run metadata instead of auth_failed", async () => {
+    checkRemoteHealth.mockResolvedValueOnce({
+      ok: false,
+      statusCode: 409,
+      error: "busy",
+      busy: true,
+      version: "1.2.3",
+      uptimeSeconds: 9002,
+      activeRun: {
+        id: "run-1",
+        startedAt: "2026-06-28T03:27:58.000Z",
+        ageSeconds: 30,
+        clientConnected: false,
+        promptChars: 42,
+        sessionId: "session-1",
+        desiredModel: "gpt-5.5-pro",
+      },
+    });
+    await runRemoteDoctor({ json: true });
+    const out = JSON.parse(logSpy.mock.calls[0][0] as string);
+    expect(out.status).toBe("busy");
+    expect(out.busy).toBe(true);
+    expect(out.activeRun).toMatchObject({
+      id: "run-1",
+      clientConnected: false,
+      sessionId: "session-1",
+      desiredModel: "gpt-5.5-pro",
+    });
+    expect(out.error).toBe("HTTP 409 (busy)");
     expect(process.exitCode).toBe(1);
   });
 

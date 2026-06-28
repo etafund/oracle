@@ -21,6 +21,16 @@ interface MockHealth {
   ok: boolean;
   statusCode?: number;
   error?: string;
+  busy?: boolean;
+  activeRun?: {
+    id: string;
+    startedAt: string;
+    ageSeconds: number;
+    clientConnected: boolean;
+    promptChars: number;
+    sessionId?: string;
+    desiredModel?: string;
+  };
   version?: string;
   uptimeSeconds?: number;
   authProfileIdHash?: string;
@@ -122,6 +132,42 @@ describe("buildRemoteEndpointReport — status precedence", () => {
     });
     expect(report.status).toBe("auth_failed");
     expect(report.error).toBe("socket hang up");
+  });
+
+  test("busy when auth succeeds but the single-flight lane is occupied", async () => {
+    checkRemoteHealth.mockResolvedValueOnce({
+      ok: false,
+      statusCode: 409,
+      error: "busy",
+      busy: true,
+      version: "9.9.9",
+      uptimeSeconds: 43,
+      activeRun: {
+        id: "run-1",
+        startedAt: "2026-06-28T03:27:58.000Z",
+        ageSeconds: 30,
+        clientConnected: false,
+        promptChars: 42,
+        sessionId: "session-1",
+        desiredModel: "gpt-5.5-pro",
+      },
+    });
+    const { report } = await buildRemoteEndpointReport({
+      resolved: resolvedConfig(),
+      env: { ORACLE_REMOTE_HOST: "h", ORACLE_REMOTE_TOKEN: "t" },
+    });
+    expect(report.status).toBe("busy");
+    expect(report.busy).toBe(true);
+    expect(report.version).toBe("9.9.9");
+    expect(report.uptimeSeconds).toBe(43);
+    expect(report.activeRun).toMatchObject({
+      id: "run-1",
+      clientConnected: false,
+      sessionId: "session-1",
+      desiredModel: "gpt-5.5-pro",
+    });
+    expect(report.error).toBe("HTTP 409 (busy)");
+    expect(isHealthyReport(report)).toBe(false);
   });
 
   test("healthy populates version, uptime, auth_profile_id_hash and provider_locks", async () => {

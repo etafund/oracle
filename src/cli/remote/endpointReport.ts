@@ -9,7 +9,7 @@
 
 import { checkRemoteHealth, checkTcpConnection } from "../../remote/health.js";
 import type { ResolvedRemoteServiceConfig } from "../../remote/remoteServiceConfig.js";
-import type { RemoteBrowserEndpointV1 } from "../../remote/types.js";
+import type { RemoteActiveRunInfo, RemoteBrowserEndpointV1 } from "../../remote/types.js";
 import { getCliVersion } from "../../version.js";
 
 /**
@@ -33,6 +33,8 @@ export interface RemoteEndpointProbe {
     uptimeSeconds?: number;
     authProfileIdHash?: string;
     providerLocks?: string[];
+    busy?: boolean;
+    activeRun?: RemoteActiveRunInfo;
   };
 }
 
@@ -70,8 +72,9 @@ const DEFAULT_TOKEN_ENV_NAME = "ORACLE_REMOTE_TOKEN";
  *   2. `missing_token`  — host but no token.
  *   3. `unreachable`    — TCP probe failed.
  *   4. `auth_failed`    — /health rejected the token.
- *   5. `healthy`        — /health succeeded.
- *   6. `unknown`        — probe was skipped.
+ *   5. `busy`           — auth succeeded but the single-flight lane is occupied.
+ *   6. `healthy`        — /health succeeded.
+ *   7. `unknown`        — probe was skipped.
  *
  * Exit-code policy (caller-side): only `healthy` and `not_configured`
  * count as success. `not_configured` is success because the user may
@@ -138,10 +141,21 @@ export async function buildRemoteEndpointReport(
   probe.health = health;
   if (health.ok) {
     report.status = "healthy";
-    report.version = health.version ?? null;
-    report.uptimeSeconds = health.uptimeSeconds ?? null;
-    report.auth_profile_id_hash = health.authProfileIdHash ?? null;
-    report.provider_locks = health.providerLocks ?? [];
+    applyHealthMetadata(report, health);
+    return { report, probe };
+  }
+
+  if (health.busy) {
+    report.status = "busy";
+    applyHealthMetadata(report, health);
+    report.busy = true;
+    report.activeRun = health.activeRun ?? null;
+    if (health.error || health.statusCode) {
+      const detail = health.error ?? "remote host is busy";
+      report.error = health.statusCode ? `HTTP ${health.statusCode} (${detail})` : detail;
+    } else {
+      report.error = "remote host is busy";
+    }
     return { report, probe };
   }
 
@@ -156,6 +170,19 @@ export async function buildRemoteEndpointReport(
 /** Returns true if the report indicates a successful end-state. */
 export function isHealthyReport(report: RemoteBrowserEndpointV1): boolean {
   return report.status === "healthy" || report.status === "not_configured";
+}
+
+function applyHealthMetadata(
+  report: RemoteBrowserEndpointV1,
+  health: RemoteEndpointProbe["health"],
+): void {
+  if (!health) {
+    return;
+  }
+  report.version = health.version ?? null;
+  report.uptimeSeconds = health.uptimeSeconds ?? null;
+  report.auth_profile_id_hash = health.authProfileIdHash ?? null;
+  report.provider_locks = health.providerLocks ?? [];
 }
 
 /**

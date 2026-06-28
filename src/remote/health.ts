@@ -1,12 +1,14 @@
 import http from "node:http";
 import net from "node:net";
 import { parseHostPort } from "../bridge/connection.js";
+import type { RemoteActiveRunInfo } from "./types.js";
 
 export interface RemoteHealthResult {
   ok: boolean;
   statusCode?: number;
   error?: string;
   busy?: boolean;
+  activeRun?: RemoteActiveRunInfo;
   version?: string;
   uptimeSeconds?: number;
   authProfileIdHash?: string;
@@ -18,6 +20,7 @@ export interface RemoteRunAvailabilityResult {
   statusCode?: number;
   error?: string;
   busy?: boolean;
+  activeRun?: RemoteActiveRunInfo;
 }
 
 export async function checkTcpConnection(
@@ -82,22 +85,40 @@ export async function checkRemoteHealth({
     });
     if (response.statusCode === 200 && typeof response.json === "object" && response.json) {
       const ok = (response.json as { ok?: unknown }).ok === true;
+      const busy = (response.json as { busy?: unknown }).busy === true;
       const version = (response.json as { version?: unknown }).version;
       const uptimeSeconds = (response.json as { uptimeSeconds?: unknown }).uptimeSeconds;
       const authProfileIdHash = (response.json as { authProfileIdHash?: unknown })
         .authProfileIdHash;
       const providerLocks = (response.json as { providerLocks?: unknown }).providerLocks;
+      const activeRun = parseActiveRun((response.json as { activeRun?: unknown }).activeRun);
       const healthResult: RemoteHealthResult = {
-        ok,
+        ok: ok && !busy,
         statusCode: response.statusCode,
+        busy: busy || undefined,
+        activeRun,
         version: typeof version === "string" ? version : undefined,
         uptimeSeconds: typeof uptimeSeconds === "number" ? uptimeSeconds : undefined,
         authProfileIdHash: typeof authProfileIdHash === "string" ? authProfileIdHash : undefined,
         providerLocks: Array.isArray(providerLocks) ? providerLocks : undefined,
       };
 
+      if (busy) {
+        return {
+          ...healthResult,
+          ok: false,
+          statusCode: 409,
+          error:
+            extractErrorMessage(response.json, response.bodyText) ??
+            "remote host is busy; /health reports an active run",
+        };
+      }
+
       if (!ok) {
-        return healthResult;
+        return {
+          ...healthResult,
+          error: extractErrorMessage(response.json, response.bodyText) ?? healthResult.error,
+        };
       }
 
       const runAvailability = await probeRemoteRunAvailability({
@@ -113,10 +134,30 @@ export async function checkRemoteHealth({
           statusCode: runAvailability.statusCode,
           error: runAvailability.error,
           busy: runAvailability.busy,
+          activeRun: runAvailability.activeRun,
         };
       }
 
       return healthResult;
+    }
+    if (response.statusCode === 409 && typeof response.json === "object" && response.json) {
+      return {
+        ok: false,
+        statusCode: response.statusCode,
+        busy: true,
+        activeRun: parseActiveRun((response.json as { activeRun?: unknown }).activeRun),
+        version:
+          typeof (response.json as { version?: unknown }).version === "string"
+            ? ((response.json as { version?: unknown }).version as string)
+            : undefined,
+        uptimeSeconds:
+          typeof (response.json as { uptimeSeconds?: unknown }).uptimeSeconds === "number"
+            ? ((response.json as { uptimeSeconds?: unknown }).uptimeSeconds as number)
+            : undefined,
+        error:
+          extractErrorMessage(response.json, response.bodyText) ??
+          "remote host is busy; /health reports an active run",
+      };
     }
     if (response.statusCode === 404) {
       return {
@@ -189,6 +230,9 @@ async function probeRemoteRunAvailability({
       ok: false,
       statusCode: response.statusCode,
       busy: true,
+      activeRun: parseActiveRun(
+        response.json ? (response.json as { activeRun?: unknown }).activeRun : undefined,
+      ),
       error: error ?? "remote host is busy; /runs is rejecting new work",
     };
   }
@@ -206,6 +250,31 @@ async function probeRemoteRunAvailability({
     ok: false,
     statusCode: response.statusCode,
     error: error ?? `unexpected /runs probe status HTTP ${response.statusCode}`,
+  };
+}
+
+function parseActiveRun(value: unknown): RemoteActiveRunInfo | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record.id !== "string" ||
+    typeof record.startedAt !== "string" ||
+    typeof record.ageSeconds !== "number" ||
+    typeof record.clientConnected !== "boolean" ||
+    typeof record.promptChars !== "number"
+  ) {
+    return undefined;
+  }
+  return {
+    id: record.id,
+    startedAt: record.startedAt,
+    ageSeconds: record.ageSeconds,
+    clientConnected: record.clientConnected,
+    promptChars: record.promptChars,
+    ...(typeof record.sessionId === "string" ? { sessionId: record.sessionId } : {}),
+    ...(typeof record.desiredModel === "string" ? { desiredModel: record.desiredModel } : {}),
   };
 }
 

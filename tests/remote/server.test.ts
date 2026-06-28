@@ -226,6 +226,99 @@ describe("remote browser service", () => {
       await rm(tmpDir, { recursive: true, force: true });
     },
   );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "reports active run metadata and client disconnects through health",
+    async () => {
+      let markRunStarted: () => void = () => {};
+      let releaseRun: ((result: BrowserRunResult) => void) | undefined;
+      const runStarted = new Promise<void>((resolve) => {
+        markRunStarted = resolve;
+      });
+      const runFinished = new Promise<BrowserRunResult>((resolve) => {
+        releaseRun = resolve;
+      });
+
+      const server = await createRemoteServer(
+        { host: "127.0.0.1", port: 0, token: "secret", logger: () => {} },
+        {
+          runBrowser: async (options) => {
+            expect(options.prompt).toBe("hold-open");
+            markRunStarted();
+            return await runFinished;
+          },
+        },
+      );
+
+      const activeRun = postRunStream(
+        server.port,
+        {
+          prompt: "hold-open",
+          attachments: [],
+          browserConfig: { desiredModel: "gpt-5.5-pro" },
+          options: { sessionId: "session-1" },
+        },
+        "secret",
+      );
+      void activeRun.finished.catch(() => undefined);
+
+      try {
+        await runStarted;
+
+        const busyHealth = await httpGetJson({
+          hostname: "127.0.0.1",
+          port: server.port,
+          path: "/health",
+          token: "secret",
+        });
+        expect(busyHealth.statusCode).toBe(409);
+        expect(busyHealth.json).toMatchObject({
+          ok: false,
+          busy: true,
+          error: "busy",
+          activeRun: {
+            clientConnected: true,
+            promptChars: "hold-open".length,
+            sessionId: "session-1",
+            desiredModel: "gpt-5.5-pro",
+          },
+        });
+        expect(typeof busyHealth.json?.activeRun).toBe("object");
+        const activeRunId = (busyHealth.json?.activeRun as { id?: unknown } | undefined)?.id;
+        expect(typeof activeRunId).toBe("string");
+
+        activeRun.abort();
+
+        const disconnectedHealth = await waitFor(
+          () =>
+            httpGetJson({
+              hostname: "127.0.0.1",
+              port: server.port,
+              path: "/health",
+              token: "secret",
+            }),
+          (result) =>
+            result.statusCode === 409 &&
+            (result.json?.activeRun as { clientConnected?: unknown } | undefined)
+              ?.clientConnected === false,
+        );
+        expect(disconnectedHealth.json?.activeRun).toMatchObject({
+          id: activeRunId,
+          clientConnected: false,
+        });
+      } finally {
+        releaseRun?.({
+          answerText: "ok",
+          answerMarkdown: "ok",
+          tookMs: 1,
+          answerTokens: 1,
+          answerChars: 2,
+        });
+        await activeRun.finished.catch(() => undefined);
+        await server.close();
+      }
+    },
+  );
 });
 
 async function httpGetJson({
@@ -271,4 +364,64 @@ async function httpGetJson({
     req.on("error", reject);
     req.end();
   });
+}
+
+function postRunStream(
+  port: number,
+  payload: Record<string, unknown>,
+  token: string,
+): { abort(): void; finished: Promise<{ statusCode: number; body: string }> } {
+  let req: http.ClientRequest | undefined;
+  const finished = new Promise<{ statusCode: number; body: string }>((resolve, reject) => {
+    const body = JSON.stringify(payload);
+    req = http.request(
+      {
+        hostname: "127.0.0.1",
+        port,
+        path: "/runs",
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(body),
+        },
+      },
+      (res) => {
+        res.setEncoding("utf8");
+        let responseBody = "";
+        res.on("data", (chunk: string) => {
+          responseBody += chunk;
+        });
+        res.on("end", () => {
+          resolve({ statusCode: res.statusCode ?? 0, body: responseBody });
+        });
+      },
+    );
+    req.on("error", reject);
+    req.write(body);
+    req.end();
+  });
+  return {
+    abort() {
+      req?.destroy();
+    },
+    finished,
+  };
+}
+
+async function waitFor<T>(
+  read: () => Promise<T>,
+  accept: (value: T) => boolean,
+  timeoutMs = 1000,
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  let last: T | undefined;
+  while (Date.now() <= deadline) {
+    last = await read();
+    if (accept(last)) {
+      return last;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out waiting for condition; last=${JSON.stringify(last)}`);
 }

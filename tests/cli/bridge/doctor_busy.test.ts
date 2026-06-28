@@ -96,7 +96,7 @@ describe("oracle bridge doctor busy remote host", () => {
 
         expect(logs).toHaveLength(1);
         const endpoint = JSON.parse(logs[0]) as { status?: string; error?: string };
-        expect(endpoint.status).toBe("unknown");
+        expect(endpoint.status).toBe("busy");
         expect(endpoint.error).toMatch(/HTTP 409|busy|\/runs/i);
         expect(process.exitCode).toBe(1);
       } finally {

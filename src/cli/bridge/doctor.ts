@@ -30,6 +30,8 @@ function applyHealthMetadata(endpoint: RemoteBrowserEndpointV1, health: RemoteHe
   endpoint.uptimeSeconds = health.uptimeSeconds ?? null;
   endpoint.auth_profile_id_hash = health.authProfileIdHash ?? null;
   endpoint.provider_locks = health.providerLocks ?? [];
+  endpoint.busy = health.busy || undefined;
+  endpoint.activeRun = health.activeRun ?? null;
 }
 
 function formatHealthFailure(health: RemoteHealthResult): string | undefined {
@@ -123,7 +125,7 @@ export async function runBridgeDoctor(options: BridgeDoctorCliOptions): Promise<
           endpoint.status = "healthy";
           applyHealthMetadata(endpoint, health);
         } else if (health.busy) {
-          endpoint.status = "unknown";
+          endpoint.status = "busy";
           applyHealthMetadata(endpoint, health);
           endpoint.error = formatHealthFailure(health) ?? "remote host is busy";
         } else {

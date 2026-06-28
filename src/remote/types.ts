@@ -30,6 +30,16 @@ export type RemoteRunEvent =
   | { type: "result"; result: BrowserRunResult }
   | { type: "error"; message: string };
 
+export interface RemoteActiveRunInfo {
+  id: string;
+  startedAt: string;
+  ageSeconds: number;
+  clientConnected: boolean;
+  promptChars: number;
+  sessionId?: string;
+  desiredModel?: string;
+}
+
 export interface SerializedAttachment extends BrowserAttachment {
   fileName: string;
   contentBase64: string;
@@ -41,6 +51,7 @@ export interface RemoteBrowserEndpointV1 {
   mode: "preferred" | "required" | "off";
   status:
     | "healthy"
+    | "busy"
     | "unreachable"
     | "auth_failed"
     | "missing_token"
@@ -57,5 +68,7 @@ export interface RemoteBrowserEndpointV1 {
   recover_command: string;
   version: string | null;
   uptimeSeconds: number | null;
+  busy?: boolean;
+  activeRun?: RemoteActiveRunInfo | null;
   error?: string;
 }
