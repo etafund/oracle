@@ -414,7 +414,9 @@ The three supported v1 lanes are:
 | `gemini-deep-think` | `gemini_pro_deep_think_browser` | `gemini_pro_deep_think_browser_automation` | Gemini Pro Deep Think via browser automation |
 | `fable-local` | `claude_code_fable_local` | `claude_code_subscription_cli` | Fable (xHigh effort) via local `claude -p` |
 
-The ChatGPT Pro lane is not just a label. Every accepted GPT Pro request must resolve to the standard browser runner shape for ChatGPT Pro Extended Reasoning. The user should be able to run the short lane command, and the lane policy should normalize it as though the fully spelled-out command included `--engine browser --model gpt-5.5-pro --browser-thinking-time extended`.
+The ChatGPT Pro lane is not just a label. Every accepted GPT Pro request must resolve to the standard browser runner shape for ChatGPT Pro Extended Reasoning. The user should be able to run the short lane command, and the lane policy should normalize it as though the fully spelled-out command included `--engine browser --model gpt-5.5-pro --browser-thinking-time extended --browser-model-strategy select --browser-archive auto --browser-attachments auto`.
+
+`--browser-archive` is the correct flag name. Do not document or accept the misspelled `--brower-archive` alias.
 
 These lane names should be the first names agents see in:
 
@@ -436,7 +438,7 @@ The helper should accept exact legacy forms only when the intent is unambiguous:
 --lane gemini-deep-think
 --lane fable-local
 --model gpt-5.5-pro
---engine browser --model gpt-5.5-pro --browser-thinking-time extended
+--engine browser --model gpt-5.5-pro --browser-thinking-time extended [--browser-archive <auto|always|never>]
 --engine browser <exact Gemini Deep Think browser options>
 --engine claude-code --model fable
 ```
@@ -575,10 +577,35 @@ should normalize to the same execution intent as:
 ```bash
 oracle --engine browser --model gpt-5.5-pro \
   --browser-thinking-time extended \
-  -p "Refactor this hot path" --file "src/render/**"
+  --browser-model-strategy select \
+  --browser-archive auto \
+  --browser-attachments auto \
+  --prompt "Refactor this hot path" --file "src/render/**"
 ```
 
-Agents should not need to remember or supply `--browser-thinking-time extended`; the lane policy must inject it for every accepted ChatGPT Pro request.
+Agents should not need to remember or supply `--browser-thinking-time extended`; the lane policy must inject it for every accepted ChatGPT Pro request. The normalized request should also preserve caller-owned metadata and content inputs, including `--slug` when the caller supplied one. Do not synthesize a slug in the lane policy; Oracle's existing session layer already derives a default slug from the prompt when `--slug` is omitted.
+
+For example:
+
+```bash
+oracle --lane chatgpt-pro \
+  --prompt "Refactor this hot path" \
+  --file "src/render/**" \
+  --slug "render hot path"
+```
+
+should preserve the slug while applying the same browser route invariants:
+
+```bash
+oracle --engine browser --model gpt-5.5-pro \
+  --browser-thinking-time extended \
+  --browser-model-strategy select \
+  --browser-archive auto \
+  --browser-attachments auto \
+  --prompt "Refactor this hot path" \
+  --file "src/render/**" \
+  --slug "render hot path"
+```
 
 ```bash
 oracle --lane gemini-deep-think \
@@ -1979,6 +2006,8 @@ The registry should be the only source for:
 - Canonical internal ids.
 - Engine and access path mappings.
 - Canonical engine/model/thinking-time option expansion for each lane.
+- Canonical browser defaults that materially affect route behavior, such as model strategy, archive policy, and attachment delivery.
+- Preserved caller options, such as prompt, files, slug, output path, and dry-run state.
 - Accepted legacy forms.
 - Refused option families.
 - Help text.
@@ -2017,6 +2046,7 @@ interface ResolvedOracleLane {
   runtimeAssertions: string[];
   replacementCommand: string;
   normalizedEngineOptions: Record<string, unknown>;
+  preservedRequestOptions: Record<string, unknown>;
 }
 ```
 
@@ -2065,12 +2095,21 @@ The `chatgpt-pro` form must normalize to the standard Oracle browser command sha
 ```bash
 oracle --engine browser --model gpt-5.5-pro \
   --browser-thinking-time extended \
+  --browser-model-strategy select \
+  --browser-archive auto \
+  --browser-attachments auto \
   --prompt "Review this" --file README.md
 ```
 
 Exact legacy forms may be accepted only when they map cleanly to a reviewed lane. Every accepted legacy form should record the same resolved lane metadata as the `--lane` form.
 
-The exact ChatGPT Pro legacy forms are `--model gpt-5.5-pro` and `--engine browser --model gpt-5.5-pro --browser-thinking-time extended`. Both must resolve to `lane: "chatgpt-pro"` and must include extended thinking before the browser runner starts. Placeholder wording like `--engine browser <exact ChatGPT Pro browser options>` is not enough. Define the Gemini Deep Think legacy form after checking the current Oracle browser CLI flags. Until then, only the `--lane` browser forms should be advertised for Gemini.
+The exact ChatGPT Pro legacy forms are `--model gpt-5.5-pro` and `--engine browser --model gpt-5.5-pro --browser-thinking-time extended`. Both must resolve to `lane: "chatgpt-pro"` and must include extended thinking before the browser runner starts. The normalized top-level browser request should also materialize the current safe defaults `browserModelStrategy: "select"`, `browserArchive: "auto"`, and `browserAttachments: "auto"` so dry runs, capabilities, route-block replacements, and tests all describe the same run shape. Placeholder wording like `--engine browser <exact ChatGPT Pro browser options>` is not enough. Define the Gemini Deep Think legacy form after checking the current Oracle browser CLI flags. Until then, only the `--lane` browser forms should be advertised for Gemini.
+
+`--slug` is not a route invariant. It is caller-owned session metadata. The lane policy must accept and preserve it when present, must include it in normalized request metadata, and must leave it absent when the caller omitted it so the existing session layer can derive the default slug from the prompt.
+
+Do not include debug, recovery, or account-specific browser controls in the normalized ChatGPT Pro lane by default. In particular, do not inject `--browser-keep-browser`, `--browser-headless`, `--browser-hide-window`, `--browser-attach-running`, `--remote-host`, `--remote-chrome`, `--browser-tab`, `--chatgpt-url`, `--copy-profile`, inline-cookie flags, `--browser-research`, or `--browser-follow-up`. These options either change lifecycle/debug behavior, depend on the operator's local browser setup, or move the run out of the one-shot ChatGPT Pro lane contract. Accept them only through explicit compatibility review and route-block conflicts where they would weaken lane verification.
+
+Do not mix the ordinary top-level normalized request with the protected-route helper command surface unless the implementation deliberately switches this lane to that subcommand. Current protected helpers can express ChatGPT Pro as `--provider chatgpt --model chatgpt-pro-latest --chatgpt-pro --extended-reasoning`, but today's standard top-level browser run shape is still `--engine browser --model gpt-5.5-pro --browser-thinking-time extended` plus the browser defaults above.
 
 Do not infer a reviewed lane from vague input. For example, `--model gemini`, `--model gpt`, `--engine browser`, or `--engine api` are not enough. They should route-block and show the exact lane commands. Exact GPT Pro requests are the exception: `--model gpt-5.5-pro` is a reviewed legacy form and must normalize to the `chatgpt-pro` lane with extended thinking.
 
@@ -2118,7 +2157,7 @@ The browser lanes need their own runtime checks. Naming a browser access path is
 For `chatgpt-pro`, require:
 
 - Browser automation provider resolves to ChatGPT.
-- The resolved browser options include model `gpt-5.5-pro` and `browserThinkingTime: "extended"` or the exact CLI equivalent `--browser-thinking-time extended`.
+- The resolved browser options include model `gpt-5.5-pro`, `browserThinkingTime: "extended"`, `browserModelStrategy: "select"`, `browserArchive: "auto"` unless the caller explicitly chose `always` or `never`, and `browserAttachments: "auto"` unless the caller explicitly chose another valid attachment mode.
 - The signed-in browser session is available.
 - The account and model picker state prove the Pro lane is available, or doctor reports `selector_state_unknown`.
 - The selected model or mode is the intended ChatGPT Pro mode immediately before prompt submission.
@@ -2212,7 +2251,15 @@ Suggested lane fields:
         "normalizedEngineOptions": {
           "engine": "browser",
           "model": "gpt-5.5-pro",
-          "browserThinkingTime": "extended"
+          "browserThinkingTime": "extended",
+          "browserModelStrategy": "select",
+          "browserArchive": "auto",
+          "browserAttachments": "auto"
+        },
+        "preservedRequestOptions": {
+          "prompt": "caller supplied",
+          "files": "caller supplied",
+          "slug": "caller supplied when present"
         },
         "doctorCommand": "oracle doctor lanes --json",
         "refusedPatterns": ["--engine api", "--models", "--engine claude-code", "gemini-*", "fable"]
@@ -3189,12 +3236,15 @@ Test:
 - Each lane has one public name, canonical id, engine, access path, replacement command, doctor command, transport eligibility, refused patterns, and runtime assertion list.
 - Help text, capabilities data, MCP enum values, and route-block supported-lane output are generated from the same registry or snapshot-tested against it.
 - `lanePolicy.resolve()` accepts `--lane chatgpt-pro` and returns `canonicalId: "chatgpt_pro_browser"`, `engine: "browser"`, `accessPath: "chatgpt_pro_browser_automation"`, `policyVersion: "agent-lanes.v1"`, and the canonical replacement command.
-- `lanePolicy.resolve()` accepts `--lane chatgpt-pro --prompt "Refactor this hot path" --file "src/render/**"` and normalizes the execution shape to `--engine browser --model gpt-5.5-pro --browser-thinking-time extended` with the same prompt and file inputs.
+- `lanePolicy.resolve()` accepts `--lane chatgpt-pro --prompt "Refactor this hot path" --file "src/render/**"` and normalizes the execution shape to `--engine browser --model gpt-5.5-pro --browser-thinking-time extended --browser-model-strategy select --browser-archive auto --browser-attachments auto` with the same prompt and file inputs.
+- `lanePolicy.resolve()` accepts `--lane chatgpt-pro --prompt "Refactor this hot path" --file "src/render/**" --slug "render hot path"` and preserves the slug in normalized request metadata and the replacement command.
+- `lanePolicy.resolve()` accepts explicit `--browser-archive never` or `--browser-archive always` for `chatgpt-pro` only if the archive mode is carried into normalized request metadata; the default is `auto`.
+- `lanePolicy.resolve()` rejects the misspelled `--brower-archive`.
 - `lanePolicy.resolve()` accepts `--lane gemini-deep-think` and returns `canonicalId: "gemini_pro_deep_think_browser"`, `engine: "browser"`, `accessPath: "gemini_pro_deep_think_browser_automation"`, `policyVersion: "agent-lanes.v1"`, and the canonical replacement command.
 - `lanePolicy.resolve()` accepts `--lane fable-local` and returns `canonicalId: "claude_code_fable_local"`, `engine: "claude-code"`, `accessPath: "claude_code_subscription_cli"`, `policyVersion: "agent-lanes.v1"`, and the canonical replacement command.
 - Exact approved legacy aliases resolve to the canonical lane and record `inferredFrom`.
 - Vague inputs route-block: `--engine browser`, `--engine api`, `--model gpt`, `--model gemini`, `--model gemini-*`, `--model claude-4.6-sonnet`, and `--model some-new-model`.
-- Exact GPT Pro legacy input `--model gpt-5.5-pro` normalizes to `lane: "chatgpt-pro"` and includes `--browser-thinking-time extended`; it must never run as an API request or a browser request with default/fast thinking.
+- Exact GPT Pro legacy input `--model gpt-5.5-pro` normalizes to `lane: "chatgpt-pro"` and includes `--browser-thinking-time extended`, `--browser-model-strategy select`, `--browser-archive auto`, and `--browser-attachments auto`; it must never run as an API request or a browser request with default/fast thinking.
 - No-default inputs route-block: `oracle --prompt "Review this"` and MCP `consult` with only `prompt`.
 - Conflict inputs route-block: `--lane fable-local --engine browser`, `--lane fable-local --remote-host x`, `--lane chatgpt-pro --engine claude-code --model fable`, `--lane gemini-deep-think --model gpt-5.5-pro`, and MCP `{ "lane": "chatgpt-pro", "engine": "claude-code" }`.
 - Route-block decisions include `attemptedRoute`, `blockedReason`, `policyVersion`, `normalizedOptions`, `supportedLanes`, `sourcePrecedence`, and `noBackendStarted: true`.
@@ -3388,11 +3438,14 @@ Test:
 Test:
 
 - `--lane chatgpt-pro` routes to the ChatGPT browser lane.
-- `--lane chatgpt-pro --prompt "Refactor this hot path" --file "src/render/**"` routes as `--engine browser --model gpt-5.5-pro --browser-thinking-time extended` with the prompt and file preserved.
+- `--lane chatgpt-pro --prompt "Refactor this hot path" --file "src/render/**"` routes as `--engine browser --model gpt-5.5-pro --browser-thinking-time extended --browser-model-strategy select --browser-archive auto --browser-attachments auto` with the prompt and file preserved.
+- `--lane chatgpt-pro --prompt "Refactor this hot path" --file "src/render/**" --slug "render hot path"` preserves the caller slug.
+- `--lane chatgpt-pro --prompt "Refactor this hot path" --file "src/render/**" --browser-archive never` preserves the explicit archive policy, while omitted archive mode normalizes to `auto`.
+- `--brower-archive auto` is rejected as an unknown or invalid flag.
 - `--lane gemini-deep-think` routes to the Gemini Deep Think browser lane.
 - `--lane fable-local` routes to the local Claude Code runner.
 - `--engine claude-code --model fable` is accepted only as an expert compatibility alias and resolves to `lane: "fable-local"`.
-- Exact approved ChatGPT browser legacy form `--engine browser --model gpt-5.5-pro --browser-thinking-time extended` resolves to `lane: "chatgpt-pro"`.
+- Exact approved ChatGPT browser legacy form `--engine browser --model gpt-5.5-pro --browser-thinking-time extended` resolves to `lane: "chatgpt-pro"` and normalizes `--browser-model-strategy select --browser-archive auto --browser-attachments auto`.
 - Exact approved Gemini Deep Think browser legacy form resolves to `lane: "gemini-deep-think"` after its exact form is defined.
 - `--engine claude-code --models ...` is rejected.
 - `--engine claude-code --remote-host ...` is rejected.
@@ -3400,7 +3453,7 @@ Test:
 - `--engine api --model fable` route-blocks and does not use subscription mode.
 - `--engine api --model claude-4.6-sonnet` route-blocks for normal agent-facing v1 runs.
 - `oracle --prompt "Review this"` route-blocks instead of choosing a default lane.
-- `--model gpt-5.5-pro` normalizes to `lane: "chatgpt-pro"` with extended thinking and must not run any other backend shape.
+- `--model gpt-5.5-pro` normalizes to `lane: "chatgpt-pro"` with extended thinking, model strategy `select`, archive policy `auto`, attachment mode `auto`, and must not run any other backend shape.
 - `ORACLE_ENGINE=claude-code` is refused in v1.
 - Config-file `engine: "claude-code"` is refused in v1.
 - Dry run for `--lane fable-local` prints local mode plan and does not spawn.
@@ -3627,7 +3680,7 @@ These are the current recommended answers.
 
 3. Accept `--engine claude-code --model fable` only as an expert compatibility form that normalizes to `lane: "fable-local"`.
 
-4. Define and test exact GPT Pro legacy forms so `--model gpt-5.5-pro` and `--engine browser --model gpt-5.5-pro --browser-thinking-time extended` both normalize to ChatGPT Pro Extended Reasoning; do not accept vague browser model aliases, and leave Gemini Deep Think legacy forms undefined until they are checked and tested.
+4. Define and test exact GPT Pro legacy forms so `--model gpt-5.5-pro` and `--engine browser --model gpt-5.5-pro --browser-thinking-time extended` both normalize to ChatGPT Pro Extended Reasoning with `--browser-model-strategy select --browser-archive auto --browser-attachments auto`; preserve caller `--slug` and explicit valid `--browser-archive` overrides; do not accept vague browser model aliases, and leave Gemini Deep Think legacy forms undefined until they are checked and tested.
 
 5. Use exit code `2` and code `agent_lane_blocked` for unsupported active run routes.
 
@@ -3684,7 +3737,7 @@ These are the current recommended answers.
 The feature is ready only when all items below are true.
 
 - [ ] `oracle --lane chatgpt-pro` exists and resolves to `chatgpt_pro_browser`.
-- [ ] `oracle --lane chatgpt-pro --prompt "Refactor this hot path" --file "src/render/**"` normalizes to `--engine browser --model gpt-5.5-pro --browser-thinking-time extended` with the prompt and file inputs preserved.
+- [ ] `oracle --lane chatgpt-pro --prompt "Refactor this hot path" --file "src/render/**"` normalizes to `--engine browser --model gpt-5.5-pro --browser-thinking-time extended --browser-model-strategy select --browser-archive auto --browser-attachments auto` with the prompt and file inputs preserved.
 - [ ] `oracle --lane gemini-deep-think` exists and resolves to `gemini_pro_deep_think_browser`.
 - [ ] `oracle --lane fable-local` exists and resolves to `claude_code_fable_local`.
 - [ ] `LaneRegistry` is the source for help, capabilities, MCP schema, doctor lane list, route-block errors, accepted legacy mappings, and lane tests.
@@ -3698,7 +3751,10 @@ The feature is ready only when all items below are true.
 - [ ] Route-block happens before API provider selection, browser launch, browser model selection, Claude Code spawn, MCP run mapping, session worker start, and router request creation.
 - [ ] `--models` fan-out route-blocks in v1 even when every listed model resembles a reviewed lane.
 - [ ] `oracle --engine claude-code --model fable` exists only as an expert compatibility form and normalizes to `lane: "fable-local"`.
-- [ ] Exact ChatGPT Pro legacy forms are defined and tested as `--model gpt-5.5-pro` and `--engine browser --model gpt-5.5-pro --browser-thinking-time extended`.
+- [ ] Exact ChatGPT Pro legacy forms are defined and tested as `--model gpt-5.5-pro` and `--engine browser --model gpt-5.5-pro --browser-thinking-time extended`, with normalized `--browser-model-strategy select --browser-archive auto --browser-attachments auto`.
+- [ ] Caller-supplied `--slug` survives ChatGPT Pro lane normalization and omitted slug remains omitted until session creation derives the default.
+- [ ] Caller-supplied `--browser-archive never` and `--browser-archive always` survive ChatGPT Pro lane normalization; omitted archive mode normalizes to `auto`.
+- [ ] Misspelled `--brower-archive` is rejected and is not documented as an alias.
 - [ ] Exact Gemini Deep Think browser legacy form is either defined and tested or not accepted.
 - [ ] Explicit lane conflicts route-block instead of being ignored.
 - [ ] ChatGPT Pro lane verifies signed-in state and Pro selector state before prompt submission.
