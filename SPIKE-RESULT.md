@@ -5,9 +5,11 @@ Coordinator: RubyCliff
 Source plan: `SPIKE.md`
 Evidence root: `.planning-runs/claude-code-spike-execution-2026-07-02/`
 
+Live addendum: after the initial no-live report was pushed, the operator approved minimal Claude Code live probes and ChatGPT Pro browser prompt smoke. Sanitized results are recorded in `.planning-runs/claude-code-spike-execution-2026-07-02/coordinator-live/LIVE-GATE-RESULTS.md`. Gemini Deep Think remained intentionally skipped, MCP `fable-local` was narrowed to CLI-only, and MCP overflow / raw purge policy decisions remain deferred.
+
 ## Executive Summary
 
-The spike portfolio was exercised under the safe default policy: no live Claude prompt, no browser prompt submission, no ChatGPT `Answer now` click, and no real MCP-client prompt smoke without explicit human opt-in. Six non-fast GPT-5.5 xhigh workers completed the assigned non-live experiments and wrote evidence under the planning run directory.
+The initial spike portfolio was exercised under the safe default policy: no live Claude prompt, no browser prompt submission, no ChatGPT `Answer now` click, and no real MCP-client prompt smoke without explicit human opt-in. Six non-fast GPT-5.5 xhigh workers completed the assigned non-live experiments and wrote evidence under the planning run directory. The later live addendum records the operator-approved Claude Code and ChatGPT Pro probes.
 
 The main outcome is not "ship the adapter as planned." The evidence supports a narrower implementation: start with a hidden or expert local Claude Code CLI lane, built from fake-run and dry-run tests first, with hard route gates before session/backend side effects. Do not expose MCP `fable-local`, public browser reviewed lanes, or live smoke claims until the blocked live/readiness gates are cleared.
 
@@ -76,7 +78,16 @@ No-live validation completed before this report:
 
 The remaining human gates were front-loaded in `.planning-runs/claude-code-spike-execution-2026-07-02/coordinator/HUMAN-GATE-FRONTLOAD.md`.
 
-Default if unanswered:
+The operator later answered the gates:
+
+- Claude live probes: approved and run.
+- ChatGPT Pro browser readiness and prompt smoke: approved and run through the remote browser router.
+- Gemini Deep Think: intentionally skipped because there is no active Gemini lane/subscription.
+- MCP: CLI-only for `fable-local`; do not implement or advertise MCP `fable-local` in the hidden alpha.
+- Sequencing: hidden alpha is acceptable.
+- MCP overflow policy and raw purge scope: deferred for more context.
+
+Original default if unanswered:
 
 - No live Claude Code prompt probes.
 - No browser prompt submission and no ChatGPT `Answer now` clicks.
@@ -89,6 +100,16 @@ Prepared but not run without opt-in:
 - `ANTHROPIC_MODEL` precedence probe.
 - Non-submitting ChatGPT Pro Extended Reasoning and Gemini Deep Think readiness probes.
 - Real MCP client launch-context check.
+
+Post-approval live findings:
+
+- Claude Code `2.1.198` live stream exposed verifier-critical startup/result fields: `apiKeySource: "none"`, `model: "claude-fable-5"`, `tools: []`, `mcp_servers: []`, `permissionMode: "plan"`, empty slash commands/skills/plugins, and `fast_mode_state: "off"`.
+- `--mcp-config '{}'` is invalid; the empty strict config shape is `--mcp-config '{"mcpServers":{}}'`.
+- `ANTHROPIC_MODEL=claude-haiku-4-5-20251001` did not override `--model fable` for the main assistant run on this version.
+- `modelUsage` included the primary `claude-fable-5` usage plus a small `claude-haiku-4-5-20251001` entry, so the verifier should distinguish primary assistant model evidence from auxiliary Claude Code bookkeeping usage.
+- Built-in `agents` remained listed in startup fields despite safe mode and disabled slash commands; no tools or agents were invoked.
+- ChatGPT Pro remote-browser smoke selected `Pro Extended`, verified the model selection, returned `CHECK_CHATGPT_PRO_OK_20260702`, archived the conversation, and saved output under the coordinator live artifacts.
+- `oracle doctor chatgpt` still reports degraded without a live UI probe, and the Vitest live smoke skipped because it preflights local Chrome cookies instead of the configured `oracle serve` router.
 
 ## Key Architectural Findings
 
@@ -120,7 +141,7 @@ claude -p \
   --safe-mode \
   --disable-slash-commands \
   --strict-mcp-config \
-  --mcp-config '{}' \
+  --mcp-config '{"mcpServers":{}}' \
   --disallowedTools 'mcp__*' \
   --no-chrome \
   --no-session-persistence \
