@@ -1,0 +1,6 @@
+session spike10-success
+status: completed
+answer: Fake slice says hello.
+events: 5
+stdout bytes: 333
+stderr bytes: 35

@@ -1,0 +1,57 @@
+{
+  "id": "spike10-success",
+  "status": "completed",
+  "mode": "claude-code",
+  "lane": "fable-local",
+  "model": "claude-code-fable-5",
+  "errorReasons": [],
+  "finalAnswer": "Fake slice says hello.",
+  "artifacts": [
+    {
+      "artifactKind": "claude-code-stdout-raw",
+      "path": "/data/projects/oracle/.planning-runs/claude-code-spike-execution-2026-07-02/worker-c-nonfast/output/sessions/spike10-success/artifacts/claude-code-stdout.raw",
+      "sizeBytes": 333
+    },
+    {
+      "artifactKind": "claude-code-stderr-raw",
+      "path": "/data/projects/oracle/.planning-runs/claude-code-spike-execution-2026-07-02/worker-c-nonfast/output/sessions/spike10-success/artifacts/claude-code-stderr.raw",
+      "sizeBytes": 35
+    },
+    {
+      "artifactKind": "claude-code-events-normalized",
+      "path": "/data/projects/oracle/.planning-runs/claude-code-spike-execution-2026-07-02/worker-c-nonfast/output/sessions/spike10-success/artifacts/claude-code-events.normalized.ndjson",
+      "sizeBytes": 2685
+    },
+    {
+      "artifactKind": "claude-code-adapter",
+      "path": "/data/projects/oracle/.planning-runs/claude-code-spike-execution-2026-07-02/worker-c-nonfast/output/sessions/spike10-success/adapter.json",
+      "sizeBytes": 218
+    }
+  ],
+  "adapter": {
+    "adapter": "claude-code-subscription-cli",
+    "fakeRunner": true,
+    "command": [
+      "fake-claude",
+      "--output-format",
+      "stream-json"
+    ],
+    "lane": "fable-local",
+    "startupVerified": true,
+    "exitCode": 0
+  },
+  "capture": {
+    "status": "completed",
+    "stdoutBytes": 333,
+    "stderrBytes": 35,
+    "rawStdoutSha256": "383bc4c6dd24cac7dbbf7c48800a01da88c2ab31c71d686245310676dacde63e",
+    "rawStderrSha256": "20f6002ff79487511c0390c04f62dcbb3d3b6569863747d1c4f2d9f71e4d1b8e",
+    "events": 5,
+    "parseErrors": 0,
+    "partialEvents": 0,
+    "streamsComplete": true,
+    "stdoutPath": "/data/projects/oracle/.planning-runs/claude-code-spike-execution-2026-07-02/worker-c-nonfast/output/sessions/spike10-success/artifacts/claude-code-stdout.raw",
+    "stderrPath": "/data/projects/oracle/.planning-runs/claude-code-spike-execution-2026-07-02/worker-c-nonfast/output/sessions/spike10-success/artifacts/claude-code-stderr.raw",
+    "eventsPath": "/data/projects/oracle/.planning-runs/claude-code-spike-execution-2026-07-02/worker-c-nonfast/output/sessions/spike10-success/artifacts/claude-code-events.normalized.ndjson"
+  }
+}

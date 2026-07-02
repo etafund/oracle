@@ -1,0 +1,786 @@
+{
+  "generatedAt": "2026-07-02T08:01:15.550Z",
+  "spike": 8,
+  "platform": "linux",
+  "repoRoot": "/data/projects/oracle",
+  "tempRoot": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance",
+  "fixtureResults": [
+    {
+      "id": "absolute-safe-binary",
+      "raw": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/safe/bin/claude",
+      "absolute": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/safe/bin/claude",
+      "realpath": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/safe/bin/claude",
+      "symlinkChain": [],
+      "file": {
+        "uid": 1000,
+        "gid": 1000,
+        "mode": "0755",
+        "size": 6
+      },
+      "components": [
+        {
+          "path": "/home",
+          "uid": 0,
+          "gid": 0,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0750",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0775",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/safe",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/safe/bin",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/safe/bin/claude",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        }
+      ],
+      "wrapper": {
+        "kind": "native-binary"
+      },
+      "outcome": "allow",
+      "reasonCodes": [],
+      "spawnPolicy": "spawn_absolute_shell_false_prompt_on_stdin"
+    },
+    {
+      "id": "audited-node-wrapper",
+      "raw": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/node-wrapper/bin/claude",
+      "absolute": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/node-wrapper/bin/claude",
+      "realpath": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/node-wrapper/bin/claude",
+      "symlinkChain": [],
+      "file": {
+        "uid": 1000,
+        "gid": 1000,
+        "mode": "0755",
+        "size": 39
+      },
+      "components": [
+        {
+          "path": "/home",
+          "uid": 0,
+          "gid": 0,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0750",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0775",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/node-wrapper",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/node-wrapper/bin",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/node-wrapper/bin/claude",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        }
+      ],
+      "wrapper": {
+        "kind": "node-wrapper-audit-required",
+        "firstLine": "#!/usr/bin/env node"
+      },
+      "outcome": "allow_with_wrapper_audit",
+      "reasonCodes": [],
+      "spawnPolicy": "spawn_absolute_shell_false_prompt_on_stdin"
+    },
+    {
+      "id": "relative-path",
+      "raw": "claude",
+      "outcome": "deny",
+      "reasonCodes": [
+        "relative_path_refused"
+      ],
+      "spawnPolicy": "do_not_spawn"
+    },
+    {
+      "id": "repo-local-shadow",
+      "raw": "/data/projects/oracle/.planning-runs/claude-code-spike-execution-2026-07-02/worker-d-nonfast/generated/spike8-repo-shadow/claude",
+      "absolute": "/data/projects/oracle/.planning-runs/claude-code-spike-execution-2026-07-02/worker-d-nonfast/generated/spike8-repo-shadow/claude",
+      "realpath": "/data/projects/oracle/.planning-runs/claude-code-spike-execution-2026-07-02/worker-d-nonfast/generated/spike8-repo-shadow/claude",
+      "symlinkChain": [],
+      "file": {
+        "uid": 1000,
+        "gid": 1000,
+        "mode": "0755",
+        "size": 4
+      },
+      "components": [
+        {
+          "path": "/data",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/data/projects",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/data/projects/oracle",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0775",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/data/projects/oracle/.planning-runs",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0775",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/data/projects/oracle/.planning-runs/claude-code-spike-execution-2026-07-02",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0775",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/data/projects/oracle/.planning-runs/claude-code-spike-execution-2026-07-02/worker-d-nonfast",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0775",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/data/projects/oracle/.planning-runs/claude-code-spike-execution-2026-07-02/worker-d-nonfast/generated",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/data/projects/oracle/.planning-runs/claude-code-spike-execution-2026-07-02/worker-d-nonfast/generated/spike8-repo-shadow",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/data/projects/oracle/.planning-runs/claude-code-spike-execution-2026-07-02/worker-d-nonfast/generated/spike8-repo-shadow/claude",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        }
+      ],
+      "wrapper": {
+        "kind": "native-binary"
+      },
+      "outcome": "deny",
+      "reasonCodes": [
+        "repo_local_path_refused"
+      ],
+      "spawnPolicy": "do_not_spawn"
+    },
+    {
+      "id": "world-writable-component",
+      "raw": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/world-writable/bin/claude",
+      "absolute": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/world-writable/bin/claude",
+      "realpath": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/world-writable/bin/claude",
+      "symlinkChain": [],
+      "file": {
+        "uid": 1000,
+        "gid": 1000,
+        "mode": "0755",
+        "size": 4
+      },
+      "components": [
+        {
+          "path": "/home",
+          "uid": 0,
+          "gid": 0,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0750",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0775",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/world-writable",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0775",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/world-writable/bin",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0777",
+          "worldWritable": true,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/world-writable/bin/claude",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        }
+      ],
+      "wrapper": {
+        "kind": "native-binary"
+      },
+      "outcome": "deny",
+      "reasonCodes": [
+        "world_writable_path_component"
+      ],
+      "spawnPolicy": "do_not_spawn"
+    },
+    {
+      "id": "safe-symlink-chain",
+      "raw": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/symlink-safe/bin/claude",
+      "absolute": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/symlink-safe/bin/claude",
+      "realpath": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/safe/bin/claude",
+      "symlinkChain": [
+        {
+          "link": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/symlink-safe/bin/claude",
+          "target": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/safe/bin/claude",
+          "resolvedTarget": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/safe/bin/claude"
+        }
+      ],
+      "file": {
+        "uid": 1000,
+        "gid": 1000,
+        "mode": "0755",
+        "size": 6
+      },
+      "components": [
+        {
+          "path": "/home",
+          "uid": 0,
+          "gid": 0,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0750",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0775",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/safe",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/safe/bin",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/safe/bin/claude",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        }
+      ],
+      "wrapper": {
+        "kind": "native-binary"
+      },
+      "outcome": "allow",
+      "reasonCodes": [],
+      "spawnPolicy": "spawn_absolute_shell_false_prompt_on_stdin"
+    },
+    {
+      "id": "symlink-into-repo",
+      "raw": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/symlink-repo/bin/claude",
+      "absolute": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/symlink-repo/bin/claude",
+      "realpath": "/data/projects/oracle/.planning-runs/claude-code-spike-execution-2026-07-02/worker-d-nonfast/generated/spike8-repo-shadow/claude",
+      "symlinkChain": [
+        {
+          "link": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/symlink-repo/bin/claude",
+          "target": "/data/projects/oracle/.planning-runs/claude-code-spike-execution-2026-07-02/worker-d-nonfast/generated/spike8-repo-shadow/claude",
+          "resolvedTarget": "/data/projects/oracle/.planning-runs/claude-code-spike-execution-2026-07-02/worker-d-nonfast/generated/spike8-repo-shadow/claude"
+        }
+      ],
+      "file": {
+        "uid": 1000,
+        "gid": 1000,
+        "mode": "0755",
+        "size": 4
+      },
+      "components": [
+        {
+          "path": "/data",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/data/projects",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/data/projects/oracle",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0775",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/data/projects/oracle/.planning-runs",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0775",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/data/projects/oracle/.planning-runs/claude-code-spike-execution-2026-07-02",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0775",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/data/projects/oracle/.planning-runs/claude-code-spike-execution-2026-07-02/worker-d-nonfast",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0775",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/data/projects/oracle/.planning-runs/claude-code-spike-execution-2026-07-02/worker-d-nonfast/generated",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/data/projects/oracle/.planning-runs/claude-code-spike-execution-2026-07-02/worker-d-nonfast/generated/spike8-repo-shadow",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/data/projects/oracle/.planning-runs/claude-code-spike-execution-2026-07-02/worker-d-nonfast/generated/spike8-repo-shadow/claude",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        }
+      ],
+      "wrapper": {
+        "kind": "native-binary"
+      },
+      "outcome": "deny",
+      "reasonCodes": [
+        "repo_local_path_refused"
+      ],
+      "spawnPolicy": "do_not_spawn"
+    },
+    {
+      "id": "dangerous-shell-wrapper",
+      "raw": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/shell-wrapper/bin/claude",
+      "absolute": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/shell-wrapper/bin/claude",
+      "realpath": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/shell-wrapper/bin/claude",
+      "symlinkChain": [],
+      "file": {
+        "uid": 1000,
+        "gid": 1000,
+        "mode": "0755",
+        "size": 39
+      },
+      "components": [
+        {
+          "path": "/home",
+          "uid": 0,
+          "gid": 0,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0750",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0775",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/shell-wrapper",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/shell-wrapper/bin",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/shell-wrapper/bin/claude",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        }
+      ],
+      "wrapper": {
+        "kind": "shell-wrapper-danger",
+        "firstLine": "#!/bin/sh",
+        "dynamicCwd": true
+      },
+      "outcome": "deny",
+      "reasonCodes": [
+        "dangerous_shell_wrapper"
+      ],
+      "spawnPolicy": "do_not_spawn"
+    },
+    {
+      "id": "not-executable",
+      "raw": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/no-exec/bin/claude",
+      "absolute": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/no-exec/bin/claude",
+      "realpath": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/no-exec/bin/claude",
+      "symlinkChain": [],
+      "file": {
+        "uid": 1000,
+        "gid": 1000,
+        "mode": "0644",
+        "size": 4
+      },
+      "components": [
+        {
+          "path": "/home",
+          "uid": 0,
+          "gid": 0,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0750",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0775",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/no-exec",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/no-exec/bin",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.cache/oracle-spike-worker-d-exec-provenance/no-exec/bin/claude",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0644",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        }
+      ],
+      "wrapper": {
+        "kind": "native-binary"
+      },
+      "outcome": "deny",
+      "reasonCodes": [
+        "not_executable"
+      ],
+      "spawnPolicy": "do_not_spawn"
+    }
+  ],
+  "actualClaudeCandidates": [
+    {
+      "raw": "/home/ubuntu/.local/bin/claude",
+      "absolute": "/home/ubuntu/.local/bin/claude",
+      "realpath": "/home/ubuntu/.local/share/claude/versions/2.1.198",
+      "symlinkChain": [
+        {
+          "link": "/home/ubuntu/.local/bin/claude",
+          "target": "/home/ubuntu/.local/share/claude/versions/2.1.198",
+          "resolvedTarget": "/home/ubuntu/.local/share/claude/versions/2.1.198"
+        }
+      ],
+      "file": {
+        "uid": 1000,
+        "gid": 1000,
+        "mode": "0755",
+        "size": 248900408
+      },
+      "components": [
+        {
+          "path": "/home",
+          "uid": 0,
+          "gid": 0,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0750",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.local",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0700",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.local/share",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0775",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.local/share/claude",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0775",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.local/share/claude/versions",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0775",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        },
+        {
+          "path": "/home/ubuntu/.local/share/claude/versions/2.1.198",
+          "uid": 1000,
+          "gid": 1000,
+          "mode": "0755",
+          "worldWritable": false,
+          "isSymbolicLink": false
+        }
+      ],
+      "wrapper": {
+        "kind": "native-binary"
+      },
+      "outcome": "allow",
+      "reasonCodes": [],
+      "spawnPolicy": "spawn_absolute_shell_false_prompt_on_stdin"
+    }
+  ],
+  "actualClaudeCandidateCount": 1,
+  "spawnInvariant": {
+    "executable": "absolute realpath selected by resolver",
+    "shell": false,
+    "argvPromptBytes": false,
+    "promptTransport": "stdin",
+    "cwd": "explicit project cwd after local-owner guard"
+  },
+  "blockedOsSpecificChecks": [
+    "macOS Gatekeeper/quarantine/notarization metadata was not available on this Linux host."
+  ]
+}

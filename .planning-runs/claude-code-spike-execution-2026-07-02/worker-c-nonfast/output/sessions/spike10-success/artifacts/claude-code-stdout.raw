@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","authSource":"oauth","model":"claude-fable-5","tools":[],"mcp":{"servers":[]}}
+{"type":"assistant_delta","delta":"Fake slice says "}
+{"type":"assistant_delta","delta":"hello."}
+{"type":"result","result":"Fake slice says hello.","total_cost_usd":0,"modelUsage":{"input_tokens":11,"output_tokens":5}}

@@ -1,0 +1,7 @@
+{"type":"system","subtype":"init","authSource":"oauth","model":"claude-fable-5","tools":[]}
+{"type":"assistant_delta","delta":"snowman + euro: â˜ƒ â‚¬"}
+{"type":"assistant_delta","delta":"first"}
+{"type":"assistant_delta","delta":"second"}
+plain visible text
+ÿþ
+{"type":"assistant_delta","delta":"unterminated

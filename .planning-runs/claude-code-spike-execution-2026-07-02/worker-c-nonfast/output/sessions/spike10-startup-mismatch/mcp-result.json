@@ -1,0 +1,78 @@
+{
+  "isError": true,
+  "content": [
+    {
+      "type": "text",
+      "text": "session spike10-startup-mismatch\nstatus: error\nanswer: (none)\nevents: 2\nstdout bytes: 135\nstderr bytes: 0"
+    }
+  ],
+  "structuredContent": {
+    "schemaVersion": 1,
+    "status": "error",
+    "success": false,
+    "sessionId": "spike10-startup-mismatch",
+    "finalAnswer": null,
+    "eventsComplete": true,
+    "streamsComplete": true,
+    "inlineByteLimit": 1048576,
+    "inlineVisibleBytes": 135,
+    "stdoutBytes": 135,
+    "stderrBytes": 0,
+    "eventCount": 2,
+    "omittedEventCount": 0,
+    "omittedVisibleBytes": 0,
+    "events": [
+      {
+        "schemaVersion": 1,
+        "receiveSeq": 1,
+        "timestamp": "2026-07-02T08:00:00.001Z",
+        "stream": "stdout",
+        "byteOffset": 0,
+        "byteLength": 99,
+        "rawEncoding": "base64",
+        "rawBase64": "eyJ0eXBlIjoic3lzdGVtIiwic3VidHlwZSI6ImluaXQiLCJhdXRoU291cmNlIjoiYXBpX2tleSIsIm1vZGVsIjoiY2xhdWRlLXNvbm5ldCIsInRvb2xzIjpbIlJlYWQiXX0K",
+        "rawSha256": "1f85c5bb3027c8ac89d4fde47f1df38967bf8847a02b8d4844b608c8c033b921",
+        "parseStatus": "json",
+        "decodedText": "{\"type\":\"system\",\"subtype\":\"init\",\"authSource\":\"api_key\",\"model\":\"claude-sonnet\",\"tools\":[\"Read\"]}",
+        "jsonType": "system",
+        "lineTerminator": "lf"
+      },
+      {
+        "schemaVersion": 1,
+        "receiveSeq": 2,
+        "timestamp": "2026-07-02T08:00:00.002Z",
+        "stream": "stdout",
+        "byteOffset": 99,
+        "byteLength": 36,
+        "rawEncoding": "base64",
+        "rawBase64": "eyJ0eXBlIjoicmVzdWx0IiwicmVzdWx0IjoidW5zYWZlIn0K",
+        "rawSha256": "67a9f68a5436855d39bd1ee616c8b93cf207a4db6168cbb1861cfff2e43b20f2",
+        "parseStatus": "json",
+        "decodedText": "{\"type\":\"result\",\"result\":\"unsafe\"}",
+        "jsonType": "result",
+        "extractedVisibleText": "unsafe",
+        "lineTerminator": "lf"
+      }
+    ],
+    "resources": [
+      {
+        "uri": "oracle-session://spike10-startup-mismatch/artifacts/claude-code-stdout.raw",
+        "artifactKind": "claude-code-stdout-raw",
+        "bytes": 135,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "uri": "oracle-session://spike10-startup-mismatch/artifacts/claude-code-stderr.raw",
+        "artifactKind": "claude-code-stderr-raw",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "uri": "oracle-session://spike10-startup-mismatch/artifacts/claude-code-events.normalized.ndjson",
+        "artifactKind": "claude-code-events-normalized",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ]
+  }
+}

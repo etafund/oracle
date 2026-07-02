@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "status": "overflow",
+  "success": false,
+  "sessionId": "spike6-10mb",
+  "finalAnswer": null,
+  "eventsComplete": false,
+  "streamsComplete": true,
+  "inlineByteLimit": 1048576,
+  "inlineVisibleBytes": 0,
+  "stdoutBytes": 10485760,
+  "stderrBytes": 128,
+  "eventCount": 641,
+  "omittedEventCount": 641,
+  "omittedVisibleBytes": 10485888,
+  "resources": [
+    {
+      "uri": "oracle-session://spike6-10mb/artifacts/claude-code-stdout.raw",
+      "artifactKind": "claude-code-stdout-raw",
+      "bytes": 10485760,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "uri": "oracle-session://spike6-10mb/artifacts/claude-code-stderr.raw",
+      "artifactKind": "claude-code-stderr-raw",
+      "bytes": 128,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "uri": "oracle-session://spike6-10mb/artifacts/claude-code-events.normalized.ndjson",
+      "artifactKind": "claude-code-events-normalized",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "overflow": {
+    "reason": "mcp_inline_byte_limit_exceeded",
+    "policy": "finish_then_non_success",
+    "message": "Visible streams exceeded the MCP inline byte limit; use raw resources for complete bytes."
+  }
+}

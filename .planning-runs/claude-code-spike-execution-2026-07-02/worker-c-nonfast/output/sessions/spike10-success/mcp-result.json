@@ -1,0 +1,124 @@
+{
+  "isError": false,
+  "content": [
+    {
+      "type": "text",
+      "text": "session spike10-success\nstatus: completed\nanswer: Fake slice says hello.\nevents: 5\nstdout bytes: 333\nstderr bytes: 35"
+    }
+  ],
+  "structuredContent": {
+    "schemaVersion": 1,
+    "status": "completed",
+    "success": true,
+    "sessionId": "spike10-success",
+    "finalAnswer": "Fake slice says hello.",
+    "eventsComplete": true,
+    "streamsComplete": true,
+    "inlineByteLimit": 1048576,
+    "inlineVisibleBytes": 368,
+    "stdoutBytes": 333,
+    "stderrBytes": 35,
+    "eventCount": 5,
+    "omittedEventCount": 0,
+    "omittedVisibleBytes": 0,
+    "events": [
+      {
+        "schemaVersion": 1,
+        "receiveSeq": 1,
+        "timestamp": "2026-07-02T08:00:00.001Z",
+        "stream": "stdout",
+        "byteOffset": 0,
+        "byteLength": 113,
+        "rawEncoding": "base64",
+        "rawBase64": "eyJ0eXBlIjoic3lzdGVtIiwic3VidHlwZSI6ImluaXQiLCJhdXRoU291cmNlIjoib2F1dGgiLCJtb2RlbCI6ImNsYXVkZS1mYWJsZS01IiwidG9vbHMiOltdLCJtY3AiOnsic2VydmVycyI6W119fQo=",
+        "rawSha256": "5146a25165b0e3ed87d8c2adff37ccd2333cc8935e60c7b98df61dbe83ad2b15",
+        "parseStatus": "json",
+        "decodedText": "{\"type\":\"system\",\"subtype\":\"init\",\"authSource\":\"oauth\",\"model\":\"claude-fable-5\",\"tools\":[],\"mcp\":{\"servers\":[]}}",
+        "jsonType": "system",
+        "lineTerminator": "lf"
+      },
+      {
+        "schemaVersion": 1,
+        "receiveSeq": 2,
+        "timestamp": "2026-07-02T08:00:00.002Z",
+        "stream": "stdout",
+        "byteOffset": 113,
+        "byteLength": 54,
+        "rawEncoding": "base64",
+        "rawBase64": "eyJ0eXBlIjoiYXNzaXN0YW50X2RlbHRhIiwiZGVsdGEiOiJGYWtlIHNsaWNlIHNheXMgIn0K",
+        "rawSha256": "b946b55046a80c4f0a5ee8c5d16044206f9a85c127a00ac8ab421c3b67ec4932",
+        "parseStatus": "json",
+        "decodedText": "{\"type\":\"assistant_delta\",\"delta\":\"Fake slice says \"}",
+        "jsonType": "assistant_delta",
+        "extractedVisibleText": "Fake slice says ",
+        "lineTerminator": "lf"
+      },
+      {
+        "schemaVersion": 1,
+        "receiveSeq": 3,
+        "timestamp": "2026-07-02T08:00:00.003Z",
+        "stream": "stderr",
+        "byteOffset": 0,
+        "byteLength": 35,
+        "rawEncoding": "base64",
+        "rawBase64": "ZGlhZ25vc3RpYzogZmFrZSBzdGRlcnIgaXMgdmlzaWJsZQo=",
+        "rawSha256": "20f6002ff79487511c0390c04f62dcbb3d3b6569863747d1c4f2d9f71e4d1b8e",
+        "parseStatus": "stderr",
+        "decodedText": "diagnostic: fake stderr is visible\n",
+        "extractedVisibleText": "diagnostic: fake stderr is visible\n"
+      },
+      {
+        "schemaVersion": 1,
+        "receiveSeq": 4,
+        "timestamp": "2026-07-02T08:00:00.004Z",
+        "stream": "stdout",
+        "byteOffset": 167,
+        "byteLength": 44,
+        "rawEncoding": "base64",
+        "rawBase64": "eyJ0eXBlIjoiYXNzaXN0YW50X2RlbHRhIiwiZGVsdGEiOiJoZWxsby4ifQo=",
+        "rawSha256": "621e7b00c030b730f612ab15f9398539dcb803d9e359fa1df436b5ec9adfdbc0",
+        "parseStatus": "json",
+        "decodedText": "{\"type\":\"assistant_delta\",\"delta\":\"hello.\"}",
+        "jsonType": "assistant_delta",
+        "extractedVisibleText": "hello.",
+        "lineTerminator": "lf"
+      },
+      {
+        "schemaVersion": 1,
+        "receiveSeq": 5,
+        "timestamp": "2026-07-02T08:00:00.005Z",
+        "stream": "stdout",
+        "byteOffset": 211,
+        "byteLength": 122,
+        "rawEncoding": "base64",
+        "rawBase64": "eyJ0eXBlIjoicmVzdWx0IiwicmVzdWx0IjoiRmFrZSBzbGljZSBzYXlzIGhlbGxvLiIsInRvdGFsX2Nvc3RfdXNkIjowLCJtb2RlbFVzYWdlIjp7ImlucHV0X3Rva2VucyI6MTEsIm91dHB1dF90b2tlbnMiOjV9fQo=",
+        "rawSha256": "f20364ee4a2528d30a299751a20eb8b9b296ebeccef2dd8e35c8082202591d91",
+        "parseStatus": "json",
+        "decodedText": "{\"type\":\"result\",\"result\":\"Fake slice says hello.\",\"total_cost_usd\":0,\"modelUsage\":{\"input_tokens\":11,\"output_tokens\":5}}",
+        "jsonType": "result",
+        "extractedVisibleText": "Fake slice says hello.",
+        "lineTerminator": "lf"
+      }
+    ],
+    "resources": [
+      {
+        "uri": "oracle-session://spike10-success/artifacts/claude-code-stdout.raw",
+        "artifactKind": "claude-code-stdout-raw",
+        "bytes": 333,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "uri": "oracle-session://spike10-success/artifacts/claude-code-stderr.raw",
+        "artifactKind": "claude-code-stderr-raw",
+        "bytes": 35,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "uri": "oracle-session://spike10-success/artifacts/claude-code-events.normalized.ndjson",
+        "artifactKind": "claude-code-events-normalized",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ]
+  }
+}

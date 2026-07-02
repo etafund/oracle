@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","authSource":"oauth","model":"claude-fable-5","tools":[]}
+{"type":"assistant_delta","delta":"crashed mid-line"

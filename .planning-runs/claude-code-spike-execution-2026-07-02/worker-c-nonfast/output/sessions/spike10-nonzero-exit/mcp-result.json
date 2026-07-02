@@ -1,0 +1,92 @@
+{
+  "isError": true,
+  "content": [
+    {
+      "type": "text",
+      "text": "session spike10-nonzero-exit\nstatus: error\nanswer: (none)\nevents: 3\nstdout bytes: 144\nstderr bytes: 29"
+    }
+  ],
+  "structuredContent": {
+    "schemaVersion": 1,
+    "status": "error",
+    "success": false,
+    "sessionId": "spike10-nonzero-exit",
+    "finalAnswer": null,
+    "eventsComplete": true,
+    "streamsComplete": true,
+    "inlineByteLimit": 1048576,
+    "inlineVisibleBytes": 173,
+    "stdoutBytes": 144,
+    "stderrBytes": 29,
+    "eventCount": 3,
+    "omittedEventCount": 0,
+    "omittedVisibleBytes": 0,
+    "events": [
+      {
+        "schemaVersion": 1,
+        "receiveSeq": 1,
+        "timestamp": "2026-07-02T08:00:00.001Z",
+        "stream": "stdout",
+        "byteOffset": 0,
+        "byteLength": 92,
+        "rawEncoding": "base64",
+        "rawBase64": "eyJ0eXBlIjoic3lzdGVtIiwic3VidHlwZSI6ImluaXQiLCJhdXRoU291cmNlIjoib2F1dGgiLCJtb2RlbCI6ImNsYXVkZS1mYWJsZS01IiwidG9vbHMiOltdfQo=",
+        "rawSha256": "a21238e3846527e2d3de65238c7b004d52f66f77bf392ee3a7dc454c5bed6865",
+        "parseStatus": "json",
+        "decodedText": "{\"type\":\"system\",\"subtype\":\"init\",\"authSource\":\"oauth\",\"model\":\"claude-fable-5\",\"tools\":[]}",
+        "jsonType": "system",
+        "lineTerminator": "lf"
+      },
+      {
+        "schemaVersion": 1,
+        "receiveSeq": 2,
+        "timestamp": "2026-07-02T08:00:00.002Z",
+        "stream": "stderr",
+        "byteOffset": 0,
+        "byteLength": 29,
+        "rawEncoding": "base64",
+        "rawBase64": "ZmF0YWw6IGZha2UgcnVubmVyIGV4aXRlZCA0Mgo=",
+        "rawSha256": "605968ece63dd084ba91a6da83f21bf6947641d47544f4c6e8fd59b977cec6f8",
+        "parseStatus": "stderr",
+        "decodedText": "fatal: fake runner exited 42\n",
+        "extractedVisibleText": "fatal: fake runner exited 42\n"
+      },
+      {
+        "schemaVersion": 1,
+        "receiveSeq": 3,
+        "timestamp": "2026-07-02T08:00:00.003Z",
+        "stream": "stdout",
+        "byteOffset": 92,
+        "byteLength": 52,
+        "rawEncoding": "base64",
+        "rawBase64": "eyJ0eXBlIjoiYXNzaXN0YW50X2RlbHRhIiwiZGVsdGEiOiJjcmFzaGVkIG1pZC1saW5lIg==",
+        "rawSha256": "3e83a3762a1d116bb52e88b20fbabd2332d6e0d6084d5b5ea509ed0178e97cbe",
+        "parseStatus": "json_parse_error",
+        "decodedText": "{\"type\":\"assistant_delta\",\"delta\":\"crashed mid-line\"",
+        "error": "Expected ',' or '}' after property value in JSON at position 52 (line 1 column 53)",
+        "lineTerminator": "none",
+        "partialFinal": true
+      }
+    ],
+    "resources": [
+      {
+        "uri": "oracle-session://spike10-nonzero-exit/artifacts/claude-code-stdout.raw",
+        "artifactKind": "claude-code-stdout-raw",
+        "bytes": 144,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "uri": "oracle-session://spike10-nonzero-exit/artifacts/claude-code-stderr.raw",
+        "artifactKind": "claude-code-stderr-raw",
+        "bytes": 29,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "uri": "oracle-session://spike10-nonzero-exit/artifacts/claude-code-events.normalized.ndjson",
+        "artifactKind": "claude-code-events-normalized",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ]
+  }
+}

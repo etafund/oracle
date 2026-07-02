@@ -1,0 +1,126 @@
+{
+  "defaultInlineVisibleByteLimit": 1048576,
+  "recommendation": "Use a 1 MiB default inline visible-byte limit; overflow should finish the run, persist complete raw artifacts, and return typed non-success unless the operator explicitly chooses early abort.",
+  "measurements": [
+    {
+      "label": "10kb",
+      "visibleBytes": 10368,
+      "eventCount": 2,
+      "defaultLimitStatus": "completed",
+      "defaultEventsComplete": true,
+      "defaultStreamsComplete": true,
+      "defaultOmittedEventCount": 0,
+      "defaultEnvelope": {
+        "jsonBytes": 36190,
+        "serializationMs": 0.104,
+        "heapDeltaBytes": 43104
+      },
+      "earlyAbortEnvelope": {
+        "jsonBytes": 36168,
+        "serializationMs": 0.025,
+        "heapDeltaBytes": 36856
+      },
+      "forcedInlineEnvelope": {
+        "jsonBytes": 36199,
+        "serializationMs": 0.025,
+        "heapDeltaBytes": 36888
+      }
+    },
+    {
+      "label": "100kb",
+      "visibleBytes": 102528,
+      "eventCount": 8,
+      "defaultLimitStatus": "completed",
+      "defaultEventsComplete": true,
+      "defaultStreamsComplete": true,
+      "defaultOmittedEventCount": 0,
+      "defaultEnvelope": {
+        "jsonBytes": 345422,
+        "serializationMs": 1.36,
+        "heapDeltaBytes": 346400
+      },
+      "earlyAbortEnvelope": {
+        "jsonBytes": 345400,
+        "serializationMs": 1.229,
+        "heapDeltaBytes": 346480
+      },
+      "forcedInlineEnvelope": {
+        "jsonBytes": 345431,
+        "serializationMs": 1.042,
+        "heapDeltaBytes": 346328
+      }
+    },
+    {
+      "label": "1mb",
+      "visibleBytes": 1000128,
+      "eventCount": 63,
+      "defaultLimitStatus": "completed",
+      "defaultEventsComplete": true,
+      "defaultStreamsComplete": true,
+      "defaultOmittedEventCount": 0,
+      "defaultEnvelope": {
+        "jsonBytes": 3356095,
+        "serializationMs": 12.756,
+        "heapDeltaBytes": 3364128
+      },
+      "earlyAbortEnvelope": {
+        "jsonBytes": 3356073,
+        "serializationMs": 10.899,
+        "heapDeltaBytes": -143184
+      },
+      "forcedInlineEnvelope": {
+        "jsonBytes": 3356104,
+        "serializationMs": 10.592,
+        "heapDeltaBytes": 3356808
+      }
+    },
+    {
+      "label": "10mb",
+      "visibleBytes": 10485888,
+      "eventCount": 641,
+      "defaultLimitStatus": "overflow",
+      "defaultEventsComplete": false,
+      "defaultStreamsComplete": true,
+      "defaultOmittedEventCount": 641,
+      "defaultEnvelope": {
+        "jsonBytes": 1160,
+        "serializationMs": 0.023,
+        "heapDeltaBytes": 2832
+      },
+      "earlyAbortEnvelope": {
+        "jsonBytes": 1149,
+        "serializationMs": 0.005,
+        "heapDeltaBytes": 1856
+      },
+      "forcedInlineEnvelope": {
+        "jsonBytes": 35172793,
+        "serializationMs": 150.973,
+        "heapDeltaBytes": 35173792
+      }
+    },
+    {
+      "label": "too-large-12mb",
+      "visibleBytes": 12583040,
+      "eventCount": 769,
+      "defaultLimitStatus": "overflow",
+      "defaultEventsComplete": false,
+      "defaultStreamsComplete": true,
+      "defaultOmittedEventCount": 769,
+      "defaultEnvelope": {
+        "jsonBytes": 1200,
+        "serializationMs": 0.022,
+        "heapDeltaBytes": 1968
+      },
+      "earlyAbortEnvelope": {
+        "jsonBytes": 1189,
+        "serializationMs": 0.004,
+        "heapDeltaBytes": 1960
+      },
+      "forcedInlineEnvelope": {
+        "jsonBytes": 42207201,
+        "serializationMs": 126.592,
+        "heapDeltaBytes": 42208264
+      }
+    }
+  ]
+}

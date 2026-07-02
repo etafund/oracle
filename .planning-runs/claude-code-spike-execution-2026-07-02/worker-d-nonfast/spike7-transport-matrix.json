@@ -1,0 +1,231 @@
+{
+  "generatedAt": "2026-07-02T08:00:27.232Z",
+  "spike": 7,
+  "facts": {
+    "platform": "linux",
+    "uid": 1000,
+    "gid": 1000,
+    "user": "ubuntu",
+    "sudoUser": null,
+    "cwd": "/data/projects/oracle",
+    "repoRoot": "/data/projects/oracle",
+    "oracleHome": "/home/ubuntu/.oracle",
+    "cwdOwner": {
+      "path": "/data/projects/oracle",
+      "exists": true,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": "0775",
+      "sameUid": true
+    },
+    "repoOwner": {
+      "path": "/data/projects/oracle",
+      "exists": true,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": "0775",
+      "sameUid": true
+    },
+    "oracleHomeOwner": {
+      "path": "/home/ubuntu/.oracle",
+      "exists": true,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": "0700",
+      "sameUid": true
+    },
+    "sessionsOwner": {
+      "path": "/home/ubuntu/.oracle/sessions",
+      "exists": true,
+      "uid": 1000,
+      "gid": 1000,
+      "mode": "0775",
+      "sameUid": true
+    }
+  },
+  "decisions": [
+    {
+      "id": "cli-foreground-local",
+      "surface": "cli",
+      "transportKind": "cli-local-tty",
+      "sessionWorker": false,
+      "detached": false,
+      "outcome": "allow",
+      "reasonCodes": []
+    },
+    {
+      "id": "cli-foreground-piped",
+      "surface": "cli",
+      "transportKind": "cli-local-nontty",
+      "sessionWorker": false,
+      "detached": false,
+      "outcome": "allow",
+      "reasonCodes": []
+    },
+    {
+      "id": "cli-detached-background-worker",
+      "surface": "cli",
+      "transportKind": "cli-local-nontty",
+      "sessionWorker": true,
+      "detached": true,
+      "outcome": "refuse",
+      "reasonCodes": [
+        "session_worker_context",
+        "detached_context"
+      ]
+    },
+    {
+      "id": "restart-attached-local",
+      "surface": "cli",
+      "transportKind": "cli-local-tty",
+      "sessionWorker": false,
+      "detached": false,
+      "restart": true,
+      "outcome": "allow",
+      "reasonCodes": []
+    },
+    {
+      "id": "mcp-stdio-local",
+      "surface": "mcp",
+      "transportKind": "mcp-stdio",
+      "sessionWorker": false,
+      "detached": false,
+      "outcome": "allow",
+      "reasonCodes": []
+    },
+    {
+      "id": "mcp-local-socket-peercred",
+      "surface": "mcp",
+      "transportKind": "mcp-local-socket-peercred",
+      "requiresPeerCred": true,
+      "peerCredSameUid": true,
+      "sessionWorker": false,
+      "detached": false,
+      "outcome": "allow",
+      "reasonCodes": []
+    },
+    {
+      "id": "mcp-local-socket-no-peercred",
+      "surface": "mcp",
+      "transportKind": "mcp-local-socket-no-peercred",
+      "requiresPeerCred": true,
+      "peerCredSameUid": false,
+      "sessionWorker": false,
+      "detached": false,
+      "outcome": "refuse",
+      "reasonCodes": [
+        "local_socket_without_peer_credentials",
+        "peer_credentials_not_verified",
+        "transport_not_allowlisted"
+      ]
+    },
+    {
+      "id": "mcp-network",
+      "surface": "mcp",
+      "transportKind": "mcp-network",
+      "remoteHost": "127.0.0.1:9473",
+      "sessionWorker": false,
+      "detached": false,
+      "outcome": "refuse",
+      "reasonCodes": [
+        "remote_host_configured",
+        "network_mcp_transport",
+        "transport_not_allowlisted"
+      ]
+    },
+    {
+      "id": "oracle-serve",
+      "surface": "serve",
+      "transportKind": "network-http",
+      "remoteHost": "0.0.0.0:9473",
+      "sessionWorker": false,
+      "detached": false,
+      "outcome": "refuse",
+      "reasonCodes": [
+        "remote_host_configured",
+        "network_service_context",
+        "transport_not_allowlisted"
+      ]
+    },
+    {
+      "id": "oracle-router",
+      "surface": "router",
+      "transportKind": "network-http",
+      "remoteHost": "router",
+      "sessionWorker": false,
+      "detached": false,
+      "outcome": "refuse",
+      "reasonCodes": [
+        "remote_host_configured",
+        "network_service_context",
+        "router_context",
+        "transport_not_allowlisted"
+      ]
+    },
+    {
+      "id": "oracle-bridge",
+      "surface": "bridge",
+      "transportKind": "network-http",
+      "remoteHost": "bridge",
+      "sessionWorker": false,
+      "detached": false,
+      "outcome": "refuse",
+      "reasonCodes": [
+        "remote_host_configured",
+        "network_service_context",
+        "bridge_context",
+        "transport_not_allowlisted"
+      ]
+    },
+    {
+      "id": "browser-remote-host",
+      "surface": "cli",
+      "transportKind": "remote-browser-cdp",
+      "remoteBrowser": true,
+      "sessionWorker": false,
+      "detached": false,
+      "outcome": "refuse",
+      "reasonCodes": [
+        "remote_browser_configured",
+        "remote_browser_cdp",
+        "transport_not_allowlisted"
+      ]
+    },
+    {
+      "id": "remote-chrome-devtools",
+      "surface": "cli",
+      "transportKind": "remote-browser-cdp",
+      "remoteChrome": true,
+      "sessionWorker": false,
+      "detached": false,
+      "outcome": "refuse",
+      "reasonCodes": [
+        "remote_chrome_configured",
+        "remote_browser_cdp",
+        "transport_not_allowlisted"
+      ]
+    }
+  ],
+  "blockedOsSpecificChecks": [],
+  "recommendedGuardApi": {
+    "name": "assertFableLocalLaunchEligible",
+    "earliestHooks": [
+      "CLI root route/lane resolver before sessionStore.createSession",
+      "restartSession before cloned session creation",
+      "MCP consult before sessionStore.createSession",
+      "detached --exec-session before performSessionRun",
+      "doctor/probe before executable resolution"
+    ],
+    "requiredServerSideInputs": [
+      "surface",
+      "transportKind",
+      "process uid/gid",
+      "SUDO_USER",
+      "cwd owner",
+      "ORACLE_HOME_DIR owner",
+      "session dir owner",
+      "remote host/browser/chrome settings",
+      "MCP peer credentials when using sockets"
+    ]
+  }
+}

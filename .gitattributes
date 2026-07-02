@@ -9,5 +9,6 @@
 
 # Binary assets: never normalize or diff as text.
 *.png binary
+*.raw binary
 *.swift text eol=lf
 vendor/oracle-notifier/OracleNotifier.app/** binary

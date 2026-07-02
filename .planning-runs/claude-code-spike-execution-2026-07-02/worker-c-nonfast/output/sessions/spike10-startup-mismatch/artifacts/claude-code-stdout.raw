@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","authSource":"api_key","model":"claude-sonnet","tools":["Read"]}
+{"type":"result","result":"unsafe"}

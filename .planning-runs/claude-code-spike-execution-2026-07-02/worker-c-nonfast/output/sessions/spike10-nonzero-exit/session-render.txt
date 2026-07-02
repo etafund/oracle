@@ -1,0 +1,6 @@
+session spike10-nonzero-exit
+status: error
+answer: (none)
+events: 3
+stdout bytes: 144
+stderr bytes: 29

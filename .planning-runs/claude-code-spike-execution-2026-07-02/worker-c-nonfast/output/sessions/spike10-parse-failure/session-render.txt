@@ -1,0 +1,6 @@
+session spike10-parse-failure
+status: error
+answer: (none)
+events: 3
+stdout bytes: 156
+stderr bytes: 0

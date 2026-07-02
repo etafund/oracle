@@ -1,0 +1,289 @@
+{
+  "generatedAt": "2026-07-02T08:01:46.306Z",
+  "spike": 11,
+  "platform": "linux",
+  "processGroupKillSupported": true,
+  "lifecycleCases": [
+    {
+      "mode": "partial-hang",
+      "pid": 3831554,
+      "pids": {
+        "child": 3831554,
+        "grandchildren": []
+      },
+      "exit": {
+        "code": null,
+        "signal": "SIGTERM"
+      },
+      "elapsedMs": 754,
+      "killedByHarness": true,
+      "killInfo": {
+        "reason": "timeout",
+        "sent": [
+          "SIGTERM"
+        ],
+        "groupAliveAfter": false
+      },
+      "verifierReason": null,
+      "stdoutBytes": 35,
+      "stderrBytes": 0,
+      "stdoutPreview": "{\"type\":\"assistant\",\"text\":\"partial",
+      "stderrPreview": "",
+      "partialRawBytesPreserved": true,
+      "streamsComplete": false,
+      "eventsComplete": false,
+      "childAliveAfter": false,
+      "descendantAliveAfter": []
+    },
+    {
+      "mode": "stdin-hang",
+      "pid": 3831593,
+      "pids": {
+        "child": 3831593,
+        "grandchildren": []
+      },
+      "exit": {
+        "code": null,
+        "signal": "SIGTERM"
+      },
+      "elapsedMs": 756,
+      "killedByHarness": true,
+      "killInfo": {
+        "reason": "timeout",
+        "sent": [
+          "SIGTERM"
+        ],
+        "groupAliveAfter": false
+      },
+      "verifierReason": null,
+      "stdoutBytes": 18,
+      "stderrBytes": 0,
+      "stdoutPreview": "waiting-for-stdin\n",
+      "stderrPreview": "",
+      "partialRawBytesPreserved": true,
+      "streamsComplete": false,
+      "eventsComplete": false,
+      "childAliveAfter": false,
+      "descendantAliveAfter": []
+    },
+    {
+      "mode": "nonzero",
+      "pid": 3831621,
+      "pids": {
+        "child": 3831621,
+        "grandchildren": []
+      },
+      "exit": {
+        "code": 42,
+        "signal": null
+      },
+      "elapsedMs": 133,
+      "killedByHarness": false,
+      "killInfo": null,
+      "verifierReason": null,
+      "stdoutBytes": 43,
+      "stderrBytes": 32,
+      "stdoutPreview": "{\"type\":\"message\",\"text\":\"before failure\"}\n",
+      "stderrPreview": "synthetic stderr before nonzero\n",
+      "partialRawBytesPreserved": true,
+      "streamsComplete": true,
+      "eventsComplete": false,
+      "childAliveAfter": false,
+      "descendantAliveAfter": []
+    },
+    {
+      "mode": "flood",
+      "pid": 3831664,
+      "pids": {
+        "child": 3831664,
+        "grandchildren": []
+      },
+      "exit": {
+        "code": null,
+        "signal": "SIGTERM"
+      },
+      "elapsedMs": 475,
+      "killedByHarness": true,
+      "killInfo": {
+        "reason": "stderr_flood_limit",
+        "sent": [
+          "SIGTERM"
+        ],
+        "groupAliveAfter": false
+      },
+      "verifierReason": null,
+      "stdoutBytes": 2162688,
+      "stderrBytes": 2162688,
+      "stdoutPreview": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "stderrPreview": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "partialRawBytesPreserved": true,
+      "streamsComplete": false,
+      "eventsComplete": false,
+      "childAliveAfter": false,
+      "descendantAliveAfter": []
+    },
+    {
+      "mode": "startup-mismatch",
+      "pid": 3831744,
+      "pids": {
+        "child": 3831744,
+        "grandchildren": []
+      },
+      "exit": {
+        "code": null,
+        "signal": "SIGTERM"
+      },
+      "elapsedMs": 432,
+      "killedByHarness": true,
+      "killInfo": {
+        "reason": "startup_mismatch",
+        "sent": [
+          "SIGTERM"
+        ],
+        "groupAliveAfter": false
+      },
+      "verifierReason": "startup_mismatch",
+      "stdoutBytes": 95,
+      "stderrBytes": 0,
+      "stdoutPreview": "{\"type\":\"system\",\"subtype\":\"init\",\"apiKeySource\":\"api_key\",\"model\":\"claude-sonnet\",\"tools\":[]}\n",
+      "stderrPreview": "",
+      "partialRawBytesPreserved": true,
+      "streamsComplete": false,
+      "eventsComplete": false,
+      "childAliveAfter": false,
+      "descendantAliveAfter": []
+    },
+    {
+      "mode": "read-only-violation",
+      "pid": 3831799,
+      "pids": {
+        "child": 3831799,
+        "grandchildren": []
+      },
+      "exit": {
+        "code": null,
+        "signal": "SIGTERM"
+      },
+      "elapsedMs": 435,
+      "killedByHarness": true,
+      "killInfo": {
+        "reason": "read_only_violation",
+        "sent": [
+          "SIGTERM"
+        ],
+        "groupAliveAfter": false
+      },
+      "verifierReason": "read_only_violation",
+      "stdoutBytes": 115,
+      "stderrBytes": 0,
+      "stdoutPreview": "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"file_path\":\"/etc/passwd\"}}]}}\n",
+      "stderrPreview": "",
+      "partialRawBytesPreserved": true,
+      "streamsComplete": false,
+      "eventsComplete": false,
+      "childAliveAfter": false,
+      "descendantAliveAfter": []
+    },
+    {
+      "mode": "grandchild-ignore-term",
+      "pid": 3831862,
+      "pids": {
+        "child": 3831862,
+        "grandchildren": [
+          3831870
+        ]
+      },
+      "exit": {
+        "code": null,
+        "signal": "SIGKILL"
+      },
+      "elapsedMs": 756,
+      "killedByHarness": true,
+      "killInfo": {
+        "reason": "timeout",
+        "sent": [
+          "SIGTERM",
+          "SIGKILL"
+        ],
+        "groupAliveAfter": false
+      },
+      "verifierReason": null,
+      "stdoutBytes": 67,
+      "stderrBytes": 0,
+      "stdoutPreview": "child-ready:3831862\ngrandchild-ready:3831870\nchild-ignored-sigterm\n",
+      "stderrPreview": "",
+      "partialRawBytesPreserved": true,
+      "streamsComplete": false,
+      "eventsComplete": false,
+      "childAliveAfter": false,
+      "descendantAliveAfter": []
+    }
+  ],
+  "lockEvents": [
+    {
+      "case": "happy-acquire",
+      "acquired": true,
+      "owner": {
+        "schema_version": "fable_local_lock.v1",
+        "token": "6034c118-4e91-4a91-88ae-ee0bf710a40e",
+        "pid": 3831536,
+        "session_id": "happy",
+        "created_at": "2026-07-02T08:01:46.194Z"
+      }
+    },
+    {
+      "case": "happy-release",
+      "released": true
+    },
+    {
+      "case": "fail-fast-contention",
+      "code": "FABLE_LOCAL_BUSY",
+      "message": "fable-local busy: lock held by pid 3831536 session held",
+      "owner": {
+        "schema_version": "fable_local_lock.v1",
+        "token": "cb6918d0-2820-4c58-a5fa-21c6d7cac2e1",
+        "pid": 3831536,
+        "session_id": "held",
+        "created_at": "2026-07-02T08:01:46.196Z"
+      }
+    },
+    {
+      "case": "wait-for-lock",
+      "acquired": true,
+      "owner": {
+        "schema_version": "fable_local_lock.v1",
+        "token": "b942e0f4-1721-4207-9176-8a30cb66664e",
+        "pid": 3831536,
+        "session_id": "wait-contender",
+        "created_at": "2026-07-02T08:01:46.302Z"
+      }
+    },
+    {
+      "case": "stale-dead-pid-recovery",
+      "acquired": true,
+      "owner": {
+        "schema_version": "fable_local_lock.v1",
+        "token": "03633198-5dfb-4991-b50d-d67776e7b571",
+        "pid": 3831536,
+        "session_id": "stale-recovered",
+        "created_at": "2026-07-02T08:01:46.304Z"
+      }
+    },
+    {
+      "case": "corrupt-lock",
+      "code": "FABLE_LOCAL_LOCK_CORRUPT",
+      "message": "fable-local lock is corrupt or unreadable at /data/projects/oracle/.planning-runs/claude-code-spike-execution-2026-07-02/worker-d-nonfast/generated/spike11/lock-drill/fable-local.lock/owner.json; recover with an audited lock recovery command",
+      "recommendation": "block with recovery command; do not silently delete corrupt lock without audit"
+    }
+  ],
+  "blockedOsSpecificChecks": [
+    "macOS process tree behavior was not exercised on this Linux host."
+  ],
+  "recommendedFailureArtifacts": [
+    "claude-code-stdout.raw",
+    "claude-code-stderr.raw",
+    "claude-code-events.ndjson",
+    "claude-code-adapter.json",
+    "lock-owner.json copied into session artifacts on busy/stale failures"
+  ]
+}

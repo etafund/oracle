@@ -1,0 +1,12 @@
+{
+  "adapter": "claude-code-subscription-cli",
+  "fakeRunner": true,
+  "command": [
+    "fake-claude",
+    "--output-format",
+    "stream-json"
+  ],
+  "lane": "fable-local",
+  "startupVerified": true,
+  "exitCode": 42
+}

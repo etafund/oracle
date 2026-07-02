@@ -1,0 +1,2215 @@
+{
+  "generatedAt": "2026-07-02T07:59:16.165Z",
+  "policyVersion": "lane_registry_spike.v0",
+  "laneRegistry": [
+    {
+      "lane": "chatgpt-pro",
+      "title": "ChatGPT Pro Extended Reasoning",
+      "engine": "browser",
+      "accessPath": "oracle_browser_remote_or_local",
+      "modelAliases": [
+        "chatgpt-pro-latest",
+        "gpt-5.5-pro"
+      ],
+      "exactCommand": "oracle --lane chatgpt-pro --prompt \"$PROMPT\" --file PATH... --browser-thinking-time extended --browser-archive auto --browser-attachments auto",
+      "mcpTemplate": "{\"lane\":\"chatgpt-pro\",\"prompt\":\"...\",\"files\":[\"PATH\"],\"browserThinkingTime\":\"extended\"}",
+      "readiness": {
+        "doctorCommand": "oracle doctor lane chatgpt-pro --json",
+        "requires": [
+          "signed_in_chatgpt",
+          "pro_model_available",
+          "extended_reasoning_selected"
+        ]
+      },
+      "materialDefaults": {
+        "browserThinkingTime": "extended",
+        "browserArchive": "auto",
+        "browserAttachments": "auto",
+        "neverClicksAnswerNow": true
+      }
+    },
+    {
+      "lane": "gemini-deep-think",
+      "title": "Gemini Deep Think",
+      "engine": "browser",
+      "accessPath": "oracle_browser_remote_or_local",
+      "modelAliases": [
+        "gemini-3.1-pro-deep-think",
+        "gemini-deep-think"
+      ],
+      "exactCommand": "oracle --lane gemini-deep-think --prompt \"$PROMPT\" --file PATH... --gemini-deep-think --gemini-deep-think-fallback fail",
+      "mcpTemplate": "{\"lane\":\"gemini-deep-think\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+      "readiness": {
+        "doctorCommand": "oracle doctor lane gemini-deep-think --json",
+        "requires": [
+          "signed_in_gemini",
+          "deep_think_available",
+          "deep_think_selected"
+        ]
+      },
+      "materialDefaults": {
+        "fallback": "fail",
+        "neverSubstitutesGeminiApi": true
+      }
+    },
+    {
+      "lane": "fable-local",
+      "title": "Claude Code Fable Local",
+      "engine": "claude-code",
+      "accessPath": "claude_code_subscription_cli",
+      "modelAliases": [
+        "fable",
+        "claude_code_fable_5"
+      ],
+      "exactCommand": "oracle --lane fable-local --prompt \"$PROMPT\" --file PATH... --claude-code-no-tools --claude-code-local-only",
+      "mcpTemplate": "{\"lane\":\"fable-local\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+      "readiness": {
+        "doctorCommand": "oracle doctor lane fable-local --json",
+        "requires": [
+          "local_same_user",
+          "subscription_cli_auth",
+          "zero_tools_verified"
+        ]
+      },
+      "materialDefaults": {
+        "tools": [],
+        "localOnly": true,
+        "providerBilling": "not_claimed_until_verified"
+      }
+    }
+  ],
+  "currentResolverObservations": [
+    {
+      "name": "current_api_model_fable",
+      "ok": true,
+      "resolvedEngine": "api",
+      "model": "fable",
+      "effectiveModelId": "fable",
+      "routePlans": [
+        {
+          "model": "fable",
+          "ok": false,
+          "provider": "other",
+          "providerLabel": "OpenRouter",
+          "base": "openrouter.ai/api/...",
+          "keySource": "OPENROUTER_API_KEY",
+          "keyPreview": "missing",
+          "keyPresent": false,
+          "isAzureOpenAI": false,
+          "azureConfigured": false,
+          "error": "Missing OPENROUTER_API_KEY."
+        }
+      ]
+    },
+    {
+      "name": "current_api_model_claude_code_fable_5",
+      "ok": true,
+      "resolvedEngine": "api",
+      "model": "claude_code_fable_5",
+      "effectiveModelId": "claude_code_fable_5",
+      "routePlans": [
+        {
+          "model": "claude_code_fable_5",
+          "ok": false,
+          "provider": "anthropic",
+          "providerLabel": "Anthropic",
+          "base": "api.anthropic.com",
+          "keySource": "ANTHROPIC_API_KEY",
+          "keyPreview": "missing",
+          "keyPresent": false,
+          "isAzureOpenAI": false,
+          "azureConfigured": false,
+          "error": "Missing ANTHROPIC_API_KEY."
+        }
+      ]
+    },
+    {
+      "name": "current_fanout_gpt55pro_fable",
+      "ok": true,
+      "resolvedEngine": "api",
+      "model": "gpt-5.5-pro",
+      "models": [
+        "gpt-5.5-pro",
+        "fable"
+      ],
+      "effectiveModelId": "gpt-5.5-pro",
+      "routePlans": [
+        {
+          "model": "gpt-5.5-pro",
+          "ok": false,
+          "provider": "openai",
+          "providerLabel": "OpenAI",
+          "base": "api.openai.com",
+          "keySource": "OPENAI_API_KEY",
+          "keyPreview": "missing",
+          "keyPresent": false,
+          "isAzureOpenAI": false,
+          "azureConfigured": false,
+          "error": "Missing OPENAI_API_KEY."
+        },
+        {
+          "model": "fable",
+          "ok": false,
+          "provider": "other",
+          "providerLabel": "OpenRouter",
+          "base": "openrouter.ai/api/...",
+          "keySource": "OPENROUTER_API_KEY",
+          "keyPreview": "missing",
+          "keyPresent": false,
+          "isAzureOpenAI": false,
+          "azureConfigured": false,
+          "error": "Missing OPENROUTER_API_KEY."
+        }
+      ]
+    },
+    {
+      "name": "current_browser_model_fable",
+      "ok": true,
+      "resolvedEngine": "browser",
+      "model": "gpt-5.2",
+      "effectiveModelId": "gpt-5.2",
+      "routePlans": [
+        {
+          "model": "gpt-5.2",
+          "ok": false,
+          "provider": "openai",
+          "providerLabel": "OpenAI",
+          "base": "api.openai.com",
+          "keySource": "OPENAI_API_KEY",
+          "keyPreview": "missing",
+          "keyPresent": false,
+          "isAzureOpenAI": false,
+          "azureConfigured": false,
+          "error": "Missing OPENAI_API_KEY."
+        }
+      ]
+    },
+    {
+      "name": "current_exact_gpt55pro_default",
+      "ok": true,
+      "resolvedEngine": "browser",
+      "model": "gpt-5.5-pro",
+      "effectiveModelId": "gpt-5.5-pro",
+      "routePlans": [
+        {
+          "model": "gpt-5.5-pro",
+          "ok": false,
+          "provider": "openai",
+          "providerLabel": "OpenAI",
+          "base": "api.openai.com",
+          "keySource": "OPENAI_API_KEY",
+          "keyPreview": "missing",
+          "keyPresent": false,
+          "isAzureOpenAI": false,
+          "azureConfigured": false,
+          "error": "Missing OPENAI_API_KEY."
+        }
+      ]
+    }
+  ],
+  "currentMcpSchemaObservations": {
+    "laneFieldAcceptedToday": false,
+    "promptOnlyAcceptedToday": true,
+    "capabilityIdsToday": [
+      "browser_leases",
+      "chatgpt_pro_browser",
+      "deepseek_adapter",
+      "gemini_deep_think_browser",
+      "prompt_payload_format_passthrough",
+      "provider_access_policy",
+      "redacted_evidence",
+      "remote_browser",
+      "toon_prompt_blocks_passthrough"
+    ]
+  },
+  "policyResults": [
+    {
+      "name": "cli_lane_chatgpt_pro_allowed",
+      "input": {
+        "surface": "cli",
+        "lane": "chatgpt-pro",
+        "engine": null,
+        "model": "gpt-5.5-pro",
+        "models": null,
+        "dryRun": false,
+        "priorSessionLane": null,
+        "sourcePrecedence": [],
+        "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+      },
+      "result": {
+        "ok": true,
+        "lane": "chatgpt-pro",
+        "noBackendStarted": false,
+        "dryRun": false,
+        "counters": {
+          "apiSelection": 0,
+          "browserLaunch": 1,
+          "claudeSpawn": 0,
+          "mcpBackendMapping": 0,
+          "sessionWorkerStart": 1,
+          "routerRequestCreation": 0
+        }
+      }
+    },
+    {
+      "name": "cli_exact_legacy_chatgpt_pro_mapping_allowed",
+      "input": {
+        "surface": "cli",
+        "lane": null,
+        "engine": "browser",
+        "model": "gpt-5.5-pro",
+        "models": null,
+        "dryRun": false,
+        "priorSessionLane": null,
+        "sourcePrecedence": [
+          "cli.engine",
+          "cli.model",
+          "cli.browserThinkingTime"
+        ],
+        "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+      },
+      "result": {
+        "ok": true,
+        "lane": "chatgpt-pro",
+        "legacyMappingApplied": "exact_chatgpt_pro_extended_browser",
+        "noBackendStarted": false,
+        "counters": {
+          "apiSelection": 0,
+          "browserLaunch": 1,
+          "claudeSpawn": 0,
+          "mcpBackendMapping": 0,
+          "sessionWorkerStart": 1,
+          "routerRequestCreation": 0
+        }
+      }
+    },
+    {
+      "name": "cli_lane_gemini_deep_think_allowed",
+      "input": {
+        "surface": "cli",
+        "lane": "gemini-deep-think",
+        "engine": null,
+        "model": "gemini-3.1-pro-deep-think",
+        "models": null,
+        "dryRun": false,
+        "priorSessionLane": null,
+        "sourcePrecedence": [],
+        "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+      },
+      "result": {
+        "ok": true,
+        "lane": "gemini-deep-think",
+        "noBackendStarted": false,
+        "dryRun": false,
+        "counters": {
+          "apiSelection": 0,
+          "browserLaunch": 1,
+          "claudeSpawn": 0,
+          "mcpBackendMapping": 0,
+          "sessionWorkerStart": 1,
+          "routerRequestCreation": 0
+        }
+      }
+    },
+    {
+      "name": "cli_lane_fable_local_allowed",
+      "input": {
+        "surface": "cli",
+        "lane": "fable-local",
+        "engine": "claude-code",
+        "model": "fable",
+        "models": null,
+        "dryRun": false,
+        "priorSessionLane": null,
+        "sourcePrecedence": [],
+        "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+      },
+      "result": {
+        "ok": true,
+        "lane": "fable-local",
+        "noBackendStarted": false,
+        "dryRun": false,
+        "counters": {
+          "apiSelection": 0,
+          "browserLaunch": 0,
+          "claudeSpawn": 1,
+          "mcpBackendMapping": 0,
+          "sessionWorkerStart": 1,
+          "routerRequestCreation": 0
+        }
+      }
+    },
+    {
+      "name": "cli_lane_fable_local_dry_run_has_no_backend",
+      "input": {
+        "surface": "cli",
+        "lane": "fable-local",
+        "engine": "claude-code",
+        "model": "fable",
+        "models": null,
+        "dryRun": true,
+        "priorSessionLane": null,
+        "sourcePrecedence": [],
+        "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+      },
+      "result": {
+        "ok": true,
+        "lane": "fable-local",
+        "noBackendStarted": true,
+        "dryRun": true,
+        "counters": {
+          "apiSelection": 0,
+          "browserLaunch": 0,
+          "claudeSpawn": 0,
+          "mcpBackendMapping": 0,
+          "sessionWorkerStart": 0,
+          "routerRequestCreation": 0
+        }
+      }
+    },
+    {
+      "name": "cli_bare_prompt_blocked",
+      "input": {
+        "surface": "cli",
+        "lane": null,
+        "engine": null,
+        "model": null,
+        "models": null,
+        "dryRun": false,
+        "priorSessionLane": null,
+        "sourcePrecedence": [
+          "none"
+        ],
+        "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+      },
+      "result": {
+        "ok": false,
+        "errorCode": "agent_lane_blocked",
+        "exitCode": 2,
+        "policyVersion": "lane_registry_spike.v0",
+        "reason": "missing_reviewed_lane",
+        "attemptedRoute": {
+          "surface": "cli",
+          "lane": null,
+          "engine": null,
+          "model": null,
+          "models": null,
+          "dryRun": false,
+          "priorSessionLane": null,
+          "sourcePrecedence": [
+            "none"
+          ],
+          "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+        },
+        "sourcePrecedence": [
+          "none"
+        ],
+        "supportedLanes": [
+          {
+            "lane": "chatgpt-pro",
+            "title": "ChatGPT Pro Extended Reasoning",
+            "engine": "browser",
+            "accessPath": "oracle_browser_remote_or_local",
+            "command": "oracle --lane chatgpt-pro --prompt \"$PROMPT\" --file PATH... --browser-thinking-time extended --browser-archive auto --browser-attachments auto",
+            "mcp": "{\"lane\":\"chatgpt-pro\",\"prompt\":\"...\",\"files\":[\"PATH\"],\"browserThinkingTime\":\"extended\"}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane chatgpt-pro --json",
+              "requires": [
+                "signed_in_chatgpt",
+                "pro_model_available",
+                "extended_reasoning_selected"
+              ]
+            },
+            "materialDefaults": {
+              "browserThinkingTime": "extended",
+              "browserArchive": "auto",
+              "browserAttachments": "auto",
+              "neverClicksAnswerNow": true
+            }
+          },
+          {
+            "lane": "gemini-deep-think",
+            "title": "Gemini Deep Think",
+            "engine": "browser",
+            "accessPath": "oracle_browser_remote_or_local",
+            "command": "oracle --lane gemini-deep-think --prompt \"$PROMPT\" --file PATH... --gemini-deep-think --gemini-deep-think-fallback fail",
+            "mcp": "{\"lane\":\"gemini-deep-think\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane gemini-deep-think --json",
+              "requires": [
+                "signed_in_gemini",
+                "deep_think_available",
+                "deep_think_selected"
+              ]
+            },
+            "materialDefaults": {
+              "fallback": "fail",
+              "neverSubstitutesGeminiApi": true
+            }
+          },
+          {
+            "lane": "fable-local",
+            "title": "Claude Code Fable Local",
+            "engine": "claude-code",
+            "accessPath": "claude_code_subscription_cli",
+            "command": "oracle --lane fable-local --prompt \"$PROMPT\" --file PATH... --claude-code-no-tools --claude-code-local-only",
+            "mcp": "{\"lane\":\"fable-local\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane fable-local --json",
+              "requires": [
+                "local_same_user",
+                "subscription_cli_auth",
+                "zero_tools_verified"
+              ]
+            },
+            "materialDefaults": {
+              "tools": [],
+              "localOnly": true,
+              "providerBilling": "not_claimed_until_verified"
+            }
+          }
+        ],
+        "noBackendStarted": true,
+        "eventsComplete": true,
+        "streamsComplete": true,
+        "details": {
+          "defaultInferenceRefused": true
+        },
+        "counters": {
+          "apiSelection": 0,
+          "browserLaunch": 0,
+          "claudeSpawn": 0,
+          "mcpBackendMapping": 0,
+          "sessionWorkerStart": 0,
+          "routerRequestCreation": 0
+        }
+      }
+    },
+    {
+      "name": "cli_api_claude_blocked",
+      "input": {
+        "surface": "cli",
+        "lane": null,
+        "engine": "api",
+        "model": "claude-4.6-sonnet",
+        "models": null,
+        "dryRun": false,
+        "priorSessionLane": null,
+        "sourcePrecedence": [
+          "cli.engine",
+          "cli.model"
+        ],
+        "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+      },
+      "result": {
+        "ok": false,
+        "errorCode": "agent_lane_blocked",
+        "exitCode": 2,
+        "policyVersion": "lane_registry_spike.v0",
+        "reason": "missing_reviewed_lane",
+        "attemptedRoute": {
+          "surface": "cli",
+          "lane": null,
+          "engine": "api",
+          "model": "claude-4.6-sonnet",
+          "models": null,
+          "dryRun": false,
+          "priorSessionLane": null,
+          "sourcePrecedence": [
+            "cli.engine",
+            "cli.model"
+          ],
+          "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+        },
+        "sourcePrecedence": [
+          "cli.engine",
+          "cli.model"
+        ],
+        "supportedLanes": [
+          {
+            "lane": "chatgpt-pro",
+            "title": "ChatGPT Pro Extended Reasoning",
+            "engine": "browser",
+            "accessPath": "oracle_browser_remote_or_local",
+            "command": "oracle --lane chatgpt-pro --prompt \"$PROMPT\" --file PATH... --browser-thinking-time extended --browser-archive auto --browser-attachments auto",
+            "mcp": "{\"lane\":\"chatgpt-pro\",\"prompt\":\"...\",\"files\":[\"PATH\"],\"browserThinkingTime\":\"extended\"}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane chatgpt-pro --json",
+              "requires": [
+                "signed_in_chatgpt",
+                "pro_model_available",
+                "extended_reasoning_selected"
+              ]
+            },
+            "materialDefaults": {
+              "browserThinkingTime": "extended",
+              "browserArchive": "auto",
+              "browserAttachments": "auto",
+              "neverClicksAnswerNow": true
+            }
+          },
+          {
+            "lane": "gemini-deep-think",
+            "title": "Gemini Deep Think",
+            "engine": "browser",
+            "accessPath": "oracle_browser_remote_or_local",
+            "command": "oracle --lane gemini-deep-think --prompt \"$PROMPT\" --file PATH... --gemini-deep-think --gemini-deep-think-fallback fail",
+            "mcp": "{\"lane\":\"gemini-deep-think\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane gemini-deep-think --json",
+              "requires": [
+                "signed_in_gemini",
+                "deep_think_available",
+                "deep_think_selected"
+              ]
+            },
+            "materialDefaults": {
+              "fallback": "fail",
+              "neverSubstitutesGeminiApi": true
+            }
+          },
+          {
+            "lane": "fable-local",
+            "title": "Claude Code Fable Local",
+            "engine": "claude-code",
+            "accessPath": "claude_code_subscription_cli",
+            "command": "oracle --lane fable-local --prompt \"$PROMPT\" --file PATH... --claude-code-no-tools --claude-code-local-only",
+            "mcp": "{\"lane\":\"fable-local\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane fable-local --json",
+              "requires": [
+                "local_same_user",
+                "subscription_cli_auth",
+                "zero_tools_verified"
+              ]
+            },
+            "materialDefaults": {
+              "tools": [],
+              "localOnly": true,
+              "providerBilling": "not_claimed_until_verified"
+            }
+          }
+        ],
+        "noBackendStarted": true,
+        "eventsComplete": true,
+        "streamsComplete": true,
+        "details": {
+          "defaultInferenceRefused": true
+        },
+        "counters": {
+          "apiSelection": 0,
+          "browserLaunch": 0,
+          "claudeSpawn": 0,
+          "mcpBackendMapping": 0,
+          "sessionWorkerStart": 0,
+          "routerRequestCreation": 0
+        }
+      }
+    },
+    {
+      "name": "cli_model_gpt_blocked",
+      "input": {
+        "surface": "cli",
+        "lane": null,
+        "engine": null,
+        "model": "gpt",
+        "models": null,
+        "dryRun": false,
+        "priorSessionLane": null,
+        "sourcePrecedence": [
+          "cli.model"
+        ],
+        "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+      },
+      "result": {
+        "ok": false,
+        "errorCode": "agent_lane_blocked",
+        "exitCode": 2,
+        "policyVersion": "lane_registry_spike.v0",
+        "reason": "missing_reviewed_lane",
+        "attemptedRoute": {
+          "surface": "cli",
+          "lane": null,
+          "engine": null,
+          "model": "gpt",
+          "models": null,
+          "dryRun": false,
+          "priorSessionLane": null,
+          "sourcePrecedence": [
+            "cli.model"
+          ],
+          "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+        },
+        "sourcePrecedence": [
+          "cli.model"
+        ],
+        "supportedLanes": [
+          {
+            "lane": "chatgpt-pro",
+            "title": "ChatGPT Pro Extended Reasoning",
+            "engine": "browser",
+            "accessPath": "oracle_browser_remote_or_local",
+            "command": "oracle --lane chatgpt-pro --prompt \"$PROMPT\" --file PATH... --browser-thinking-time extended --browser-archive auto --browser-attachments auto",
+            "mcp": "{\"lane\":\"chatgpt-pro\",\"prompt\":\"...\",\"files\":[\"PATH\"],\"browserThinkingTime\":\"extended\"}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane chatgpt-pro --json",
+              "requires": [
+                "signed_in_chatgpt",
+                "pro_model_available",
+                "extended_reasoning_selected"
+              ]
+            },
+            "materialDefaults": {
+              "browserThinkingTime": "extended",
+              "browserArchive": "auto",
+              "browserAttachments": "auto",
+              "neverClicksAnswerNow": true
+            }
+          },
+          {
+            "lane": "gemini-deep-think",
+            "title": "Gemini Deep Think",
+            "engine": "browser",
+            "accessPath": "oracle_browser_remote_or_local",
+            "command": "oracle --lane gemini-deep-think --prompt \"$PROMPT\" --file PATH... --gemini-deep-think --gemini-deep-think-fallback fail",
+            "mcp": "{\"lane\":\"gemini-deep-think\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane gemini-deep-think --json",
+              "requires": [
+                "signed_in_gemini",
+                "deep_think_available",
+                "deep_think_selected"
+              ]
+            },
+            "materialDefaults": {
+              "fallback": "fail",
+              "neverSubstitutesGeminiApi": true
+            }
+          },
+          {
+            "lane": "fable-local",
+            "title": "Claude Code Fable Local",
+            "engine": "claude-code",
+            "accessPath": "claude_code_subscription_cli",
+            "command": "oracle --lane fable-local --prompt \"$PROMPT\" --file PATH... --claude-code-no-tools --claude-code-local-only",
+            "mcp": "{\"lane\":\"fable-local\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane fable-local --json",
+              "requires": [
+                "local_same_user",
+                "subscription_cli_auth",
+                "zero_tools_verified"
+              ]
+            },
+            "materialDefaults": {
+              "tools": [],
+              "localOnly": true,
+              "providerBilling": "not_claimed_until_verified"
+            }
+          }
+        ],
+        "noBackendStarted": true,
+        "eventsComplete": true,
+        "streamsComplete": true,
+        "details": {
+          "defaultInferenceRefused": true
+        },
+        "counters": {
+          "apiSelection": 0,
+          "browserLaunch": 0,
+          "claudeSpawn": 0,
+          "mcpBackendMapping": 0,
+          "sessionWorkerStart": 0,
+          "routerRequestCreation": 0
+        }
+      }
+    },
+    {
+      "name": "cli_exact_gpt_55_pro_without_lane_blocked",
+      "input": {
+        "surface": "cli",
+        "lane": null,
+        "engine": null,
+        "model": "gpt-5.5-pro",
+        "models": null,
+        "dryRun": false,
+        "priorSessionLane": null,
+        "sourcePrecedence": [
+          "cli.model"
+        ],
+        "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+      },
+      "result": {
+        "ok": false,
+        "errorCode": "agent_lane_blocked",
+        "exitCode": 2,
+        "policyVersion": "lane_registry_spike.v0",
+        "reason": "missing_reviewed_lane",
+        "attemptedRoute": {
+          "surface": "cli",
+          "lane": null,
+          "engine": null,
+          "model": "gpt-5.5-pro",
+          "models": null,
+          "dryRun": false,
+          "priorSessionLane": null,
+          "sourcePrecedence": [
+            "cli.model"
+          ],
+          "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+        },
+        "sourcePrecedence": [
+          "cli.model"
+        ],
+        "supportedLanes": [
+          {
+            "lane": "chatgpt-pro",
+            "title": "ChatGPT Pro Extended Reasoning",
+            "engine": "browser",
+            "accessPath": "oracle_browser_remote_or_local",
+            "command": "oracle --lane chatgpt-pro --prompt \"$PROMPT\" --file PATH... --browser-thinking-time extended --browser-archive auto --browser-attachments auto",
+            "mcp": "{\"lane\":\"chatgpt-pro\",\"prompt\":\"...\",\"files\":[\"PATH\"],\"browserThinkingTime\":\"extended\"}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane chatgpt-pro --json",
+              "requires": [
+                "signed_in_chatgpt",
+                "pro_model_available",
+                "extended_reasoning_selected"
+              ]
+            },
+            "materialDefaults": {
+              "browserThinkingTime": "extended",
+              "browserArchive": "auto",
+              "browserAttachments": "auto",
+              "neverClicksAnswerNow": true
+            }
+          },
+          {
+            "lane": "gemini-deep-think",
+            "title": "Gemini Deep Think",
+            "engine": "browser",
+            "accessPath": "oracle_browser_remote_or_local",
+            "command": "oracle --lane gemini-deep-think --prompt \"$PROMPT\" --file PATH... --gemini-deep-think --gemini-deep-think-fallback fail",
+            "mcp": "{\"lane\":\"gemini-deep-think\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane gemini-deep-think --json",
+              "requires": [
+                "signed_in_gemini",
+                "deep_think_available",
+                "deep_think_selected"
+              ]
+            },
+            "materialDefaults": {
+              "fallback": "fail",
+              "neverSubstitutesGeminiApi": true
+            }
+          },
+          {
+            "lane": "fable-local",
+            "title": "Claude Code Fable Local",
+            "engine": "claude-code",
+            "accessPath": "claude_code_subscription_cli",
+            "command": "oracle --lane fable-local --prompt \"$PROMPT\" --file PATH... --claude-code-no-tools --claude-code-local-only",
+            "mcp": "{\"lane\":\"fable-local\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane fable-local --json",
+              "requires": [
+                "local_same_user",
+                "subscription_cli_auth",
+                "zero_tools_verified"
+              ]
+            },
+            "materialDefaults": {
+              "tools": [],
+              "localOnly": true,
+              "providerBilling": "not_claimed_until_verified"
+            }
+          }
+        ],
+        "noBackendStarted": true,
+        "eventsComplete": true,
+        "streamsComplete": true,
+        "details": {
+          "defaultInferenceRefused": true
+        },
+        "counters": {
+          "apiSelection": 0,
+          "browserLaunch": 0,
+          "claudeSpawn": 0,
+          "mcpBackendMapping": 0,
+          "sessionWorkerStart": 0,
+          "routerRequestCreation": 0
+        }
+      }
+    },
+    {
+      "name": "cli_fable_api_blocked_before_provider",
+      "input": {
+        "surface": "cli",
+        "lane": null,
+        "engine": "api",
+        "model": "fable",
+        "models": null,
+        "dryRun": false,
+        "priorSessionLane": null,
+        "sourcePrecedence": [
+          "cli.engine",
+          "cli.model"
+        ],
+        "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+      },
+      "result": {
+        "ok": false,
+        "errorCode": "agent_lane_blocked",
+        "exitCode": 2,
+        "policyVersion": "lane_registry_spike.v0",
+        "reason": "fable_alias_requires_fable_local_lane",
+        "attemptedRoute": {
+          "surface": "cli",
+          "lane": null,
+          "engine": "api",
+          "model": "fable",
+          "models": null,
+          "dryRun": false,
+          "priorSessionLane": null,
+          "sourcePrecedence": [
+            "cli.engine",
+            "cli.model"
+          ],
+          "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+        },
+        "sourcePrecedence": [
+          "cli.engine",
+          "cli.model"
+        ],
+        "supportedLanes": [
+          {
+            "lane": "chatgpt-pro",
+            "title": "ChatGPT Pro Extended Reasoning",
+            "engine": "browser",
+            "accessPath": "oracle_browser_remote_or_local",
+            "command": "oracle --lane chatgpt-pro --prompt \"$PROMPT\" --file PATH... --browser-thinking-time extended --browser-archive auto --browser-attachments auto",
+            "mcp": "{\"lane\":\"chatgpt-pro\",\"prompt\":\"...\",\"files\":[\"PATH\"],\"browserThinkingTime\":\"extended\"}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane chatgpt-pro --json",
+              "requires": [
+                "signed_in_chatgpt",
+                "pro_model_available",
+                "extended_reasoning_selected"
+              ]
+            },
+            "materialDefaults": {
+              "browserThinkingTime": "extended",
+              "browserArchive": "auto",
+              "browserAttachments": "auto",
+              "neverClicksAnswerNow": true
+            }
+          },
+          {
+            "lane": "gemini-deep-think",
+            "title": "Gemini Deep Think",
+            "engine": "browser",
+            "accessPath": "oracle_browser_remote_or_local",
+            "command": "oracle --lane gemini-deep-think --prompt \"$PROMPT\" --file PATH... --gemini-deep-think --gemini-deep-think-fallback fail",
+            "mcp": "{\"lane\":\"gemini-deep-think\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane gemini-deep-think --json",
+              "requires": [
+                "signed_in_gemini",
+                "deep_think_available",
+                "deep_think_selected"
+              ]
+            },
+            "materialDefaults": {
+              "fallback": "fail",
+              "neverSubstitutesGeminiApi": true
+            }
+          },
+          {
+            "lane": "fable-local",
+            "title": "Claude Code Fable Local",
+            "engine": "claude-code",
+            "accessPath": "claude_code_subscription_cli",
+            "command": "oracle --lane fable-local --prompt \"$PROMPT\" --file PATH... --claude-code-no-tools --claude-code-local-only",
+            "mcp": "{\"lane\":\"fable-local\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane fable-local --json",
+              "requires": [
+                "local_same_user",
+                "subscription_cli_auth",
+                "zero_tools_verified"
+              ]
+            },
+            "materialDefaults": {
+              "tools": [],
+              "localOnly": true,
+              "providerBilling": "not_claimed_until_verified"
+            }
+          }
+        ],
+        "noBackendStarted": true,
+        "eventsComplete": true,
+        "streamsComplete": true,
+        "details": {
+          "requiredLane": "fable-local",
+          "rejectedEngine": "api"
+        },
+        "counters": {
+          "apiSelection": 0,
+          "browserLaunch": 0,
+          "claudeSpawn": 0,
+          "mcpBackendMapping": 0,
+          "sessionWorkerStart": 0,
+          "routerRequestCreation": 0
+        }
+      }
+    },
+    {
+      "name": "cli_claude_code_fable_api_blocked_before_provider",
+      "input": {
+        "surface": "cli",
+        "lane": null,
+        "engine": "api",
+        "model": "claude_code_fable_5",
+        "models": null,
+        "dryRun": false,
+        "priorSessionLane": null,
+        "sourcePrecedence": [
+          "cli.engine",
+          "cli.model"
+        ],
+        "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+      },
+      "result": {
+        "ok": false,
+        "errorCode": "agent_lane_blocked",
+        "exitCode": 2,
+        "policyVersion": "lane_registry_spike.v0",
+        "reason": "fable_alias_requires_fable_local_lane",
+        "attemptedRoute": {
+          "surface": "cli",
+          "lane": null,
+          "engine": "api",
+          "model": "claude_code_fable_5",
+          "models": null,
+          "dryRun": false,
+          "priorSessionLane": null,
+          "sourcePrecedence": [
+            "cli.engine",
+            "cli.model"
+          ],
+          "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+        },
+        "sourcePrecedence": [
+          "cli.engine",
+          "cli.model"
+        ],
+        "supportedLanes": [
+          {
+            "lane": "chatgpt-pro",
+            "title": "ChatGPT Pro Extended Reasoning",
+            "engine": "browser",
+            "accessPath": "oracle_browser_remote_or_local",
+            "command": "oracle --lane chatgpt-pro --prompt \"$PROMPT\" --file PATH... --browser-thinking-time extended --browser-archive auto --browser-attachments auto",
+            "mcp": "{\"lane\":\"chatgpt-pro\",\"prompt\":\"...\",\"files\":[\"PATH\"],\"browserThinkingTime\":\"extended\"}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane chatgpt-pro --json",
+              "requires": [
+                "signed_in_chatgpt",
+                "pro_model_available",
+                "extended_reasoning_selected"
+              ]
+            },
+            "materialDefaults": {
+              "browserThinkingTime": "extended",
+              "browserArchive": "auto",
+              "browserAttachments": "auto",
+              "neverClicksAnswerNow": true
+            }
+          },
+          {
+            "lane": "gemini-deep-think",
+            "title": "Gemini Deep Think",
+            "engine": "browser",
+            "accessPath": "oracle_browser_remote_or_local",
+            "command": "oracle --lane gemini-deep-think --prompt \"$PROMPT\" --file PATH... --gemini-deep-think --gemini-deep-think-fallback fail",
+            "mcp": "{\"lane\":\"gemini-deep-think\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane gemini-deep-think --json",
+              "requires": [
+                "signed_in_gemini",
+                "deep_think_available",
+                "deep_think_selected"
+              ]
+            },
+            "materialDefaults": {
+              "fallback": "fail",
+              "neverSubstitutesGeminiApi": true
+            }
+          },
+          {
+            "lane": "fable-local",
+            "title": "Claude Code Fable Local",
+            "engine": "claude-code",
+            "accessPath": "claude_code_subscription_cli",
+            "command": "oracle --lane fable-local --prompt \"$PROMPT\" --file PATH... --claude-code-no-tools --claude-code-local-only",
+            "mcp": "{\"lane\":\"fable-local\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane fable-local --json",
+              "requires": [
+                "local_same_user",
+                "subscription_cli_auth",
+                "zero_tools_verified"
+              ]
+            },
+            "materialDefaults": {
+              "tools": [],
+              "localOnly": true,
+              "providerBilling": "not_claimed_until_verified"
+            }
+          }
+        ],
+        "noBackendStarted": true,
+        "eventsComplete": true,
+        "streamsComplete": true,
+        "details": {
+          "requiredLane": "fable-local",
+          "rejectedEngine": "api"
+        },
+        "counters": {
+          "apiSelection": 0,
+          "browserLaunch": 0,
+          "claudeSpawn": 0,
+          "mcpBackendMapping": 0,
+          "sessionWorkerStart": 0,
+          "routerRequestCreation": 0
+        }
+      }
+    },
+    {
+      "name": "cli_fanout_with_fable_blocked",
+      "input": {
+        "surface": "cli",
+        "lane": null,
+        "engine": null,
+        "model": null,
+        "models": [
+          "gpt-5.5-pro",
+          "fable"
+        ],
+        "dryRun": false,
+        "priorSessionLane": null,
+        "sourcePrecedence": [
+          "cli.models"
+        ],
+        "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+      },
+      "result": {
+        "ok": false,
+        "errorCode": "agent_lane_blocked",
+        "exitCode": 2,
+        "policyVersion": "lane_registry_spike.v0",
+        "reason": "fable_alias_disallowed_in_multi_model_fanout",
+        "attemptedRoute": {
+          "surface": "cli",
+          "lane": null,
+          "engine": null,
+          "model": null,
+          "models": [
+            "gpt-5.5-pro",
+            "fable"
+          ],
+          "dryRun": false,
+          "priorSessionLane": null,
+          "sourcePrecedence": [
+            "cli.models"
+          ],
+          "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+        },
+        "sourcePrecedence": [
+          "cli.models"
+        ],
+        "supportedLanes": [
+          {
+            "lane": "chatgpt-pro",
+            "title": "ChatGPT Pro Extended Reasoning",
+            "engine": "browser",
+            "accessPath": "oracle_browser_remote_or_local",
+            "command": "oracle --lane chatgpt-pro --prompt \"$PROMPT\" --file PATH... --browser-thinking-time extended --browser-archive auto --browser-attachments auto",
+            "mcp": "{\"lane\":\"chatgpt-pro\",\"prompt\":\"...\",\"files\":[\"PATH\"],\"browserThinkingTime\":\"extended\"}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane chatgpt-pro --json",
+              "requires": [
+                "signed_in_chatgpt",
+                "pro_model_available",
+                "extended_reasoning_selected"
+              ]
+            },
+            "materialDefaults": {
+              "browserThinkingTime": "extended",
+              "browserArchive": "auto",
+              "browserAttachments": "auto",
+              "neverClicksAnswerNow": true
+            }
+          },
+          {
+            "lane": "gemini-deep-think",
+            "title": "Gemini Deep Think",
+            "engine": "browser",
+            "accessPath": "oracle_browser_remote_or_local",
+            "command": "oracle --lane gemini-deep-think --prompt \"$PROMPT\" --file PATH... --gemini-deep-think --gemini-deep-think-fallback fail",
+            "mcp": "{\"lane\":\"gemini-deep-think\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane gemini-deep-think --json",
+              "requires": [
+                "signed_in_gemini",
+                "deep_think_available",
+                "deep_think_selected"
+              ]
+            },
+            "materialDefaults": {
+              "fallback": "fail",
+              "neverSubstitutesGeminiApi": true
+            }
+          },
+          {
+            "lane": "fable-local",
+            "title": "Claude Code Fable Local",
+            "engine": "claude-code",
+            "accessPath": "claude_code_subscription_cli",
+            "command": "oracle --lane fable-local --prompt \"$PROMPT\" --file PATH... --claude-code-no-tools --claude-code-local-only",
+            "mcp": "{\"lane\":\"fable-local\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane fable-local --json",
+              "requires": [
+                "local_same_user",
+                "subscription_cli_auth",
+                "zero_tools_verified"
+              ]
+            },
+            "materialDefaults": {
+              "tools": [],
+              "localOnly": true,
+              "providerBilling": "not_claimed_until_verified"
+            }
+          }
+        ],
+        "noBackendStarted": true,
+        "eventsComplete": true,
+        "streamsComplete": true,
+        "details": {
+          "disallowedAliases": [
+            "fable"
+          ]
+        },
+        "counters": {
+          "apiSelection": 0,
+          "browserLaunch": 0,
+          "claudeSpawn": 0,
+          "mcpBackendMapping": 0,
+          "sessionWorkerStart": 0,
+          "routerRequestCreation": 0
+        }
+      }
+    },
+    {
+      "name": "cli_lane_conflict_blocked",
+      "input": {
+        "surface": "cli",
+        "lane": "fable-local",
+        "engine": "browser",
+        "model": "fable",
+        "models": null,
+        "dryRun": false,
+        "priorSessionLane": null,
+        "sourcePrecedence": [
+          "cli.lane",
+          "cli.engine",
+          "cli.model"
+        ],
+        "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+      },
+      "result": {
+        "ok": false,
+        "errorCode": "agent_lane_blocked",
+        "exitCode": 2,
+        "policyVersion": "lane_registry_spike.v0",
+        "reason": "lane_engine_conflict",
+        "attemptedRoute": {
+          "surface": "cli",
+          "lane": "fable-local",
+          "engine": "browser",
+          "model": "fable",
+          "models": null,
+          "dryRun": false,
+          "priorSessionLane": null,
+          "sourcePrecedence": [
+            "cli.lane",
+            "cli.engine",
+            "cli.model"
+          ],
+          "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+        },
+        "sourcePrecedence": [
+          "cli.lane",
+          "cli.engine",
+          "cli.model"
+        ],
+        "supportedLanes": [
+          {
+            "lane": "chatgpt-pro",
+            "title": "ChatGPT Pro Extended Reasoning",
+            "engine": "browser",
+            "accessPath": "oracle_browser_remote_or_local",
+            "command": "oracle --lane chatgpt-pro --prompt \"$PROMPT\" --file PATH... --browser-thinking-time extended --browser-archive auto --browser-attachments auto",
+            "mcp": "{\"lane\":\"chatgpt-pro\",\"prompt\":\"...\",\"files\":[\"PATH\"],\"browserThinkingTime\":\"extended\"}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane chatgpt-pro --json",
+              "requires": [
+                "signed_in_chatgpt",
+                "pro_model_available",
+                "extended_reasoning_selected"
+              ]
+            },
+            "materialDefaults": {
+              "browserThinkingTime": "extended",
+              "browserArchive": "auto",
+              "browserAttachments": "auto",
+              "neverClicksAnswerNow": true
+            }
+          },
+          {
+            "lane": "gemini-deep-think",
+            "title": "Gemini Deep Think",
+            "engine": "browser",
+            "accessPath": "oracle_browser_remote_or_local",
+            "command": "oracle --lane gemini-deep-think --prompt \"$PROMPT\" --file PATH... --gemini-deep-think --gemini-deep-think-fallback fail",
+            "mcp": "{\"lane\":\"gemini-deep-think\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane gemini-deep-think --json",
+              "requires": [
+                "signed_in_gemini",
+                "deep_think_available",
+                "deep_think_selected"
+              ]
+            },
+            "materialDefaults": {
+              "fallback": "fail",
+              "neverSubstitutesGeminiApi": true
+            }
+          },
+          {
+            "lane": "fable-local",
+            "title": "Claude Code Fable Local",
+            "engine": "claude-code",
+            "accessPath": "claude_code_subscription_cli",
+            "command": "oracle --lane fable-local --prompt \"$PROMPT\" --file PATH... --claude-code-no-tools --claude-code-local-only",
+            "mcp": "{\"lane\":\"fable-local\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane fable-local --json",
+              "requires": [
+                "local_same_user",
+                "subscription_cli_auth",
+                "zero_tools_verified"
+              ]
+            },
+            "materialDefaults": {
+              "tools": [],
+              "localOnly": true,
+              "providerBilling": "not_claimed_until_verified"
+            }
+          }
+        ],
+        "noBackendStarted": true,
+        "eventsComplete": true,
+        "streamsComplete": true,
+        "details": {
+          "lane": "fable-local",
+          "expectedEngine": "claude-code",
+          "attemptedEngine": "browser"
+        },
+        "counters": {
+          "apiSelection": 0,
+          "browserLaunch": 0,
+          "claudeSpawn": 0,
+          "mcpBackendMapping": 0,
+          "sessionWorkerStart": 0,
+          "routerRequestCreation": 0
+        }
+      }
+    },
+    {
+      "name": "cli_config_default_blocked",
+      "input": {
+        "surface": "cli",
+        "lane": null,
+        "engine": "browser",
+        "model": "gemini-3-pro",
+        "models": null,
+        "dryRun": false,
+        "priorSessionLane": null,
+        "sourcePrecedence": [
+          "config.engine",
+          "config.model"
+        ],
+        "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+      },
+      "result": {
+        "ok": false,
+        "errorCode": "agent_lane_blocked",
+        "exitCode": 2,
+        "policyVersion": "lane_registry_spike.v0",
+        "reason": "missing_reviewed_lane",
+        "attemptedRoute": {
+          "surface": "cli",
+          "lane": null,
+          "engine": "browser",
+          "model": "gemini-3-pro",
+          "models": null,
+          "dryRun": false,
+          "priorSessionLane": null,
+          "sourcePrecedence": [
+            "config.engine",
+            "config.model"
+          ],
+          "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+        },
+        "sourcePrecedence": [
+          "config.engine",
+          "config.model"
+        ],
+        "supportedLanes": [
+          {
+            "lane": "chatgpt-pro",
+            "title": "ChatGPT Pro Extended Reasoning",
+            "engine": "browser",
+            "accessPath": "oracle_browser_remote_or_local",
+            "command": "oracle --lane chatgpt-pro --prompt \"$PROMPT\" --file PATH... --browser-thinking-time extended --browser-archive auto --browser-attachments auto",
+            "mcp": "{\"lane\":\"chatgpt-pro\",\"prompt\":\"...\",\"files\":[\"PATH\"],\"browserThinkingTime\":\"extended\"}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane chatgpt-pro --json",
+              "requires": [
+                "signed_in_chatgpt",
+                "pro_model_available",
+                "extended_reasoning_selected"
+              ]
+            },
+            "materialDefaults": {
+              "browserThinkingTime": "extended",
+              "browserArchive": "auto",
+              "browserAttachments": "auto",
+              "neverClicksAnswerNow": true
+            }
+          },
+          {
+            "lane": "gemini-deep-think",
+            "title": "Gemini Deep Think",
+            "engine": "browser",
+            "accessPath": "oracle_browser_remote_or_local",
+            "command": "oracle --lane gemini-deep-think --prompt \"$PROMPT\" --file PATH... --gemini-deep-think --gemini-deep-think-fallback fail",
+            "mcp": "{\"lane\":\"gemini-deep-think\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane gemini-deep-think --json",
+              "requires": [
+                "signed_in_gemini",
+                "deep_think_available",
+                "deep_think_selected"
+              ]
+            },
+            "materialDefaults": {
+              "fallback": "fail",
+              "neverSubstitutesGeminiApi": true
+            }
+          },
+          {
+            "lane": "fable-local",
+            "title": "Claude Code Fable Local",
+            "engine": "claude-code",
+            "accessPath": "claude_code_subscription_cli",
+            "command": "oracle --lane fable-local --prompt \"$PROMPT\" --file PATH... --claude-code-no-tools --claude-code-local-only",
+            "mcp": "{\"lane\":\"fable-local\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane fable-local --json",
+              "requires": [
+                "local_same_user",
+                "subscription_cli_auth",
+                "zero_tools_verified"
+              ]
+            },
+            "materialDefaults": {
+              "tools": [],
+              "localOnly": true,
+              "providerBilling": "not_claimed_until_verified"
+            }
+          }
+        ],
+        "noBackendStarted": true,
+        "eventsComplete": true,
+        "streamsComplete": true,
+        "details": {
+          "defaultInferenceRefused": true
+        },
+        "counters": {
+          "apiSelection": 0,
+          "browserLaunch": 0,
+          "claudeSpawn": 0,
+          "mcpBackendMapping": 0,
+          "sessionWorkerStart": 0,
+          "routerRequestCreation": 0
+        }
+      }
+    },
+    {
+      "name": "cli_prior_session_with_reviewed_lane_allowed",
+      "input": {
+        "surface": "cli",
+        "lane": null,
+        "engine": null,
+        "model": null,
+        "models": null,
+        "dryRun": false,
+        "priorSessionLane": "chatgpt-pro",
+        "sourcePrecedence": [
+          "session.lane"
+        ],
+        "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+      },
+      "result": {
+        "ok": true,
+        "lane": "chatgpt-pro",
+        "priorSessionLaneApplied": true,
+        "noBackendStarted": false,
+        "counters": {
+          "apiSelection": 0,
+          "browserLaunch": 1,
+          "claudeSpawn": 0,
+          "mcpBackendMapping": 0,
+          "sessionWorkerStart": 1,
+          "routerRequestCreation": 0
+        }
+      }
+    },
+    {
+      "name": "cli_prior_session_without_reviewed_lane_blocked",
+      "input": {
+        "surface": "cli",
+        "lane": null,
+        "engine": null,
+        "model": null,
+        "models": null,
+        "dryRun": false,
+        "priorSessionLane": "legacy-browser",
+        "sourcePrecedence": [
+          "session.mode",
+          "session.model"
+        ],
+        "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+      },
+      "result": {
+        "ok": false,
+        "errorCode": "agent_lane_blocked",
+        "exitCode": 2,
+        "policyVersion": "lane_registry_spike.v0",
+        "reason": "prior_session_has_unreviewed_lane",
+        "attemptedRoute": {
+          "surface": "cli",
+          "lane": null,
+          "engine": null,
+          "model": null,
+          "models": null,
+          "dryRun": false,
+          "priorSessionLane": "legacy-browser",
+          "sourcePrecedence": [
+            "session.mode",
+            "session.model"
+          ],
+          "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+        },
+        "sourcePrecedence": [
+          "session.mode",
+          "session.model"
+        ],
+        "supportedLanes": [
+          {
+            "lane": "chatgpt-pro",
+            "title": "ChatGPT Pro Extended Reasoning",
+            "engine": "browser",
+            "accessPath": "oracle_browser_remote_or_local",
+            "command": "oracle --lane chatgpt-pro --prompt \"$PROMPT\" --file PATH... --browser-thinking-time extended --browser-archive auto --browser-attachments auto",
+            "mcp": "{\"lane\":\"chatgpt-pro\",\"prompt\":\"...\",\"files\":[\"PATH\"],\"browserThinkingTime\":\"extended\"}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane chatgpt-pro --json",
+              "requires": [
+                "signed_in_chatgpt",
+                "pro_model_available",
+                "extended_reasoning_selected"
+              ]
+            },
+            "materialDefaults": {
+              "browserThinkingTime": "extended",
+              "browserArchive": "auto",
+              "browserAttachments": "auto",
+              "neverClicksAnswerNow": true
+            }
+          },
+          {
+            "lane": "gemini-deep-think",
+            "title": "Gemini Deep Think",
+            "engine": "browser",
+            "accessPath": "oracle_browser_remote_or_local",
+            "command": "oracle --lane gemini-deep-think --prompt \"$PROMPT\" --file PATH... --gemini-deep-think --gemini-deep-think-fallback fail",
+            "mcp": "{\"lane\":\"gemini-deep-think\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane gemini-deep-think --json",
+              "requires": [
+                "signed_in_gemini",
+                "deep_think_available",
+                "deep_think_selected"
+              ]
+            },
+            "materialDefaults": {
+              "fallback": "fail",
+              "neverSubstitutesGeminiApi": true
+            }
+          },
+          {
+            "lane": "fable-local",
+            "title": "Claude Code Fable Local",
+            "engine": "claude-code",
+            "accessPath": "claude_code_subscription_cli",
+            "command": "oracle --lane fable-local --prompt \"$PROMPT\" --file PATH... --claude-code-no-tools --claude-code-local-only",
+            "mcp": "{\"lane\":\"fable-local\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane fable-local --json",
+              "requires": [
+                "local_same_user",
+                "subscription_cli_auth",
+                "zero_tools_verified"
+              ]
+            },
+            "materialDefaults": {
+              "tools": [],
+              "localOnly": true,
+              "providerBilling": "not_claimed_until_verified"
+            }
+          }
+        ],
+        "noBackendStarted": true,
+        "eventsComplete": true,
+        "streamsComplete": true,
+        "details": {
+          "priorSessionLane": "legacy-browser"
+        },
+        "counters": {
+          "apiSelection": 0,
+          "browserLaunch": 0,
+          "claudeSpawn": 0,
+          "mcpBackendMapping": 0,
+          "sessionWorkerStart": 0,
+          "routerRequestCreation": 0
+        }
+      }
+    },
+    {
+      "name": "cli_status_passive_bypasses_active_gate",
+      "input": {
+        "surface": "cli",
+        "lane": null,
+        "engine": null,
+        "model": null,
+        "models": null,
+        "dryRun": false,
+        "priorSessionLane": null,
+        "sourcePrecedence": [],
+        "promptSha256": null
+      },
+      "result": {
+        "ok": true,
+        "passive": true,
+        "noBackendStarted": true,
+        "lane": null,
+        "counters": {
+          "apiSelection": 0,
+          "browserLaunch": 0,
+          "claudeSpawn": 0,
+          "mcpBackendMapping": 0,
+          "sessionWorkerStart": 0,
+          "routerRequestCreation": 0
+        }
+      }
+    },
+    {
+      "name": "mcp_prompt_only_blocked",
+      "input": {
+        "surface": "mcp",
+        "lane": null,
+        "engine": null,
+        "model": null,
+        "models": null,
+        "dryRun": false,
+        "priorSessionLane": null,
+        "sourcePrecedence": [
+          "request.prompt"
+        ],
+        "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+      },
+      "result": {
+        "ok": false,
+        "errorCode": "agent_lane_blocked",
+        "exitCode": 2,
+        "policyVersion": "lane_registry_spike.v0",
+        "reason": "missing_reviewed_lane",
+        "attemptedRoute": {
+          "surface": "mcp",
+          "lane": null,
+          "engine": null,
+          "model": null,
+          "models": null,
+          "dryRun": false,
+          "priorSessionLane": null,
+          "sourcePrecedence": [
+            "request.prompt"
+          ],
+          "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+        },
+        "sourcePrecedence": [
+          "request.prompt"
+        ],
+        "supportedLanes": [
+          {
+            "lane": "chatgpt-pro",
+            "title": "ChatGPT Pro Extended Reasoning",
+            "engine": "browser",
+            "accessPath": "oracle_browser_remote_or_local",
+            "command": "oracle --lane chatgpt-pro --prompt \"$PROMPT\" --file PATH... --browser-thinking-time extended --browser-archive auto --browser-attachments auto",
+            "mcp": "{\"lane\":\"chatgpt-pro\",\"prompt\":\"...\",\"files\":[\"PATH\"],\"browserThinkingTime\":\"extended\"}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane chatgpt-pro --json",
+              "requires": [
+                "signed_in_chatgpt",
+                "pro_model_available",
+                "extended_reasoning_selected"
+              ]
+            },
+            "materialDefaults": {
+              "browserThinkingTime": "extended",
+              "browserArchive": "auto",
+              "browserAttachments": "auto",
+              "neverClicksAnswerNow": true
+            }
+          },
+          {
+            "lane": "gemini-deep-think",
+            "title": "Gemini Deep Think",
+            "engine": "browser",
+            "accessPath": "oracle_browser_remote_or_local",
+            "command": "oracle --lane gemini-deep-think --prompt \"$PROMPT\" --file PATH... --gemini-deep-think --gemini-deep-think-fallback fail",
+            "mcp": "{\"lane\":\"gemini-deep-think\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane gemini-deep-think --json",
+              "requires": [
+                "signed_in_gemini",
+                "deep_think_available",
+                "deep_think_selected"
+              ]
+            },
+            "materialDefaults": {
+              "fallback": "fail",
+              "neverSubstitutesGeminiApi": true
+            }
+          },
+          {
+            "lane": "fable-local",
+            "title": "Claude Code Fable Local",
+            "engine": "claude-code",
+            "accessPath": "claude_code_subscription_cli",
+            "command": "oracle --lane fable-local --prompt \"$PROMPT\" --file PATH... --claude-code-no-tools --claude-code-local-only",
+            "mcp": "{\"lane\":\"fable-local\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane fable-local --json",
+              "requires": [
+                "local_same_user",
+                "subscription_cli_auth",
+                "zero_tools_verified"
+              ]
+            },
+            "materialDefaults": {
+              "tools": [],
+              "localOnly": true,
+              "providerBilling": "not_claimed_until_verified"
+            }
+          }
+        ],
+        "noBackendStarted": true,
+        "eventsComplete": true,
+        "streamsComplete": true,
+        "details": {
+          "defaultInferenceRefused": true
+        },
+        "counters": {
+          "apiSelection": 0,
+          "browserLaunch": 0,
+          "claudeSpawn": 0,
+          "mcpBackendMapping": 0,
+          "sessionWorkerStart": 0,
+          "routerRequestCreation": 0
+        }
+      }
+    },
+    {
+      "name": "mcp_fable_stdio_allowed",
+      "input": {
+        "surface": "mcp",
+        "lane": "fable-local",
+        "engine": null,
+        "model": "fable",
+        "models": null,
+        "dryRun": false,
+        "priorSessionLane": null,
+        "sourcePrecedence": [],
+        "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+      },
+      "result": {
+        "ok": true,
+        "lane": "fable-local",
+        "noBackendStarted": false,
+        "dryRun": false,
+        "counters": {
+          "apiSelection": 0,
+          "browserLaunch": 0,
+          "claudeSpawn": 1,
+          "mcpBackendMapping": 1,
+          "sessionWorkerStart": 1,
+          "routerRequestCreation": 0
+        }
+      }
+    },
+    {
+      "name": "mcp_lane_engine_conflict_blocked",
+      "input": {
+        "surface": "mcp",
+        "lane": "fable-local",
+        "engine": "api",
+        "model": "fable",
+        "models": null,
+        "dryRun": false,
+        "priorSessionLane": null,
+        "sourcePrecedence": [
+          "request.lane",
+          "request.engine"
+        ],
+        "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+      },
+      "result": {
+        "ok": false,
+        "errorCode": "agent_lane_blocked",
+        "exitCode": 2,
+        "policyVersion": "lane_registry_spike.v0",
+        "reason": "lane_engine_conflict",
+        "attemptedRoute": {
+          "surface": "mcp",
+          "lane": "fable-local",
+          "engine": "api",
+          "model": "fable",
+          "models": null,
+          "dryRun": false,
+          "priorSessionLane": null,
+          "sourcePrecedence": [
+            "request.lane",
+            "request.engine"
+          ],
+          "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+        },
+        "sourcePrecedence": [
+          "request.lane",
+          "request.engine"
+        ],
+        "supportedLanes": [
+          {
+            "lane": "chatgpt-pro",
+            "title": "ChatGPT Pro Extended Reasoning",
+            "engine": "browser",
+            "accessPath": "oracle_browser_remote_or_local",
+            "command": "oracle --lane chatgpt-pro --prompt \"$PROMPT\" --file PATH... --browser-thinking-time extended --browser-archive auto --browser-attachments auto",
+            "mcp": "{\"lane\":\"chatgpt-pro\",\"prompt\":\"...\",\"files\":[\"PATH\"],\"browserThinkingTime\":\"extended\"}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane chatgpt-pro --json",
+              "requires": [
+                "signed_in_chatgpt",
+                "pro_model_available",
+                "extended_reasoning_selected"
+              ]
+            },
+            "materialDefaults": {
+              "browserThinkingTime": "extended",
+              "browserArchive": "auto",
+              "browserAttachments": "auto",
+              "neverClicksAnswerNow": true
+            }
+          },
+          {
+            "lane": "gemini-deep-think",
+            "title": "Gemini Deep Think",
+            "engine": "browser",
+            "accessPath": "oracle_browser_remote_or_local",
+            "command": "oracle --lane gemini-deep-think --prompt \"$PROMPT\" --file PATH... --gemini-deep-think --gemini-deep-think-fallback fail",
+            "mcp": "{\"lane\":\"gemini-deep-think\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane gemini-deep-think --json",
+              "requires": [
+                "signed_in_gemini",
+                "deep_think_available",
+                "deep_think_selected"
+              ]
+            },
+            "materialDefaults": {
+              "fallback": "fail",
+              "neverSubstitutesGeminiApi": true
+            }
+          },
+          {
+            "lane": "fable-local",
+            "title": "Claude Code Fable Local",
+            "engine": "claude-code",
+            "accessPath": "claude_code_subscription_cli",
+            "command": "oracle --lane fable-local --prompt \"$PROMPT\" --file PATH... --claude-code-no-tools --claude-code-local-only",
+            "mcp": "{\"lane\":\"fable-local\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane fable-local --json",
+              "requires": [
+                "local_same_user",
+                "subscription_cli_auth",
+                "zero_tools_verified"
+              ]
+            },
+            "materialDefaults": {
+              "tools": [],
+              "localOnly": true,
+              "providerBilling": "not_claimed_until_verified"
+            }
+          }
+        ],
+        "noBackendStarted": true,
+        "eventsComplete": true,
+        "streamsComplete": true,
+        "details": {
+          "lane": "fable-local",
+          "expectedEngine": "claude-code",
+          "attemptedEngine": "api"
+        },
+        "counters": {
+          "apiSelection": 0,
+          "browserLaunch": 0,
+          "claudeSpawn": 0,
+          "mcpBackendMapping": 0,
+          "sessionWorkerStart": 0,
+          "routerRequestCreation": 0
+        }
+      }
+    },
+    {
+      "name": "mcp_network_fable_blocked",
+      "input": {
+        "surface": "mcp",
+        "lane": "fable-local",
+        "engine": null,
+        "model": "fable",
+        "models": null,
+        "dryRun": false,
+        "priorSessionLane": null,
+        "sourcePrecedence": [],
+        "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+      },
+      "result": {
+        "ok": false,
+        "errorCode": "agent_lane_blocked",
+        "exitCode": 2,
+        "policyVersion": "lane_registry_spike.v0",
+        "reason": "fable_local_refuses_ambiguous_mcp_transport",
+        "attemptedRoute": {
+          "surface": "mcp",
+          "lane": "fable-local",
+          "engine": null,
+          "model": "fable",
+          "models": null,
+          "dryRun": false,
+          "priorSessionLane": null,
+          "sourcePrecedence": [],
+          "promptSha256": "sha256:23acfefd5f74e0477c91cbff7fa86012f44842431d9540989df2dd911cc593f3"
+        },
+        "sourcePrecedence": [],
+        "supportedLanes": [
+          {
+            "lane": "chatgpt-pro",
+            "title": "ChatGPT Pro Extended Reasoning",
+            "engine": "browser",
+            "accessPath": "oracle_browser_remote_or_local",
+            "command": "oracle --lane chatgpt-pro --prompt \"$PROMPT\" --file PATH... --browser-thinking-time extended --browser-archive auto --browser-attachments auto",
+            "mcp": "{\"lane\":\"chatgpt-pro\",\"prompt\":\"...\",\"files\":[\"PATH\"],\"browserThinkingTime\":\"extended\"}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane chatgpt-pro --json",
+              "requires": [
+                "signed_in_chatgpt",
+                "pro_model_available",
+                "extended_reasoning_selected"
+              ]
+            },
+            "materialDefaults": {
+              "browserThinkingTime": "extended",
+              "browserArchive": "auto",
+              "browserAttachments": "auto",
+              "neverClicksAnswerNow": true
+            }
+          },
+          {
+            "lane": "gemini-deep-think",
+            "title": "Gemini Deep Think",
+            "engine": "browser",
+            "accessPath": "oracle_browser_remote_or_local",
+            "command": "oracle --lane gemini-deep-think --prompt \"$PROMPT\" --file PATH... --gemini-deep-think --gemini-deep-think-fallback fail",
+            "mcp": "{\"lane\":\"gemini-deep-think\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane gemini-deep-think --json",
+              "requires": [
+                "signed_in_gemini",
+                "deep_think_available",
+                "deep_think_selected"
+              ]
+            },
+            "materialDefaults": {
+              "fallback": "fail",
+              "neverSubstitutesGeminiApi": true
+            }
+          },
+          {
+            "lane": "fable-local",
+            "title": "Claude Code Fable Local",
+            "engine": "claude-code",
+            "accessPath": "claude_code_subscription_cli",
+            "command": "oracle --lane fable-local --prompt \"$PROMPT\" --file PATH... --claude-code-no-tools --claude-code-local-only",
+            "mcp": "{\"lane\":\"fable-local\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+            "readiness": {
+              "doctorCommand": "oracle doctor lane fable-local --json",
+              "requires": [
+                "local_same_user",
+                "subscription_cli_auth",
+                "zero_tools_verified"
+              ]
+            },
+            "materialDefaults": {
+              "tools": [],
+              "localOnly": true,
+              "providerBilling": "not_claimed_until_verified"
+            }
+          }
+        ],
+        "noBackendStarted": true,
+        "eventsComplete": true,
+        "streamsComplete": true,
+        "details": {
+          "transport": "network"
+        },
+        "counters": {
+          "apiSelection": 0,
+          "browserLaunch": 0,
+          "claudeSpawn": 0,
+          "mcpBackendMapping": 0,
+          "sessionWorkerStart": 0,
+          "routerRequestCreation": 0
+        }
+      }
+    }
+  ],
+  "blockedInvariantFailures": [],
+  "generatedSurfaces": {
+    "helpLaneSection": "chatgpt-pro: ChatGPT Pro Extended Reasoning\n  command: oracle --lane chatgpt-pro --prompt \"$PROMPT\" --file PATH... --browser-thinking-time extended --browser-archive auto --browser-attachments auto\n  doctor: oracle doctor lane chatgpt-pro --json\ngemini-deep-think: Gemini Deep Think\n  command: oracle --lane gemini-deep-think --prompt \"$PROMPT\" --file PATH... --gemini-deep-think --gemini-deep-think-fallback fail\n  doctor: oracle doctor lane gemini-deep-think --json\nfable-local: Claude Code Fable Local\n  command: oracle --lane fable-local --prompt \"$PROMPT\" --file PATH... --claude-code-no-tools --claude-code-local-only\n  doctor: oracle doctor lane fable-local --json",
+    "capabilitiesJson": [
+      {
+        "id": "chatgpt-pro",
+        "title": "ChatGPT Pro Extended Reasoning",
+        "engine": "browser",
+        "accessPath": "oracle_browser_remote_or_local",
+        "readiness": {
+          "doctorCommand": "oracle doctor lane chatgpt-pro --json",
+          "requires": [
+            "signed_in_chatgpt",
+            "pro_model_available",
+            "extended_reasoning_selected"
+          ]
+        },
+        "materialDefaults": {
+          "browserThinkingTime": "extended",
+          "browserArchive": "auto",
+          "browserAttachments": "auto",
+          "neverClicksAnswerNow": true
+        }
+      },
+      {
+        "id": "gemini-deep-think",
+        "title": "Gemini Deep Think",
+        "engine": "browser",
+        "accessPath": "oracle_browser_remote_or_local",
+        "readiness": {
+          "doctorCommand": "oracle doctor lane gemini-deep-think --json",
+          "requires": [
+            "signed_in_gemini",
+            "deep_think_available",
+            "deep_think_selected"
+          ]
+        },
+        "materialDefaults": {
+          "fallback": "fail",
+          "neverSubstitutesGeminiApi": true
+        }
+      },
+      {
+        "id": "fable-local",
+        "title": "Claude Code Fable Local",
+        "engine": "claude-code",
+        "accessPath": "claude_code_subscription_cli",
+        "readiness": {
+          "doctorCommand": "oracle doctor lane fable-local --json",
+          "requires": [
+            "local_same_user",
+            "subscription_cli_auth",
+            "zero_tools_verified"
+          ]
+        },
+        "materialDefaults": {
+          "tools": [],
+          "localOnly": true,
+          "providerBilling": "not_claimed_until_verified"
+        }
+      }
+    ],
+    "mcpLaneEnum": [
+      "chatgpt-pro",
+      "gemini-deep-think",
+      "fable-local"
+    ],
+    "routeBlockSupportedLanes": [
+      {
+        "lane": "chatgpt-pro",
+        "title": "ChatGPT Pro Extended Reasoning",
+        "engine": "browser",
+        "accessPath": "oracle_browser_remote_or_local",
+        "command": "oracle --lane chatgpt-pro --prompt \"$PROMPT\" --file PATH... --browser-thinking-time extended --browser-archive auto --browser-attachments auto",
+        "mcp": "{\"lane\":\"chatgpt-pro\",\"prompt\":\"...\",\"files\":[\"PATH\"],\"browserThinkingTime\":\"extended\"}",
+        "readiness": {
+          "doctorCommand": "oracle doctor lane chatgpt-pro --json",
+          "requires": [
+            "signed_in_chatgpt",
+            "pro_model_available",
+            "extended_reasoning_selected"
+          ]
+        },
+        "materialDefaults": {
+          "browserThinkingTime": "extended",
+          "browserArchive": "auto",
+          "browserAttachments": "auto",
+          "neverClicksAnswerNow": true
+        }
+      },
+      {
+        "lane": "gemini-deep-think",
+        "title": "Gemini Deep Think",
+        "engine": "browser",
+        "accessPath": "oracle_browser_remote_or_local",
+        "command": "oracle --lane gemini-deep-think --prompt \"$PROMPT\" --file PATH... --gemini-deep-think --gemini-deep-think-fallback fail",
+        "mcp": "{\"lane\":\"gemini-deep-think\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+        "readiness": {
+          "doctorCommand": "oracle doctor lane gemini-deep-think --json",
+          "requires": [
+            "signed_in_gemini",
+            "deep_think_available",
+            "deep_think_selected"
+          ]
+        },
+        "materialDefaults": {
+          "fallback": "fail",
+          "neverSubstitutesGeminiApi": true
+        }
+      },
+      {
+        "lane": "fable-local",
+        "title": "Claude Code Fable Local",
+        "engine": "claude-code",
+        "accessPath": "claude_code_subscription_cli",
+        "command": "oracle --lane fable-local --prompt \"$PROMPT\" --file PATH... --claude-code-no-tools --claude-code-local-only",
+        "mcp": "{\"lane\":\"fable-local\",\"prompt\":\"...\",\"files\":[\"PATH\"]}",
+        "readiness": {
+          "doctorCommand": "oracle doctor lane fable-local --json",
+          "requires": [
+            "local_same_user",
+            "subscription_cli_auth",
+            "zero_tools_verified"
+          ]
+        },
+        "materialDefaults": {
+          "tools": [],
+          "localOnly": true,
+          "providerBilling": "not_claimed_until_verified"
+        }
+      }
+    ],
+    "doctorLaneRecords": [
+      {
+        "lane": "chatgpt-pro",
+        "command": "oracle doctor lane chatgpt-pro --json",
+        "requires": [
+          "signed_in_chatgpt",
+          "pro_model_available",
+          "extended_reasoning_selected"
+        ]
+      },
+      {
+        "lane": "gemini-deep-think",
+        "command": "oracle doctor lane gemini-deep-think --json",
+        "requires": [
+          "signed_in_gemini",
+          "deep_think_available",
+          "deep_think_selected"
+        ]
+      },
+      {
+        "lane": "fable-local",
+        "command": "oracle doctor lane fable-local --json",
+        "requires": [
+          "local_same_user",
+          "subscription_cli_auth",
+          "zero_tools_verified"
+        ]
+      }
+    ],
+    "testCases": [
+      {
+        "name": "allows_chatgpt_pro",
+        "input": {
+          "lane": "chatgpt-pro",
+          "model": "chatgpt-pro-latest"
+        }
+      },
+      {
+        "name": "allows_gemini_deep_think",
+        "input": {
+          "lane": "gemini-deep-think",
+          "model": "gemini-3.1-pro-deep-think"
+        }
+      },
+      {
+        "name": "allows_fable_local",
+        "input": {
+          "lane": "fable-local",
+          "model": "fable"
+        }
+      }
+    ]
+  },
+  "surfaceDrift": false,
+  "summary": {
+    "policyCaseCount": 21,
+    "blockedCaseCount": 13,
+    "blockedInvariantFailures": 0,
+    "surfaceDrift": false
+  }
+}

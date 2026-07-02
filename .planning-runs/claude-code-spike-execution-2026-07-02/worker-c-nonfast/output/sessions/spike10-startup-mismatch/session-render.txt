@@ -1,0 +1,6 @@
+session spike10-startup-mismatch
+status: error
+answer: (none)
+events: 2
+stdout bytes: 135
+stderr bytes: 0
