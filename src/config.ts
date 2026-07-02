@@ -109,6 +109,14 @@ export interface UserConfig {
   modelOverrides?: ModelOverridesConfig;
 }
 
+export const DEFAULT_USER_CONFIG: UserConfig = {
+  engine: "browser",
+  model: "gpt-5.5-pro",
+  browser: {
+    thinkingTime: "extended",
+  },
+};
+
 export const PROJECT_CONFIG_RELATIVE_PATH = path.join(".oracle", "config.json");
 
 function resolveUserConfigPath(): string {
@@ -189,7 +197,7 @@ export async function loadUserConfig(
     loadedConfigs.push(userConfig);
   }
 
-  let merged = userConfig.loaded ? userConfig.config : {};
+  let merged = mergeUserConfig(DEFAULT_USER_CONFIG, userConfig.loaded ? userConfig.config : {});
   for (const projectConfigPath of projectConfigPaths) {
     const projectConfig = await readConfigFile(projectConfigPath);
     if (!projectConfig.loaded) continue;

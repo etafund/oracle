@@ -2,7 +2,12 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadUserConfig, PROJECT_CONFIG_RELATIVE_PATH, writeUserConfig } from "../src/config.js";
+import {
+  DEFAULT_USER_CONFIG,
+  loadUserConfig,
+  PROJECT_CONFIG_RELATIVE_PATH,
+  writeUserConfig,
+} from "../src/config.js";
 import { setOracleHomeDirOverrideForTest } from "../src/oracleHome.js";
 
 describe("loadUserConfig", () => {
@@ -58,11 +63,32 @@ describe("loadUserConfig", () => {
     expect(result.config.browser?.remoteToken).toBe("secret");
   });
 
-  it("returns empty config when file is missing", async () => {
+  it("returns packaged defaults when file is missing", async () => {
     const result = await loadUserConfig({ env: {} as NodeJS.ProcessEnv });
     expect(result.loaded).toBe(false);
-    expect(result.config).toEqual({});
+    expect(result.config).toEqual(DEFAULT_USER_CONFIG);
     expect(result.paths).toEqual([]);
+  });
+
+  it("lets user config override packaged defaults", async () => {
+    await fs.writeFile(
+      path.join(tempDir, "config.json"),
+      `{
+        engine: "api",
+        model: "gpt-5.5",
+        browser: { thinkingTime: "heavy" },
+      }`,
+      "utf8",
+    );
+
+    const result = await loadUserConfig({ env: {} as NodeJS.ProcessEnv });
+
+    expect(result.loaded).toBe(true);
+    expect(result.config).toMatchObject({
+      engine: "api",
+      model: "gpt-5.5",
+      browser: { thinkingTime: "heavy" },
+    });
   });
 
   it("merges project configs from parent to child over user config", async () => {
@@ -309,14 +335,14 @@ describe("loadUserConfig", () => {
     expect(result.config.browser?.remoteHost).toBe("config:9473");
   });
 
-  it("rejects non-object config content and falls back to empty config", async () => {
+  it("rejects non-object config content and falls back to packaged defaults", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     await fs.writeFile(path.join(tempDir, "config.json"), "true", "utf8");
 
     const result = await loadUserConfig({ env: {} as NodeJS.ProcessEnv });
 
     expect(result.loaded).toBe(false);
-    expect(result.config).toEqual({});
+    expect(result.config).toEqual(DEFAULT_USER_CONFIG);
     expect(warn).toHaveBeenCalledWith(
       expect.stringMatching(/Expected .* to contain a JSON object/),
     );
