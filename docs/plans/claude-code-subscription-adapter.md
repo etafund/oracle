@@ -1,7 +1,7 @@
 # Plan: Local Claude Code Subscription Adapter for Fable 5
 
 Status: draft plan for `etafund/oracle`
-Date: 2026-07-01
+Date: 2026-07-02
 Audience: a new maintainer who has not read Oracle, Oracle Router, or this chat
 Scope: plan only, not implementation
 
@@ -35,9 +35,9 @@ This feature is not a proxy. It is not a hosted service. It is not an Anthropic 
 
 This plan also adds a broader v1 CLI shape change: the revised agent-facing Oracle CLI should guide and gate agents into exactly three reviewed lanes:
 
-- ChatGPT Pro through browser automation.
+- ChatGPT Pro (Extended Reasoning) through browser automation.
 - Gemini Pro with Deep Think through browser automation.
-- Fable through local Claude Code `claude -p`.
+- Fable (xHigh effort) through local Claude Code `claude -p`.
 
 The broader Oracle feature set should stay in the fork. API providers, browser machinery, session storage, MCP plumbing, docs, tests, and future model support are not being deleted. The change is that normal agent-facing discovery, help text, MCP schema hints, and error messages should steer agents to the three reviewed lanes, and other routes should fail with a clear route-block error for now.
 
@@ -410,9 +410,9 @@ The three supported v1 lanes are:
 
 | Public lane | Canonical internal id | Access path | Required shape |
 |-------------|-----------------------|-------------|----------------|
-| `chatgpt-pro` | `chatgpt_pro_browser` | `chatgpt_pro_browser_automation` | ChatGPT Pro via browser automation |
+| `chatgpt-pro` | `chatgpt_pro_browser` | `chatgpt_pro_browser_automation` | ChatGPT Pro (Extended Reasoning) via browser automation |
 | `gemini-deep-think` | `gemini_pro_deep_think_browser` | `gemini_pro_deep_think_browser_automation` | Gemini Pro Deep Think via browser automation |
-| `fable-local` | `claude_code_fable_local` | `claude_code_subscription_cli` | Fable via local `claude -p` |
+| `fable-local` | `claude_code_fable_local` | `claude_code_subscription_cli` | Fable (xHigh effort) via local `claude -p` |
 
 These lane names should be the first names agents see in:
 
