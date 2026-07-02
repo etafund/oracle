@@ -50,6 +50,7 @@ export async function runRemoteAttach(options: RemoteAttachCliOptions): Promise<
     // wrong endpoint silently. attach is a diagnostic surface; the
     // user's typed host is the intent.
     preferCli: true,
+    allowMissingToken: true,
   });
 
   const { report } = await buildRemoteEndpointReport({

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { resolveRunOptionsFromConfig } from "../src/cli/runOptions.js";
 import { estimateRequestTokens } from "../src/oracle/tokenEstimate.js";
 import { DEFAULT_MODEL, MODEL_CONFIGS } from "../src/oracle/config.js";
+import { LaneRouteBlockError } from "../src/cli/routeBlockError.js";
 
 describe("resolveRunOptionsFromConfig", () => {
   const basePrompt = "This prompt is comfortably above twenty characters.";
@@ -52,6 +53,88 @@ describe("resolveRunOptionsFromConfig", () => {
       prompt: basePrompt,
     });
     expect(runOptions.model).toBe(DEFAULT_MODEL);
+  });
+
+  it("normalizes --lane fable-local to the claude-code engine without API model resolution", () => {
+    const { runOptions, resolvedEngine, resolvedLane } = resolveRunOptionsFromConfig({
+      prompt: basePrompt,
+      lane: "fable-local",
+      model: "fable",
+      env: {},
+    });
+    expect(resolvedEngine).toBe("claude-code");
+    expect(resolvedLane).toBe("fable-local");
+    expect(runOptions.lane).toBe("fable-local");
+    expect(runOptions.model).toBe("fable");
+    expect(runOptions.effectiveModelId).toBe("fable");
+    expect(runOptions.claudeCode).toMatchObject({
+      model: "fable",
+      readOnly: true,
+      outputFormat: "stream-json",
+      permissionMode: "plan",
+      toolMode: "none",
+      safeMode: true,
+      disableSlashCommands: true,
+      strictMcpConfig: true,
+      noChrome: true,
+      noSessionPersistence: true,
+    });
+  });
+
+  it("normalizes expert --engine claude-code --model fable to fable-local", () => {
+    const { runOptions, resolvedEngine, resolvedLane } = resolveRunOptionsFromConfig({
+      prompt: basePrompt,
+      engine: "claude-code",
+      model: "fable",
+      env: {},
+    });
+    expect(resolvedEngine).toBe("claude-code");
+    expect(resolvedLane).toBe("fable-local");
+    expect(runOptions.lane).toBe("fable-local");
+    expect(runOptions.model).toBe("fable");
+    expect(runOptions.claudeCode?.model).toBe("fable");
+  });
+
+  it("route-blocks API fable requests before API/OpenRouter model fallback", () => {
+    expect(() =>
+      resolveRunOptionsFromConfig({
+        prompt: basePrompt,
+        engine: "api",
+        model: "fable",
+        env: {},
+      }),
+    ).toThrow(LaneRouteBlockError);
+  });
+
+  it("route-blocks multi-model fan-out containing fable", () => {
+    expect(() =>
+      resolveRunOptionsFromConfig({
+        prompt: basePrompt,
+        models: ["gpt-5.5-pro", "fable"],
+        env: {},
+      }),
+    ).toThrow(LaneRouteBlockError);
+  });
+
+  it("route-blocks ORACLE_ENGINE=claude-code without explicit lane or expert form", () => {
+    expect(() =>
+      resolveRunOptionsFromConfig({
+        prompt: basePrompt,
+        model: "gpt-5.1",
+        env: { ORACLE_ENGINE: "claude-code" } as NodeJS.ProcessEnv,
+      }),
+    ).toThrow(LaneRouteBlockError);
+  });
+
+  it("route-blocks config-only engine claude-code without explicit lane or expert form", () => {
+    expect(() =>
+      resolveRunOptionsFromConfig({
+        prompt: basePrompt,
+        model: "gpt-5.1",
+        userConfig: { engine: "claude-code" },
+        env: {},
+      }),
+    ).toThrow(LaneRouteBlockError);
   });
 
   it("uses config model when caller does not provide one", () => {

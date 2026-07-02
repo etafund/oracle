@@ -3,6 +3,8 @@ import { THINKING_TIME_INPUT_VALUES, normalizeThinkingTimeLevel } from "../oracl
 import type { ThinkingTimeLevel } from "../oracle/types.js";
 
 export const CONSULT_PRESETS = ["chatgpt-pro-heavy"] as const;
+export const CONSULT_LANES = ["chatgpt-pro", "gemini-deep-think", "fable-local"] as const;
+export const CONSULT_ENGINES = ["api", "browser", "claude-code"] as const;
 
 export const browserThinkingTimeRawSchema = z.enum(THINKING_TIME_INPUT_VALUES);
 
@@ -21,9 +23,10 @@ export const consultInputSchema = z
     preset: z.enum(CONSULT_PRESETS).optional(),
     prompt: z.string().min(1, "Prompt is required."),
     files: z.array(z.string()).default([]),
+    lane: z.enum(CONSULT_LANES).optional(),
     model: z.string().optional(),
     models: z.array(z.string()).optional(),
-    engine: z.enum(["api", "browser"]).optional(),
+    engine: z.enum(CONSULT_ENGINES).optional(),
     browserModelLabel: z.string().optional(),
     browserAttachments: z.enum(["auto", "never", "always"]).optional(),
     browserBundleFiles: z.boolean().optional(),

@@ -69,8 +69,8 @@ export function registerProtectedRunCommand(
     .description("Plan protected browser provider runs without submitting prompts.");
   addChatGptProRunFlags(run);
   addGeminiDeepThinkRunFlags(run);
-  run.action(async (_options: ProtectedRunCliOptions, command: Command) => {
-    const options = command.optsWithGlobals() as ProtectedRunCliOptions;
+  run.action(async function (this: Command) {
+    const options = this.optsWithGlobals() as ProtectedRunCliOptions;
     const envelope = await runProtectedRunCommand(options, deps, deps);
     if (!envelope.ok) {
       process.exitCode = 1;

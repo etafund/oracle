@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { AGENT_LANE_POLICY_VERSION, LANE_TEMPLATES } from "../../laneRegistry.js";
 import { sessionStore, type SessionStore } from "../../../sessionStore.js";
 import {
   runChatGptDoctor,
@@ -29,6 +30,7 @@ export interface AggregateDoctorData {
     chatgpt: ProviderDoctorEnvelope;
     gemini: ProviderDoctorEnvelope;
   };
+  lane_policy: AggregateDoctorCheck;
   remote_bridge: AggregateDoctorCheck;
   session_storage: AggregateDoctorCheck;
   provider_docs?: AggregateDoctorCheck;
@@ -81,6 +83,7 @@ export async function runAggregateDoctor(
   const [
     chatgpt,
     gemini,
+    lanePolicy,
     remoteBridge,
     sessionStorage,
     providerDocs,
@@ -95,6 +98,7 @@ export async function runAggregateDoctor(
       () => options.geminiDoctor?.() ?? defaultGeminiDoctor(store, remoteBrowser),
       "gemini_doctor",
     ),
+    runCheck(async () => defaultLanePolicyCheck(), "lane_policy"),
     runCheck(
       () => options.remoteBridgeDoctor?.() ?? defaultRemoteBridgeDoctor(),
       "remote_bridge_doctor",
@@ -111,6 +115,7 @@ export async function runAggregateDoctor(
   const providerChecks = [
     providerEnvelopeToCheck("chatgpt", chatgpt as ProviderDoctorEnvelope),
     providerEnvelopeToCheck("gemini", gemini as ProviderDoctorEnvelope),
+    lanePolicy as AggregateDoctorCheck,
   ];
   const optionalChecks = [providerDocs, browserLeases, evidenceStorage].filter(
     (check): check is AggregateDoctorCheck => Boolean(check),
@@ -138,6 +143,7 @@ export async function runAggregateDoctor(
       chatgpt: chatgpt as ProviderDoctorEnvelope,
       gemini: gemini as ProviderDoctorEnvelope,
     },
+    lane_policy: lanePolicy as AggregateDoctorCheck,
     remote_bridge: remoteBridge as AggregateDoctorCheck,
     session_storage: sessionStorage as AggregateDoctorCheck,
     ...(providerDocs ? { provider_docs: providerDocs } : {}),
@@ -161,6 +167,7 @@ export async function runAggregateDoctor(
     commands: {
       chatgpt_doctor: "oracle doctor chatgpt --json",
       gemini_doctor: "oracle doctor gemini --json",
+      lanes_doctor: "oracle doctor lanes --json",
       remote_doctor: "oracle remote doctor --json",
       bridge_doctor: "oracle bridge doctor --json",
       browser_leases_recover: "oracle browser leases recover --json",
@@ -260,6 +267,62 @@ async function defaultGeminiDoctor(
     },
     { stdout: () => {} },
   );
+}
+
+function defaultLanePolicyCheck(): AggregateDoctorCheck {
+  const lanes = LANE_TEMPLATES.map((entry) => ({
+    lane: entry.lane,
+    canonical_id: entry.canonicalId,
+    readiness: entry.readiness,
+    enabled_for_cli: entry.enabledForCli,
+    transport_eligibility: entry.transportEligibility,
+    doctor_command: entry.doctorCommand,
+    blocked_reason: entry.blockedReason ?? null,
+  }));
+  const fable = lanes.find((entry) => entry.lane === "fable-local");
+  const enabled = lanes.filter((entry) => entry.enabled_for_cli).map((entry) => entry.lane);
+  const deferred = lanes
+    .filter((entry) => !entry.enabled_for_cli)
+    .map((entry) => ({
+      lane: entry.lane,
+      readiness: entry.readiness,
+      blocked_reason: entry.blocked_reason,
+    }));
+
+  if (!fable?.enabled_for_cli) {
+    return {
+      component: "lane_policy",
+      status: "fail",
+      code: "fable_local_lane_unavailable",
+      message: "Reviewed lane policy loaded but fable-local is not enabled for local CLI use.",
+      details: {
+        schema_version: AGENT_LANE_POLICY_VERSION,
+        lanes,
+        enabled_lanes: enabled,
+        deferred_lanes: deferred,
+      },
+      next_command: "oracle doctor lanes --json",
+      fix_command: null,
+      retry_safe: false,
+    };
+  }
+
+  return {
+    component: "lane_policy",
+    status: "pass",
+    code: "reviewed_lane_policy_loaded",
+    message:
+      "Reviewed lane policy loaded; fable-local is enabled locally and ChatGPT/Gemini browser lanes expose provider-specific doctor commands.",
+    details: {
+      schema_version: AGENT_LANE_POLICY_VERSION,
+      lanes,
+      enabled_lanes: enabled,
+      deferred_lanes: deferred,
+    },
+    next_command: "oracle doctor lanes --json",
+    fix_command: null,
+    retry_safe: true,
+  };
 }
 
 async function defaultRemoteBridgeDoctor(): Promise<AggregateDoctorCheck> {

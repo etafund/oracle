@@ -1,9 +1,9 @@
 ---
 title: Mythical Pro Agents
-description: "The frontier 'Pro' model lineup Oracle speaks to — GPT-5.5 Pro, Gemini 3.1 Pro, Claude Opus, Deep Research — and when to reach for each."
+description: "Compatibility model catalog for older API/browser routes. The reviewed agent-facing routes are ChatGPT Pro Extended Reasoning, Fable xHigh, and Gemini 3.1 Deep Think."
 ---
 
-The headline frontier models — the ones marked **Pro** — are slow, expensive, and gated behind separate consumer subscriptions or per-token bills. Oracle is the single CLI that talks to all of them with the same flags, the same session store, and the same bundling rules.
+The reviewed agent-facing routes are ChatGPT Pro Extended Reasoning, Fable xHigh, and Gemini 3.1 Deep Think. This page remains as a compatibility catalog for older API/browser model routes and cost intuition; do not treat every row here as a reviewed lane.
 
 ## The lineup
 
@@ -48,7 +48,7 @@ oracle --engine browser --model gemini-3.1-pro \
   --generate-image out.png --aspect 1:1
 ```
 
-### Claude Opus 4.1
+### Claude Opus 4.1 (compatibility API)
 
 API-only. Best at sustained reasoning over a single tightly-scoped problem; lower hallucination rate on tricky code than Pro GPT models in our experience. Use when the task is "reason carefully" rather than "write a lot."
 
@@ -57,7 +57,7 @@ oracle -p "Audit this state machine for unreachable transitions" \
   --model claude-4.1-opus --file "src/state/**"
 ```
 
-### Multi-model triangulation
+### Multi-model triangulation (compatibility API)
 
 When the answer matters, ask three:
 

@@ -4,6 +4,7 @@
 
 ### Added
 
+- CLI: add the hidden-alpha `--lane fable-local` path for read-only local Claude Code Fable reviews, with central lane route-blocking, Anthropic API env refusal, guarded `claude -p` command construction, raw visible-stream artifacts, session metadata, dry-run output, and MCP schema discovery that still blocks MCP execution until that lane is proven separately.
 - Bridge/Browser: transfer ChatGPT-generated files from the browser host back to the client over a token-protected artifact endpoint, with capability discovery, safe filenames, byte counts, SHA-256 metadata, ZIP validation, and manual fallback guidance for mixed-version bridge deployments. Thanks @DK625!
 - API: add user-only `modelOverrides` for remapping known models and their metadata on custom OpenAI-compatible gateways. Fixes #273. Thanks @wangwllu!
 
@@ -13,6 +14,9 @@
 
 ### Fixed
 
+- CLI/Remote: pass Commander options correctly for zero-positional subcommands so `oracle remote doctor --json`, `oracle remote status --json`, `oracle remote attach --host ... --json`, bridge diagnostics, capabilities, robot-docs, protected-run planning, and browser lease commands emit clean machine-readable output instead of human text or stale defaults.
+- CLI/Docs: add `oracle doctor lanes --json`, refresh capabilities/robot docs around the reviewed ChatGPT Pro Extended Reasoning, Fable xHigh, and Gemini 3.1 Deep Think lanes, and remove dead-end recovery hints such as `oracle browser doctor --json` and `browser leases list --json`.
+- CLI/Remote: ignore passive remote-browser env/config when an explicit API-provider route or local Fable lane is selected, so router defaults no longer block custom-base-url follow-ups or local subscription reviews.
 - Browser/Bridge: improve ChatGPT ZIP artifact capture before bridge transfer by broadening sandbox/file-card/download-control discovery, adding sanitized direct-download diagnostics, and falling back to scoped browser downloads when sandbox fetches fail. Thanks @DK625!
 - API: forward configured reasoning effort through custom OpenAI-compatible chat-completions gateways.
 - Browser: accept a stable, exact file-input name match when ChatGPT marks the composer ready but exposes no attachment chip or count, while still waiting through active uploads and rejecting missing or extra files. Fixes #275. Thanks @wangwllu!

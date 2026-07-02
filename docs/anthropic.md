@@ -15,6 +15,18 @@ Scope: API support for Claude 4.5 Sonnet and Claude 4.1 Opus in Oracle CLI.
 - Engine: **API only**. Browser mode is blocked for Claude.
 - Tokenizer: `@anthropic-ai/tokenizer` (wrapped to accept Oracle’s array inputs). Estimates are approximate; rely on API `usage` for actual billing.
 
+## Local Claude Code lane is separate
+
+The experimental `fable-local` lane is not part of the Anthropic API integration described above. It is a local-owner review path that runs the user's installed Claude Code CLI on the same machine, uses Oracle-supplied prompt/file context, and keeps Claude Code tools disabled for read-only review.
+
+Key differences:
+
+- Anthropic API mode requires `ANTHROPIC_API_KEY`; local Claude Code mode refuses when that environment variable name is present.
+- Anthropic API mode calls provider API endpoints; local Claude Code mode runs the local `claude` command and must not be exposed through `oracle serve`, router/bridge flows, remote browser workers, or network MCP transports.
+- Local Claude Code mode captures visible CLI events only. It does not capture hidden reasoning.
+- Raw visible stream artifacts can contain prompts, file snippets, local paths, stderr, and other sensitive visible data. They are not redacted exports by default.
+- MCP `consult` recognizes `lane:"fable-local"` and `engine:"claude-code"` only to return a typed hidden-alpha route-block until the MCP local-owner and full visible-event return contracts are implemented.
+
 ## Planned CLI Behavior
 
 - Add models to `--model/--models`: `claude-4.6-sonnet`, `claude-4.1-opus`. Aliases: “sonnet”, “opus” map to those IDs.

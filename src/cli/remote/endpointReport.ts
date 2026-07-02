@@ -116,7 +116,7 @@ export async function buildRemoteEndpointReport(
   }
   if (!resolved.token) {
     report.status = "missing_token";
-    report.recover_command = "oracle config set browser.remoteToken <token>";
+    report.recover_command = "export ORACLE_REMOTE_TOKEN=<token>";
     return { report, probe };
   }
   if (input.probe === false) {

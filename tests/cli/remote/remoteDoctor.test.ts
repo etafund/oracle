@@ -135,7 +135,7 @@ describe("runRemoteDoctor --json", () => {
     await runRemoteDoctor({ json: true });
     const out = JSON.parse(logSpy.mock.calls[0][0] as string);
     expect(out.status).toBe("missing_token");
-    expect(out.recover_command).toMatch(/browser\.remoteToken/);
+    expect(out.recover_command).toBe("export ORACLE_REMOTE_TOKEN=<token>");
     expect(process.exitCode).toBe(1);
   });
 

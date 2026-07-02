@@ -29,7 +29,7 @@ export function registerGeminiDoctorCommand(
 ): Command {
   return doctorCommand
     .command("gemini")
-    .description("Check Gemini browser/API readiness without submitting a prompt.")
+    .description("Check Gemini Deep Think browser readiness without submitting a prompt.")
     .option("--deep-think", "Require Gemini Deep Think browser route readiness.", false)
     .option(
       "--remote-browser <mode>",
@@ -37,7 +37,8 @@ export function registerGeminiDoctorCommand(
       "preferred",
     )
     .option("--json", "Print structured JSON.", false)
-    .action(async (options: GeminiDoctorOptions) => {
+    .action(async function (this: Command) {
+      const options = this.optsWithGlobals() as GeminiDoctorOptions;
       const envelope = await runGeminiDoctor({ ...deps, ...options });
       if (!envelope.ok) {
         process.exitCode = 1;
@@ -51,10 +52,14 @@ export async function runGeminiDoctor(
 ): Promise<ProviderDoctorEnvelope> {
   const remoteBrowser = normalizeRemoteBrowser(options.remoteBrowser);
   const sessions = await (options.sessionStore ?? sessionStore).listSessions().catch(() => []);
+  const uiProbe = await runGeminiUiProbe(options.uiProbe);
   const checks = [
-    { name: "auth", ...(await (options.authProbe ?? (() => defaultGeminiAuthProbe(options)))()) },
+    {
+      name: "auth",
+      ...(await (options.authProbe ?? (() => defaultGeminiAuthProbe(options, uiProbe)))()),
+    },
     recentSessionCheck("gemini", sessions),
-    uiProbeToCheck("gemini", remoteBrowser, await runGeminiUiProbe(options.uiProbe)),
+    uiProbeToCheck("gemini", remoteBrowser, uiProbe),
   ];
   const envelope = buildProviderDoctorEnvelope("gemini", checks, {
     deep_think: Boolean(options.deepThink),
@@ -64,8 +69,35 @@ export async function runGeminiDoctor(
   return envelope;
 }
 
-async function defaultGeminiAuthProbe(options: GeminiDoctorOptions): Promise<ProviderProbeResult> {
+async function defaultGeminiAuthProbe(
+  options: GeminiDoctorOptions,
+  uiProbe?: ProviderUiProbeResult,
+): Promise<ProviderProbeResult> {
   const env = options.env ?? process.env;
+  if (options.deepThink) {
+    if (uiProbe?.status === "verified") {
+      return {
+        status: "pass",
+        code: "gemini_browser_auth_verified",
+        message: "Gemini browser auth is verified by the Deep Think UI probe.",
+      };
+    }
+    if (env.ORACLE_BROWSER_INLINE_COOKIES || env.ORACLE_BROWSER_INLINE_COOKIES_FILE) {
+      return {
+        status: "pass",
+        code: "browser_cookies_configured",
+        message: "Inline browser cookies are configured for Gemini Deep Think browser checks.",
+      };
+    }
+    return {
+      status: "fail",
+      code: "provider_login_required",
+      message:
+        "Gemini Deep Think browser auth was not found. Sign in to gemini.google.com in Chrome or configure inline browser cookies.",
+      fix_command: "Sign in to gemini.google.com in Chrome.",
+      next_command: "oracle doctor gemini --deep-think --json",
+    };
+  }
   if (env.GEMINI_API_KEY?.trim()) {
     return {
       status: "pass",

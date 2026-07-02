@@ -113,6 +113,19 @@ export const ROBOT_COMMANDS: readonly RobotCommandEntry[] = Object.freeze([
     required_env: ORACLE_REMOTE_ENVS,
     output_schema_version: JSON_ENVELOPE_SCHEMA_VERSION,
     recovery_fields: ROBOT_RECOVERY_FIELDS,
+    touches_network: true,
+    touches_chrome: false,
+  }),
+  entry({
+    name: "doctor-lanes",
+    command: "oracle doctor lanes --json",
+    purpose:
+      "Static reviewed-lane policy: ChatGPT Pro Extended Reasoning, Fable xHigh, and Gemini 3.1 Deep Think.",
+    paid_calls: false,
+    dry_run: true,
+    required_env: [],
+    output_schema_version: JSON_ENVELOPE_SCHEMA_VERSION,
+    recovery_fields: ROBOT_RECOVERY_FIELDS,
     touches_network: false,
     touches_chrome: false,
   }),
@@ -193,7 +206,7 @@ export const ROBOT_COMMANDS: readonly RobotCommandEntry[] = Object.freeze([
   }),
   entry({
     name: "browser-leases-release",
-    command: "oracle browser leases release --lease <id> --json",
+    command: "oracle browser leases release --lease-id <id> --json",
     purpose: "Release a previously-acquired browser provider lease.",
     paid_calls: false,
     dry_run: false,

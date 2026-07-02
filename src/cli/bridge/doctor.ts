@@ -100,8 +100,8 @@ export async function runBridgeDoctor(options: BridgeDoctorCliOptions): Promise<
       no_plaintext_secrets: true,
       shared_profile_policy: true,
       provider_locks: [],
-      doctor_command: "oracle remote doctor",
-      recover_command: "oracle remote doctor",
+      doctor_command: "oracle remote doctor --json",
+      recover_command: "oracle remote doctor --json",
       version: null,
       uptimeSeconds: null,
     };

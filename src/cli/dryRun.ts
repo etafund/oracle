@@ -19,6 +19,12 @@ import type { BrowserSessionConfig } from "../sessionStore.js";
 import { buildTokenEstimateSuffix, formatAttachmentLabel } from "../browser/promptSummary.js";
 import { buildCookiePlan } from "../browser/policies.js";
 import { describeBrowserControlPlan, formatBrowserControlPlan } from "../browser/controlPlan.js";
+import {
+  DEFAULT_CLAUDE_CODE_SYSTEM_PROMPT,
+  buildClaudeCodeCommand,
+  redactedClaudeCodeCommand,
+} from "../claude-code/command.js";
+import { findBlockedClaudeCodeEnvironmentSources } from "../claude-code/envGuard.js";
 
 interface DryRunDeps {
   readFilesImpl?: typeof readFiles;
@@ -36,7 +42,7 @@ export async function runDryRunSummary(
     log,
     browserConfig,
   }: {
-    engine: "api" | "browser";
+    engine: "api" | "browser" | "claude-code";
     runOptions: RunOracleOptions;
     cwd: string;
     version: string;
@@ -45,11 +51,68 @@ export async function runDryRunSummary(
   },
   deps: DryRunDeps = {},
 ): Promise<void> {
+  if (engine === "claude-code") {
+    await runClaudeCodeDryRun({ runOptions, cwd, version, log }, deps);
+    return;
+  }
   if (engine === "browser") {
     await runBrowserDryRun({ runOptions, cwd, version, log, browserConfig }, deps);
     return;
   }
   await runApiDryRun({ runOptions, cwd, version, log }, deps);
+}
+
+async function runClaudeCodeDryRun(
+  {
+    runOptions,
+    cwd,
+    version,
+    log,
+  }: {
+    runOptions: RunOracleOptions;
+    cwd: string;
+    version: string;
+    log: (message: string) => void;
+  },
+  deps: DryRunDeps,
+): Promise<void> {
+  const readFilesImpl = deps.readFilesImpl ?? readFiles;
+  const files = sortFiles(
+    await readFilesImpl(runOptions.file ?? [], {
+      cwd,
+      maxFileSizeBytes: runOptions.maxFileSizeBytes,
+    }),
+  );
+  const combinedPrompt = buildPrompt(runOptions.prompt ?? "", files, cwd);
+  const tokenizer = MODEL_CONFIGS["gpt-5.1"].tokenizer;
+  const estimatedInputTokens = tokenizer(
+    [
+      {
+        role: "system",
+        content: DEFAULT_CLAUDE_CODE_SYSTEM_PROMPT,
+      },
+      { role: "user", content: combinedPrompt },
+    ],
+    TOKENIZER_OPTIONS,
+  );
+  const model = runOptions.model ?? "fable";
+  const headerLine = `[dry-run] Oracle (${version}) would run Claude Code local mode (${model}) with ~${estimatedInputTokens.toLocaleString()} tokens and ${files.length} files.`;
+  log(styleLine(headerLine, "cyan"));
+  logClaudeCodeDryRunPlan({ runOptions, log });
+  if (files.length === 0) {
+    log(styleLine("[dry-run] No files matched the provided --file patterns.", "dim"));
+    return;
+  }
+  const stats = getFileTokenStats(files, {
+    cwd,
+    tokenizer,
+    tokenizerOptions: TOKENIZER_OPTIONS,
+    inputTokenBudget: runOptions.maxInput,
+  });
+  printDeterministicFileTokenStats(stats, {
+    inputTokenBudget: runOptions.maxInput,
+    log,
+  });
 }
 
 async function runApiDryRun(
@@ -298,6 +361,35 @@ function logDryRunPlan({
   }
 }
 
+function logClaudeCodeDryRunPlan({
+  runOptions,
+  log,
+}: {
+  runOptions: RunOracleOptions;
+  log: (message: string) => void;
+}): void {
+  const promptEvidence = createPromptEvidence(runOptions.prompt ?? "");
+  const blockedSources = findClaudeCodeBlockingEnv(process.env);
+  const envStatus =
+    blockedSources.length > 0
+      ? `blocked (${blockedSources.join(", ")})`
+      : "clear (no known Claude API/provider auth env present)";
+  const lines = [
+    `[dry-run] Generated at: ${DRY_RUN_TIMESTAMP}.`,
+    `[dry-run] Route: claude-code/local; model=${runOptions.model ?? "fable"}; access_path=claude_code_subscription_cli.`,
+    "[dry-run] Live Claude Code action: disabled; no claude subprocess, API request, browser prompt submission, or browser mutation will run.",
+    `[dry-run] Env block status: ${envStatus}.`,
+    `[dry-run] Command shape: ${formatClaudeCodeCommandShape(runOptions.model ?? "fable")}.`,
+    '[dry-run] Read-only policy: permissionMode=plan; toolMode=none; --tools ""; MCP blocked; slash commands disabled; Chrome disabled; session persistence disabled.',
+    "[dry-run] Artifact path plan: not created in dry-run; live runs write ~/.oracle/sessions/<session-id>/artifacts/claude-code-stdout.raw, claude-code-stderr.raw, claude-code-events.normalized.ndjson, claude-code-final.md, claude-code-progress.md, and claude-code-adapter.json.",
+    `[dry-run] Prompt hash plan: prompt_sha256=${promptEvidence.prompt_sha256}; prompt_manifest_sha256=${promptEvidence.prompt_manifest_sha256}; prompt_bytes=${promptEvidence.prompt_bytes}.`,
+    '[dry-run] Recovery command plan: no session is created; live runs print "oracle session <id>" for reattach.',
+  ];
+  for (const line of lines) {
+    log(styleLine(line, "dim"));
+  }
+}
+
 function buildDryRunPlans(
   engine: "api" | "browser",
   browserConfig?: BrowserSessionConfig,
@@ -335,6 +427,22 @@ function describeRoute(engine: "api" | "browser", browserConfig?: BrowserSession
     return "browser/local-attach";
   }
   return "browser/local-launch";
+}
+
+function formatClaudeCodeCommandShape(model: string): string {
+  const command = buildClaudeCodeCommand({ model });
+  const args = redactedClaudeCodeCommand(command).map((part) =>
+    part === DEFAULT_CLAUDE_CODE_SYSTEM_PROMPT
+      ? "<tiny Oracle-owned supplied-context reviewer prompt>"
+      : part === ""
+        ? '""'
+        : part,
+  );
+  return args.map((part) => (/\s/.test(part) ? JSON.stringify(part) : part)).join(" ");
+}
+
+function findClaudeCodeBlockingEnv(env: NodeJS.ProcessEnv): string[] {
+  return findBlockedClaudeCodeEnvironmentSources(env).sort(compareStrings);
 }
 
 function createPromptEvidence(prompt: string): {

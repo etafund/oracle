@@ -90,7 +90,7 @@ describe("buildRemoteEndpointReport — status precedence", () => {
       env: { ORACLE_REMOTE_HOST: "remote.test:9473" },
     });
     expect(report.status).toBe("missing_token");
-    expect(report.recover_command).toMatch(/browser\.remoteToken/);
+    expect(report.recover_command).toBe("export ORACLE_REMOTE_TOKEN=<token>");
     expect(isHealthyReport(report)).toBe(false);
   });
 

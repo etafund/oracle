@@ -78,6 +78,20 @@ describe("resolveRemoteServiceConfig", () => {
     );
   });
 
+  it("can preserve missing-token endpoint state for diagnostic commands", () => {
+    const resolved = resolveRemoteServiceConfig({
+      cliHost: "host:123",
+      env: {},
+      allowMissingToken: true,
+    });
+
+    expect(resolved.host).toBe("host:123");
+    expect(resolved.token).toBeUndefined();
+    expect(resolved.redactedToken).toBeUndefined();
+    expect(resolved.sources.host).toBe("cli");
+    expect(resolved.sources.token).toBe("unset");
+  });
+
   it("provides hostHash and redactedToken for safe logging", () => {
     const resolved = resolveRemoteServiceConfig({
       cliHost: "secret-host.com:9222",

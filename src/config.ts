@@ -11,7 +11,7 @@ import type {
 } from "./browser/types.js";
 import type { ThinkingTimeLevel, ModelOverridesConfig } from "./oracle/types.js";
 
-export type EnginePreference = "api" | "browser";
+export type EnginePreference = "api" | "browser" | "claude-code";
 
 export interface NotifyConfig {
   enabled?: boolean;
@@ -152,7 +152,9 @@ function normalizeOptionalString(value: unknown): string | undefined {
 
 function normalizeEngine(value: unknown): EnginePreference | undefined {
   const normalized = normalizeOptionalString(value)?.toLowerCase();
-  return normalized === "api" || normalized === "browser" ? normalized : undefined;
+  return normalized === "api" || normalized === "browser" || normalized === "claude-code"
+    ? normalized
+    : undefined;
 }
 
 export function applyEnvConfigOverrides(

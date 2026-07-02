@@ -22,6 +22,12 @@ function buildHappyEnvelope(): AggregateDoctorEnvelope {
         chatgpt: { schema_version: "json_envelope.v1", ok: true } as never,
         gemini: { schema_version: "json_envelope.v1", ok: true } as never,
       },
+      lane_policy: {
+        component: "lane_policy",
+        status: "pass",
+        code: "ok",
+        message: "ok",
+      },
       remote_bridge: {
         component: "remote_bridge",
         status: "pass",

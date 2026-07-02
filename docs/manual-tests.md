@@ -66,6 +66,38 @@ Prereqs:
    `pnpm vitest run tests/live/chatgpt-smoke-live.test.ts tests/live/gemini-smoke-live.test.ts`
    - Both suites should report skipped tests with no Chrome launch.
 
+### Remote router / oracle-browser smoke
+
+Run this whenever you touch remote browser routing, `oracle remote ...`, `oracle serve`, or `/data/projects/oracle-router`.
+
+Prereqs:
+
+- `/data/projects/oracle-router` nginx config is deployed and reloaded.
+- `oracle-browser.incus:9473` and `oracle-browser-arthur.incus:9473` both answer `/status`.
+- `~/.oracle/config.json` points `browser.remoteHost` at the local router, normally `127.0.0.1:9470`.
+
+Checks:
+
+1. Local CLI diagnostics:
+   `pnpm exec tsx bin/oracle-cli.ts doctor lanes --json`
+   `pnpm exec tsx bin/oracle-cli.ts remote status --json`
+   `pnpm exec tsx bin/oracle-cli.ts remote doctor --json`
+   - The JSON must parse without an intro banner.
+   - `remote doctor` should report `status:"healthy"` before live browser smokes.
+2. Router and upstream health:
+   `curl -fsS http://127.0.0.1:9470/status`
+   `curl -fsS http://oracle-browser.incus:9473/status`
+   `curl -fsS http://oracle-browser-arthur.incus:9473/status`
+   - All three should return `{"ok":true}`.
+3. Load-balanced attachment smoke:
+   - Start two ChatGPT Pro Extended Reasoning browser runs through the router with distinct slugs and small file attachments.
+   - Inspect the router access log and confirm `POST /runs` reached both upstream boxes.
+   - Reattach with `oracle session <id> --render`; never click ChatGPT's "Answer now".
+4. Artifact proxy smoke:
+   - Run a browser prompt that produces a downloadable artifact.
+   - Reattach or render the session and confirm artifact metadata is present.
+   - Confirm the router access log shows `GET /runs/<runId>/artifacts/<artifactId>` and that the artifact is fetched from the owning upstream.
+
 ### Gemini browser mode (Gemini web / cookies)
 
 Run this whenever you touch the Gemini web client or the `--generate-image` / `--edit-image` plumbing.
@@ -75,10 +107,10 @@ Prereqs:
 - Chrome profile is signed into `gemini.google.com`.
 
 1. Generate an image:
-   `pnpm run oracle -- --engine browser --model gemini-3-pro --prompt "a cute robot holding a banana" --generate-image /tmp/gemini-gen.jpg --aspect 1:1 --wait --verbose`
+   `pnpm run oracle -- --engine browser --model gemini-3.1-pro --prompt "a cute robot holding a banana" --generate-image /tmp/gemini-gen.jpg --aspect 1:1 --wait --verbose`
    - Confirm the output file exists and is a real image (`file /tmp/gemini-gen.jpg`).
 2. Edit an image:
-   `pnpm run oracle -- --engine browser --model gemini-3-pro --prompt "add sunglasses" --edit-image /tmp/gemini-gen.jpg --output /tmp/gemini-edit.jpg --wait --verbose`
+   `pnpm run oracle -- --engine browser --model gemini-3.1-pro --prompt "add sunglasses" --edit-image /tmp/gemini-gen.jpg --output /tmp/gemini-edit.jpg --wait --verbose`
    - Confirm `/tmp/gemini-edit.jpg` exists.
 
 ### Multi-Model CLI fan-out
@@ -120,6 +152,25 @@ Run this when touching top-level CLI startup, option parsing, signal handling, o
 3. Perf trace:
    `pnpm run oracle -- --perf-trace --perf-trace-path /tmp/oracle-perf.json --dry-run summary --prompt "trace smoke"`
    - Confirm the JSON contains `cli-module-ready`, `root-command-start`, `first-output`, and `exit`, and prompt/key-like argv values are redacted.
+
+### Hidden-alpha local Claude Code lane checks
+
+Run these when touching the local Claude Code lane schema, route-blocks, or docs. They must not spend real Claude usage by default.
+
+1. MCP hidden-alpha route-block:
+   `pnpm vitest run tests/mcp/consult.test.ts -t "route-blocks MCP fable-local"`
+   - Expect a typed non-success result with `code:"agent_lane_blocked"`, `category:"route-block"`, `exitCode:2`, and `noBackendStarted:true`.
+   - Confirm the test does not create an Oracle session and does not start a browser, provider request, worker, or local `claude` subprocess.
+2. Expert compatibility route-block:
+   `pnpm vitest run tests/mcp/consult.test.ts -t "claude-code/fable expert compatibility"`
+   - Expect `engine:"claude-code"` and Fable model aliases to block before normal MCP consult mapping.
+3. Future CLI smoke, once the local runner exists:
+   - Put a fake `claude` executable at the front of `PATH` that records argv and emits a checked `stream-json` fixture.
+   - Run the CLI lane against that fake executable and verify read-only flags, stdin prompt delivery, raw artifact persistence, and visible-event parsing.
+   - Repeat with a busy local lock plus `--wait-for-lock <duration>` and verify Oracle waits before spawning `claude`.
+   - Repeat with a fake `tool_use` event and verify Oracle marks the run error, preserves artifacts, and releases the lock.
+   - Do not run a live Claude prompt unless the operator explicitly opts in for that run.
+   - Raw visible stream artifacts may contain prompts, file snippets, local paths, stderr, and other sensitive visible data; they are not redacted exports by default.
 
 ### Lightweight Browser CLI (manual exploration)
 

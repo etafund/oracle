@@ -4,6 +4,7 @@ import {
   buildReattachLine,
   formatResponseMetadata,
   formatBrowserEvidence,
+  formatClaudeCodeEvidence,
   formatTransportMetadata,
   formatUserErrorMetadata,
   trimBeforeFirstAnswer,
@@ -143,6 +144,68 @@ describe("formatBrowserEvidence", () => {
     expect(formatBrowserEvidence(metadata)).toEqual([
       "model requested=GPT-5.5 Pro; resolved=Pro; status=already-selected; strategy=select; verified=yes",
       "warning browser-pro-fast-large-run: Large browser Pro run completed quickly.",
+    ]);
+  });
+});
+
+describe("formatClaudeCodeEvidence", () => {
+  test("formats Claude Code session metadata and artifact paths", () => {
+    const metadata: SessionMetadata = {
+      id: "fable-local",
+      createdAt: new Date().toISOString(),
+      status: "completed",
+      mode: "claude-code",
+      model: "fable",
+      options: {},
+      claudeCode: {
+        schema_version: "claude_code_session.v1",
+        access_path: "claude_code_subscription_cli",
+        provider_family: "claude",
+        model_requested: "fable",
+        model_observed: "claude-fable-5",
+        model_resolved_from_init: "claude-fable-5",
+        model_usage_keys: ["claude-fable-5"],
+        model_verification_status: "observed",
+        total_cost_usd_observed: 0,
+        subscription_billing_uncertain: true,
+        credit_billing_warning_emitted: false,
+        read_only: {
+          readOnly: true,
+          permissionMode: "plan",
+          toolMode: "none",
+          allowedTools: [],
+          blockedTools: ["*"],
+          mcpToolsBlocked: true,
+          slashCommandsDisabled: true,
+          safeMode: true,
+          chromeDisabled: true,
+          sessionPersistenceDisabled: true,
+        },
+        transcript_fidelity: "visible_cli_stream",
+        hidden_reasoning_captured: false,
+        visible_thinking_captured: "unknown",
+        artifact_paths: {
+          rawStdoutPath: "/tmp/sessions/fable/artifacts/claude-code-stdout.raw",
+          rawStderrPath: "/tmp/sessions/fable/artifacts/claude-code-stderr.raw",
+          normalizedEventsPath:
+            "/tmp/sessions/fable/artifacts/claude-code-events.normalized.ndjson",
+          finalAnswerPath: "/tmp/sessions/fable/artifacts/claude-code-final.md",
+          progressPath: "/tmp/sessions/fable/artifacts/claude-code-progress.md",
+          adapterMetadataPath: "/tmp/sessions/fable/artifacts/claude-code-adapter.json",
+        },
+      },
+    };
+
+    expect(formatClaudeCodeEvidence(metadata)).toEqual([
+      "access path=claude_code_subscription_cli; transcript=visible_cli_stream; hidden_reasoning_captured=false",
+      "model requested=fable; observed=claude-fable-5; verification=observed",
+      "visible_thinking_captured=unknown; subscription_billing_uncertain=true; total_cost_usd_observed=0",
+      "read-only=yes; permission=plan; tools=none",
+      "final answer=/tmp/sessions/fable/artifacts/claude-code-final.md",
+      "raw stdout=/tmp/sessions/fable/artifacts/claude-code-stdout.raw",
+      "raw stderr=/tmp/sessions/fable/artifacts/claude-code-stderr.raw",
+      "normalized events=/tmp/sessions/fable/artifacts/claude-code-events.normalized.ndjson",
+      "adapter metadata=/tmp/sessions/fable/artifacts/claude-code-adapter.json",
     ]);
   });
 });

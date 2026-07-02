@@ -31,7 +31,7 @@ import {
   type ProviderBoundaryPavMetadata,
 } from "./oracle/provider_boundaries_pav.js";
 
-export type SessionMode = "api" | "browser";
+export type SessionMode = "api" | "browser" | "claude-code";
 
 export interface BrowserSessionConfig {
   chromeProfile?: string | null;
@@ -160,6 +160,73 @@ export interface BrowserMetadata {
   warnings?: BrowserRunWarning[];
 }
 
+export type ClaudeCodeModelVerificationStatus =
+  | "requested_only"
+  | "observed"
+  | "fallback_observed"
+  | "unknown";
+
+export interface ClaudeCodeReadOnlyPolicy {
+  readOnly: true;
+  permissionMode: "plan";
+  toolMode: "none";
+  allowedTools: string[];
+  blockedTools: string[];
+  mcpToolsBlocked: boolean;
+  slashCommandsDisabled: boolean;
+  safeMode: boolean;
+  chromeDisabled: boolean;
+  sessionPersistenceDisabled: boolean;
+}
+
+export interface ClaudeCodeArtifactPaths {
+  rawStdoutPath: string;
+  rawStderrPath: string;
+  normalizedEventsPath: string;
+  finalAnswerPath?: string;
+  progressPath?: string;
+  adapterMetadataPath: string;
+}
+
+export interface ClaudeCodeSessionMetadata {
+  schema_version: "claude_code_session.v1";
+  access_path: "claude_code_subscription_cli";
+  provider_family: "claude";
+  model_requested?: string;
+  model_observed?: string | null;
+  model_resolved_from_init?: string | null;
+  model_usage_keys: string[];
+  model_usage_auxiliary_keys?: string[];
+  model_verification_status: ClaudeCodeModelVerificationStatus;
+  total_cost_usd_observed?: number | null;
+  subscription_billing_uncertain: true;
+  credit_billing_warning_emitted: boolean;
+  read_only: ClaudeCodeReadOnlyPolicy;
+  local_owner_verified?: boolean;
+  anthropic_api_key_present?: boolean;
+  anthropic_api_key_refusal_checked?: boolean;
+  child_env_scrubbed?: boolean;
+  transcript_fidelity: "visible_cli_stream";
+  hidden_reasoning_captured: false;
+  visible_thinking_captured: boolean | "unknown";
+  exit_code?: number | null;
+  signal?: string | null;
+  events_complete?: boolean;
+  streams_complete?: boolean;
+  stdout_events?: number;
+  stdout_bytes?: number;
+  stderr_events?: number;
+  stderr_bytes?: number;
+  artifact_paths?: ClaudeCodeArtifactPaths;
+  adapter_metadata_path?: string;
+  raw_stdout_path?: string;
+  raw_stderr_path?: string;
+  normalized_events_path?: string;
+  final_answer_path?: string;
+  progress_path?: string;
+  error_reason?: string;
+}
+
 export type SessionArtifactValidationType = "generic" | "zip";
 export type SessionArtifactTransferStatus =
   | "not-needed"
@@ -187,7 +254,17 @@ export interface SessionArtifactOrigin {
 }
 
 export interface SessionArtifact {
-  kind: "transcript" | "deep-research-report" | "image" | "file";
+  kind:
+    | "transcript"
+    | "deep-research-report"
+    | "image"
+    | "file"
+    | "claude-code-stdout-raw"
+    | "claude-code-stderr-raw"
+    | "claude-code-events-normalized"
+    | "claude-code-final"
+    | "claude-code-progress"
+    | "claude-code-adapter";
   path: string;
   label?: string;
   mimeType?: string;
@@ -283,6 +360,23 @@ export interface StoredRunOptions {
   aspectRatio?: string;
   geminiShowThoughts?: boolean;
   providerBoundary?: SessionProviderBoundaryOptions;
+  lane?: string;
+  claudeCode?: {
+    executable?: string;
+    model?: string;
+    readOnly: true;
+    inlineEvents: true;
+    outputFormat: "stream-json";
+    permissionMode: "plan";
+    toolMode: "none";
+    bareMode?: boolean;
+    safeMode?: boolean;
+    disableSlashCommands: true;
+    strictMcpConfig: true;
+    noChrome: true;
+    noSessionPersistence: true;
+    maxInlineBytes?: number;
+  };
 }
 
 export interface SessionMetadata {
@@ -310,6 +404,8 @@ export interface SessionMetadata {
   errorMessage?: string;
   elapsedMs?: number;
   browser?: BrowserMetadata;
+  lane?: string;
+  claudeCode?: ClaudeCodeSessionMetadata;
   artifacts?: SessionArtifact[];
   evidence?: SessionEvidenceMetadata;
   response?: SessionResponseMetadata;
@@ -321,7 +417,7 @@ export interface SessionMetadata {
 export type SessionStatus = "pending" | "running" | "completed" | "partial" | "error" | "cancelled";
 
 export interface SessionLifecycleMetadata {
-  engine: "api" | "browser";
+  engine: "api" | "browser" | "claude-code";
   execution: "foreground" | "background";
   attached: boolean;
   detached: boolean;
@@ -637,6 +733,8 @@ export async function initializeSession(
     parentSessionId: options.parentSessionId,
     followUpOfSessionId: options.followUpOfSessionId,
     browser: browserConfig ? { config: browserConfig } : undefined,
+    lane: options.lane,
+    claudeCode: undefined,
     evidence,
     notifications,
     options: {
@@ -686,6 +784,8 @@ export async function initializeSession(
       browserResumeConversationUrl: options.browserResumeConversationUrl,
       aspectRatio: options.aspectRatio,
       geminiShowThoughts: options.geminiShowThoughts,
+      lane: options.lane,
+      claudeCode: options.claudeCode,
     },
   };
   await ensureDir(modelsDir(sessionId));

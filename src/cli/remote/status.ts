@@ -26,6 +26,7 @@ export async function runRemoteStatus(options: RemoteStatusCliOptions): Promise<
     cliToken: undefined,
     userConfig,
     env: process.env,
+    allowMissingToken: true,
   });
 
   const { report } = await buildRemoteEndpointReport({ resolved, probe: false });

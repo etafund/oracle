@@ -93,7 +93,8 @@ export function registerChatGptDoctorCommand(
       "preferred",
     )
     .option("--json", "Print structured JSON.", false)
-    .action(async (options: ChatGptDoctorOptions) => {
+    .action(async function (this: Command) {
+      const options = this.optsWithGlobals() as ChatGptDoctorOptions;
       const envelope = await runChatGptDoctor({ ...deps, ...options });
       if (!envelope.ok) {
         process.exitCode = 1;
@@ -187,7 +188,7 @@ export function uiProbeToCheck(
         fix_command:
           provider === "chatgpt"
             ? "Sign in to chatgpt.com in Chrome."
-            : "Sign in to gemini.google.com or set GEMINI_API_KEY.",
+            : "Sign in to gemini.google.com in Chrome.",
       };
     case "ui_drift_suspected":
       return {

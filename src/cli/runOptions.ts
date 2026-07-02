@@ -15,10 +15,13 @@ import { PromptValidationError } from "../oracle/errors.js";
 import { normalizeChatGptModelForBrowser } from "./browserConfig.js";
 import { resolveConfiguredMaxFileSizeBytes } from "./fileSize.js";
 import { isAzureOpenAICandidateModel } from "../oracle/providerRouting.js";
+import { resolveLanePolicy } from "./lanePolicy.js";
+import { LaneRouteBlockError } from "./routeBlockError.js";
 
 export interface ResolveRunOptionsInput {
   prompt: string;
   files?: string[];
+  lane?: string;
   model?: string;
   models?: string[];
   engine?: EngineMode;
@@ -30,22 +33,84 @@ export interface ResolvedRunOptions {
   runOptions: RunOracleOptions;
   resolvedEngine: EngineMode;
   engineCoercedToApi?: boolean;
+  resolvedLane?: string;
 }
 
 export function resolveRunOptionsFromConfig({
   prompt,
   files = [],
+  lane,
   model,
   models,
   engine,
   userConfig,
   env = process.env,
 }: ResolveRunOptionsInput): ResolvedRunOptions {
+  const laneDecision = resolveLanePolicy({
+    lane,
+    engine,
+    model: lane ? model : (model ?? userConfig?.model),
+    models,
+    prompt,
+    files,
+    source: "runOptions",
+    envEngine: env.ORACLE_ENGINE,
+    configEngine: userConfig?.engine,
+    allowLegacyRoutes: true,
+  });
+  if (!laneDecision.ok) {
+    throw new LaneRouteBlockError(laneDecision);
+  }
+
   const resolvedEngine = resolveEngine({
     engine,
     configEngine: userConfig?.engine,
     env,
   });
+  if (laneDecision.resolvedLane?.engine === "claude-code") {
+    const promptWithSuffix =
+      userConfig?.promptSuffix && userConfig.promptSuffix.trim().length > 0
+        ? `${prompt.trim()}\n${userConfig.promptSuffix}`
+        : prompt;
+    const search = userConfig?.search !== "off";
+    const heartbeatIntervalMs =
+      userConfig?.heartbeatSeconds !== undefined ? userConfig.heartbeatSeconds * 1000 : 30_000;
+    const maxFileSizeBytes = resolveConfiguredMaxFileSizeBytes(userConfig, env);
+    const laneModel =
+      typeof laneDecision.resolvedLane.normalizedEngineOptions.model === "string"
+        ? laneDecision.resolvedLane.normalizedEngineOptions.model
+        : "fable";
+
+    return {
+      runOptions: {
+        prompt: promptWithSuffix,
+        model: laneModel as ModelName,
+        file: files ?? [],
+        lane: laneDecision.resolvedLane.lane,
+        claudeCode: {
+          model: laneModel,
+          readOnly: true,
+          inlineEvents: true,
+          outputFormat: "stream-json",
+          permissionMode: "plan",
+          toolMode: "none",
+          safeMode: true,
+          disableSlashCommands: true,
+          strictMcpConfig: true,
+          noChrome: true,
+          noSessionPersistence: true,
+        },
+        maxFileSizeBytes,
+        search,
+        heartbeatIntervalMs,
+        filesReport: userConfig?.filesReport,
+        background: false,
+        effectiveModelId: laneModel,
+      },
+      resolvedEngine: laneDecision.resolvedLane.engine,
+      resolvedLane: laneDecision.resolvedLane.lane,
+    };
+  }
   const envEnginePreference = (env.ORACLE_ENGINE ?? "").trim().toLowerCase();
   const browserRequested = engine === "browser";
   const explicitApiEngineRequested = engine === "api" || (!engine && envEnginePreference === "api");

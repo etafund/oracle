@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { AGENT_LANE_POLICY_VERSION, LANE_TEMPLATES } from "../../laneRegistry.js";
 import {
   runAggregateDoctor,
   type AggregateDoctorCheck,
@@ -17,6 +18,10 @@ export interface DoctorCommandDeps {
   aggregate?: Partial<AggregateDoctorOptions>;
   chatgpt?: Partial<ChatGptDoctorOptions>;
   gemini?: Partial<GeminiDoctorOptions>;
+}
+
+export interface LaneDoctorOptions {
+  json?: boolean;
 }
 
 /**
@@ -101,19 +106,20 @@ export function registerDoctorCommand(program: Command, deps: DoctorCommandDeps 
     .command("doctor")
     .description("Run Oracle preflight diagnostics without submitting prompts.")
     .option("--json", "Print structured JSON.", false)
-    .option("--providers", "Inspect API provider keys and route choices.", false)
-    .option("--models <models>", "Comma-separated API model list to inspect.")
-    .option("-m, --model <model>", "Single API model to inspect.")
-    .option("--provider <provider>", "Provider routing override (auto, openai, azure).")
-    .option("--no-azure", "Disable Azure OpenAI routing for this inspection.")
-    .option("--azure-endpoint <url>", "Azure OpenAI Endpoint.")
-    .option("--azure-deployment <name>", "Azure OpenAI Deployment Name.")
-    .option("--azure-api-version <version>", "Azure OpenAI API Version.")
-    .option("--base-url <url>", "Override OpenAI-compatible base URL.")
+    .option("--providers", "Inspect compatibility API provider keys and route choices.", false)
+    .option("--models <models>", "Comma-separated compatibility API model list to inspect.")
+    .option("-m, --model <model>", "Single compatibility API model to inspect.")
+    .option("--provider <provider>", "Compatibility API provider override (auto, openai, azure).")
+    .option("--no-azure", "Disable Azure OpenAI routing for this compatibility inspection.")
+    .option("--azure-endpoint <url>", "Compatibility Azure OpenAI Endpoint.")
+    .option("--azure-deployment <name>", "Compatibility Azure OpenAI Deployment Name.")
+    .option("--azure-api-version <version>", "Compatibility Azure OpenAI API Version.")
+    .option("--base-url <url>", "Override compatibility OpenAI-compatible base URL.")
     .action(async function (
       this: Command,
-      options: AggregateDoctorOptions & { providers?: boolean },
+      _options: AggregateDoctorOptions & { providers?: boolean },
     ) {
+      const options = this.optsWithGlobals() as AggregateDoctorOptions & { providers?: boolean };
       // Upstream synced 86ccc0db / b36a3dce / 3ae0df0d added an API-provider
       // readiness probe; route there when --providers is set, otherwise run
       // the fork's aggregate v18 doctor.
@@ -128,9 +134,83 @@ export function registerDoctorCommand(program: Command, deps: DoctorCommandDeps 
       }
     });
 
+  doctorCommand
+    .command("lanes")
+    .description("Print the reviewed Oracle lane policy without launching browsers or models.")
+    .option("--json", "Print structured JSON.", false)
+    .action(async function (this: Command) {
+      runLaneDoctor(this.optsWithGlobals() as LaneDoctorOptions);
+    });
+
   registerChatGptDoctorCommand(doctorCommand, deps.chatgpt);
   registerGeminiDoctorCommand(doctorCommand, deps.gemini);
   return doctorCommand;
+}
+
+export function runLaneDoctor(options: LaneDoctorOptions = {}): void {
+  const lanes = LANE_TEMPLATES.map((entry) => ({
+    lane: entry.lane,
+    canonical_id: entry.canonicalId,
+    engine: entry.engine,
+    access_path: entry.accessPath,
+    readiness: entry.readiness,
+    enabled_for_cli: entry.enabledForCli,
+    command: entry.command,
+    doctor_command: entry.doctorCommand,
+    transport_eligibility: entry.transportEligibility,
+    blocked_reason: entry.blockedReason ?? null,
+    normalized_engine_options: entry.normalizedEngineOptions,
+    refused_patterns: [...entry.refusedPatterns],
+    runtime_assertions: [...entry.runtimeAssertions],
+  }));
+  const envelope = {
+    schema_version: "json_envelope.v1" as const,
+    ok: true,
+    data: {
+      schema_version: AGENT_LANE_POLICY_VERSION,
+      lanes,
+      enabled_lanes: lanes.filter((entry) => entry.enabled_for_cli).map((entry) => entry.lane),
+      deferred_lanes: lanes
+        .filter((entry) => !entry.enabled_for_cli)
+        .map((entry) => ({
+          lane: entry.lane,
+          readiness: entry.readiness,
+          blocked_reason: entry.blocked_reason,
+        })),
+    },
+    meta: {
+      command: "oracle doctor lanes --json",
+      generated_at: new Date().toISOString(),
+    },
+    blocked_reason: null,
+    next_command: "oracle capabilities --json",
+    fix_command: null,
+    retry_safe: true,
+    errors: [],
+    warnings: lanes
+      .filter((entry) => !entry.enabled_for_cli)
+      .map((entry) => `${entry.lane}:${entry.blocked_reason ?? entry.readiness}`),
+    commands: {
+      capabilities: "oracle capabilities --json",
+      remote_doctor: "oracle remote doctor --json",
+      doctor: "oracle doctor --json",
+    },
+  };
+  if (options.json) {
+    console.log(JSON.stringify(envelope, null, 2));
+    return;
+  }
+  console.log(
+    [
+      "oracle doctor lanes",
+      ...lanes.map((entry) => {
+        const state = entry.enabled_for_cli ? "enabled" : entry.readiness;
+        const reason = entry.blocked_reason ? ` (${entry.blocked_reason})` : "";
+        return `- ${entry.lane}: ${state}${reason} -> ${entry.command}`;
+      }),
+      "Next: oracle capabilities --json",
+    ].join("\n"),
+  );
 }
 
 export { runAggregateDoctor } from "./aggregate.js";

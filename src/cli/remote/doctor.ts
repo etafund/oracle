@@ -26,6 +26,7 @@ export async function runRemoteDoctor(options: RemoteDoctorCliOptions): Promise<
     cliToken: undefined,
     userConfig,
     env: process.env,
+    allowMissingToken: true,
   });
 
   const { report, probe } = await buildRemoteEndpointReport({ resolved });

@@ -14,6 +14,7 @@ This is the curated cheatsheet. The authoritative source is always `oracle --hel
 | `oracle session <id>`          | Replay or block on a stored session.                                                                                            |
 | `oracle restart <id>`          | Re-run with the same prompt + files.                                                                                            |
 | `oracle docs check`            | Check documented flags against CLI help metadata.                                                                               |
+| `oracle doctor lanes --json`   | Print the reviewed lane policy without launching browsers or models.                                                            |
 | `oracle serve`                 | Run the remote browser host (see [Browser Mode](browser-mode.md)).                                                              |
 | `oracle remote doctor`         | Probe the configured remote endpoint (TCP + `/health`). `--json` emits a `remote_browser_endpoint.v1` envelope.                 |
 | `oracle remote status`         | Print the resolved remote endpoint config without touching the network. `--json` for machine-readable output.                   |
@@ -25,19 +26,41 @@ This is the curated cheatsheet. The authoritative source is always `oracle --hel
 
 ## Core consult flags
 
+The reviewed agent-facing route families are below. `oracle doctor lanes --json` remains the source of truth for explicit lane-template readiness in the current checkout; ChatGPT/Gemini browser command forms may be used for live browser smokes even when their explicit `--lane ...` templates are doctor-gated.
+
+| Lane                           | Command shape                                                                                      | Notes                                                                                                                                                    |
+| ------------------------------ | -------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ChatGPT Pro Extended Reasoning | `oracle --engine browser --model gpt-5.5-pro --browser-thinking-time extended -p "..." --file ...` | Uses ChatGPT browser automation; remote router/serve hosts are allowed when configured. The explicit `--lane chatgpt-pro` template may report not-ready. |
+| Fable xHigh                    | `oracle --lane fable-local -p "..." --file ...`                                                    | Uses the local Claude Code subscription CLI only. It refuses API, browser, router, and multi-model fan-out.                                              |
+| Gemini 3.1 Deep Think          | `oracle --engine browser --provider gemini --gemini-deep-think -p "..." --file ...`                | Uses browser automation and API-substitution guardrails. The explicit `--lane gemini-deep-think` template may report deferred.                           |
+
+Run `oracle doctor lanes --json`, `oracle capabilities --json`, and `oracle remote doctor --json` before remote browser smokes.
+
 | Flag                              | Purpose                                                                                          |
 | --------------------------------- | ------------------------------------------------------------------------------------------------ |
 | `-p, --prompt <text>`             | Required prompt.                                                                                 |
 | `-f, --file <paths...>`           | Files / dirs / globs. Repeatable. `!` prefix = exclude.                                          |
-| `-e, --engine <api\|browser>`     | Force engine. Default: auto-pick.                                                                |
-| `-m, --model <name>`              | Single model. See [Mythical Pro Agents](mythical-pro-agents.md).                                 |
-| `--models <list>`                 | Comma-separated multi-model run (API only).                                                      |
+| `-e, --engine <api\|browser>`     | Force engine. Reviewed ChatGPT/Gemini lanes use browser.                                         |
+| `-m, --model <name>`              | Single model. For reviewed lanes prefer the command shapes above.                                |
+| `--models <list>`                 | Compatibility-only comma-separated API fan-out.                                                  |
 | `--slug <name>`                   | Stable session slug.                                                                             |
 | `--render`                        | Print the assembled bundle to stdout.                                                            |
 | `--copy`                          | Copy the bundle to the clipboard.                                                                |
 | `--write-output <path>`           | Save the final answer to a file; multi-model runs add per-model files plus `<stem>.oracle.json`. |
 | `--files-report`                  | Print per-file token usage.                                                                      |
 | `--dry-run [summary\|json\|full]` | Preview without sending.                                                                         |
+
+## Fable xHigh local lane
+
+`fable-local` is the local Claude Code review lane for Fable xHigh. It is for the local owner running their installed and logged-in `claude` command on the same machine. It is read-only review of Oracle-supplied prompt/file context, separate from Anthropic API mode.
+
+The lane must refuse when `ANTHROPIC_API_KEY` is present because Claude Code would prefer API-key billing in that environment. It must also refuse remote browser, `oracle serve`, router/bridge, background, restart, follow-up, and multi-model fan-out flows.
+
+The lane captures the visible Claude Code event stream only. It does not capture hidden reasoning. Raw visible stream artifacts may include prompts, file snippets, local paths, stderr, and other sensitive visible data; they are owner-local artifacts and are not included in redacted exports by default.
+
+Local Claude Code lane runs use a single-flight lock. By default, a second run fails before spawning `claude`; pass `--wait-for-lock <duration>` with `fable-local` to wait explicitly for the current local run to finish.
+
+MCP `consult` already recognizes `lane:"fable-local"` and `engine:"claude-code"` for hidden-alpha schema discovery, but returns a typed `agent_lane_blocked` route-block before any backend starts. MCP execution waits for separate local-owner, launch-context, inline-event, overflow, and resource-URI work.
 
 ## Followup / lineage
 
@@ -66,7 +89,9 @@ Notes:
 - Ctrl-C exits foreground API runs with code 130. Browser runs still keep their cleanup / reattach path.
 - `--perf-trace=/tmp/oracle.json` is accepted in addition to `--perf-trace-path`; `ORACLE_PERF_TRACE=1` writes a local `.oracle-perf-…json` file.
 
-## API endpoints
+## Compatibility API endpoints
+
+These flags remain for older API workflows. They are not the reviewed ChatGPT Pro Extended Reasoning, Fable xHigh, or Gemini 3.1 Deep Think lane surface.
 
 | Flag                  | Purpose                                   |
 | --------------------- | ----------------------------------------- |
@@ -110,11 +135,11 @@ See [Browser Mode](browser-mode.md) for usage.
 
 ## Remote browser
 
-| Flag                          | Purpose                                      |
-| ----------------------------- | -------------------------------------------- |
-| `--remote-host <host:port>`   | Use a remote `oracle serve` host.            |
-| `--remote-token <secret>`     | Auth for the remote host.                    |
-| `--remote-chrome <host:port>` | Attach to an existing remote Chrome session. |
+| Flag                          | Purpose                                                                                             |
+| ----------------------------- | --------------------------------------------------------------------------------------------------- |
+| `--remote-host <host:port>`   | Use a remote `oracle serve` host.                                                                   |
+| `--remote-token <secret>`     | Compatibility auth flag for the remote host; prefer `ORACLE_REMOTE_TOKEN` or `browser.remoteToken`. |
+| `--remote-chrome <host:port>` | Attach to an existing remote Chrome session.                                                        |
 
 ## Image / media (browser)
 
@@ -134,19 +159,19 @@ See [Browser Mode](browser-mode.md) for usage.
 
 ## Environment variables
 
-| Var                                 | Effect                                                  |
-| ----------------------------------- | ------------------------------------------------------- |
-| `OPENAI_API_KEY`                    | Enables OpenAI API mode.                                |
-| `AZURE_OPENAI_API_KEY` etc.         | Enables Azure mode (paired with endpoint / deployment). |
-| `GEMINI_API_KEY`                    | Enables Gemini API mode.                                |
-| `ANTHROPIC_API_KEY`                 | Enables Claude API mode.                                |
-| `OPENROUTER_API_KEY`                | Enables OpenRouter ids.                                 |
-| `ORACLE_HOME_DIR`                   | Override `~/.oracle/` root.                             |
-| `ORACLE_MAX_FILE_SIZE_BYTES`        | Per-file size cap (default 1 MB).                       |
-| `ORACLE_BROWSER_COOKIES_JSON`       | Inline ChatGPT cookies (JSON / base64).                 |
-| `ORACLE_BROWSER_COOKIES_FILE`       | Path to cookies JSON.                                   |
-| `ORACLE_BROWSER_ATTACHMENT_TIMEOUT` | Attachment upload/readiness timeout for browser mode.   |
-| `ORACLE_CHATGPT_ACCOUNT_EMAIL`      | Exact saved account for the Welcome back picker.        |
+| Var                                 | Effect                                                                                                      |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `OPENAI_API_KEY`                    | Enables OpenAI API mode.                                                                                    |
+| `AZURE_OPENAI_API_KEY` etc.         | Enables Azure mode (paired with endpoint / deployment).                                                     |
+| `GEMINI_API_KEY`                    | Enables Gemini API mode.                                                                                    |
+| `ANTHROPIC_API_KEY`                 | Enables Claude API mode for Anthropic API models; local Claude Code mode refuses when this name is present. |
+| `OPENROUTER_API_KEY`                | Enables OpenRouter ids.                                                                                     |
+| `ORACLE_HOME_DIR`                   | Override `~/.oracle/` root.                                                                                 |
+| `ORACLE_MAX_FILE_SIZE_BYTES`        | Per-file size cap (default 1 MB).                                                                           |
+| `ORACLE_BROWSER_COOKIES_JSON`       | Inline ChatGPT cookies (JSON / base64).                                                                     |
+| `ORACLE_BROWSER_COOKIES_FILE`       | Path to cookies JSON.                                                                                       |
+| `ORACLE_BROWSER_ATTACHMENT_TIMEOUT` | Attachment upload/readiness timeout for browser mode.                                                       |
+| `ORACLE_CHATGPT_ACCOUNT_EMAIL`      | Exact saved account for the Welcome back picker.                                                            |
 
 ## See also
 

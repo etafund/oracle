@@ -61,7 +61,7 @@ describe("createErrorEnvelope — error envelopes never leak secrets through det
       errors: [{ error_code: "provider_login_required", message: "login required" }],
       meta: { tool: "oracle remote doctor" },
       next_command: "oracle remote doctor --json",
-      fix_command: "oracle config set browser.remoteToken <token>",
+      fix_command: "export ORACLE_REMOTE_TOKEN=<token>",
       retry_safe: true,
     });
     assertNoLeaks(env, { fakes: FAKES });
@@ -94,7 +94,7 @@ describe("createErrorEnvelope — error envelopes never leak secrets through det
       ],
       meta: { tool: "oracle remote doctor" },
       next_command: "oracle remote doctor --json",
-      fix_command: "oracle config set browser.remoteToken <token>",
+      fix_command: "export ORACLE_REMOTE_TOKEN=<token>",
       retry_safe: true,
     });
     assertNoLeaks(env, { fakes: FAKES });

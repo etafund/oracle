@@ -1,4 +1,6 @@
 import kleur from "kleur";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type {
@@ -8,6 +10,7 @@ import type {
   BrowserRuntimeMetadata,
   SessionArtifact,
   SessionModelRun,
+  ClaudeCodeSessionMetadata,
 } from "../sessionStore.js";
 import type { ProviderFailureContext, RunOracleOptions, UsageSummary } from "../oracle.js";
 import {
@@ -51,9 +54,25 @@ import { estimateTokenCount } from "../browser/utils.js";
 import type { BrowserLogger } from "../browser/types.js";
 import { formatElapsed } from "../oracle/format.js";
 import { formatBrowserReattachGuidance } from "./reattachGuidance.js";
+import { getOracleHomeDir } from "../oracleHome.js";
+import { buildClaudeCodeCommand } from "../claude-code/command.js";
+import { prepareClaudeCodeEnvironment } from "../claude-code/envGuard.js";
+import { resolveClaudeExecutable } from "../claude-code/executableResolver.js";
+import { assertClaudeCodeLocalOwner } from "../claude-code/localOwnerGuard.js";
+import {
+  ClaudeCodeStreamNormalizer,
+  type ClaudeCodeNormalizedEvent,
+} from "../claude-code/streamParser.js";
+import { verifyClaudeCodeRun } from "../claude-code/startupVerifier.js";
 
 const isTty = process.stdout.isTTY;
 const dim = (text: string): string => (isTty ? kleur.dim(text) : text);
+const CLAUDE_CODE_SESSION_FINALIZED = Symbol("claudeCodeSessionFinalized");
+const DEFAULT_CLAUDE_CODE_MAX_INLINE_BYTES = 64 * 1024 * 1024;
+
+type ClaudeCodeFinalizedError = Error & {
+  [CLAUDE_CODE_SESSION_FINALIZED]?: true;
+};
 
 export interface SessionRunParams {
   sessionMeta: SessionMetadata;
@@ -67,7 +86,68 @@ export interface SessionRunParams {
   notifications?: NotificationSettings;
   browserDeps?: BrowserSessionRunnerDeps;
   muteStdout?: boolean;
+  claudeCodeRunner?: ClaudeCodeSessionRunner;
 }
+
+export interface ClaudeCodeRunnerInput {
+  sessionId: string;
+  prompt: string;
+  model: string;
+  cwd: string;
+  runOptions: RunOracleOptions;
+  artifactPaths: ClaudeCodeArtifactPaths;
+  log: (message?: string) => void;
+  write: (chunk: string) => boolean;
+}
+
+export interface ClaudeCodeArtifactPayloads {
+  stdoutRaw?: Buffer | string;
+  stderrRaw?: Buffer | string;
+  normalizedEventsNdjson?: string;
+  finalAnswerMarkdown?: string;
+  progressMarkdown?: string;
+  adapterMetadata?: Record<string, unknown>;
+}
+
+export interface ClaudeCodeRunnerResult extends ClaudeCodeArtifactPayloads {
+  finalAnswerText?: string;
+  usage?: UsageSummary;
+  elapsedMs?: number;
+  exitCode?: number | null;
+  signal?: string | null;
+  eventsComplete?: boolean;
+  streamsComplete?: boolean;
+  stdoutEvents?: number;
+  stderrEvents?: number;
+  modelRequested?: string;
+  modelObserved?: string | null;
+  modelResolvedFromInit?: string | null;
+  modelUsageKeys?: string[];
+  modelUsageAuxiliaryKeys?: string[];
+  modelVerificationStatus?: ClaudeCodeSessionMetadata["model_verification_status"];
+  totalCostUsdObserved?: number | null;
+  visibleThinkingCaptured?: boolean | "unknown";
+  subscriptionBillingUncertain?: boolean;
+  creditBillingWarningEmitted?: boolean;
+  localOwnerVerified?: boolean;
+  anthropicApiKeyPresent?: boolean;
+  anthropicApiKeyRefusalChecked?: boolean;
+  childEnvScrubbed?: boolean;
+  errorMessage?: string;
+}
+
+export type ClaudeCodeArtifactPaths = {
+  rawStdoutPath: string;
+  rawStderrPath: string;
+  normalizedEventsPath: string;
+  finalAnswerPath: string;
+  progressPath: string;
+  adapterMetadataPath: string;
+};
+
+export type ClaudeCodeSessionRunner = (
+  input: ClaudeCodeRunnerInput,
+) => Promise<ClaudeCodeRunnerResult>;
 
 export async function performSessionRun({
   sessionMeta,
@@ -81,6 +161,7 @@ export async function performSessionRun({
   notifications,
   browserDeps,
   muteStdout = false,
+  claudeCodeRunner = runLocalClaudeCodeSession,
 }: SessionRunParams): Promise<void> {
   const writeInline = (chunk: string): boolean => {
     // Keep session logs intact while still echoing inline output to the user.
@@ -97,6 +178,113 @@ export async function performSessionRun({
     notifications ?? deriveNotificationSettingsFromMetadata(sessionMeta, process.env);
   const modelForStatus = runOptions.model ?? sessionMeta.model;
   try {
+    if (mode === "claude-code") {
+      if (modelForStatus) {
+        await sessionStore.updateModelRun(sessionMeta.id, modelForStatus, {
+          status: "running",
+          startedAt: new Date().toISOString(),
+        });
+      }
+      const files = await readFiles(runOptions.file ?? [], {
+        cwd,
+        maxFileSizeBytes: runOptions.maxFileSizeBytes,
+      });
+      const promptWithFiles = buildPrompt(runOptions.prompt ?? "", files, cwd);
+      const artifactPaths = await buildClaudeCodeArtifactPaths(sessionMeta.id);
+      log(
+        dim(
+          `Claude Code local mode: assembled ${files.length} file${files.length === 1 ? "" : "s"} through Oracle file context; prompt will be sent over stdin.`,
+        ),
+      );
+      const startedAt = Date.now();
+      const result = await claudeCodeRunner({
+        sessionId: sessionMeta.id,
+        prompt: promptWithFiles,
+        model: modelForStatus ?? "fable",
+        cwd,
+        runOptions,
+        artifactPaths,
+        log,
+        write: writeInline,
+      });
+      const elapsedMs = result.elapsedMs ?? Date.now() - startedAt;
+      const artifacts = await persistClaudeCodeArtifacts({
+        artifactPaths,
+        payloads: result,
+      });
+      const answerText =
+        result.finalAnswerText ?? result.finalAnswerMarkdown ?? extractFinalTextFromNdjson(result);
+      const usage = result.usage ?? usageFromClaudeCodeResult(result);
+      const success = !result.errorMessage && (result.exitCode == null || result.exitCode === 0);
+      const claudeCodeMetadata = buildClaudeCodeSessionMetadata({
+        result,
+        artifactPaths,
+        model: modelForStatus ?? "fable",
+      });
+      const logWriter = sessionStore.createLogWriter(sessionMeta.id);
+      logWriter.logLine("Answer:");
+      logWriter.logLine(answerText || "(no final answer extracted)");
+      logWriter.logLine("");
+      logWriter.logLine("Claude Code artifacts:");
+      for (const artifact of artifacts) {
+        logWriter.logLine(`- ${artifact.label ?? artifact.kind}: ${artifact.path}`);
+      }
+      logWriter.stream.end();
+      if (modelForStatus) {
+        await sessionStore.updateModelRun(sessionMeta.id, modelForStatus, {
+          status: success ? "completed" : "error",
+          completedAt: new Date().toISOString(),
+          usage,
+          error: result.errorMessage
+            ? {
+                category: "claude-code",
+                message: result.errorMessage,
+              }
+            : undefined,
+        });
+      }
+      await sessionStore.updateSession(sessionMeta.id, {
+        status: success ? "completed" : "error",
+        completedAt: new Date().toISOString(),
+        usage,
+        elapsedMs,
+        errorMessage: success ? undefined : result.errorMessage,
+        mode,
+        claudeCode: claudeCodeMetadata,
+        artifacts: mergeArtifacts(sessionMeta.artifacts, artifacts),
+        response: undefined,
+        transport: undefined,
+        error: success
+          ? undefined
+          : {
+              category: "claude-code",
+              message: result.errorMessage ?? "Claude Code local mode failed.",
+            },
+      });
+      if (!success) {
+        throw finalizedClaudeCodeError(result.errorMessage ?? "Claude Code local mode failed.");
+      }
+      if (answerText && !muteStdout) {
+        const printable =
+          runOptions.renderPlain === true ? answerText : renderMarkdownAnsi(answerText);
+        writeInline(printable.endsWith("\n") ? printable : `${printable}\n`);
+      }
+      await writeAssistantOutput(runOptions.writeOutputPath, answerText, log);
+      await sendSessionNotification(
+        {
+          sessionId: sessionMeta.id,
+          sessionName: sessionMeta.options?.slug ?? sessionMeta.id,
+          mode,
+          model: sessionMeta.model ?? runOptions.model,
+          usage,
+          characters: answerText.length,
+        },
+        notificationSettings,
+        log,
+        answerText.slice(0, 140),
+      );
+      return;
+    }
     if (mode === "browser") {
       if (!browserConfig) {
         throw new Error("Missing browser configuration for session.");
@@ -497,6 +685,9 @@ export async function performSessionRun({
     const message = formatError(error);
     log(`ERROR: ${message}`);
     markErrorLogged(error);
+    if (isFinalizedClaudeCodeError(error)) {
+      throw error;
+    }
     const userError = asOracleUserError(error);
     const connectionLost =
       userError?.category === "browser-automation" &&
@@ -675,6 +866,13 @@ export async function performSessionRun({
       completedAt: new Date().toISOString(),
       errorMessage: message,
       mode,
+      claudeCode:
+        mode === "claude-code"
+          ? buildClaudeCodeErrorSessionMetadata({
+              model: modelForStatus ?? "fable",
+              message,
+            })
+          : undefined,
       browser: browserConfig
         ? {
             config: browserConfig,
@@ -714,6 +912,1020 @@ function mergeArtifacts(
   }
   const values = Array.from(merged.values());
   return values.length > 0 ? values : undefined;
+}
+
+async function runLocalClaudeCodeSession(
+  input: ClaudeCodeRunnerInput,
+): Promise<ClaudeCodeRunnerResult> {
+  const startedAt = Date.now();
+  const sessionDir = path.dirname(path.dirname(input.artifactPaths.rawStdoutPath));
+  const preparedEnv = prepareClaudeCodeEnvironment(process.env);
+  const ownerResult = await assertClaudeCodeLocalOwner({
+    oracleHome: getOracleHomeDir(),
+    sessionDir,
+    env: process.env,
+    transport: "stdio",
+  });
+  const executable = await resolveClaudeExecutable({
+    executable: "claude",
+    repoRoot: input.cwd,
+    env: process.env,
+  });
+  const command = buildClaudeCodeCommand({
+    executable: executable.path,
+    model: input.model,
+  });
+  const waitForLockMs = resolveClaudeCodeWaitForLockMs(input.runOptions.claudeCode?.waitForLockMs);
+  if (waitForLockMs > 0) {
+    input.log(
+      dim(`Claude Code single-flight lock: waiting up to ${formatElapsed(waitForLockMs)}.`),
+    );
+  }
+  const singleFlightLock = await acquireClaudeCodeSingleFlightLock(input.sessionId, {
+    waitForLockMs,
+  });
+  input.log(
+    dim(
+      `Claude Code command: ${command.file} ${command.args.map(redactClaudeCodeArgForLog).join(" ")}`,
+    ),
+  );
+  for (const warning of preparedEnv.warnings) {
+    input.log(dim(`Claude Code env warning: ${warning.source} ${warning.action}.`));
+  }
+  for (const warning of ownerResult.warnings) {
+    input.log(dim(`Claude Code owner warning: ${warning}.`));
+  }
+
+  try {
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    const normalizer = new ClaudeCodeStreamNormalizer();
+    const events: ClaudeCodeNormalizedEvent[] = [];
+    let stdoutEvents = 0;
+    let stderrEvents = 0;
+    let rawStreamBytes = 0;
+    let timedOut = false;
+    let policyViolation: ClaudeCodeReadOnlyPolicyViolation | undefined;
+    let outputFlood: { stream: "stdout" | "stderr"; totalBytes: number } | undefined;
+    let abortedBySignal: NodeJS.Signals | undefined;
+    const timeoutMs = resolveClaudeCodeTimeoutMs(input.runOptions.timeoutSeconds);
+    const maxInlineBytes = resolveClaudeCodeMaxInlineBytes(
+      input.runOptions.claudeCode?.maxInlineBytes,
+    );
+
+    const child = spawn(command.file, command.args, {
+      ...command.spawnOptions,
+      cwd: input.cwd,
+      detached: process.platform !== "win32",
+      env: preparedEnv.childEnv,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    let hardKillTimeout: NodeJS.Timeout | undefined;
+    const scheduleHardKill = () => {
+      if (hardKillTimeout) return;
+      hardKillTimeout = setTimeout(() => terminateClaudeCodeChild(child, "SIGKILL"), 5_000);
+      hardKillTimeout.unref?.();
+    };
+    const stopForPolicyViolation = (normalized: ClaudeCodeNormalizedEvent[]) => {
+      if (policyViolation) return;
+      const violation = findClaudeCodeReadOnlyPolicyViolation(normalized);
+      if (!violation) return;
+      policyViolation = violation;
+      terminateClaudeCodeChild(child, "SIGTERM");
+      scheduleHardKill();
+    };
+    const stopForOutputFlood = (stream: "stdout" | "stderr", totalBytes: number) => {
+      if (outputFlood || totalBytes <= maxInlineBytes) return;
+      outputFlood = { stream, totalBytes };
+      terminateClaudeCodeChild(child, "SIGTERM");
+      scheduleHardKill();
+    };
+    const stopForAbortSignal = (signal: NodeJS.Signals) => {
+      if (abortedBySignal) return;
+      abortedBySignal = signal;
+      terminateClaudeCodeChild(child, "SIGTERM");
+      scheduleHardKill();
+    };
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      terminateClaudeCodeChild(child, "SIGTERM");
+      scheduleHardKill();
+    }, timeoutMs);
+    timeout.unref?.();
+    const sigintHandler = () => stopForAbortSignal("SIGINT");
+    const sigtermHandler = () => stopForAbortSignal("SIGTERM");
+    process.once("SIGINT", sigintHandler);
+    process.once("SIGTERM", sigtermHandler);
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      const bytes = Buffer.from(chunk);
+      stdoutChunks.push(bytes);
+      rawStreamBytes += bytes.length;
+      stopForOutputFlood("stdout", rawStreamBytes);
+      const normalized = normalizer.push("stdout", bytes);
+      stdoutEvents += normalized.length;
+      events.push(...normalized);
+      writeClaudeCodeVisibleEvents(input.write, normalized);
+      stopForPolicyViolation(normalized);
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      const bytes = Buffer.from(chunk);
+      stderrChunks.push(bytes);
+      rawStreamBytes += bytes.length;
+      stopForOutputFlood("stderr", rawStreamBytes);
+      const normalized = normalizer.push("stderr", bytes);
+      stderrEvents += normalized.length;
+      events.push(...normalized);
+      writeClaudeCodeVisibleEvents(input.write, normalized);
+      stopForPolicyViolation(normalized);
+    });
+
+    const exit = await new Promise<{ exitCode: number | null; signal: string | null }>(
+      (resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", (exitCode, signal) => resolve({ exitCode, signal }));
+        child.stdin.once("error", reject);
+        child.stdin.end(input.prompt);
+      },
+    ).finally(() => {
+      process.off("SIGINT", sigintHandler);
+      process.off("SIGTERM", sigtermHandler);
+      clearTimeout(timeout);
+      if (hardKillTimeout) {
+        clearTimeout(hardKillTimeout);
+      }
+    });
+    const finalEvents = normalizer.finish();
+    if (finalEvents.length > 0) {
+      stdoutEvents += finalEvents.filter((event) => event.stream === "stdout").length;
+      events.push(...finalEvents);
+      writeClaudeCodeVisibleEvents(input.write, finalEvents);
+      policyViolation = policyViolation ?? findClaudeCodeReadOnlyPolicyViolation(finalEvents);
+    }
+
+    const verification = verifyClaudeCodeRun(events, { requestedModel: input.model });
+    const verificationError = verification.ok
+      ? undefined
+      : `Claude Code local mode stopped because startup verification failed: ${verification.failures
+          .map((failure) => failure.code)
+          .join(", ")}`;
+    const exitError =
+      exit.exitCode === 0
+        ? undefined
+        : timedOut
+          ? `Claude Code local mode timed out after ${formatElapsed(timeoutMs)}.`
+          : `Claude Code exited with code ${exit.exitCode ?? "null"}${exit.signal ? ` signal ${exit.signal}` : ""}.`;
+    const policyViolationError = policyViolation
+      ? `Claude Code local mode stopped because the visible event stream showed a read-only policy violation: ${policyViolation.reason}. Raw events were saved in ${input.artifactPaths.normalizedEventsPath}.`
+      : undefined;
+    const outputFloodError = outputFlood
+      ? `Claude Code local mode stopped because visible ${outputFlood.stream} output exceeded the inline byte limit (${outputFlood.totalBytes.toLocaleString()} bytes > ${maxInlineBytes.toLocaleString()} bytes). Raw events were saved in ${input.artifactPaths.normalizedEventsPath}.`
+      : undefined;
+    const abortError = abortedBySignal
+      ? `Claude Code local mode stopped after ${abortedBySignal}. Raw events were saved in ${input.artifactPaths.normalizedEventsPath}.`
+      : undefined;
+    const errorMessage =
+      policyViolationError ?? outputFloodError ?? abortError ?? verificationError ?? exitError;
+    const normalizedEventsNdjson = events.map((event) => JSON.stringify(event)).join("\n");
+    const finalAnswer = extractFinalTextFromEvents(events);
+
+    return {
+      stdoutRaw: Buffer.concat(stdoutChunks),
+      stderrRaw: Buffer.concat(stderrChunks),
+      normalizedEventsNdjson: normalizedEventsNdjson ? `${normalizedEventsNdjson}\n` : "",
+      finalAnswerMarkdown: finalAnswer,
+      progressMarkdown: summarizeClaudeCodeProgress(events, errorMessage),
+      finalAnswerText: finalAnswer,
+      elapsedMs: Date.now() - startedAt,
+      exitCode: exit.exitCode,
+      signal: exit.signal,
+      eventsComplete: !timedOut && !policyViolation && !outputFlood && !abortedBySignal,
+      streamsComplete: !timedOut && !policyViolation && !outputFlood && !abortedBySignal,
+      stdoutEvents,
+      stderrEvents,
+      modelRequested: verification.metadata.modelRequested,
+      modelObserved: verification.metadata.modelObserved,
+      modelResolvedFromInit: verification.metadata.modelResolvedFromInit,
+      modelUsageKeys: verification.metadata.modelUsageKeys,
+      modelUsageAuxiliaryKeys: verification.metadata.modelUsageAuxiliaryKeys,
+      modelVerificationStatus: verification.metadata.modelVerificationStatus,
+      totalCostUsdObserved: verification.metadata.totalCostUsdObserved,
+      visibleThinkingCaptured: verification.metadata.visibleThinkingCaptured,
+      localOwnerVerified: true,
+      anthropicApiKeyPresent: false,
+      anthropicApiKeyRefusalChecked: true,
+      childEnvScrubbed: true,
+      errorMessage,
+      adapterMetadata: {
+        command: {
+          executable: command.file,
+          args_redacted: command.args.map(redactClaudeCodeArgForAdapter),
+        },
+        executable: {
+          requested: executable.requested,
+          path: executable.path,
+          owner_uid: executable.ownerUid,
+          mode: executable.mode,
+        },
+        env_warnings: preparedEnv.warnings,
+        env_scrubbed_sources: preparedEnv.scrubbedSources,
+        local_owner: ownerResult,
+        single_flight_lock: {
+          path: singleFlightLock.path,
+          session_id: singleFlightLock.metadata.session_id,
+          pid: singleFlightLock.metadata.pid,
+          created_at: singleFlightLock.metadata.created_at,
+          wait_for_lock_ms: waitForLockMs,
+        },
+        policy_violation: policyViolation ?? null,
+        output_flood: outputFlood ?? null,
+        aborted_by_signal: abortedBySignal ?? null,
+        verification,
+        timeout_ms: timeoutMs,
+        max_inline_bytes: maxInlineBytes,
+      },
+    };
+  } finally {
+    await singleFlightLock.release().catch((error: unknown) => {
+      input.log(dim(`Claude Code lock release warning: ${formatError(error)}`));
+    });
+  }
+}
+
+async function buildClaudeCodeArtifactPaths(sessionId: string): Promise<ClaudeCodeArtifactPaths> {
+  const sessionDir = await resolveSessionDir(sessionId);
+  if (!sessionDir) {
+    throw new Error(`Cannot resolve session directory for ${sessionId}.`);
+  }
+  const artifactsDir = path.join(sessionDir, "artifacts");
+  await ensureOwnerOnlyClaudeCodeArtifactsDir(artifactsDir);
+  return {
+    rawStdoutPath: path.join(artifactsDir, "claude-code-stdout.raw"),
+    rawStderrPath: path.join(artifactsDir, "claude-code-stderr.raw"),
+    normalizedEventsPath: path.join(artifactsDir, "claude-code-events.normalized.ndjson"),
+    finalAnswerPath: path.join(artifactsDir, "claude-code-final.md"),
+    progressPath: path.join(artifactsDir, "claude-code-progress.md"),
+    adapterMetadataPath: path.join(artifactsDir, "claude-code-adapter.json"),
+  };
+}
+
+async function ensureOwnerOnlyClaudeCodeArtifactsDir(dir: string): Promise<void> {
+  await assertNotSymlink(dir, "Claude Code artifact directory");
+  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  await assertNotSymlink(dir, "Claude Code artifact directory");
+  if (process.platform !== "win32") {
+    await fs.chmod(dir, 0o700).catch(() => undefined);
+  }
+}
+
+async function assertNotSymlink(targetPath: string, label: string): Promise<void> {
+  try {
+    const stat = await fs.lstat(targetPath);
+    if (stat.isSymbolicLink()) {
+      throw new Error(`${label} refuses symlink path: ${targetPath}`);
+    }
+  } catch (error) {
+    const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+    if (code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+}
+
+async function persistClaudeCodeArtifacts({
+  artifactPaths,
+  payloads,
+}: {
+  artifactPaths: ClaudeCodeArtifactPaths;
+  payloads: ClaudeCodeArtifactPayloads;
+}): Promise<SessionArtifact[]> {
+  const adapterMetadata = buildClaudeCodeAdapterMetadata(payloads, artifactPaths);
+  const writes: Array<{
+    kind: SessionArtifact["kind"];
+    path: string;
+    label: string;
+    mimeType: string;
+    contents: Buffer | string;
+  }> = [
+    {
+      kind: "claude-code-stdout-raw",
+      path: artifactPaths.rawStdoutPath,
+      label: "Claude Code stdout (raw)",
+      mimeType: "application/octet-stream",
+      contents: payloads.stdoutRaw ?? Buffer.alloc(0),
+    },
+    {
+      kind: "claude-code-stderr-raw",
+      path: artifactPaths.rawStderrPath,
+      label: "Claude Code stderr (raw)",
+      mimeType: "application/octet-stream",
+      contents: payloads.stderrRaw ?? Buffer.alloc(0),
+    },
+    {
+      kind: "claude-code-events-normalized",
+      path: artifactPaths.normalizedEventsPath,
+      label: "Claude Code normalized events",
+      mimeType: "application/x-ndjson",
+      contents: payloads.normalizedEventsNdjson ?? "",
+    },
+    {
+      kind: "claude-code-final",
+      path: artifactPaths.finalAnswerPath,
+      label: "Claude Code final answer",
+      mimeType: "text/markdown",
+      contents: payloads.finalAnswerMarkdown ?? "",
+    },
+    {
+      kind: "claude-code-progress",
+      path: artifactPaths.progressPath,
+      label: "Claude Code visible progress",
+      mimeType: "text/markdown",
+      contents: payloads.progressMarkdown ?? "",
+    },
+    {
+      kind: "claude-code-adapter",
+      path: artifactPaths.adapterMetadataPath,
+      label: "Claude Code adapter metadata",
+      mimeType: "application/json",
+      contents: `${JSON.stringify(adapterMetadata, null, 2)}\n`,
+    },
+  ];
+  const artifacts: SessionArtifact[] = [];
+  for (const item of writes) {
+    artifacts.push(await writeOwnerOnlyClaudeCodeArtifact(item));
+  }
+  return artifacts;
+}
+
+async function writeOwnerOnlyClaudeCodeArtifact({
+  kind,
+  path: targetPath,
+  label,
+  mimeType,
+  contents,
+}: {
+  kind: SessionArtifact["kind"];
+  path: string;
+  label: string;
+  mimeType: string;
+  contents: Buffer | string;
+}): Promise<SessionArtifact> {
+  await assertNotSymlink(targetPath, "Claude Code artifact file");
+  const buffer = Buffer.isBuffer(contents) ? contents : Buffer.from(contents, "utf8");
+  await fs.writeFile(targetPath, buffer, { mode: 0o600, flag: "wx" });
+  if (process.platform !== "win32") {
+    await fs.chmod(targetPath, 0o600).catch(() => undefined);
+  }
+  return {
+    kind,
+    path: targetPath,
+    label,
+    mimeType,
+    sizeBytes: buffer.length,
+    sha256: createHash("sha256").update(buffer).digest("hex"),
+    validation: { type: "generic", ok: true },
+    transfer: { status: "not-needed" },
+    origin: { mode: "local" },
+  };
+}
+
+function buildClaudeCodeAdapterMetadata(
+  payloads: ClaudeCodeArtifactPayloads,
+  artifactPaths: ClaudeCodeArtifactPaths,
+): Record<string, unknown> {
+  return {
+    schema_version: "claude_code_adapter.v1",
+    access_path: "claude_code_subscription_cli",
+    provider_family: "claude",
+    transcript_fidelity: "visible_cli_stream",
+    hidden_reasoning_captured: false,
+    subscription_billing_uncertain: true,
+    raw_stdout_path: artifactPaths.rawStdoutPath,
+    raw_stderr_path: artifactPaths.rawStderrPath,
+    normalized_events_path: artifactPaths.normalizedEventsPath,
+    final_answer_path: artifactPaths.finalAnswerPath,
+    progress_path: artifactPaths.progressPath,
+    adapter_metadata_path: artifactPaths.adapterMetadataPath,
+    ...payloads.adapterMetadata,
+  };
+}
+
+function buildClaudeCodeSessionMetadata({
+  result,
+  artifactPaths,
+  model,
+}: {
+  result: ClaudeCodeRunnerResult;
+  artifactPaths: ClaudeCodeArtifactPaths;
+  model: string;
+}): ClaudeCodeSessionMetadata {
+  const modelUsageKeys = result.modelUsageKeys ?? [];
+  return {
+    schema_version: "claude_code_session.v1",
+    access_path: "claude_code_subscription_cli",
+    provider_family: "claude",
+    model_requested: result.modelRequested ?? model,
+    model_observed: result.modelObserved ?? null,
+    model_resolved_from_init: result.modelResolvedFromInit ?? null,
+    model_usage_keys: modelUsageKeys,
+    model_usage_auxiliary_keys: result.modelUsageAuxiliaryKeys ?? [],
+    model_verification_status: result.modelVerificationStatus ?? "requested_only",
+    total_cost_usd_observed: result.totalCostUsdObserved ?? null,
+    subscription_billing_uncertain: true,
+    credit_billing_warning_emitted: result.creditBillingWarningEmitted ?? false,
+    read_only: {
+      readOnly: true,
+      permissionMode: "plan",
+      toolMode: "none",
+      allowedTools: [],
+      blockedTools: ["*"],
+      mcpToolsBlocked: true,
+      slashCommandsDisabled: true,
+      safeMode: true,
+      chromeDisabled: true,
+      sessionPersistenceDisabled: true,
+    },
+    local_owner_verified: result.localOwnerVerified,
+    anthropic_api_key_present: result.anthropicApiKeyPresent,
+    anthropic_api_key_refusal_checked: result.anthropicApiKeyRefusalChecked,
+    child_env_scrubbed: result.childEnvScrubbed,
+    transcript_fidelity: "visible_cli_stream",
+    hidden_reasoning_captured: false,
+    visible_thinking_captured: result.visibleThinkingCaptured ?? "unknown",
+    exit_code: result.exitCode ?? null,
+    signal: result.signal ?? null,
+    events_complete: result.eventsComplete ?? true,
+    streams_complete: result.streamsComplete ?? result.eventsComplete ?? true,
+    stdout_events: result.stdoutEvents,
+    stdout_bytes: byteLength(result.stdoutRaw),
+    stderr_events: result.stderrEvents,
+    stderr_bytes: byteLength(result.stderrRaw),
+    artifact_paths: artifactPaths,
+    adapter_metadata_path: artifactPaths.adapterMetadataPath,
+    raw_stdout_path: artifactPaths.rawStdoutPath,
+    raw_stderr_path: artifactPaths.rawStderrPath,
+    normalized_events_path: artifactPaths.normalizedEventsPath,
+    final_answer_path: artifactPaths.finalAnswerPath,
+    progress_path: artifactPaths.progressPath,
+  };
+}
+
+function buildClaudeCodeErrorSessionMetadata({
+  model,
+  message,
+}: {
+  model: string;
+  message: string;
+}): ClaudeCodeSessionMetadata {
+  return {
+    schema_version: "claude_code_session.v1",
+    access_path: "claude_code_subscription_cli",
+    provider_family: "claude",
+    model_requested: model,
+    model_observed: null,
+    model_resolved_from_init: null,
+    model_usage_keys: [],
+    model_usage_auxiliary_keys: [],
+    model_verification_status: "requested_only",
+    total_cost_usd_observed: null,
+    subscription_billing_uncertain: true,
+    credit_billing_warning_emitted: false,
+    read_only: {
+      readOnly: true,
+      permissionMode: "plan",
+      toolMode: "none",
+      allowedTools: [],
+      blockedTools: ["*"],
+      mcpToolsBlocked: true,
+      slashCommandsDisabled: true,
+      safeMode: true,
+      chromeDisabled: true,
+      sessionPersistenceDisabled: true,
+    },
+    transcript_fidelity: "visible_cli_stream",
+    hidden_reasoning_captured: false,
+    visible_thinking_captured: "unknown",
+    events_complete: false,
+    streams_complete: false,
+    error_reason: message,
+  };
+}
+
+function usageFromClaudeCodeResult(result: ClaudeCodeRunnerResult): UsageSummary {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    reasoningTokens: 0,
+    totalTokens: 0,
+    cost: result.totalCostUsdObserved ?? undefined,
+  };
+}
+
+function extractFinalTextFromNdjson(result: ClaudeCodeRunnerResult): string {
+  const ndjson = result.normalizedEventsNdjson;
+  if (!ndjson) {
+    return "";
+  }
+  const pieces: string[] = [];
+  for (const line of ndjson.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(trimmed) as { text?: unknown };
+      if (typeof parsed.text === "string") {
+        pieces.push(parsed.text);
+      }
+    } catch {
+      // Normalized parse failures are preserved in artifacts; extraction is best effort.
+    }
+  }
+  return pieces.join("");
+}
+
+function resolveClaudeCodeTimeoutMs(timeoutSeconds: RunOracleOptions["timeoutSeconds"]): number {
+  if (typeof timeoutSeconds === "number" && Number.isFinite(timeoutSeconds) && timeoutSeconds > 0) {
+    return timeoutSeconds * 1000;
+  }
+  return 60 * 60 * 1000;
+}
+
+function resolveClaudeCodeWaitForLockMs(waitForLockMs: number | undefined): number {
+  if (typeof waitForLockMs === "number" && Number.isFinite(waitForLockMs) && waitForLockMs > 0) {
+    return waitForLockMs;
+  }
+  return 0;
+}
+
+function resolveClaudeCodeMaxInlineBytes(maxInlineBytes: number | undefined): number {
+  if (typeof maxInlineBytes === "number" && Number.isFinite(maxInlineBytes) && maxInlineBytes > 0) {
+    return Math.floor(maxInlineBytes);
+  }
+  return DEFAULT_CLAUDE_CODE_MAX_INLINE_BYTES;
+}
+
+interface ClaudeCodeSingleFlightLockMetadata {
+  schema_version: "claude_code_single_flight_lock.v1";
+  session_id: string;
+  pid: number;
+  nonce: string;
+  created_at: string;
+}
+
+interface ClaudeCodeSingleFlightLock {
+  path: string;
+  metadata: ClaudeCodeSingleFlightLockMetadata;
+  release: () => Promise<void>;
+}
+
+interface ClaudeCodeReadOnlyPolicyViolation {
+  reason: string;
+  eventType?: string;
+  eventSeq?: number;
+}
+
+class ClaudeCodeSingleFlightLockBusyError extends Error {
+  constructor(
+    readonly lockPath: string,
+    readonly existing: ClaudeCodeSingleFlightLockMetadata | null,
+  ) {
+    super(formatClaudeCodeLockBusyMessage(lockPath, existing));
+    this.name = "ClaudeCodeSingleFlightLockBusyError";
+  }
+}
+
+async function acquireClaudeCodeSingleFlightLock(
+  sessionId: string,
+  options: { waitForLockMs?: number; retryIntervalMs?: number } = {},
+): Promise<ClaudeCodeSingleFlightLock> {
+  const locksDir = path.join(getOracleHomeDir(), "locks");
+  await fs.mkdir(locksDir, { recursive: true, mode: 0o700 });
+  if (process.platform !== "win32") {
+    await fs.chmod(locksDir, 0o700).catch(() => undefined);
+  }
+  const lockPath = path.join(locksDir, "claude-code-subscription.lock");
+  const metadata: ClaudeCodeSingleFlightLockMetadata = {
+    schema_version: "claude_code_single_flight_lock.v1",
+    session_id: sessionId,
+    pid: process.pid,
+    nonce: randomUUID(),
+    created_at: new Date().toISOString(),
+  };
+  const waitForLockMs = resolveClaudeCodeWaitForLockMs(options.waitForLockMs);
+  const deadline = waitForLockMs > 0 ? Date.now() + waitForLockMs : 0;
+  const retryIntervalMs = Math.max(25, Math.min(options.retryIntervalMs ?? 250, 1_000));
+
+  while (true) {
+    try {
+      return await tryAcquireClaudeCodeSingleFlightLock(lockPath, metadata);
+    } catch (error) {
+      if (!(error instanceof ClaudeCodeSingleFlightLockBusyError) || waitForLockMs <= 0) {
+        throw error;
+      }
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        throw error;
+      }
+      await wait(Math.min(retryIntervalMs, remainingMs));
+    }
+  }
+}
+
+async function tryAcquireClaudeCodeSingleFlightLock(
+  lockPath: string,
+  metadata: ClaudeCodeSingleFlightLockMetadata,
+): Promise<ClaudeCodeSingleFlightLock> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await fs.writeFile(lockPath, `${JSON.stringify(metadata, null, 2)}\n`, {
+        flag: "wx",
+        mode: 0o600,
+      });
+      if (process.platform !== "win32") {
+        await fs.chmod(lockPath, 0o600).catch(() => undefined);
+      }
+      return {
+        path: lockPath,
+        metadata,
+        release: () => releaseClaudeCodeSingleFlightLock(lockPath, metadata.nonce),
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw error;
+      }
+      const existing = await readClaudeCodeSingleFlightLock(lockPath);
+      if (existing && !isProcessAlive(existing.pid)) {
+        await fs.unlink(lockPath).catch((unlinkError: unknown) => {
+          if ((unlinkError as NodeJS.ErrnoException).code !== "ENOENT") {
+            throw unlinkError;
+          }
+        });
+        continue;
+      }
+      throw new ClaudeCodeSingleFlightLockBusyError(lockPath, existing);
+    }
+  }
+
+  throw new Error(`Claude Code local mode could not acquire single-flight lock at ${lockPath}.`);
+}
+
+async function readClaudeCodeSingleFlightLock(
+  lockPath: string,
+): Promise<ClaudeCodeSingleFlightLockMetadata | null> {
+  try {
+    const raw = await fs.readFile(lockPath, "utf8");
+    const parsed = JSON.parse(raw) as Partial<ClaudeCodeSingleFlightLockMetadata>;
+    if (
+      parsed.schema_version === "claude_code_single_flight_lock.v1" &&
+      typeof parsed.session_id === "string" &&
+      typeof parsed.pid === "number" &&
+      Number.isInteger(parsed.pid) &&
+      typeof parsed.nonce === "string" &&
+      typeof parsed.created_at === "string"
+    ) {
+      return parsed as ClaudeCodeSingleFlightLockMetadata;
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return null;
+    }
+  }
+  return null;
+}
+
+async function releaseClaudeCodeSingleFlightLock(lockPath: string, nonce: string): Promise<void> {
+  const current = await readClaudeCodeSingleFlightLock(lockPath);
+  if (!current || current.nonce !== nonce) {
+    return;
+  }
+  await fs.unlink(lockPath).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  });
+}
+
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "EPERM";
+  }
+}
+
+function formatClaudeCodeLockBusyMessage(
+  lockPath: string,
+  existing: ClaudeCodeSingleFlightLockMetadata | null,
+): string {
+  const sessionId = existing?.session_id ?? "unknown";
+  return [
+    `Claude Code local mode is already running in session ${sessionId}.`,
+    "Only one local subscription run is allowed at a time.",
+    `Wait for it to finish, inspect it with \`oracle session ${sessionId} --render\`, or remove stale lock ${lockPath} after confirming no Claude Code run is active.`,
+  ].join("\n");
+}
+
+const CLAUDE_CODE_BLOCKED_TOOL_NAMES = new Set(
+  [
+    "agent",
+    "applypatch",
+    "bash",
+    "browser",
+    "chrome",
+    "cron",
+    "edit",
+    "glob",
+    "grep",
+    "lsp",
+    "ls",
+    "mcp",
+    "monitor",
+    "notebookedit",
+    "powershell",
+    "read",
+    "remotetrigger",
+    "skill",
+    "task",
+    "webfetch",
+    "websearch",
+    "workflow",
+    "write",
+  ].map(normalizeClaudeCodePolicyToken),
+);
+
+function findClaudeCodeReadOnlyPolicyViolation(
+  events: readonly ClaudeCodeNormalizedEvent[],
+): ClaudeCodeReadOnlyPolicyViolation | undefined {
+  for (const event of events) {
+    const json = claudeCodeObject(event.json);
+    if (!json) continue;
+    const jsonType = claudeCodeStringField(json, "type");
+    const jsonSubtype = claudeCodeStringField(json, "subtype");
+    if (jsonType === "system" && jsonSubtype === "init") {
+      continue;
+    }
+    const reason = inspectClaudeCodePolicyValue(json, event.type);
+    if (reason) {
+      return {
+        reason,
+        eventType: event.type,
+        eventSeq: event.seq,
+      };
+    }
+  }
+  return undefined;
+}
+
+function inspectClaudeCodePolicyValue(
+  value: unknown,
+  parentEventType: string | undefined,
+  depth = 0,
+): string | undefined {
+  if (depth > 12) return undefined;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const reason = inspectClaudeCodePolicyValue(item, parentEventType, depth + 1);
+      if (reason) return reason;
+    }
+    return undefined;
+  }
+  const obj = claudeCodeObject(value);
+  if (!obj) return undefined;
+
+  const type = claudeCodeStringField(obj, "type");
+  const normalizedType = normalizeClaudeCodePolicyToken(type);
+  const name = firstClaudeCodeStringField(obj, [
+    "name",
+    "tool",
+    "toolName",
+    "tool_name",
+    "function",
+    "functionName",
+    "function_name",
+  ]);
+  const normalizedParent = normalizeClaudeCodePolicyToken(parentEventType);
+  const normalizedName = normalizeClaudeCodePolicyToken(name);
+
+  if (isClaudeCodeToolUseType(normalizedType)) {
+    return `tool use${name ? ` (${name})` : ""}`;
+  }
+  if (isClaudeCodePermissionRequestType(normalizedType)) {
+    return `permission request${name ? ` (${name})` : ""}`;
+  }
+  if (isClaudeCodeDisallowedSurfaceType(normalizedType)) {
+    return `disallowed event type ${type}`;
+  }
+  if (normalizedName && isBlockedClaudeCodeToolName(name, normalizedName)) {
+    return `blocked tool ${name}`;
+  }
+  if (normalizedParent && isClaudeCodeToolUseType(normalizedParent) && name && normalizedName) {
+    return `tool use (${name})`;
+  }
+  const permissionMode = firstClaudeCodeStringField(obj, [
+    "permissionMode",
+    "permission_mode",
+    "mode",
+  ]);
+  const normalizedPermissionMode = normalizeClaudeCodePolicyToken(permissionMode);
+  if (normalizedPermissionMode.includes("bypass") || normalizedPermissionMode.includes("danger")) {
+    return `dangerous permission mode ${permissionMode}`;
+  }
+
+  for (const [key, child] of Object.entries(obj)) {
+    if (key === "text" || key === "result" || key === "rawText" || key === "rawBase64") {
+      continue;
+    }
+    const reason = inspectClaudeCodePolicyValue(child, type ?? parentEventType, depth + 1);
+    if (reason) return reason;
+  }
+  return undefined;
+}
+
+function isClaudeCodeToolUseType(type: string): boolean {
+  return (
+    type === "tooluse" ||
+    type === "toolcall" ||
+    type === "mcp_tool_call" ||
+    type.includes("tooluse") ||
+    type.includes("toolcall")
+  );
+}
+
+function isClaudeCodePermissionRequestType(type: string): boolean {
+  return type === "permissionrequest" || type.includes("permissionrequest");
+}
+
+function isClaudeCodeDisallowedSurfaceType(type: string): boolean {
+  return (
+    type.includes("hook") ||
+    type.includes("subagent") ||
+    type === "agent" ||
+    type.includes("chrome") ||
+    type.includes("browser") ||
+    type.includes("cron") ||
+    type.includes("workflow") ||
+    type.includes("skill")
+  );
+}
+
+function claudeCodeObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function firstClaudeCodeStringField(
+  obj: Record<string, unknown>,
+  fields: readonly string[],
+): string | undefined {
+  for (const field of fields) {
+    const value = claudeCodeStringField(obj, field);
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function claudeCodeStringField(obj: Record<string, unknown>, field: string): string | undefined {
+  const value = obj[field];
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function normalizeClaudeCodePolicyToken(value: string | undefined): string {
+  return (value ?? "").replace(/[\s_-]+/gu, "").toLowerCase();
+}
+
+function isBlockedClaudeCodeToolName(name: string | undefined, normalizedName: string): boolean {
+  const rawLower = (name ?? "").trim().toLowerCase();
+  return (
+    CLAUDE_CODE_BLOCKED_TOOL_NAMES.has(normalizedName) ||
+    rawLower.startsWith("mcp__") ||
+    normalizedName.startsWith("mcp")
+  );
+}
+
+function terminateClaudeCodeChild(
+  child: ChildProcessWithoutNullStreams,
+  signal: NodeJS.Signals,
+): void {
+  if (process.platform !== "win32" && child.pid) {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch {
+      // Fall back to the direct child below; process groups can fail on some platforms.
+    }
+  }
+  child.kill(signal);
+}
+
+function redactClaudeCodeArgForLog(arg: string): string {
+  if (arg === "") {
+    return '""';
+  }
+  if (
+    arg ===
+    "You are Oracle's supplied-context reviewer. Answer only from the user-provided prompt and attached context. Do not use tools."
+  ) {
+    return "<system-prompt>";
+  }
+  return /\s/.test(arg) ? JSON.stringify(arg) : arg;
+}
+
+function redactClaudeCodeArgForAdapter(arg: string): string {
+  if (
+    arg ===
+    "You are Oracle's supplied-context reviewer. Answer only from the user-provided prompt and attached context. Do not use tools."
+  ) {
+    return "<tiny Oracle-owned supplied-context reviewer prompt>";
+  }
+  return arg;
+}
+
+function writeClaudeCodeVisibleEvents(
+  write: (chunk: string) => boolean,
+  events: ClaudeCodeNormalizedEvent[],
+): void {
+  for (const event of events) {
+    if (event.stream === "stdout" && event.text) {
+      write(event.text);
+      continue;
+    }
+    if (event.stream === "stderr" && event.rawText) {
+      write(event.rawText);
+    }
+  }
+}
+
+function extractFinalTextFromEvents(events: ClaudeCodeNormalizedEvent[]): string {
+  const resultText = [...events]
+    .reverse()
+    .map((event) => event.json)
+    .find((json): json is { result: string } =>
+      Boolean(
+        json &&
+        typeof json === "object" &&
+        "result" in json &&
+        typeof (json as { result?: unknown }).result === "string",
+      ),
+    )?.result;
+  if (resultText) {
+    return resultText;
+  }
+  return events
+    .filter((event) => event.stream === "stdout" && event.text)
+    .map((event) => event.text)
+    .join("");
+}
+
+function summarizeClaudeCodeProgress(
+  events: ClaudeCodeNormalizedEvent[],
+  errorMessage: string | undefined,
+): string {
+  const lines = events
+    .filter((event) => event.type || event.text || event.parseError)
+    .slice(0, 200)
+    .map((event) => {
+      const parts = [`#${event.seq}`, event.stream];
+      if (event.type) parts.push(event.type);
+      if (event.parseError) parts.push(`parse_error=${event.parseError}`);
+      if (event.text) parts.push(`text=${event.text.slice(0, 160)}`);
+      return parts.join(" ");
+    });
+  if (errorMessage) {
+    lines.push(`error=${errorMessage}`);
+  }
+  return lines.join("\n");
+}
+
+function byteLength(value: Buffer | string | undefined): number {
+  if (Buffer.isBuffer(value)) {
+    return value.length;
+  }
+  if (typeof value === "string") {
+    return Buffer.byteLength(value, "utf8");
+  }
+  return 0;
+}
+
+function finalizedClaudeCodeError(message: string): ClaudeCodeFinalizedError {
+  const error = new Error(message) as ClaudeCodeFinalizedError;
+  error[CLAUDE_CODE_SESSION_FINALIZED] = true;
+  return error;
+}
+
+function isFinalizedClaudeCodeError(error: unknown): error is ClaudeCodeFinalizedError {
+  return (
+    error instanceof Error &&
+    (error as ClaudeCodeFinalizedError)[CLAUDE_CODE_SESSION_FINALIZED] === true
+  );
 }
 
 function formatError(error: unknown): string {

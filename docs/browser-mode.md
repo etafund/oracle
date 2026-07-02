@@ -6,9 +6,11 @@ Oracle’s `--engine browser` supports three different execution paths:
 - **ChatGPT attach-running mode** (GPT-\* models): Oracle attaches to your already-running local Chrome session through Chrome’s local remote-debugging toggle, opens a dedicated tab, and leaves the browser process/profile alone.
 - **Gemini web mode** (Gemini models): talks directly to `gemini.google.com` using your signed-in Chrome cookies (no ChatGPT automation).
 
+The reviewed browser route forms are ChatGPT Pro Extended Reasoning (`--engine browser --model gpt-5.5-pro --browser-thinking-time extended`) and Gemini 3.1 Deep Think (`--engine browser --provider gemini --gemini-deep-think`). `oracle doctor lanes --json` reports the stricter explicit lane-template readiness for the current checkout. Remote browser hosts and `oracle-router` are transport for those browser routes. Fable xHigh is a separate local `--lane fable-local` Claude Code path and is not a browser/router mode.
+
 If you’re running Gemini, also see `docs/gemini.md`.
 
-`oracle --engine browser` routes the assembled prompt bundle through the ChatGPT web UI instead of the Responses API. (Legacy `--browser` still maps to `--engine browser`, but it will be removed.) If you omit `--engine`, Oracle first honors `ORACLE_ENGINE`, then any `engine` value in the effective config, including project `.oracle/config.json` files layered over `~/.oracle/config.json`. It auto-picks API when `OPENAI_API_KEY` is available and falls back to browser otherwise. The CLI writes the same session metadata/logs as API runs, and by default pastes the payload into ChatGPT via a temporary Chrome profile (manual-login mode can reuse a persistent automation profile).
+`oracle --engine browser` routes the assembled prompt bundle through the web UI instead of the Responses API. (Legacy `--browser` still maps to `--engine browser`, but it will be removed.) If you omit `--engine`, Oracle first honors `ORACLE_ENGINE`, then any `engine` value in the effective config, including project `.oracle/config.json` files layered over `~/.oracle/config.json`. For reviewed browser lanes, pass browser intent explicitly so API keys do not redirect the run to compatibility API paths. The CLI writes the same session metadata/logs as API runs, and by default pastes the payload into ChatGPT via a temporary Chrome profile (manual-login mode can reuse a persistent automation profile).
 
 `--preview` now works with `--engine browser`: it renders the composed prompt, lists which files would be uploaded vs inlined, and shows the bundle location when bundling is enabled, without launching Chrome.
 
@@ -341,24 +343,24 @@ Prefer to keep Chrome entirely on the remote Mac (no DevTools tunneling, no manu
 
    ```
    Listening at 0.0.0.0:9473
-   Access token: c4e5f9...
+   Access token: <redacted bearer token>
    ```
 
-   Use `--host`, `--port`, or `--token` to override the defaults if needed.
+   Use `--host`, `--port`, or `--token "$ORACLE_REMOTE_TOKEN"` to override the defaults if needed. Prefer env/config storage over literal tokens on argv.
    If the host Chrome profile is not signed into ChatGPT, the service opens chatgpt.com for login and exits—sign in, then restart `oracle serve`.
 
 2. **Run from your laptop**
 
    ```bash
+   export ORACLE_REMOTE_TOKEN="<token printed by oracle serve>"
    oracle --engine browser \
      --remote-host 192.168.64.2:9473 \
-     --remote-token c4e5f9... \
-   --prompt "Summarize the incident doc" \
-    --file docs/incidents/latest.md
+     --prompt "Summarize the incident doc" \
+     --file docs/incidents/latest.md
    ```
 
    - `--remote-host` points the CLI at the VM.
-   - `--remote-token` matches the token printed by `oracle serve` (set `ORACLE_REMOTE_TOKEN` to avoid repeating it).
+   - `ORACLE_REMOTE_TOKEN` matches the token printed by `oracle serve`; prefer the env var or `browser.remoteToken` in `~/.oracle/config.json` over putting the token on the command line.
    - You can also set defaults in `~/.oracle/config.json` (`browser.remoteHost`, `browser.remoteToken`) so you don’t need the flags; env vars still override those when present.
    - Cookies are **not** transferred from your laptop. The service requires the host Chrome profile to be signed in; if not, it opens chatgpt.com and exits so you can log in, then restart `oracle serve`.
 

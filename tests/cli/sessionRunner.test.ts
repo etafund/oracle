@@ -74,6 +74,7 @@ import { sendSessionNotification } from "../../src/cli/notifier.ts";
 import { getCliVersion } from "../../src/version.ts";
 import { deriveModelOutputPath } from "../../src/cli/sessionRunner.ts";
 import { resumeBrowserSession } from "../../src/browser/reattach.ts";
+import { setOracleHomeDirOverrideForTest } from "../../src/oracleHome.ts";
 
 const baseSessionMeta: SessionMetadata = {
   id: "sess-1",
@@ -119,6 +120,103 @@ async function withExactEnv<T>(
   }
 }
 
+const blockedClaudeCodeEnvDefaults = {
+  ANTHROPIC_API_KEY: undefined,
+  ANTHROPIC_AUTH_TOKEN: undefined,
+  ANTHROPIC_BASE_URL: undefined,
+  ANTHROPIC_DEFAULT_OPUS_MODEL: undefined,
+  ANTHROPIC_DEFAULT_SONNET_MODEL: undefined,
+  ANTHROPIC_MODEL: undefined,
+  CLAUDE_CODE_USE_BEDROCK: undefined,
+  CLAUDE_CODE_USE_VERTEX: undefined,
+  CLAUDE_CODE_USE_FOUNDRY: undefined,
+  CLAUDE_CODE_USE_ANTHROPIC_AWS: undefined,
+} satisfies Record<string, string | undefined>;
+
+const fableClaudeCodePolicy = {
+  model: "fable",
+  readOnly: true,
+  inlineEvents: true,
+  outputFormat: "stream-json",
+  permissionMode: "plan",
+  toolMode: "none",
+  safeMode: true,
+  disableSlashCommands: true,
+  strictMcpConfig: true,
+  noChrome: true,
+  noSessionPersistence: true,
+} as const;
+
+function fakeClaudeCodeInitEvent(): Record<string, unknown> {
+  return {
+    type: "system",
+    subtype: "init",
+    apiKeySource: "none",
+    model: "claude-fable-5",
+    tools: [],
+    mcp_servers: [],
+    permissionMode: "plan",
+    slash_commands: [],
+    skills: [],
+    plugins: [],
+    fast_mode_state: "off",
+    agents: ["claude", "Explore", "general-purpose", "Plan"],
+  };
+}
+
+function createFakeClaudeExecutable({
+  binDir,
+  argvPath,
+  stdinPath,
+  markerPath,
+  stdoutEvents,
+  lingerMs = 0,
+}: {
+  binDir: string;
+  argvPath: string;
+  stdinPath: string;
+  markerPath: string;
+  stdoutEvents?: unknown[];
+  lingerMs?: number;
+}): string {
+  const executablePath = path.join(binDir, "claude");
+  const initEvent = fakeClaudeCodeInitEvent();
+  const resultEvent = {
+    type: "result",
+    result: "Fake final answer from Claude Code",
+    modelUsage: { "claude-fable-5": {} },
+    total_cost_usd: 0,
+  };
+  const events = stdoutEvents ?? [initEvent, resultEvent];
+  const script = [
+    "#!/usr/bin/env node",
+    "const fs = require('node:fs');",
+    `const argvPath = ${JSON.stringify(argvPath)};`,
+    `const stdinPath = ${JSON.stringify(stdinPath)};`,
+    `const markerPath = ${JSON.stringify(markerPath)};`,
+    `const stdoutEvents = ${JSON.stringify(events)};`,
+    `const lingerMs = ${JSON.stringify(lingerMs)};`,
+    "let input = '';",
+    "process.stdin.setEncoding('utf8');",
+    "process.stdin.on('data', (chunk) => { input += chunk; });",
+    "process.stdin.on('end', () => {",
+    "  fs.writeFileSync(markerPath, 'spawned\\n');",
+    "  fs.writeFileSync(argvPath, JSON.stringify(process.argv.slice(2), null, 2));",
+    "  fs.writeFileSync(stdinPath, input);",
+    "  for (const event of stdoutEvents) {",
+    "    process.stdout.write(`${JSON.stringify(event)}\\n`);",
+    "  }",
+    "  process.stderr.write('fake stderr\\n');",
+    "  if (lingerMs > 0) {",
+    "    setTimeout(() => process.exit(0), lingerMs);",
+    "  }",
+    "});",
+    "",
+  ].join("\n");
+  fs.writeFileSync(executablePath, script, { mode: 0o700 });
+  return executablePath;
+}
+
 beforeAll(() => {
   // Force macOS platform so browser-mode paths are reachable in Linux/Windows CI
   Object.defineProperty(process, "platform", { value: "darwin" });
@@ -153,11 +251,850 @@ beforeEach(() => {
   });
   sessionStoreMock.readModelLog.mockResolvedValue("model log body");
   sessionStoreMock.sessionsDir.mockReturnValue("/tmp/.oracle/sessions");
+  sessionStoreMock.getPaths.mockResolvedValue({
+    dir: "/tmp/.oracle/sessions/sess-1",
+    metadata: "/tmp/.oracle/sessions/sess-1/meta.json",
+    request: "/tmp/.oracle/sessions/sess-1/request.json",
+    log: "/tmp/.oracle/sessions/sess-1/output.log",
+  });
   vi.spyOn(fsPromises, "mkdir").mockResolvedValue(undefined);
   vi.spyOn(fsPromises, "writeFile").mockResolvedValue(undefined);
 });
 
 describe("performSessionRun", () => {
+  test("default claude-code runner spawns a guarded local claude process with stdin prompt and raw artifacts", async () => {
+    vi.mocked(fsPromises.mkdir).mockRestore();
+    vi.mocked(fsPromises.writeFile).mockRestore();
+
+    const root = fs.mkdtempSync(path.join(os.homedir(), ".oracle-claude-code-test-"));
+    const oracleHome = path.join(root, "oracle-home");
+    const sessionsDir = path.join(root, "sessions");
+    const sessionDir = path.join(sessionsDir, "sess-1");
+    const repoDir = path.join(root, "repo");
+    const binDir = path.join(root, "bin");
+    const argvPath = path.join(root, "claude-argv.json");
+    const stdinPath = path.join(root, "claude-stdin.txt");
+    const markerPath = path.join(root, "claude-spawned.txt");
+    for (const dir of [oracleHome, sessionsDir, sessionDir, repoDir, binDir]) {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      fs.chmodSync(dir, 0o700);
+    }
+    const contextPath = path.join(repoDir, "context.md");
+    fs.writeFileSync(contextPath, "fake file context", "utf8");
+    createFakeClaudeExecutable({ binDir, argvPath, stdinPath, markerPath });
+    sessionStoreMock.sessionsDir.mockReturnValue(sessionsDir);
+    sessionStoreMock.getPaths.mockResolvedValue({
+      dir: sessionDir,
+      metadata: path.join(sessionDir, "meta.json"),
+      request: path.join(sessionDir, "request.json"),
+      log: path.join(sessionDir, "output.log"),
+    });
+    setOracleHomeDirOverrideForTest(oracleHome);
+
+    try {
+      await withExactEnv(
+        {
+          ...blockedClaudeCodeEnvDefaults,
+          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        },
+        async () => {
+          await performSessionRun({
+            sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+            runOptions: {
+              prompt: "Review via fake executable",
+              model: "fable",
+              file: [contextPath],
+            },
+            mode: "claude-code",
+            cwd: repoDir,
+            log,
+            write,
+            version: cliVersion,
+            muteStdout: true,
+          });
+        },
+      );
+
+      expect(vi.mocked(runOracle)).not.toHaveBeenCalled();
+      expect(vi.mocked(runBrowserSessionExecution)).not.toHaveBeenCalled();
+      expect(fs.readFileSync(markerPath, "utf8")).toBe("spawned\n");
+      const argv = JSON.parse(fs.readFileSync(argvPath, "utf8")) as string[];
+      expect(argv).toContain("-p");
+      expect(argv[argv.indexOf("--model") + 1]).toBe("fable");
+      expect(argv[argv.indexOf("--output-format") + 1]).toBe("stream-json");
+      expect(argv[argv.indexOf("--permission-mode") + 1]).toBe("plan");
+      expect(argv[argv.indexOf("--tools") + 1]).toBe("");
+      expect(argv.join("\n")).not.toContain("Review via fake executable");
+      const stdin = fs.readFileSync(stdinPath, "utf8");
+      expect(stdin).toContain("Review via fake executable");
+      expect(stdin).toContain("fake file context");
+      const artifactsDir = path.join(sessionDir, "artifacts");
+      expect(fs.readFileSync(path.join(artifactsDir, "claude-code-stdout.raw"), "utf8")).toContain(
+        '"type":"result"',
+      );
+      expect(fs.readFileSync(path.join(artifactsDir, "claude-code-stderr.raw"), "utf8")).toBe(
+        "fake stderr\n",
+      );
+      expect(fs.readFileSync(path.join(artifactsDir, "claude-code-final.md"), "utf8")).toBe(
+        "Fake final answer from Claude Code",
+      );
+      expect(
+        fs.readFileSync(path.join(artifactsDir, "claude-code-events.normalized.ndjson"), "utf8"),
+      ).toContain('"type":"result"');
+      const adapter = JSON.parse(
+        fs.readFileSync(path.join(artifactsDir, "claude-code-adapter.json"), "utf8"),
+      ) as { access_path?: string; command?: { args_redacted?: string[] } };
+      expect(adapter.access_path).toBe("claude_code_subscription_cli");
+      expect(adapter.command?.args_redacted).toContain(
+        "<tiny Oracle-owned supplied-context reviewer prompt>",
+      );
+      const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+      expect(finalUpdate).toMatchObject({
+        status: "completed",
+        mode: "claude-code",
+        claudeCode: {
+          access_path: "claude_code_subscription_cli",
+          model_requested: "fable",
+          model_observed: "claude-fable-5",
+          model_usage_keys: ["claude-fable-5"],
+          model_verification_status: "observed",
+          total_cost_usd_observed: 0,
+          local_owner_verified: true,
+          child_env_scrubbed: true,
+          artifact_paths: expect.objectContaining({
+            finalAnswerPath: path.join(artifactsDir, "claude-code-final.md"),
+          }),
+        },
+      });
+      expect(fs.existsSync(path.join(oracleHome, "locks", "claude-code-subscription.lock"))).toBe(
+        false,
+      );
+    } finally {
+      setOracleHomeDirOverrideForTest(null);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("default claude-code runner refuses a busy single-flight lock before spawning", async () => {
+    vi.mocked(fsPromises.mkdir).mockRestore();
+    vi.mocked(fsPromises.writeFile).mockRestore();
+
+    const root = fs.mkdtempSync(path.join(os.homedir(), ".oracle-claude-code-lock-test-"));
+    const oracleHome = path.join(root, "oracle-home");
+    const sessionsDir = path.join(root, "sessions");
+    const sessionDir = path.join(sessionsDir, "sess-1");
+    const repoDir = path.join(root, "repo");
+    const binDir = path.join(root, "bin");
+    const markerPath = path.join(root, "claude-spawned.txt");
+    for (const dir of [oracleHome, sessionsDir, sessionDir, repoDir, binDir]) {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      fs.chmodSync(dir, 0o700);
+    }
+    createFakeClaudeExecutable({
+      binDir,
+      argvPath: path.join(root, "argv.json"),
+      stdinPath: path.join(root, "stdin.txt"),
+      markerPath,
+    });
+    const locksDir = path.join(oracleHome, "locks");
+    fs.mkdirSync(locksDir, { recursive: true, mode: 0o700 });
+    const lockPath = path.join(locksDir, "claude-code-subscription.lock");
+    fs.writeFileSync(
+      lockPath,
+      `${JSON.stringify({
+        schema_version: "claude_code_single_flight_lock.v1",
+        session_id: "busy-session",
+        pid: process.pid,
+        nonce: "busy-lock",
+        created_at: "2026-07-02T00:00:00.000Z",
+      })}\n`,
+      { mode: 0o600 },
+    );
+    sessionStoreMock.sessionsDir.mockReturnValue(sessionsDir);
+    sessionStoreMock.getPaths.mockResolvedValue({
+      dir: sessionDir,
+      metadata: path.join(sessionDir, "meta.json"),
+      request: path.join(sessionDir, "request.json"),
+      log: path.join(sessionDir, "output.log"),
+    });
+    setOracleHomeDirOverrideForTest(oracleHome);
+
+    try {
+      await withExactEnv(
+        {
+          ...blockedClaudeCodeEnvDefaults,
+          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        },
+        async () => {
+          await expect(
+            performSessionRun({
+              sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+              runOptions: { prompt: "Review", model: "fable" },
+              mode: "claude-code",
+              cwd: repoDir,
+              log,
+              write,
+              version: cliVersion,
+            }),
+          ).rejects.toThrow(/already running in session busy-session/);
+        },
+      );
+
+      expect(fs.existsSync(markerPath)).toBe(false);
+      expect(fs.existsSync(lockPath)).toBe(true);
+      expect(vi.mocked(runOracle)).not.toHaveBeenCalled();
+      expect(vi.mocked(runBrowserSessionExecution)).not.toHaveBeenCalled();
+      const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+      expect(finalUpdate).toMatchObject({
+        status: "error",
+        mode: "claude-code",
+        claudeCode: {
+          access_path: "claude_code_subscription_cli",
+          events_complete: false,
+          error_reason: expect.stringContaining("busy-session"),
+        },
+      });
+    } finally {
+      setOracleHomeDirOverrideForTest(null);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("default claude-code runner waits for a busy single-flight lock when requested", async () => {
+    vi.mocked(fsPromises.mkdir).mockRestore();
+    vi.mocked(fsPromises.writeFile).mockRestore();
+
+    const root = fs.mkdtempSync(path.join(os.homedir(), ".oracle-claude-code-lock-wait-test-"));
+    const oracleHome = path.join(root, "oracle-home");
+    const sessionsDir = path.join(root, "sessions");
+    const sessionDir = path.join(sessionsDir, "sess-1");
+    const repoDir = path.join(root, "repo");
+    const binDir = path.join(root, "bin");
+    const markerPath = path.join(root, "claude-spawned.txt");
+    for (const dir of [oracleHome, sessionsDir, sessionDir, repoDir, binDir]) {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      fs.chmodSync(dir, 0o700);
+    }
+    createFakeClaudeExecutable({
+      binDir,
+      argvPath: path.join(root, "argv.json"),
+      stdinPath: path.join(root, "stdin.txt"),
+      markerPath,
+    });
+    const locksDir = path.join(oracleHome, "locks");
+    fs.mkdirSync(locksDir, { recursive: true, mode: 0o700 });
+    const lockPath = path.join(locksDir, "claude-code-subscription.lock");
+    fs.writeFileSync(
+      lockPath,
+      `${JSON.stringify({
+        schema_version: "claude_code_single_flight_lock.v1",
+        session_id: "busy-session",
+        pid: process.pid,
+        nonce: "busy-lock",
+        created_at: "2026-07-02T00:00:00.000Z",
+      })}\n`,
+      { mode: 0o600 },
+    );
+    sessionStoreMock.sessionsDir.mockReturnValue(sessionsDir);
+    sessionStoreMock.getPaths.mockResolvedValue({
+      dir: sessionDir,
+      metadata: path.join(sessionDir, "meta.json"),
+      request: path.join(sessionDir, "request.json"),
+      log: path.join(sessionDir, "output.log"),
+    });
+    setOracleHomeDirOverrideForTest(oracleHome);
+    const releaseBusyLock = setTimeout(() => {
+      try {
+        fs.unlinkSync(lockPath);
+      } catch {
+        // The runner may have already recovered or the test may be unwinding.
+      }
+    }, 50);
+
+    try {
+      await withExactEnv(
+        {
+          ...blockedClaudeCodeEnvDefaults,
+          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        },
+        async () => {
+          await performSessionRun({
+            sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+            runOptions: {
+              prompt: "Review after lock wait",
+              model: "fable",
+              claudeCode: { ...fableClaudeCodePolicy, waitForLockMs: 1_000 },
+            },
+            mode: "claude-code",
+            cwd: repoDir,
+            log,
+            write,
+            version: cliVersion,
+            muteStdout: true,
+          });
+        },
+      );
+
+      expect(fs.readFileSync(markerPath, "utf8")).toBe("spawned\n");
+      expect(fs.existsSync(lockPath)).toBe(false);
+      const adapter = JSON.parse(
+        fs.readFileSync(path.join(sessionDir, "artifacts", "claude-code-adapter.json"), "utf8"),
+      ) as { single_flight_lock?: { wait_for_lock_ms?: number } };
+      expect(adapter.single_flight_lock?.wait_for_lock_ms).toBe(1_000);
+      const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+      expect(finalUpdate).toMatchObject({
+        status: "completed",
+        mode: "claude-code",
+      });
+    } finally {
+      clearTimeout(releaseBusyLock);
+      setOracleHomeDirOverrideForTest(null);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("default claude-code runner stops when visible events show tool use", async () => {
+    vi.mocked(fsPromises.mkdir).mockRestore();
+    vi.mocked(fsPromises.writeFile).mockRestore();
+
+    const root = fs.mkdtempSync(path.join(os.homedir(), ".oracle-claude-code-policy-test-"));
+    const oracleHome = path.join(root, "oracle-home");
+    const sessionsDir = path.join(root, "sessions");
+    const sessionDir = path.join(sessionsDir, "sess-1");
+    const repoDir = path.join(root, "repo");
+    const binDir = path.join(root, "bin");
+    const markerPath = path.join(root, "claude-spawned.txt");
+    for (const dir of [oracleHome, sessionsDir, sessionDir, repoDir, binDir]) {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      fs.chmodSync(dir, 0o700);
+    }
+    createFakeClaudeExecutable({
+      binDir,
+      argvPath: path.join(root, "argv.json"),
+      stdinPath: path.join(root, "stdin.txt"),
+      markerPath,
+      stdoutEvents: [
+        fakeClaudeCodeInitEvent(),
+        {
+          type: "assistant",
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                id: "toolu_test",
+                name: "Bash",
+                input: { command: "pwd" },
+              },
+            ],
+          },
+        },
+      ],
+      lingerMs: 3_000,
+    });
+    sessionStoreMock.sessionsDir.mockReturnValue(sessionsDir);
+    sessionStoreMock.getPaths.mockResolvedValue({
+      dir: sessionDir,
+      metadata: path.join(sessionDir, "meta.json"),
+      request: path.join(sessionDir, "request.json"),
+      log: path.join(sessionDir, "output.log"),
+    });
+    setOracleHomeDirOverrideForTest(oracleHome);
+
+    try {
+      await withExactEnv(
+        {
+          ...blockedClaudeCodeEnvDefaults,
+          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        },
+        async () => {
+          await expect(
+            performSessionRun({
+              sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+              runOptions: {
+                prompt: "Review but do not run tools",
+                model: "fable",
+              },
+              mode: "claude-code",
+              cwd: repoDir,
+              log,
+              write,
+              version: cliVersion,
+              muteStdout: true,
+            }),
+          ).rejects.toThrow(/read-only policy violation: tool use \(Bash\)/);
+        },
+      );
+
+      expect(fs.readFileSync(markerPath, "utf8")).toBe("spawned\n");
+      expect(fs.existsSync(path.join(oracleHome, "locks", "claude-code-subscription.lock"))).toBe(
+        false,
+      );
+      const adapter = JSON.parse(
+        fs.readFileSync(path.join(sessionDir, "artifacts", "claude-code-adapter.json"), "utf8"),
+      ) as { policy_violation?: { reason?: string } };
+      expect(adapter.policy_violation?.reason).toBe("tool use (Bash)");
+      const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+      expect(finalUpdate).toMatchObject({
+        status: "error",
+        mode: "claude-code",
+        errorMessage: expect.stringContaining("read-only policy violation"),
+        claudeCode: {
+          events_complete: false,
+          streams_complete: false,
+        },
+      });
+    } finally {
+      setOracleHomeDirOverrideForTest(null);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("default claude-code runner stops when visible output exceeds the inline byte limit", async () => {
+    vi.mocked(fsPromises.mkdir).mockRestore();
+    vi.mocked(fsPromises.writeFile).mockRestore();
+
+    const root = fs.mkdtempSync(path.join(os.homedir(), ".oracle-claude-code-flood-test-"));
+    const oracleHome = path.join(root, "oracle-home");
+    const sessionsDir = path.join(root, "sessions");
+    const sessionDir = path.join(sessionsDir, "sess-1");
+    const repoDir = path.join(root, "repo");
+    const binDir = path.join(root, "bin");
+    const markerPath = path.join(root, "claude-spawned.txt");
+    for (const dir of [oracleHome, sessionsDir, sessionDir, repoDir, binDir]) {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      fs.chmodSync(dir, 0o700);
+    }
+    createFakeClaudeExecutable({
+      binDir,
+      argvPath: path.join(root, "argv.json"),
+      stdinPath: path.join(root, "stdin.txt"),
+      markerPath,
+      stdoutEvents: [
+        fakeClaudeCodeInitEvent(),
+        {
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            delta: { type: "text_delta", text: "this line exceeds the test byte budget" },
+          },
+        },
+      ],
+      lingerMs: 3_000,
+    });
+    sessionStoreMock.sessionsDir.mockReturnValue(sessionsDir);
+    sessionStoreMock.getPaths.mockResolvedValue({
+      dir: sessionDir,
+      metadata: path.join(sessionDir, "meta.json"),
+      request: path.join(sessionDir, "request.json"),
+      log: path.join(sessionDir, "output.log"),
+    });
+    setOracleHomeDirOverrideForTest(oracleHome);
+
+    try {
+      await withExactEnv(
+        {
+          ...blockedClaudeCodeEnvDefaults,
+          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        },
+        async () => {
+          await expect(
+            performSessionRun({
+              sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+              runOptions: {
+                prompt: "Review but keep output bounded",
+                model: "fable",
+                claudeCode: { ...fableClaudeCodePolicy, maxInlineBytes: 32 },
+              },
+              mode: "claude-code",
+              cwd: repoDir,
+              log,
+              write,
+              version: cliVersion,
+              muteStdout: true,
+            }),
+          ).rejects.toThrow(/visible stdout output exceeded the inline byte limit/);
+        },
+      );
+
+      expect(fs.readFileSync(markerPath, "utf8")).toBe("spawned\n");
+      expect(fs.existsSync(path.join(oracleHome, "locks", "claude-code-subscription.lock"))).toBe(
+        false,
+      );
+      const adapter = JSON.parse(
+        fs.readFileSync(path.join(sessionDir, "artifacts", "claude-code-adapter.json"), "utf8"),
+      ) as { output_flood?: { stream?: string }; max_inline_bytes?: number };
+      expect(adapter.output_flood?.stream).toBe("stdout");
+      expect(adapter.max_inline_bytes).toBe(32);
+      const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+      expect(finalUpdate).toMatchObject({
+        status: "error",
+        mode: "claude-code",
+        errorMessage: expect.stringContaining("inline byte limit"),
+        claudeCode: {
+          events_complete: false,
+          streams_complete: false,
+        },
+      });
+    } finally {
+      setOracleHomeDirOverrideForTest(null);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("default claude-code runner terminates child and releases lock on SIGINT", async () => {
+    vi.mocked(fsPromises.mkdir).mockRestore();
+    vi.mocked(fsPromises.writeFile).mockRestore();
+
+    const root = fs.mkdtempSync(path.join(os.homedir(), ".oracle-claude-code-sigint-test-"));
+    const oracleHome = path.join(root, "oracle-home");
+    const sessionsDir = path.join(root, "sessions");
+    const sessionDir = path.join(sessionsDir, "sess-1");
+    const repoDir = path.join(root, "repo");
+    const binDir = path.join(root, "bin");
+    const markerPath = path.join(root, "claude-spawned.txt");
+    for (const dir of [oracleHome, sessionsDir, sessionDir, repoDir, binDir]) {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      fs.chmodSync(dir, 0o700);
+    }
+    createFakeClaudeExecutable({
+      binDir,
+      argvPath: path.join(root, "argv.json"),
+      stdinPath: path.join(root, "stdin.txt"),
+      markerPath,
+      stdoutEvents: [fakeClaudeCodeInitEvent()],
+      lingerMs: 3_000,
+    });
+    sessionStoreMock.sessionsDir.mockReturnValue(sessionsDir);
+    sessionStoreMock.getPaths.mockResolvedValue({
+      dir: sessionDir,
+      metadata: path.join(sessionDir, "meta.json"),
+      request: path.join(sessionDir, "request.json"),
+      log: path.join(sessionDir, "output.log"),
+    });
+    setOracleHomeDirOverrideForTest(oracleHome);
+    const interrupt = setTimeout(() => {
+      process.emit("SIGINT");
+    }, 50);
+
+    try {
+      await withExactEnv(
+        {
+          ...blockedClaudeCodeEnvDefaults,
+          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        },
+        async () => {
+          await expect(
+            performSessionRun({
+              sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+              runOptions: {
+                prompt: "Review until interrupted",
+                model: "fable",
+              },
+              mode: "claude-code",
+              cwd: repoDir,
+              log,
+              write,
+              version: cliVersion,
+              muteStdout: true,
+            }),
+          ).rejects.toThrow(/stopped after SIGINT/);
+        },
+      );
+
+      expect(fs.readFileSync(markerPath, "utf8")).toBe("spawned\n");
+      expect(fs.existsSync(path.join(oracleHome, "locks", "claude-code-subscription.lock"))).toBe(
+        false,
+      );
+      const adapter = JSON.parse(
+        fs.readFileSync(path.join(sessionDir, "artifacts", "claude-code-adapter.json"), "utf8"),
+      ) as { aborted_by_signal?: string };
+      expect(adapter.aborted_by_signal).toBe("SIGINT");
+      const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+      expect(finalUpdate).toMatchObject({
+        status: "error",
+        mode: "claude-code",
+        errorMessage: expect.stringContaining("SIGINT"),
+        claudeCode: {
+          events_complete: false,
+          streams_complete: false,
+        },
+      });
+    } finally {
+      clearTimeout(interrupt);
+      setOracleHomeDirOverrideForTest(null);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("default claude-code runner refuses API-key env before spawning claude", async () => {
+    const root = fs.mkdtempSync(path.join(os.homedir(), ".oracle-claude-code-guard-test-"));
+    const binDir = path.join(root, "bin");
+    const markerPath = path.join(root, "claude-spawned.txt");
+    fs.mkdirSync(binDir, { recursive: true, mode: 0o700 });
+    fs.chmodSync(binDir, 0o700);
+    createFakeClaudeExecutable({
+      binDir,
+      argvPath: path.join(root, "argv.json"),
+      stdinPath: path.join(root, "stdin.txt"),
+      markerPath,
+    });
+
+    try {
+      await withExactEnv(
+        {
+          ...blockedClaudeCodeEnvDefaults,
+          ANTHROPIC_API_KEY: "sk-ant-test",
+          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        },
+        async () => {
+          await expect(
+            performSessionRun({
+              sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+              runOptions: { prompt: "Review", model: "fable" },
+              mode: "claude-code",
+              cwd: "/tmp",
+              log,
+              write,
+              version: cliVersion,
+            }),
+          ).rejects.toThrow(/ANTHROPIC_API_KEY/);
+        },
+      );
+
+      expect(fs.existsSync(markerPath)).toBe(false);
+      expect(vi.mocked(runOracle)).not.toHaveBeenCalled();
+      expect(vi.mocked(runBrowserSessionExecution)).not.toHaveBeenCalled();
+      const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+      expect(finalUpdate).toMatchObject({
+        status: "error",
+        mode: "claude-code",
+        claudeCode: {
+          access_path: "claude_code_subscription_cli",
+          events_complete: false,
+          error_reason: expect.stringContaining("ANTHROPIC_API_KEY"),
+        },
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("runs claude-code sessions through supplied context and persists raw artifacts", async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "oracle-claude-code-context-"));
+    const contextPath = path.join(repoDir, "notes.md");
+    fs.writeFileSync(contextPath, "important supplied context", "utf8");
+    const claudeCodeRunner = vi.fn(async (input) => {
+      expect(input.prompt).toContain("Review this local lane");
+      expect(input.prompt).toContain("important supplied context");
+      expect(input.model).toBe("fable");
+      expect(input.artifactPaths.rawStdoutPath).toBe(
+        "/tmp/.oracle/sessions/sess-1/artifacts/claude-code-stdout.raw",
+      );
+      return {
+        stdoutRaw: Buffer.from('{"type":"assistant","text":"Final answer"}\n'),
+        stderrRaw: Buffer.from("visible stderr\n"),
+        normalizedEventsNdjson:
+          '{"seq":0,"stream":"stdout","type":"assistant","text":"Final answer"}\n',
+        finalAnswerMarkdown: "Final answer",
+        progressMarkdown: "Visible progress",
+        finalAnswerText: "Final answer",
+        elapsedMs: 42,
+        exitCode: 0,
+        eventsComplete: true,
+        streamsComplete: true,
+        stdoutEvents: 1,
+        stderrEvents: 1,
+        modelRequested: "fable",
+        modelObserved: "claude-fable-5",
+        modelResolvedFromInit: "claude-fable-5",
+        modelUsageKeys: ["claude-fable-5"],
+        modelVerificationStatus: "observed" as const,
+        totalCostUsdObserved: 0,
+        visibleThinkingCaptured: false,
+        localOwnerVerified: true,
+        anthropicApiKeyPresent: false,
+        anthropicApiKeyRefusalChecked: true,
+        childEnvScrubbed: true,
+      };
+    });
+
+    await performSessionRun({
+      sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+      runOptions: { prompt: "Review this local lane", model: "fable", file: [contextPath] },
+      mode: "claude-code",
+      cwd: repoDir,
+      log,
+      write,
+      version: cliVersion,
+      muteStdout: true,
+      claudeCodeRunner,
+    });
+
+    expect(claudeCodeRunner).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(runOracle)).not.toHaveBeenCalled();
+    expect(vi.mocked(runBrowserSessionExecution)).not.toHaveBeenCalled();
+    const writeCalls = (fsPromises.writeFile as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls;
+    expect(writeCalls).toContainEqual([
+      "/tmp/.oracle/sessions/sess-1/artifacts/claude-code-stdout.raw",
+      Buffer.from('{"type":"assistant","text":"Final answer"}\n'),
+      { mode: 0o600, flag: "wx" },
+    ]);
+    expect(writeCalls).toContainEqual([
+      "/tmp/.oracle/sessions/sess-1/artifacts/claude-code-stderr.raw",
+      Buffer.from("visible stderr\n"),
+      { mode: 0o600, flag: "wx" },
+    ]);
+    expect(writeCalls).toContainEqual([
+      "/tmp/.oracle/sessions/sess-1/artifacts/claude-code-final.md",
+      Buffer.from("Final answer", "utf8"),
+      { mode: 0o600, flag: "wx" },
+    ]);
+    const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    expect(finalUpdate).toMatchObject({
+      status: "completed",
+      mode: "claude-code",
+      claudeCode: {
+        access_path: "claude_code_subscription_cli",
+        transcript_fidelity: "visible_cli_stream",
+        hidden_reasoning_captured: false,
+        visible_thinking_captured: false,
+        subscription_billing_uncertain: true,
+        model_requested: "fable",
+        model_observed: "claude-fable-5",
+        model_usage_keys: ["claude-fable-5"],
+        read_only: expect.objectContaining({ readOnly: true, toolMode: "none" }),
+        artifact_paths: expect.objectContaining({
+          rawStdoutPath: "/tmp/.oracle/sessions/sess-1/artifacts/claude-code-stdout.raw",
+          adapterMetadataPath: "/tmp/.oracle/sessions/sess-1/artifacts/claude-code-adapter.json",
+        }),
+      },
+      artifacts: expect.arrayContaining([
+        expect.objectContaining({ kind: "claude-code-stdout-raw" }),
+        expect.objectContaining({ kind: "claude-code-stderr-raw" }),
+        expect.objectContaining({ kind: "claude-code-events-normalized" }),
+        expect.objectContaining({ kind: "claude-code-final" }),
+        expect.objectContaining({ kind: "claude-code-progress" }),
+        expect.objectContaining({ kind: "claude-code-adapter" }),
+      ]),
+    });
+    expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
+      baseSessionMeta.id,
+      "fable",
+      expect.objectContaining({ status: "completed" }),
+    );
+  });
+
+  test("keeps claude-code artifacts when the local runner reports an error", async () => {
+    const claudeCodeRunner = vi.fn(async () => ({
+      stdoutRaw: Buffer.from('{"type":"system","subtype":"init"}\n'),
+      stderrRaw: Buffer.from("startup verifier rejected run\n"),
+      normalizedEventsNdjson: '{"seq":0,"stream":"stdout","type":"system/init","text":"init"}\n',
+      finalAnswerMarkdown: "",
+      progressMarkdown: "error=verification failed",
+      finalAnswerText: "",
+      elapsedMs: 25,
+      exitCode: 1,
+      eventsComplete: true,
+      streamsComplete: true,
+      stdoutEvents: 1,
+      stderrEvents: 1,
+      modelRequested: "fable",
+      modelVerificationStatus: "requested_only" as const,
+      visibleThinkingCaptured: "unknown" as const,
+      localOwnerVerified: true,
+      anthropicApiKeyPresent: false,
+      anthropicApiKeyRefusalChecked: true,
+      childEnvScrubbed: true,
+      errorMessage: "Claude Code local mode stopped because startup verification failed.",
+    }));
+
+    await expect(
+      performSessionRun({
+        sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+        runOptions: { prompt: "Review", model: "fable" },
+        mode: "claude-code",
+        cwd: "/tmp",
+        log,
+        write,
+        version: cliVersion,
+        claudeCodeRunner,
+      }),
+    ).rejects.toThrow(/startup verification failed/);
+
+    expect(sessionStoreMock.updateSession).toHaveBeenCalledTimes(2);
+    const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    expect(finalUpdate).toMatchObject({
+      status: "error",
+      mode: "claude-code",
+      errorMessage: "Claude Code local mode stopped because startup verification failed.",
+      claudeCode: {
+        access_path: "claude_code_subscription_cli",
+        transcript_fidelity: "visible_cli_stream",
+        hidden_reasoning_captured: false,
+        exit_code: 1,
+        events_complete: true,
+        artifact_paths: expect.objectContaining({
+          rawStdoutPath: "/tmp/.oracle/sessions/sess-1/artifacts/claude-code-stdout.raw",
+        }),
+      },
+      artifacts: expect.arrayContaining([
+        expect.objectContaining({ kind: "claude-code-stdout-raw" }),
+        expect.objectContaining({ kind: "claude-code-adapter" }),
+      ]),
+    });
+    expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
+      baseSessionMeta.id,
+      "fable",
+      expect.objectContaining({
+        status: "error",
+        error: expect.objectContaining({
+          category: "claude-code",
+          message: "Claude Code local mode stopped because startup verification failed.",
+        }),
+      }),
+    );
+  });
+
+  test("marks claude-code sessions error when a guard fails before spawn", async () => {
+    const claudeCodeRunner = vi.fn(async () => {
+      throw new Error("Claude Code subscription mode refused because ANTHROPIC_API_KEY is set.");
+    });
+
+    await expect(
+      performSessionRun({
+        sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+        runOptions: { prompt: "Review", model: "fable" },
+        mode: "claude-code",
+        cwd: "/tmp",
+        log,
+        write,
+        version: cliVersion,
+        claudeCodeRunner,
+      }),
+    ).rejects.toThrow(/ANTHROPIC_API_KEY/);
+
+    expect(vi.mocked(runOracle)).not.toHaveBeenCalled();
+    expect(vi.mocked(runBrowserSessionExecution)).not.toHaveBeenCalled();
+    const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    expect(finalUpdate).toMatchObject({
+      status: "error",
+      mode: "claude-code",
+      claudeCode: {
+        access_path: "claude_code_subscription_cli",
+        transcript_fidelity: "visible_cli_stream",
+        hidden_reasoning_captured: false,
+        events_complete: false,
+        error_reason: "Claude Code subscription mode refused because ANTHROPIC_API_KEY is set.",
+      },
+    });
+    expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
+      baseSessionMeta.id,
+      "fable",
+      expect.objectContaining({ status: "error" }),
+    );
+  });
+
   test("completes API sessions and records usage", async () => {
     const liveResult: RunOracleResult = {
       mode: "live",

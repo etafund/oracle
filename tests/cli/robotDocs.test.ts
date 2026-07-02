@@ -23,6 +23,7 @@ import {
 const REQUIRED_COMMAND_NAMES = [
   "capabilities",
   "doctor",
+  "doctor-lanes",
   "doctor-chatgpt",
   "doctor-gemini",
   "browser-leases-plan",
@@ -83,6 +84,10 @@ describe("each RobotCommandEntry carries the required v18 metadata", () => {
     for (const entry of ROBOT_COMMANDS) {
       expect(entry.paid_calls).toBe(false);
     }
+  });
+
+  test("aggregate doctor honestly advertises that remote checks touch the network", () => {
+    expect(findRobotCommand("doctor")?.touches_network).toBe(true);
   });
 
   test("required_env carries env NAMES only (no leaked secret-looking strings)", () => {

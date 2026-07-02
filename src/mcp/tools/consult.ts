@@ -113,7 +113,13 @@ async function readSessionLogTail(sessionId: string, maxBytes: number): Promise<
 import { performSessionRun } from "../../cli/sessionRunner.js";
 import { runDryRunSummary } from "../../cli/dryRun.js";
 import { CHATGPT_URL } from "../../browser/constants.js";
-import { CONSULT_PRESETS, browserThinkingTimeRawSchema, consultInputSchema } from "../types.js";
+import {
+  CONSULT_ENGINES,
+  CONSULT_LANES,
+  CONSULT_PRESETS,
+  browserThinkingTimeRawSchema,
+  consultInputSchema,
+} from "../types.js";
 import { applyConsultPreset } from "../consultPresets.js";
 import { loadUserConfig, type UserConfig } from "../../config.js";
 import { resolveNotificationSettings } from "../../cli/notifier.js";
@@ -136,6 +142,12 @@ const consultInputShape = {
     .describe(
       "Optional file paths or glob patterns (like the CLI `--file`). Resolved relative to the MCP server working directory.",
     ),
+  lane: z
+    .enum(CONSULT_LANES)
+    .optional()
+    .describe(
+      'Reviewed lane template. Hidden alpha accepts the field for schema discovery, but MCP lane execution is not enabled yet; lane:"fable-local" returns a typed route-block before any session/backend starts.',
+    ),
   model: z
     .string()
     .optional()
@@ -147,10 +159,10 @@ const consultInputShape = {
     .optional()
     .describe("Multi-model fan-out (API engine only). Cannot be combined with browser automation."),
   engine: z
-    .enum(["api", "browser"])
+    .enum(CONSULT_ENGINES)
     .optional()
     .describe(
-      "Execution engine. `api` uses OpenAI/other providers. `browser` automates the ChatGPT web UI (supports attachments and ChatGPT-only model labels). When omitted, Oracle follows CLI defaults: config/ORACLE_ENGINE first, then `api` when OPENAI_API_KEY is set, otherwise `browser`.",
+      "Execution engine. `api` uses provider APIs. `browser` automates the ChatGPT web UI. `claude-code` is parsed only for hidden-alpha route-blocking; MCP does not execute local Claude Code yet.",
     ),
   browserModelLabel: z
     .string()
@@ -280,7 +292,18 @@ const consultModelSummaryShape = z.object({
 });
 
 const consultArtifactSummaryShape = z.object({
-  kind: z.enum(["transcript", "deep-research-report", "image", "file"]),
+  kind: z.enum([
+    "transcript",
+    "deep-research-report",
+    "image",
+    "file",
+    "claude-code-stdout-raw",
+    "claude-code-stderr-raw",
+    "claude-code-events-normalized",
+    "claude-code-final",
+    "claude-code-progress",
+    "claude-code-adapter",
+  ]),
   path: z.string(),
   label: z.string().optional(),
   mimeType: z.string().optional(),
@@ -320,12 +343,46 @@ const consultDryRunResolvedShape = z.object({
   guidance: z.array(z.string()),
 });
 
+const consultRouteBlockShape = z.object({
+  code: z.literal("agent_lane_blocked"),
+  category: z.literal("route-block"),
+  exitCode: z.literal(2),
+  message: z.string(),
+  policyVersion: z.literal("agent-lanes.v1"),
+  attemptedRoute: z.object({
+    lane: z.string().nullable().optional(),
+    engine: z.string().nullable().optional(),
+    model: z.string().nullable().optional(),
+    models: z.array(z.string()).optional(),
+  }),
+  blockedReason: z.string(),
+  normalizedOptions: z.record(z.string(), z.unknown()),
+  sourcePrecedence: z.array(z.string()),
+  noBackendStarted: z.literal(true),
+  enabledLanes: z.array(
+    z.object({
+      lane: z.string(),
+      command: z.string(),
+    }),
+  ),
+  deferredLanes: z.array(
+    z.object({
+      lane: z.string(),
+      status: z.string(),
+      reason: z.string(),
+    }),
+  ),
+  capabilitiesCommand: z.literal("oracle capabilities --json"),
+});
+
 export const consultOutputShape = {
   sessionId: z.string().optional(),
   status: z.string(),
   output: z.string(),
   dryRun: z.boolean().optional(),
   resolved: consultDryRunResolvedShape.optional(),
+  resolvedLane: z.string().optional(),
+  error: consultRouteBlockShape.optional(),
   models: z.array(consultModelSummaryShape).optional(),
   artifacts: z.array(consultArtifactSummaryShape).optional(),
   images: z.array(consultImageSummaryShape).optional(),
@@ -594,6 +651,135 @@ export function formatConsultDryRunResolved(details: ConsultDryRunResolved): str
 
 type McpLoggingServer = Pick<McpServer["server"], "sendLoggingMessage">;
 
+interface McpLaneRouteBlock {
+  code: "agent_lane_blocked";
+  category: "route-block";
+  exitCode: 2;
+  message: string;
+  policyVersion: "agent-lanes.v1";
+  attemptedRoute: {
+    lane?: string | null;
+    engine?: string | null;
+    model?: string | null;
+    models?: string[];
+  };
+  blockedReason: string;
+  normalizedOptions: Record<string, unknown>;
+  sourcePrecedence: string[];
+  noBackendStarted: true;
+  enabledLanes: Array<{ lane: string; command: string }>;
+  deferredLanes: Array<{ lane: string; status: string; reason: string }>;
+  capabilitiesCommand: "oracle capabilities --json";
+}
+
+const FABLE_LOCAL_MODEL_ALIASES = new Set(["fable", "claude-fable-5"]);
+
+function isFableLocalModel(value: string | undefined): boolean {
+  return FABLE_LOCAL_MODEL_ALIASES.has(value?.trim().toLowerCase() ?? "");
+}
+
+function buildMcpLaneRouteBlock(input: {
+  lane?: string;
+  engine?: string;
+  model?: string;
+  models?: string[];
+  reason: string;
+}): McpLaneRouteBlock {
+  const attemptedRoute = {
+    lane: input.lane ?? null,
+    engine: input.engine ?? null,
+    model: input.model ?? null,
+    ...(input.models && input.models.length > 0 ? { models: input.models } : {}),
+  };
+  return {
+    code: "agent_lane_blocked",
+    category: "route-block",
+    exitCode: 2,
+    message: "Oracle MCP hidden alpha does not run local Claude Code or unresolved lane templates.",
+    policyVersion: "agent-lanes.v1",
+    attemptedRoute,
+    blockedReason: input.reason,
+    normalizedOptions: attemptedRoute,
+    sourcePrecedence: ["mcp-input", "config", "env", "defaults"],
+    noBackendStarted: true,
+    enabledLanes: [],
+    deferredLanes: [
+      {
+        lane: "fable-local",
+        status: "deferred",
+        reason:
+          "MCP local Claude Code execution is deferred until local-owner checks, launch-context proof, full visible-event inline semantics, overflow handling, and raw resource URIs are implemented.",
+      },
+      {
+        lane: "chatgpt-pro",
+        status: "not-ready",
+        reason:
+          'MCP lane routing is not enabled yet; use preset:"chatgpt-pro-heavy" or explicit browser fields for existing ChatGPT browser consults.',
+      },
+      {
+        lane: "gemini-deep-think",
+        status: "deferred",
+        reason: "No active MCP lane template is implemented for Gemini Deep Think.",
+      },
+    ],
+    capabilitiesCommand: "oracle capabilities --json",
+  };
+}
+
+function findMcpLaneRouteBlock(input: {
+  lane?: string;
+  engine?: string;
+  model?: string;
+  models?: string[];
+}): McpLaneRouteBlock | null {
+  if (input.lane) {
+    return buildMcpLaneRouteBlock({
+      ...input,
+      reason:
+        input.lane === "fable-local"
+          ? "mcp_fable_local_hidden_alpha_cli_only"
+          : "mcp_lane_routing_not_enabled",
+    });
+  }
+  if (input.engine === "claude-code") {
+    return buildMcpLaneRouteBlock({
+      ...input,
+      lane: "fable-local",
+      reason: "mcp_claude_code_engine_hidden_alpha_cli_only",
+    });
+  }
+  if (isFableLocalModel(input.model) || input.models?.some((model) => isFableLocalModel(model))) {
+    return buildMcpLaneRouteBlock({
+      ...input,
+      lane: "fable-local",
+      reason: "mcp_fable_model_alias_hidden_alpha_cli_only",
+    });
+  }
+  return null;
+}
+
+function formatMcpLaneRouteBlock(block: McpLaneRouteBlock): string {
+  const attempted = [
+    block.attemptedRoute.lane ? `lane=${block.attemptedRoute.lane}` : null,
+    block.attemptedRoute.engine ? `engine=${block.attemptedRoute.engine}` : null,
+    block.attemptedRoute.model ? `model=${block.attemptedRoute.model}` : null,
+    block.attemptedRoute.models?.length ? `models=${block.attemptedRoute.models.join(",")}` : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const lines = [
+    block.message,
+    `code: ${block.code}`,
+    `reason: ${block.blockedReason}`,
+    `attempted route: ${attempted || "(none)"}`,
+    "No session, browser, API request, worker, or local Claude Code subprocess was started.",
+    "Local Claude Code review is CLI-only in this hidden alpha.",
+    'For existing ChatGPT browser MCP consults, use preset:"chatgpt-pro-heavy" or explicit engine:"browser" fields.',
+    `Machine-readable contract: ${block.capabilitiesCommand}`,
+  ];
+  return lines.join("\n");
+}
+
 export async function runConsultTool(
   input: unknown,
   { server, deps = {} }: { server: McpLoggingServer; deps?: ConsultToolDeps },
@@ -611,6 +797,7 @@ export async function runConsultTool(
   const {
     prompt,
     files,
+    lane,
     model,
     models,
     engine,
@@ -631,7 +818,58 @@ export async function runConsultTool(
     dryRun,
     slug,
   } = parsedInput;
+  const laneBlock = findMcpLaneRouteBlock({ lane, engine, model, models });
+  if (laneBlock) {
+    const output = formatMcpLaneRouteBlock(laneBlock);
+    return {
+      isError: true,
+      content: textContent(output),
+      structuredContent: {
+        status: "route-blocked",
+        output,
+        error: laneBlock,
+      },
+    };
+  }
+  if (!lane && !engine && process.env.ORACLE_ENGINE?.trim().toLowerCase() === "claude-code") {
+    const block = buildMcpLaneRouteBlock({
+      lane: "fable-local",
+      engine: "claude-code",
+      model,
+      models,
+      reason: "mcp_claude_code_env_hidden_alpha_cli_only",
+    });
+    const output = formatMcpLaneRouteBlock(block);
+    return {
+      isError: true,
+      content: textContent(output),
+      structuredContent: {
+        status: "route-blocked",
+        output,
+        error: block,
+      },
+    };
+  }
   const { config: userConfig } = await loadUserConfig();
+  if (!lane && !engine && userConfig.engine === "claude-code") {
+    const block = buildMcpLaneRouteBlock({
+      lane: "fable-local",
+      engine: "claude-code",
+      model,
+      models,
+      reason: "mcp_claude_code_config_hidden_alpha_cli_only",
+    });
+    const output = formatMcpLaneRouteBlock(block);
+    return {
+      isError: true,
+      content: textContent(output),
+      structuredContent: {
+        status: "route-blocked",
+        output,
+        error: block,
+      },
+    };
+  }
   let runOptions: RunOracleOptions;
   let resolvedEngine: EngineMode;
   try {
@@ -640,7 +878,7 @@ export async function runConsultTool(
       files: files ?? [],
       model,
       models,
-      engine,
+      engine: engine === "api" || engine === "browser" ? engine : undefined,
       search,
       browserAttachments,
       browserBundleFiles,
@@ -655,6 +893,25 @@ export async function runConsultTool(
     return {
       isError: true,
       content: textContent(error instanceof Error ? error.message : String(error)),
+    };
+  }
+  if (resolvedEngine === "claude-code") {
+    const block = buildMcpLaneRouteBlock({
+      lane: "fable-local",
+      engine: resolvedEngine,
+      model: runOptions.model,
+      models: runOptions.models,
+      reason: "mcp_claude_code_resolved_hidden_alpha_cli_only",
+    });
+    const output = formatMcpLaneRouteBlock(block);
+    return {
+      isError: true,
+      content: textContent(output),
+      structuredContent: {
+        status: "route-blocked",
+        output,
+        error: block,
+      },
     };
   }
   const cwd = process.cwd();

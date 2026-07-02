@@ -248,6 +248,55 @@ describe("session lifecycle", () => {
     expect(logContent).toBe("");
   });
 
+  test("initializeSession persists claude-code mode, lane, and stored policy options", async () => {
+    const metadata = await sessionModule.initializeSession(
+      {
+        prompt: "Review supplied context",
+        model: "fable",
+        mode: "claude-code",
+        lane: "fable-local",
+        claudeCode: {
+          model: "fable",
+          readOnly: true,
+          inlineEvents: true,
+          outputFormat: "stream-json",
+          permissionMode: "plan",
+          toolMode: "none",
+          safeMode: true,
+          disableSlashCommands: true,
+          strictMcpConfig: true,
+          noChrome: true,
+          noSessionPersistence: true,
+        },
+      },
+      "/tmp/cwd",
+    );
+
+    expect(metadata.mode).toBe("claude-code");
+    expect(metadata.lane).toBe("fable-local");
+    expect(metadata.options.claudeCode).toMatchObject({
+      readOnly: true,
+      outputFormat: "stream-json",
+      permissionMode: "plan",
+      toolMode: "none",
+    });
+
+    const baseDir = path.join(sessionModule.getSessionsDir(), metadata.id);
+    const storedMeta = await readJsonFixture<StoredSessionJson>(path.join(baseDir, "meta.json"));
+    expect(storedMeta.mode).toBe("claude-code");
+    expect(storedMeta.lane).toBe("fable-local");
+    expect(storedMeta.options.lane).toBe("fable-local");
+    expect(storedMeta.options.claudeCode).toMatchObject({
+      readOnly: true,
+      inlineEvents: true,
+      outputFormat: "stream-json",
+      permissionMode: "plan",
+      toolMode: "none",
+      noChrome: true,
+      noSessionPersistence: true,
+    });
+  });
+
   test("readSessionMetadata returns null for missing sessions and updateSessionMetadata persists changes", async () => {
     expect(await sessionModule.readSessionMetadata("missing")).toBeNull();
     const meta = await sessionModule.initializeSession(

@@ -407,6 +407,13 @@ export async function attachSession(
         console.log(dim(`- ${line}`));
       }
     }
+    const claudeCodeEvidence = formatClaudeCodeEvidence(metadata);
+    if (claudeCodeEvidence) {
+      console.log("Claude Code evidence:");
+      for (const line of claudeCodeEvidence) {
+        console.log(dim(`- ${line}`));
+      }
+    }
     if (metadata.artifacts && metadata.artifacts.length > 0) {
       console.log("Artifacts:");
       for (const artifact of metadata.artifacts) {
@@ -671,6 +678,28 @@ export function formatBrowserEvidence(metadata: SessionMetadata): string[] | nul
     lines.push(`warning ${warning.code}: ${warning.message}`);
   }
   return lines.length > 0 ? lines : null;
+}
+
+export function formatClaudeCodeEvidence(metadata: SessionMetadata): string[] | null {
+  const claudeCode = metadata.claudeCode;
+  if (!claudeCode) {
+    return null;
+  }
+  const lines = [
+    `access path=${claudeCode.access_path}; transcript=${claudeCode.transcript_fidelity}; hidden_reasoning_captured=${String(claudeCode.hidden_reasoning_captured)}`,
+    `model requested=${claudeCode.model_requested ?? "(unknown)"}; observed=${claudeCode.model_observed ?? "(none)"}; verification=${claudeCode.model_verification_status}`,
+    `visible_thinking_captured=${String(claudeCode.visible_thinking_captured)}; subscription_billing_uncertain=${String(claudeCode.subscription_billing_uncertain)}; total_cost_usd_observed=${claudeCode.total_cost_usd_observed ?? "n/a"}`,
+    `read-only=${claudeCode.read_only.readOnly ? "yes" : "no"}; permission=${claudeCode.read_only.permissionMode}; tools=${claudeCode.read_only.toolMode}`,
+  ];
+  const paths = claudeCode.artifact_paths;
+  if (paths) {
+    lines.push(`final answer=${paths.finalAnswerPath ?? "(unavailable)"}`);
+    lines.push(`raw stdout=${paths.rawStdoutPath}`);
+    lines.push(`raw stderr=${paths.rawStderrPath}`);
+    lines.push(`normalized events=${paths.normalizedEventsPath}`);
+    lines.push(`adapter metadata=${paths.adapterMetadataPath}`);
+  }
+  return lines;
 }
 
 export function buildReattachLine(metadata: SessionMetadata): string | null {
@@ -974,7 +1003,11 @@ export function formatCompletionSummary(
     return null;
   }
   const modeLabel =
-    metadata.mode === "browser" ? `${metadata.model ?? "n/a"}[browser]` : (metadata.model ?? "n/a");
+    metadata.mode === "browser"
+      ? `${metadata.model ?? "n/a"}[browser]`
+      : metadata.mode === "claude-code"
+        ? `${metadata.model ?? "n/a"}[claude-code]`
+        : (metadata.model ?? "n/a");
   const usage = metadata.usage;
   const cost = resolveSessionCost(metadata);
   const tokensDisplay = [

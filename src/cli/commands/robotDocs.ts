@@ -104,7 +104,8 @@ export function registerRobotDocsCommand(program: Command): Command {
     )
     .option("--json", "Print machine-readable JSON envelope (default).", true)
     .option("--no-json", "Print a short human summary instead of JSON.")
-    .action(async (commandOptions: { json?: boolean }) => {
+    .action(async function (this: Command) {
+      const commandOptions = this.optsWithGlobals() as { json?: boolean };
       try {
         await runRobotDocs({ json: commandOptions.json ?? true });
       } catch (error) {

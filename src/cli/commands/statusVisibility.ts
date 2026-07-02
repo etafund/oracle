@@ -21,7 +21,8 @@ export function registerStatusVisibilityCommand(program: Command): Command {
     .requiredOption("--profile <profile>", "APR/profile name, for example balanced or audit.")
     .requiredOption("--slot <slot>", "Provider slot to inspect.")
     .option("--json", "Print structured JSON.", true)
-    .action(async (options: StatusVisibilityCommandOptions) => {
+    .action(async function (this: Command) {
+      const options = this.optsWithGlobals() as StatusVisibilityCommandOptions;
       const result = await runStatusVisibility(options);
       if (!result.envelope.ok) {
         process.exitCode = 1;

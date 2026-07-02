@@ -243,6 +243,24 @@ export interface RunOracleOptions {
   suppressAnswerHeader?: boolean;
   /** Skip preamble tips (no-files / short prompt) when a higher-level runner already printed them. */
   suppressTips?: boolean;
+  lane?: string;
+  claudeCode?: {
+    executable?: string;
+    model?: string;
+    readOnly: true;
+    inlineEvents: true;
+    outputFormat: "stream-json";
+    permissionMode: "plan";
+    toolMode: "none";
+    bareMode?: boolean;
+    safeMode?: boolean;
+    disableSlashCommands: true;
+    strictMcpConfig: true;
+    noChrome: true;
+    noSessionPersistence: true;
+    waitForLockMs?: number;
+    maxInlineBytes?: number;
+  };
 }
 
 export interface UsageSummary {

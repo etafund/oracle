@@ -71,7 +71,7 @@ export function buildCapabilitiesEnvelope(
     },
     next_command:
       headline?.next_command ??
-      (report.counts.available > 0 ? "oracle browser doctor --json" : NEXT_COMMAND_HEALTHY),
+      (report.counts.available > 0 ? "oracle doctor lanes --json" : NEXT_COMMAND_HEALTHY),
     fix_command: headline?.fix_command ?? null,
     retry_safe: true,
     commands: {
@@ -130,7 +130,8 @@ export function registerCapabilitiesCommand(program: Command): Command {
     )
     .option("--json", "Print machine-readable JSON envelope (default).", true)
     .option("--no-json", "Print a short human summary instead of JSON.")
-    .action(async (commandOptions: { json?: boolean }) => {
+    .action(async function (this: Command) {
+      const commandOptions = this.optsWithGlobals() as { json?: boolean };
       try {
         await runCapabilities({ json: commandOptions.json ?? true });
       } catch (error) {

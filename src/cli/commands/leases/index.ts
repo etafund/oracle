@@ -89,13 +89,15 @@ export function registerBrowserLeasesCommand(
 
   addCommonOptions(leases.command("plan").description("Preview required browser provider leases."))
     .option("--json", "Print structured JSON.", true)
-    .action(async (options: BrowserLeasesCommandOptions) => {
+    .action(async function (this: Command) {
+      const options = this.opts<BrowserLeasesCommandOptions>();
       await runAndSetExitCode(() => runBrowserLeasesPlan({ ...deps, ...options }));
     });
 
   addCommonOptions(leases.command("status").description("Show browser provider lease status."))
     .option("--json", "Print structured JSON.", true)
-    .action(async (options: BrowserLeasesCommandOptions) => {
+    .action(async function (this: Command) {
+      const options = this.opts<BrowserLeasesCommandOptions>();
       await runAndSetExitCode(() => runBrowserLeasesStatus({ ...deps, ...options }));
     });
 
@@ -104,21 +106,24 @@ export function registerBrowserLeasesCommand(
     .option("--holder <label>", "Lease holder label.")
     .option("--command-summary <text>", "Command summary to store with the lease.")
     .option("--json", "Print structured JSON.", true)
-    .action(async (options: BrowserLeasesCommandOptions) => {
+    .action(async function (this: Command) {
+      const options = this.opts<BrowserLeasesCommandOptions>();
       await runAndSetExitCode(() => runBrowserLeasesAcquire({ ...deps, ...options }));
     });
 
   addCommonOptions(leases.command("release").description("Release a browser provider lease."))
     .requiredOption("--lease-id <id>", "Lease id to release.")
     .option("--json", "Print structured JSON.", true)
-    .action(async (options: BrowserLeasesCommandOptions) => {
+    .action(async function (this: Command) {
+      const options = this.opts<BrowserLeasesCommandOptions>();
       await runAndSetExitCode(() => runBrowserLeasesRelease({ ...deps, ...options }));
     });
 
   addCommonOptions(leases.command("recover").description("Print safe recovery guidance."))
     .option("--lease-id <id>", "Lease id to recover.")
     .option("--json", "Print structured JSON.", true)
-    .action(async (options: BrowserLeasesCommandOptions) => {
+    .action(async function (this: Command) {
+      const options = this.opts<BrowserLeasesCommandOptions>();
       await runAndSetExitCode(() => runBrowserLeasesRecover({ ...deps, ...options }));
     });
 

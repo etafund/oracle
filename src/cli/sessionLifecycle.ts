@@ -1,8 +1,7 @@
 import type { SessionLifecycleMetadata, SessionMetadata } from "../sessionManager.js";
-import type { EngineMode } from "./engine.js";
 
 export interface BuildSessionLifecycleOptions {
-  engine: EngineMode;
+  engine: SessionLifecycleMetadata["engine"];
   detached: boolean;
   reattachCommand: string;
 }
@@ -47,7 +46,12 @@ export function formatSessionExecutionLabel(meta: SessionMetadata): string {
   if (!lifecycle) {
     return meta.mode ?? meta.options?.mode ?? "api";
   }
-  const engine = lifecycle.engine === "browser" ? "br" : lifecycle.engine;
+  const engine =
+    lifecycle.engine === "browser"
+      ? "br"
+      : lifecycle.engine === "claude-code"
+        ? "cc"
+        : lifecycle.engine;
   const execution = lifecycle.execution === "background" ? "bg" : "fg";
   return `${engine}/${execution}`;
 }

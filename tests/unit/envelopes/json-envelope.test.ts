@@ -78,7 +78,7 @@ describe("json_envelope.v1 unit conformance", () => {
         ],
         meta: { command: "oracle remote doctor" },
         next_command: "export ORACLE_REMOTE_TOKEN=<token>",
-        fix_command: "oracle config set browser.remoteToken <token>",
+        fix_command: "export ORACLE_REMOTE_TOKEN=<token>",
         retry_safe: true,
       },
       { diagnostic_id: "diag-remote-token" },
@@ -104,7 +104,7 @@ describe("json_envelope.v1 unit conformance", () => {
             "message": "Remote browser host is configured without a token."
           }
         ],
-        "fix_command": "oracle config set browser.remoteToken <token>",
+        "fix_command": "export ORACLE_REMOTE_TOKEN=<token>",
         "meta": {
           "command": "oracle remote doctor"
         },

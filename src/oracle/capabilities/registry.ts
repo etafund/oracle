@@ -29,6 +29,7 @@ export const ORACLE_CAPABILITIES_SCHEMA_VERSION = "oracle_capabilities.v1" as co
 export type CapabilityId =
   | "chatgpt_pro_browser"
   | "gemini_deep_think_browser"
+  | "fable_xhigh_cli"
   | "remote_browser"
   | "browser_leases"
   | "redacted_evidence"
@@ -96,10 +97,11 @@ function chatgptCapability(env: Readonly<Record<string, string | undefined>>): C
     id: "chatgpt_pro_browser",
     supported: true,
     status: "available",
-    description: "ChatGPT Pro browser path with selector manifest and redacted evidence.",
+    description:
+      "Core lane: ChatGPT Pro Extended Reasoning through browser automation with redacted evidence.",
     next_command: remotePreferred
-      ? "oracle --engine browser --model gpt-5.5-pro -p '...'"
-      : "oracle browser doctor --json",
+      ? "oracle --engine browser --model gpt-5.5-pro --browser-thinking-time extended --prompt '...'"
+      : "oracle doctor chatgpt --json",
     fix_command: remotePreferred
       ? null
       : "set ORACLE_REMOTE_HOST and ORACLE_REMOTE_TOKEN to prefer remote browser",
@@ -118,10 +120,11 @@ function geminiCapability(env: Readonly<Record<string, string | undefined>>): Ca
     id: "gemini_deep_think_browser",
     supported: true,
     status: "available",
-    description: "Gemini Deep Think browser path with high-if-exposed strategy.",
+    description:
+      "Core lane: Gemini 3.1 Deep Think through browser automation with API-substitution guardrails.",
     next_command: remotePreferred
-      ? "oracle --engine browser --model gemini-3-pro -p '...'"
-      : "oracle browser doctor --json",
+      ? "oracle --engine browser --provider gemini --gemini-deep-think --prompt '...'"
+      : "oracle doctor gemini --json",
     fix_command: remotePreferred
       ? null
       : "set ORACLE_REMOTE_HOST and ORACLE_REMOTE_TOKEN to prefer remote browser",
@@ -130,6 +133,26 @@ function geminiCapability(env: Readonly<Record<string, string | undefined>>): Ca
       strategy: "high_if_exposed",
       never_substitutes_gemini_api: true,
       remote_browser_preferred: remotePreferred,
+    },
+  };
+}
+
+function fableCapability(): CapabilityEntry {
+  return {
+    id: "fable_xhigh_cli",
+    supported: true,
+    status: "available",
+    description:
+      "Core lane: Fable xHigh through the local Claude Code subscription CLI, isolated from browser/router transports.",
+    next_command: "oracle --lane fable-local --prompt '...' --file path",
+    fix_command: null,
+    notes: {
+      lane: "fable-local",
+      effort: "xhigh",
+      access_path: "claude_code_subscription_cli",
+      local_only: true,
+      remote_browser_allowed: false,
+      api_substitution_guard: true,
     },
   };
 }
@@ -184,7 +207,7 @@ function browserLeasesCapability(): CapabilityEntry {
     supported: true,
     status: "ready",
     description: "Typed browser leases with TTL, status, and same-session policy.",
-    next_command: "oracle browser leases list --json",
+    next_command: "oracle browser leases status --json",
     fix_command: null,
     notes: {
       lease_schema_version: BROWSER_LEASE_SCHEMA_VERSION,
@@ -283,6 +306,7 @@ export function buildCapabilityReport(input: BuildCapabilityReportInput): Capabi
   const capabilities: CapabilityEntry[] = [
     chatgptCapability(input.env),
     geminiCapability(input.env),
+    fableCapability(),
     remoteBrowserCapability(input.env),
     browserLeasesCapability(),
     redactedEvidenceCapability(),

@@ -70,4 +70,25 @@ describe("session lifecycle formatting", () => {
     expect(formatSessionLifecycleBlock(meta)).toEqual([]);
     expect(formatSessionExecutionLabel(meta)).toBe("api");
   });
+
+  test("formats attached claude-code runs compactly", () => {
+    const lifecycle = buildSessionLifecycle({
+      engine: "claude-code",
+      detached: false,
+      reattachCommand: "oracle session fable-1",
+    });
+    const meta = {
+      id: "fable-1",
+      createdAt: "2026-07-02T00:00:00.000Z",
+      status: "running",
+      mode: "claude-code",
+      model: "fable",
+      options: {},
+      lifecycle,
+    } as SessionMetadata;
+
+    expect(formatSessionLifecycleBlock(meta)).toContain("Mode: claude-code foreground");
+    expect(formatSessionLifecycleBlock(meta)).toContain("Detach: no");
+    expect(formatSessionExecutionLabel(meta)).toBe("cc/fg");
+  });
 });

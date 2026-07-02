@@ -83,6 +83,31 @@ describe("summarizeModelRunsForConsult", () => {
     });
   });
 
+  test("accepts reviewed lane and claude-code compatibility fields for typed route-blocking", () => {
+    expect(
+      consultInputSchema.parse({
+        lane: "fable-local",
+        prompt: "review this plan",
+        files: [],
+      }),
+    ).toMatchObject({
+      lane: "fable-local",
+      prompt: "review this plan",
+    });
+
+    expect(
+      consultInputSchema.parse({
+        engine: "claude-code",
+        model: "fable",
+        prompt: "review this plan",
+        files: [],
+      }),
+    ).toMatchObject({
+      engine: "claude-code",
+      model: "fable",
+    });
+  });
+
   test("keeps the registered MCP input schema JSON-schema compatible", () => {
     let inputSchema: z.ZodRawShape | undefined;
     registerConsultTool({
@@ -96,6 +121,137 @@ describe("summarizeModelRunsForConsult", () => {
 
     expect(inputSchema).toBeDefined();
     expect(() => z.toJSONSchema(z.object(inputSchema!))).not.toThrow();
+  });
+
+  test("route-blocks MCP fable-local before session/backend side effects", async () => {
+    const handlers: Array<(input: unknown) => Promise<unknown>> = [];
+    registerConsultTool({
+      registerTool: (_name: string, _def: unknown, fn: (input: unknown) => Promise<unknown>) => {
+        handlers.push(fn);
+      },
+      server: {
+        sendLoggingMessage: async () => undefined,
+      },
+    } as unknown as Parameters<typeof registerConsultTool>[0]);
+    const handler = handlers[0];
+    if (!handler) throw new Error("handler not registered");
+
+    const result = (await handler({
+      lane: "fable-local",
+      prompt: "review this plan",
+      files: [],
+    })) as {
+      isError?: boolean;
+      content: Array<{ type: "text"; text: string }>;
+      structuredContent?: {
+        status: string;
+        error?: {
+          code: string;
+          category: string;
+          exitCode: number;
+          blockedReason: string;
+          noBackendStarted: boolean;
+          attemptedRoute: Record<string, unknown>;
+          deferredLanes: Array<Record<string, unknown>>;
+        };
+      };
+    };
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain("Local Claude Code review is CLI-only");
+    expect(result.structuredContent).toMatchObject({
+      status: "route-blocked",
+      error: {
+        code: "agent_lane_blocked",
+        category: "route-block",
+        exitCode: 2,
+        blockedReason: "mcp_fable_local_hidden_alpha_cli_only",
+        noBackendStarted: true,
+        attemptedRoute: { lane: "fable-local" },
+      },
+    });
+    expect(result.structuredContent?.error?.deferredLanes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          lane: "fable-local",
+          status: "deferred",
+        }),
+      ]),
+    );
+    expect(performSessionRun).not.toHaveBeenCalled();
+  });
+
+  test("route-blocks MCP claude-code/fable expert compatibility forms", async () => {
+    const handlers: Array<(input: unknown) => Promise<unknown>> = [];
+    registerConsultTool({
+      registerTool: (_name: string, _def: unknown, fn: (input: unknown) => Promise<unknown>) => {
+        handlers.push(fn);
+      },
+      server: {
+        sendLoggingMessage: async () => undefined,
+      },
+    } as unknown as Parameters<typeof registerConsultTool>[0]);
+    const handler = handlers[0];
+    if (!handler) throw new Error("handler not registered");
+
+    for (const input of [
+      {
+        engine: "claude-code",
+        model: "fable",
+        prompt: "review this plan",
+        files: [],
+      },
+      {
+        model: "claude-fable-5",
+        prompt: "review this plan",
+        files: [],
+      },
+    ]) {
+      const result = (await handler(input)) as {
+        isError?: boolean;
+        structuredContent?: { error?: { code: string; noBackendStarted: boolean } };
+      };
+
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent?.error).toMatchObject({
+        code: "agent_lane_blocked",
+        noBackendStarted: true,
+      });
+    }
+    expect(performSessionRun).not.toHaveBeenCalled();
+  });
+
+  test("route-blocks MCP claude-code resolved from environment defaults", async () => {
+    vi.stubEnv("ORACLE_ENGINE", "claude-code");
+
+    const handlers: Array<(input: unknown) => Promise<unknown>> = [];
+    registerConsultTool({
+      registerTool: (_name: string, _def: unknown, fn: (input: unknown) => Promise<unknown>) => {
+        handlers.push(fn);
+      },
+      server: {
+        sendLoggingMessage: async () => undefined,
+      },
+    } as unknown as Parameters<typeof registerConsultTool>[0]);
+    const handler = handlers[0];
+    if (!handler) throw new Error("handler not registered");
+
+    const result = (await handler({
+      prompt: "review this plan",
+      files: [],
+    })) as {
+      isError?: boolean;
+      structuredContent?: {
+        error?: { blockedReason: string; noBackendStarted: boolean };
+      };
+    };
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent?.error).toMatchObject({
+      blockedReason: "mcp_claude_code_env_hidden_alpha_cli_only",
+      noBackendStarted: true,
+    });
+    expect(performSessionRun).not.toHaveBeenCalled();
   });
 
   test("maps per-model metadata into consult summaries", () => {

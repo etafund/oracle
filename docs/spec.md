@@ -7,7 +7,7 @@ This page captures the design constraints. The README and the rest of the docs d
 
 ## Goals
 
-1. **One CLI to every Pro model.** Same flags, same session store, same bundling rules whether the answer comes from GPT-5.5 Pro, Gemini 3 Pro, or Claude Opus.
+1. **One CLI for reviewed expert routes.** Same session store and bundling rules whether the answer comes from ChatGPT Pro Extended Reasoning, Fable xHigh, or Gemini 3.1 Deep Think. Older API/provider routes remain compatibility paths, not the primary agent-facing surface.
 2. **Runs on every box.** macOS first, Linux and Windows supported. Browser mode optional.
 3. **Stable artifacts.** `--render` is contracted; session metadata stays machine-readable; stderr is for humans.
 4. **Bundles, not chats.** Oracle assembles a deterministic prompt+files bundle and ships it once. Chat-style interactivity is the agent's job, not Oracle's.
@@ -19,7 +19,7 @@ This page captures the design constraints. The README and the rest of the docs d
 - **Not a chat client.** Oracle doesn't try to replace ChatGPT's UI. Browser mode drives ChatGPT; it doesn't reimplement it.
 - **Not a model.** Oracle has no opinions about reasoning quality. It bundles, ships, and stores.
 - **Not a security boundary.** API keys live in your environment. Cookies live in your browser profile or in a JSON file you control.
-- **Not a quota manager.** API mode bills go to your provider account directly. Oracle reports usage, doesn't gate.
+- **Not a quota manager.** Compatibility API mode bills go to your provider account directly. Oracle reports usage, doesn't gate.
 
 ## Bundling rules
 
@@ -38,10 +38,10 @@ Auto-pick rules:
 
 1. If `--engine` is set, use it.
 2. Else if `engine` is set in the effective config, use it. The effective config starts with `~/.oracle/config.json`, then layers project `.oracle/config.json` files from parent folders to the current directory.
-3. Else if `OPENAI_API_KEY` (or another supported API key) is set, use API.
+3. Else compatibility auto-detection may use API when a supported key is set.
 4. Else use browser.
 
-Browser engine handles ChatGPT (GPT-\* models) and Gemini (Gemini-\*); everything else is API only.
+Browser engine handles the reviewed ChatGPT and Gemini browser route forms. Fable xHigh uses the local Claude Code CLI through `--lane fable-local`; remote browser, bridge, serve, and router transports do not apply to Fable.
 
 ## Session lifecycle states
 

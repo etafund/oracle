@@ -49,6 +49,7 @@ export function resolveRemoteServiceConfig({
   userConfig,
   env = process.env,
   preferCli = false,
+  allowMissingToken = false,
 }: {
   cliHost?: string;
   cliToken?: string;
@@ -68,6 +69,13 @@ export function resolveRemoteServiceConfig({
    * `oracle remote attach --host …`, oracle-72u).
    */
   preferCli?: boolean;
+  /**
+   * Diagnostic surfaces use this to report `status=missing_token`
+   * instead of throwing before they can emit their machine-readable
+   * endpoint envelope. Execution paths keep the default fail-fast
+   * behavior.
+   */
+  allowMissingToken?: boolean;
 }): ResolvedRemoteServiceConfig {
   const configBrowserHost = normalizeString(userConfig?.browser?.remoteHost);
   const configBrowserToken = normalizeString(userConfig?.browser?.remoteToken);
@@ -100,11 +108,11 @@ export function resolveRemoteServiceConfig({
     );
   }
 
-  if (host && !token && mode !== "off") {
+  if (host && !token && mode !== "off" && !allowMissingToken) {
     throw new Error(
       "remote_browser_token_missing: A remote host is configured but no token was provided.\n" +
-        "Fix command: oracle config set browser.remoteToken <token>\n" +
-        "Next command: export ORACLE_REMOTE_TOKEN=<token>",
+        "Fix command: export ORACLE_REMOTE_TOKEN=<token>\n" +
+        "Next command: oracle remote doctor --json",
     );
   }
 

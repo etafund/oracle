@@ -21,6 +21,7 @@ const EMPTY_ENV: Record<string, string | undefined> = Object.freeze({});
 const ALL_FAMILIES: readonly CapabilityId[] = [
   "chatgpt_pro_browser",
   "gemini_deep_think_browser",
+  "fable_xhigh_cli",
   "remote_browser",
   "browser_leases",
   "redacted_evidence",
@@ -62,6 +63,30 @@ describe("buildCapabilityReport — static registry", () => {
     expect(buildCapabilityReport({ env: { CI: "1" }, now: FROZEN_TIME }).ci).toBe(true);
     expect(buildCapabilityReport({ env: { CI: "false" }, now: FROZEN_TIME }).ci).toBe(false);
     expect(buildCapabilityReport({ env: EMPTY_ENV, now: FROZEN_TIME }).ci).toBe(false);
+  });
+});
+
+describe("core lane capability commands", () => {
+  test("ChatGPT and Gemini diagnostics point at implemented doctor commands", () => {
+    const report = buildCapabilityReport({ env: EMPTY_ENV, now: FROZEN_TIME });
+    expect(capabilityById(report, "chatgpt_pro_browser")?.next_command).toBe(
+      "oracle doctor chatgpt --json",
+    );
+    expect(capabilityById(report, "gemini_deep_think_browser")?.next_command).toBe(
+      "oracle doctor gemini --json",
+    );
+    expect(capabilityById(report, "browser_leases")?.next_command).toBe(
+      "oracle browser leases status --json",
+    );
+  });
+
+  test("Fable xHigh is advertised as the local-only reviewed lane", () => {
+    const report = buildCapabilityReport({ env: EMPTY_ENV, now: FROZEN_TIME });
+    const fable = capabilityById(report, "fable_xhigh_cli");
+    expect(fable?.supported).toBe(true);
+    expect(fable?.notes.lane).toBe("fable-local");
+    expect(fable?.notes.effort).toBe("xhigh");
+    expect(fable?.notes.remote_browser_allowed).toBe(false);
   });
 });
 

@@ -9,6 +9,44 @@ const baseRunOptions: RunOracleOptions = {
 };
 
 describe("runDryRunSummary", () => {
+  test("prints claude-code dry-run summary without starting Claude", async () => {
+    const originalKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "";
+    try {
+      const log = vi.fn();
+      await runDryRunSummary(
+        {
+          engine: "claude-code",
+          runOptions: { prompt: "Review", model: "fable", file: ["notes.md"] },
+          cwd: "/repo",
+          version: "1.2.3",
+          log,
+        },
+        {
+          readFilesImpl: async () => [{ path: "/repo/notes.md", content: "local fable context" }],
+        },
+      );
+
+      const joined = log.mock.calls.flat().join("\n");
+      expect(joined).toContain("would run Claude Code local mode (fable)");
+      expect(joined).toContain("Route: claude-code/local; model=fable");
+      expect(joined).toContain("access_path=claude_code_subscription_cli");
+      expect(joined).toContain("Live Claude Code action: disabled; no claude subprocess");
+      expect(joined).toContain("Env block status: blocked (ANTHROPIC_API_KEY)");
+      expect(joined).toContain("--model fable");
+      expect(joined).toContain('--tools ""');
+      expect(joined).toContain("claude-code-stdout.raw");
+      expect(joined).toContain("Read-only policy: permissionMode=plan; toolMode=none");
+      expect(joined).toContain("File Token Usage");
+    } finally {
+      if (originalKey === undefined) {
+        delete process.env.ANTHROPIC_API_KEY;
+      } else {
+        process.env.ANTHROPIC_API_KEY = originalKey;
+      }
+    }
+  });
+
   test("prints API token summary and file stats", async () => {
     const log = vi.fn();
     await runDryRunSummary(

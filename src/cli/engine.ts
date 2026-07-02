@@ -1,6 +1,6 @@
 import { isProModel } from "../oracle/modelResolver.js";
 
-export type EngineMode = "api" | "browser";
+export type EngineMode = "api" | "browser" | "claude-code";
 
 export function defaultWaitPreference(model: string, engine: EngineMode): boolean {
   // Pro-class API runs can take a long time; prefer non-blocking unless explicitly overridden.
@@ -17,7 +17,7 @@ export function defaultWaitPreference(model: string, engine: EngineMode): boolea
  * 1) Legacy --browser flag forces browser.
  * 2) Explicit --engine value.
  * 3) Explicit API provider routing flags force API.
- * 4) ORACLE_ENGINE environment override (api|browser).
+ * 4) ORACLE_ENGINE environment override (api|browser|claude-code).
  * 5) Config engine value.
  * 6) API environment decides: api when set, otherwise browser.
  */
@@ -64,5 +64,6 @@ function normalizeEngineMode(raw: unknown): EngineMode | null {
   const normalized = raw.trim().toLowerCase();
   if (normalized === "api") return "api";
   if (normalized === "browser") return "browser";
+  if (normalized === "claude-code") return "claude-code";
   return null;
 }

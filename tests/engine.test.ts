@@ -89,6 +89,21 @@ describe("resolveEngine", () => {
     expect(engine).toBe<EngineMode>("api");
   });
 
+  it("recognizes explicit claude-code engine for lane policy compatibility", () => {
+    const engine = resolveEngine({
+      engine: "claude-code",
+      browserFlag: false,
+      env: envWithoutKey,
+    });
+    expect(engine).toBe<EngineMode>("claude-code");
+  });
+
+  it("recognizes ORACLE_ENGINE=claude-code so policy can refuse env-only use", () => {
+    const env = { ...envWithoutKey, ORACLE_ENGINE: "claude-code" } as NodeJS.ProcessEnv;
+    const engine = resolveEngine({ engine: undefined, browserFlag: false, env });
+    expect(engine).toBe<EngineMode>("claude-code");
+  });
+
   it("lets legacy --browser override everything", () => {
     const engine = resolveEngine({ engine: "api", browserFlag: true, env: envWithKey });
     expect(engine).toBe<EngineMode>("browser");
@@ -105,5 +120,6 @@ describe("defaultWaitPreference", () => {
   it("keeps wait enabled for Codex and browser models", () => {
     expect(defaultWaitPreference("gpt-5.1-codex", "api")).toBe(true);
     expect(defaultWaitPreference("gpt-5.2-pro", "browser")).toBe(true);
+    expect(defaultWaitPreference("fable", "claude-code")).toBe(true);
   });
 });

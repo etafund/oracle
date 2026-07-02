@@ -179,7 +179,6 @@ describe("Gemini provider doctor", () => {
   test("passes when auth, last session, and Deep Think controls are reachable", async () => {
     const result = await runGeminiDoctor({
       deepThink: true,
-      env: { GEMINI_API_KEY: "test-key" } as NodeJS.ProcessEnv,
       sessionStore: store("gemini"),
       uiProbe: async () => ({
         status: "verified",
@@ -191,8 +190,21 @@ describe("Gemini provider doctor", () => {
 
     expect(result.ok).toBe(true);
     expect(result.status).toBe("ready");
-    expect(result.checks.map((check) => check.code)).toContain("gemini_api_key_configured");
+    expect(result.checks.map((check) => check.code)).toContain("gemini_browser_auth_verified");
     expect(result.checks.map((check) => check.code)).toContain("recent_provider_session_reachable");
+  });
+
+  test("does not treat a Gemini API key as Deep Think browser readiness", async () => {
+    const result = await runGeminiDoctor({
+      deepThink: true,
+      env: { GEMINI_API_KEY: "test-key" } as NodeJS.ProcessEnv,
+      sessionStore: store("gemini"),
+      uiProbe: async () => ({ status: "skipped" }),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.blockers.map((check) => check.code)).toContain("provider_login_required");
+    expect(result.fix_command).toBe("Sign in to gemini.google.com in Chrome.");
   });
 
   test("blocks when Deep Think effort control is missing", async () => {

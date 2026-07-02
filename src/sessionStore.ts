@@ -152,6 +152,10 @@ export type {
   SessionStatus,
   SessionModelRun,
   SessionProviderBoundaryOptions,
+  ClaudeCodeSessionMetadata,
+  ClaudeCodeReadOnlyPolicy,
+  ClaudeCodeArtifactPaths,
+  ClaudeCodeModelVerificationStatus,
 } from "./sessionManager.js";
 
 export async function pruneOldSessions(

@@ -315,7 +315,8 @@ export function registerPreviewCommand(program: Command): Command {
     )
     .option("--json", "Print machine-readable JSON envelope (default).", true)
     .option("--no-json", "Print a short human summary instead of JSON.")
-    .action(async (commandOptions: { json?: boolean }) => {
+    .action(async function (this: Command) {
+      const commandOptions = this.optsWithGlobals() as { json?: boolean };
       try {
         // Production wiring (file/stdin parsing for --slots/--budget)
         // lives in the CLI bootstrap layer; this registration ensures

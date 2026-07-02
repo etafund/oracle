@@ -98,6 +98,8 @@ import {
   launchDetachedSessionFinalizer,
   launchDetachedSessionRunner,
 } from "../src/cli/detachedSession.js";
+import { isFableModel, resolveLanePolicy, type ResolvedOracleLane } from "../src/cli/lanePolicy.js";
+import { LaneRouteBlockError } from "../src/cli/routeBlockError.js";
 
 interface CliOptions extends OptionValues {
   prompt?: string;
@@ -110,6 +112,7 @@ interface CliOptions extends OptionValues {
   path?: string[];
   paths?: string[];
   render?: boolean;
+  lane?: string;
   model: string;
   models?: string[];
   force?: boolean;
@@ -135,6 +138,7 @@ interface CliOptions extends OptionValues {
   engine?: EngineMode;
   browser?: boolean;
   timeout?: number | "auto";
+  waitForLock?: number;
   background?: boolean;
   httpTimeout?: number;
   zombieTimeout?: number;
@@ -290,6 +294,14 @@ const normalizedArgv = [
 ];
 const routingCliArgs = stripPerfTraceArgs(userCliArgs);
 const isTty = process.stdout.isTTY;
+const isRootVerboseHelpRequest = (args: readonly string[]): boolean => {
+  const hasHelp = args.some((arg) => arg === "--help" || arg === "-h");
+  const hasVerbose = args.some((arg) => arg === "--verbose" || arg === "-v");
+  if (!hasHelp || !hasVerbose) return false;
+  return args.every((arg) => arg.startsWith("-"));
+};
+const isRootDebugHelpRequest = (args: readonly string[]): boolean =>
+  args.some((arg) => arg === "--debug-help");
 const perfTrace = createPerfTrace({
   value: perfTraceArgs.value,
   argv: userCliArgs,
@@ -382,8 +394,15 @@ const doctorJsonRequested =
   doctorArgIndex >= 0 && routingCliArgs.slice(doctorArgIndex).includes("--json");
 const docsArgIndex = routingCliArgs.indexOf("docs");
 const docsCheckRequested = docsArgIndex >= 0 && routingCliArgs[docsArgIndex + 1] === "check";
+const structuredJsonCommandRequested =
+  routingCliArgs.includes("--json") ||
+  ["capabilities", "robot-docs", "preview", "run", "visibility-status"].includes(
+    routingCliArgs[0] ?? "",
+  ) ||
+  (routingCliArgs[0] === "browser" && routingCliArgs[1] === "leases");
 const suppressIntro =
   doctorJsonRequested ||
+  structuredJsonCommandRequested ||
   docsCheckRequested ||
   (routingCliArgs[0] === "bridge" &&
     (routingCliArgs[1] === "codex-config" || routingCliArgs[1] === "claude-config"));
@@ -449,7 +468,7 @@ program.hook("preAction", async (thisCommand) => {
 program
   .name("oracle")
   .description(
-    "One-shot GPT-5.5 Pro / GPT-5.5 / GPT-5.1 Codex tool for hard questions that benefit from large file context and server-side search.",
+    "One-shot expert review tool for the reviewed lanes: ChatGPT Pro Extended Reasoning, Fable xHigh, and Gemini 3.1 Deep Think.",
   )
   .version(VERSION)
   .argument("[prompt]", "Prompt text (shorthand for --prompt).")
@@ -507,15 +526,21 @@ program
   )
   .addOption(new Option("--copy").hideHelp().default(false))
   .option("-s, --slug <words>", "Custom session slug (3-5 words).")
+  .addOption(
+    new Option(
+      "--lane <lane>",
+      "Reviewed lane template (fable-local enabled locally; chatgpt-pro and gemini-deep-think report readiness via doctor lanes).",
+    ),
+  )
   .option(
     "-m, --model <model>",
-    'Model to target (gpt-5.5-pro default). Also gpt-5.5, gpt-5.4-pro, gpt-5.4, gpt-5.1-pro, gpt-5-pro, gpt-5.1, gpt-5.1-codex API-only, gpt-5.2, gpt-5.2-instant, gpt-5.2-pro, gemini-3.1-flash-lite, gemini-3.5-flash, gemini-3.1-pro, legacy gemini-3-pro, claude-4.6-sonnet, claude-4.1-opus, or ChatGPT labels like "5.5 Pro" / "5.2 Thinking" for browser runs).',
+    "Model to target. Core lanes use gpt-5.5-pro (ChatGPT Pro Extended Reasoning), fable (via --lane fable-local), or Gemini Deep Think via --provider gemini --gemini-deep-think; older API/browser aliases remain compatibility-only.",
     normalizeModelOption,
   )
   .addOption(
     new Option(
       "--models <models>",
-      'Comma-separated API model list to query in parallel (e.g., "gpt-5.5-pro,gemini-3-pro").',
+      "Compatibility-only comma-separated API model fan-out. Not part of the reviewed lane surface.",
     )
       .argParser(collectModelList)
       .default([]),
@@ -523,8 +548,8 @@ program
   .addOption(
     new Option(
       "-e, --engine <mode>",
-      "Execution engine (api | browser). Browser engine: GPT models automate ChatGPT; Gemini models use a cookie-based client for gemini.google.com. If omitted, oracle picks api when OPENAI_API_KEY is set, otherwise browser.",
-    ).choices(["api", "browser"]),
+      "Execution engine (api | browser | claude-code). Reviewed lanes use browser for ChatGPT/Gemini and claude-code for fable-local.",
+    ).choices(["api", "browser", "claude-code"]),
   )
   .addOption(
     new Option(
@@ -550,8 +575,8 @@ program
   )
   .addOption(new Option("--json", "Accept canonical protected-run JSON flag.").default(false))
   .addOption(
-    new Option("--mode <mode>", "Alias for --engine (api | browser).")
-      .choices(["api", "browser"])
+    new Option("--mode <mode>", "Alias for --engine (api | browser | claude-code).")
+      .choices(["api", "browser", "claude-code"])
       .hideHelp(),
   )
   .option(
@@ -580,6 +605,14 @@ program
     )
       .argParser(parseTimeoutOption)
       .default("auto"),
+  )
+  .addOption(
+    new Option(
+      "--wait-for-lock <ms|s|m|h>",
+      "For --lane fable-local, wait this long for an existing local Claude Code lane lock.",
+    )
+      .argParser((value) => parseDurationOption(value, "Lock wait"))
+      .default(undefined),
   )
   .addOption(
     new Option(
@@ -1011,12 +1044,19 @@ program.addHelpText(
   "after",
   `
 Examples:
-  # Quick API run with two files
-  oracle --prompt "Summarize the risk register" --file docs/risk-register.md docs/risk-matrix.md
+  # ChatGPT Pro Extended Reasoning browser run with source context
+  oracle --engine browser --model gpt-5.5-pro --browser-thinking-time extended \\
+    --prompt "Summarize the risk register" --file docs/risk-register.md docs/risk-matrix.md
 
-  # Browser run (no API key) + globbed TypeScript sources, excluding tests
-  oracle --engine browser --prompt "Review the TS data layer" \\
+  # Fable xHigh local subscription-CLI review
+  oracle --lane fable-local --prompt "Review this migration plan" --file docs/plan.md
+
+  # Gemini 3.1 Deep Think browser run
+  oracle --engine browser --provider gemini --gemini-deep-think --prompt "Review the TS data layer" \\
     --file "src/**/*.ts" --file "!src/**/*.test.ts"
+
+  # Check the remote router / browser boxes before a live browser run
+  oracle remote doctor --json
 
   # Build, print, and copy a markdown bundle (semi-manual)
   oracle --render --copy -p "Review the TS data layer" --file "src/**/*.ts" --file "!src/**/*.test.ts"
@@ -1038,7 +1078,8 @@ program
     "--manual-login-profile-dir <path>",
     "Chrome profile directory for manual login (default ~/.oracle/browser-profile).",
   )
-  .action(async (commandOptions) => {
+  .action(async function (this: Command) {
+    const commandOptions = this.optsWithGlobals();
     const { serveRemote } = await import("../src/remote/server.js");
     await serveRemote({
       host: commandOptions.host,
@@ -1147,7 +1188,8 @@ bridgeCommand
   .option("--foreground", "Run the host in the foreground (default).", false)
   .option("--print", "Print the client connection string (includes token).", false)
   .option("--print-token", "Print only the token.", false)
-  .action(async (commandOptions) => {
+  .action(async function (this: Command) {
+    const commandOptions = this.optsWithGlobals();
     const { runBridgeHost } = await import("../src/cli/bridge/host.js");
     await runBridgeHost(commandOptions);
   });
@@ -1163,7 +1205,8 @@ bridgeCommand
   .option("--no-write-config", "Do not write ~/.oracle/config.json (just validate).")
   .option("--no-test", "Skip remote /health check.")
   .option("--print-env", "Print env var exports (includes token).", false)
-  .action(async (commandOptions) => {
+  .action(async function (this: Command) {
+    const commandOptions = this.optsWithGlobals();
     const { runBridgeClient } = await import("../src/cli/bridge/client.js");
     await runBridgeClient(commandOptions);
   });
@@ -1173,7 +1216,8 @@ bridgeCommand
   .description("Diagnose bridge connectivity and browser engine prerequisites.")
   .option("--verbose", "Show extra diagnostics.", false)
   .option("--json", "Emit a remote_browser_endpoint.v1-compatible JSON envelope.", false)
-  .action(async (commandOptions) => {
+  .action(async function (this: Command) {
+    const commandOptions = this.optsWithGlobals();
     const { runBridgeDoctor } = await import("../src/cli/bridge/doctor.js");
     await runBridgeDoctor(commandOptions);
   });
@@ -1187,7 +1231,8 @@ remoteCommand
   .description("Probe the configured remote oracle endpoint (TCP + /health).")
   .option("--json", "Emit a remote_browser_endpoint.v1-compatible JSON envelope.", false)
   .option("--verbose", "Show extra diagnostics.", false)
-  .action(async (commandOptions) => {
+  .action(async function (this: Command) {
+    const commandOptions = this.optsWithGlobals();
     const { runRemoteDoctor } = await import("../src/cli/remote/doctor.js");
     await runRemoteDoctor(commandOptions);
   });
@@ -1196,7 +1241,8 @@ remoteCommand
   .command("status")
   .description("Print the resolved remote endpoint config without touching the network.")
   .option("--json", "Emit a remote_browser_endpoint.v1-compatible JSON envelope.", false)
-  .action(async (commandOptions) => {
+  .action(async function (this: Command) {
+    const commandOptions = this.optsWithGlobals();
     const { runRemoteStatus } = await import("../src/cli/remote/status.js");
     await runRemoteStatus(commandOptions);
   });
@@ -1210,16 +1256,18 @@ remoteCommand
     "Name of the environment variable holding the access token (default: ORACLE_REMOTE_TOKEN).",
   )
   .option("--json", "Emit a remote_browser_endpoint.v1-compatible JSON envelope.", false)
-  .action(async (commandOptions) => {
+  .action(async function (this: Command) {
+    const commandOptions = this.optsWithGlobals();
     const { runRemoteAttach } = await import("../src/cli/remote/attach.js");
-    await runRemoteAttach(commandOptions);
+    await runRemoteAttach(commandOptions as Parameters<typeof runRemoteAttach>[0]);
   });
 
 bridgeCommand
   .command("codex-config")
   .description("Print a Codex CLI MCP server config snippet for oracle-mcp.")
   .option("--print-token", "Include ORACLE_REMOTE_TOKEN in the snippet.", false)
-  .action(async (commandOptions) => {
+  .action(async function (this: Command) {
+    const commandOptions = this.optsWithGlobals();
     const { runBridgeCodexConfig } = await import("../src/cli/bridge/codexConfig.js");
     await runBridgeCodexConfig(commandOptions);
   });
@@ -1238,7 +1286,8 @@ bridgeCommand
     "--browser-profile-dir <path>",
     "Override ORACLE_BROWSER_PROFILE_DIR in the generated snippet.",
   )
-  .action(async (commandOptions) => {
+  .action(async function (this: Command) {
+    const commandOptions = this.optsWithGlobals();
     const { runBridgeClaudeConfig } = await import("../src/cli/bridge/claudeConfig.js");
     await runBridgeClaudeConfig(commandOptions);
   });
@@ -1267,7 +1316,8 @@ docsCommand
   .description("Check documented CLI flags against Commander help metadata.")
   .option("--docs-path <file...>", "Markdown files to check (default core shipped docs).")
   .option("--json", "Print structured JSON.", false)
-  .action(async (options: { docsPath?: string[]; json?: boolean }) => {
+  .action(async function (this: Command) {
+    const options = this.optsWithGlobals() as { docsPath?: string[]; json?: boolean };
     const { checkDocsFlags, printDocsCheckResult } = await import("../src/cli/docsCheck.js");
     const result = await checkDocsFlags({ command: program, paths: options.docsPath });
     if (options.json) {
@@ -1475,6 +1525,25 @@ function buildRunOptions(
           apiVersion: overrides.azure?.apiVersion ?? options.azureApiVersion,
         }
       : undefined;
+  const lane = overrides.lane ?? options.lane;
+  const claudeCode =
+    overrides.claudeCode ??
+    (options.engine === "claude-code" || lane === "fable-local"
+      ? {
+          model: options.model,
+          readOnly: true,
+          inlineEvents: true,
+          outputFormat: "stream-json" as const,
+          permissionMode: "plan" as const,
+          toolMode: "none" as const,
+          safeMode: true,
+          disableSlashCommands: true,
+          strictMcpConfig: true,
+          noChrome: true,
+          noSessionPersistence: true,
+          waitForLockMs: options.waitForLock,
+        }
+      : undefined);
 
   return {
     prompt: options.prompt,
@@ -1499,6 +1568,8 @@ function buildRunOptions(
     partialMode,
     silent: overrides.silent ?? options.silent,
     search: overrides.search ?? options.search,
+    lane,
+    claudeCode,
     preview: overrides.preview ?? undefined,
     previewMode: overrides.previewMode ?? options.previewMode,
     apiKey: overrides.apiKey ?? options.apiKey,
@@ -1542,6 +1613,53 @@ function hasExplicitAzureOption(optionUsesDefault: (name: string) => boolean): b
     !optionUsesDefault("azureDeployment") ||
     !optionUsesDefault("azureApiVersion")
   );
+}
+
+function collectLaneBrowserConflictFlags(
+  options: CliOptions,
+  optionUsesDefault: (name: string) => boolean,
+): string[] {
+  const flagNames = [
+    "browser",
+    "browserChromeProfile",
+    "browserChromePath",
+    "browserCookiePath",
+    "browserAttachRunning",
+    "chatgptUrl",
+    "browserUrl",
+    "browserTimeout",
+    "browserInputTimeout",
+    "browserAttachmentTimeout",
+    "browserModelStrategy",
+    "browserResearch",
+    "browserAttachments",
+    "browserInlineFiles",
+    "browserBundleFiles",
+    "browserBundleFormat",
+    "browserHeadless",
+    "browserHideWindow",
+    "browserKeepBrowser",
+    "browserTab",
+    "browserManualLogin",
+    "copyProfile",
+    "geminiDeepThink",
+    "deepThink",
+    "geminiDeepThinkFallback",
+    "evidence",
+    "youtube",
+    "generateImage",
+    "editImage",
+    "remoteChrome",
+    "remoteHost",
+    "remoteBrowser",
+  ] as const;
+  return flagNames.filter((name) => {
+    const value = options[name];
+    if (value === undefined || value === false || value === null) {
+      return false;
+    }
+    return !optionUsesDefault(name) || value === true;
+  });
 }
 
 function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
@@ -1878,6 +1996,10 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     await launchTui({ version: VERSION, printIntro: false });
     return;
   }
+  if (options.debugHelp) {
+    printDebugHelp(program.name());
+    return;
+  }
   const userConfig = (await loadUserConfig()).config;
   const helpRequested = rawCliArgs.some((arg: string) => arg === "--help" || arg === "-h");
   const multiModelProvided = Array.isArray(options.models) && options.models.length > 0;
@@ -1943,24 +2065,21 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     cliMode: options.remoteBrowser,
     userConfig,
     env: process.env,
+    allowMissingToken: true,
   });
   const remoteHost = remoteConfig.host;
   const remoteToken = remoteConfig.token;
-  if (remoteHost) {
-    console.log(chalk.dim(`Remote browser host detected: ${remoteHost}`));
-  }
 
   if (routingCliArgs.length === 0) {
+    if (remoteHost) {
+      console.log(chalk.dim(`Remote browser host detected: ${remoteHost}`));
+    }
     console.log(
       chalk.yellow(
         "No prompt or subcommand supplied. Run `oracle --help` or `oracle tui` for the TUI.",
       ),
     );
     program.outputHelp();
-    return;
-  }
-  if (options.debugHelp) {
-    printDebugHelp(program.name());
     return;
   }
   if (options.dryRun && renderMarkdown) {
@@ -1986,6 +2105,86 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   applyGeminiDeepThinkRootDefaults(options, optionUsesDefault);
 
   const providerMode = resolveApiProviderMode(options);
+  const runningUnderVitest =
+    process.env.VITEST === "true" ||
+    process.env.VITEST_WORKER_ID !== undefined ||
+    process.env.VITEST_POOL_ID !== undefined;
+  const allowLegacyRoutesForTests =
+    runningUnderVitest && process.env.ORACLE_TEST_ALLOW_LEGACY_ROUTES === "1";
+  const lanePolicyRequested =
+    Boolean(options.lane) ||
+    options.engine === "claude-code" ||
+    (process.env.ORACLE_ENGINE ?? "").trim().toLowerCase() === "claude-code" ||
+    userConfig.engine === "claude-code" ||
+    isFableModel(options.model) ||
+    (options.models ?? []).some((model) => isFableModel(model));
+  const passiveProviderDiagnostic =
+    (options.route || options.preflight) &&
+    !options.lane &&
+    options.engine !== "claude-code" &&
+    (process.env.ORACLE_ENGINE ?? "").trim().toLowerCase() !== "claude-code" &&
+    userConfig.engine !== "claude-code" &&
+    !isFableModel(options.model) &&
+    !(options.models ?? []).some((model) => isFableModel(model));
+  const applyActiveLanePolicy =
+    lanePolicyRequested &&
+    !(
+      passiveProviderDiagnostic ||
+      renderMarkdown ||
+      copyMarkdown ||
+      options.status ||
+      options.session ||
+      options.execSession ||
+      options.finalizeSession
+    );
+  let resolvedLane: ResolvedOracleLane | null = null;
+  if (applyActiveLanePolicy) {
+    const lanePolicyRemoteHost = optionUsesDefault("remoteHost") ? undefined : remoteHost;
+    const lanePolicyRemoteBrowser = optionUsesDefault("remoteBrowser")
+      ? undefined
+      : remoteConfig.mode;
+    const laneDecision = resolveLanePolicy({
+      lane: options.lane,
+      engine: options.engine,
+      model: options.lane && optionUsesDefault("model") ? undefined : options.model,
+      models: options.models,
+      prompt: options.prompt,
+      files: options.file,
+      slug: options.slug,
+      source: "cli",
+      envEngine: process.env.ORACLE_ENGINE,
+      configEngine: userConfig.engine,
+      remoteHost: lanePolicyRemoteHost,
+      remoteChrome: !optionUsesDefault("remoteChrome") ? options.remoteChrome : undefined,
+      remoteBrowser: lanePolicyRemoteBrowser,
+      browserFlags: collectLaneBrowserConflictFlags(options, optionUsesDefault),
+      apiProviderRequested:
+        providerMode !== "auto" ||
+        hasExplicitAzureOption(optionUsesDefault) ||
+        !optionUsesDefault("baseUrl"),
+      allowLegacyRoutes: allowLegacyRoutesForTests,
+    });
+    if (!laneDecision.ok) {
+      throw new LaneRouteBlockError(laneDecision);
+    }
+    resolvedLane = laneDecision.resolvedLane;
+  }
+  if (remoteHost && resolvedLane?.transportEligibility !== "local-only") {
+    console.log(chalk.dim(`Remote browser host detected: ${remoteHost}`));
+  }
+  if (resolvedLane?.engine === "claude-code") {
+    options.lane = resolvedLane.lane;
+    options.engine = "claude-code";
+    options.model =
+      typeof resolvedLane.normalizedEngineOptions.model === "string"
+        ? resolvedLane.normalizedEngineOptions.model
+        : "fable";
+    if (options.route || options.preflight) {
+      throw new Error(
+        "--route/--preflight are API-provider diagnostics and cannot inspect the fable-local Claude Code lane yet.",
+      );
+    }
+  }
   // applyGeminiDeepThinkRootDefaults already coerces engine to "browser" when a
   // deep-think alias is requested, so by the time we reach this resolveApiModel
   // call the only deep-think models we will see are ones the user explicitly
@@ -1993,9 +2192,11 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   // preserve the protected-browser passthrough; everything else still gets the
   // strict API-mode resolver.
   const resolveModelForEngine = (entry: string): ModelName =>
-    options.engine === "browser"
-      ? (inferModelFromLabel(entry) as ModelName)
-      : resolveApiModel(entry);
+    options.engine === "claude-code"
+      ? (entry as ModelName)
+      : options.engine === "browser"
+        ? (inferModelFromLabel(entry) as ModelName)
+        : resolveApiModel(entry);
   const engineModels = multiModelProvided
     ? Array.from(new Set(options.models!.map(resolveModelForEngine)))
     : [resolveModelForEngine(normalizeModelOption(options.model) || DEFAULT_MODEL)];
@@ -2078,12 +2279,18 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     Boolean(options.azureEndpoint?.trim()) &&
     engineModels.some((model) => isAzureOpenAICandidateModel(model));
   const explicitApiProviderRequested =
-    providerMode !== "auto" || hasExplicitAzureOption(optionUsesDefault);
+    providerMode !== "auto" ||
+    hasExplicitAzureOption(optionUsesDefault) ||
+    !optionUsesDefault("baseUrl");
   const envEnginePreference = (process.env.ORACLE_ENGINE ?? "").trim().toLowerCase();
   const explicitApiEngineRequested =
     options.engine === "api" || (!options.engine && envEnginePreference === "api");
+  const explicitClaudeCodeEngineRequested = options.engine === "claude-code";
   const configBrowserEngineRequested =
-    userConfig.engine === "browser" && !explicitApiEngineRequested && !explicitApiProviderRequested;
+    !options.engine &&
+    userConfig.engine === "browser" &&
+    !explicitApiEngineRequested &&
+    !explicitApiProviderRequested;
   let engine: EngineMode = resolveEngine({
     engine: options.engine,
     configEngine: userConfig.engine,
@@ -2092,11 +2299,20 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     env: process.env,
   });
   const browserEngineRequested =
-    options.browser ||
-    options.engine === "browser" ||
-    Boolean(remoteHost) ||
-    configBrowserEngineRequested ||
-    (!options.engine && !explicitApiProviderRequested && envEnginePreference === "browser");
+    !explicitClaudeCodeEngineRequested &&
+    (options.browser ||
+      options.engine === "browser" ||
+      Boolean(remoteHost) ||
+      configBrowserEngineRequested ||
+      (!options.engine && !explicitApiProviderRequested && envEnginePreference === "browser"));
+  if (
+    remoteHost &&
+    engine !== "claude-code" &&
+    !explicitApiEngineRequested &&
+    !explicitApiProviderRequested
+  ) {
+    engine = "browser";
+  }
   if (azureAutoApiRequested && engine === "browser" && !browserEngineRequested) {
     engine = "api";
   }
@@ -2104,10 +2320,18 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     console.log(chalk.yellow("`--browser` is deprecated; use `--engine browser` instead."));
   }
 
-  if (remoteHost && engine !== "browser") {
+  const remoteHostExplicitlyRequested =
+    !optionUsesDefault("remoteHost") || !optionUsesDefault("remoteBrowser");
+  const remoteBrowserHostForRun = engine === "browser" ? remoteHost : undefined;
+  if (
+    remoteHost &&
+    engine !== "browser" &&
+    engine !== "claude-code" &&
+    remoteHostExplicitlyRequested
+  ) {
     throw new Error("--remote-host requires --engine browser.");
   }
-  if (remoteHost && options.remoteChrome) {
+  if (remoteBrowserHostForRun && options.remoteChrome) {
     throw new Error("--remote-host cannot be combined with --remote-chrome.");
   }
   if (options.browserTab && engine !== "browser") {
@@ -2121,9 +2345,11 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     normalizeModelOption(options.model) || (multiModelProvided ? "" : DEFAULT_MODEL);
   const resolvedModelCandidate: ModelName = multiModelProvided
     ? normalizedMultiModels[0]
-    : engine === "browser"
-      ? inferModelFromLabel(cliModelArg || DEFAULT_MODEL)
-      : resolveApiModel(cliModelArg || DEFAULT_MODEL);
+    : engine === "claude-code"
+      ? (cliModelArg as ModelName)
+      : engine === "browser"
+        ? inferModelFromLabel(cliModelArg || DEFAULT_MODEL)
+        : resolveApiModel(cliModelArg || DEFAULT_MODEL);
   const primaryModelCandidate = normalizedMultiModels[0] ?? resolvedModelCandidate;
   const isGemini = primaryModelCandidate.startsWith("gemini");
   const isCodex = primaryModelCandidate.startsWith("gpt-5.1-codex");
@@ -2306,13 +2532,44 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   }
   const activeModel = resolvedOptions.model;
 
+  if (engine === "claude-code") {
+    if (previewMode || options.dryRun) {
+      if (!options.prompt) {
+        throw new Error("Prompt is required when using --dry-run/preview.");
+      }
+      if (userConfig.promptSuffix) {
+        options.prompt = `${options.prompt.trim()}\n${userConfig.promptSuffix}`;
+      }
+      resolvedOptions.prompt = options.prompt;
+      const runOptions = buildRunOptions(resolvedOptions, {
+        preview: true,
+        previewMode: previewMode || "summary",
+        background: false,
+        baseUrl: undefined,
+      });
+      const { runDryRunSummary } = await import("../src/cli/dryRun.js");
+      await runDryRunSummary(
+        {
+          engine,
+          runOptions,
+          cwd: process.cwd(),
+          version: VERSION,
+          log: console.log,
+        },
+        {},
+      );
+      return;
+    }
+  }
+
   const browserFollowUpCount =
     options.browserFollowUp?.filter((entry) => entry.trim().length > 0).length ?? 0;
   if (engine !== "browser" && browserFollowUpCount > 0) {
     throw new Error("--browser-follow-up requires --engine browser.");
   }
 
-  const sessionMode: SessionMode = engine === "browser" ? "browser" : "api";
+  const sessionMode: SessionMode =
+    engine === "browser" ? "browser" : engine === "claude-code" ? "claude-code" : "api";
   const browserConfig = await (async (): Promise<BrowserSessionConfig | undefined> => {
     if (sessionMode !== "browser") return undefined;
     if (browserFollowup) {
@@ -2322,7 +2579,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
       await import("../src/cli/browserConfig.js");
     const config = await buildBrowserConfig({
       ...options,
-      remoteHost: remoteHost ?? undefined,
+      remoteHost: remoteBrowserHostForRun,
       model: activeModel,
       browserModelLabel: resolveBrowserModelLabel(cliModelArg, activeModel),
     });
@@ -2359,8 +2616,9 @@ async function runRootCommand(options: CliOptions): Promise<void> {
       );
       return;
     }
-    // API dry-run/preview path
-    validateApiProviderRoutingForCli(runOptions);
+    if (engine !== "claude-code") {
+      validateApiProviderRoutingForCli(runOptions);
+    }
     const { runDryRunSummary } = await import("../src/cli/dryRun.js");
     if (previewMode === "summary") {
       await runDryRunSummary(
@@ -2430,12 +2688,22 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   });
 
   let browserDeps: BrowserSessionRunnerDeps | undefined;
-  if (browserConfig && remoteHost) {
+  if (browserConfig && remoteBrowserHostForRun) {
+    if (!remoteToken) {
+      throw new Error(
+        "remote_browser_token_missing: A remote host is configured but no token was provided.\n" +
+          "Fix command: export ORACLE_REMOTE_TOKEN=<token>\n" +
+          "Next command: oracle remote doctor --json",
+      );
+    }
     const { createRemoteBrowserExecutor } = await import("../src/remote/client.js");
     browserDeps = {
-      executeBrowser: createRemoteBrowserExecutor({ host: remoteHost, token: remoteToken }),
+      executeBrowser: createRemoteBrowserExecutor({
+        host: remoteBrowserHostForRun,
+        token: remoteToken,
+      }),
     };
-    console.log(chalk.dim(`Routing browser automation to remote host ${remoteHost}`));
+    console.log(chalk.dim(`Routing browser automation to remote host ${remoteBrowserHostForRun}`));
   } else if (browserConfig && activeModel.startsWith("gemini")) {
     const { createGeminiWebExecutor } = await import("../src/gemini-web/index.js");
     browserDeps = {
@@ -2484,7 +2752,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     model: activeModel,
     engine,
   });
-  if (remoteHost && waitPreference === false) {
+  if (remoteBrowserHostForRun && waitPreference === false) {
     console.log(chalk.dim("Remote browser runs require --wait; ignoring --no-wait."));
     waitPreference = true;
   }
@@ -2983,6 +3251,42 @@ async function executeSession(sessionId: string) {
     userConfig.notify,
   );
   try {
+    let browserDeps: BrowserSessionRunnerDeps | undefined;
+    if (browserConfig) {
+      const remoteConfig = resolveRemoteServiceConfig({
+        userConfig,
+        env: process.env,
+      });
+      const remoteHost = remoteConfig.host;
+      if (remoteHost && sessionMode !== "browser") {
+        throw new Error("--remote-host requires a browser session.");
+      }
+      if (remoteHost) {
+        logLine(`Remote browser host detected: ${remoteHost}`);
+        const { createRemoteBrowserExecutor } = await import("../src/remote/client.js");
+        browserDeps = {
+          executeBrowser: createRemoteBrowserExecutor({
+            host: remoteHost,
+            token: remoteConfig.token,
+          }),
+        };
+        logLine(`Routing browser automation to remote host ${remoteHost}`);
+      } else if (runOptions.model.startsWith("gemini")) {
+        const storedOptions = metadata.options ?? {};
+        const { createGeminiWebExecutor } = await import("../src/gemini-web/index.js");
+        browserDeps = {
+          executeBrowser: createGeminiWebExecutor({
+            youtube: storedOptions.youtube,
+            generateImage: storedOptions.generateImage,
+            editImage: storedOptions.editImage,
+            outputPath: storedOptions.outputPath,
+            aspectRatio: storedOptions.aspectRatio,
+            showThoughts: storedOptions.geminiShowThoughts,
+          }),
+        };
+        logLine("Using Gemini web client for browser automation");
+      }
+    }
     const { performSessionRun } = await import("../src/cli/sessionRunner.js");
     await performSessionRun({
       sessionMeta: metadata,
@@ -2994,9 +3298,13 @@ async function executeSession(sessionId: string) {
       write: writeChunk,
       version: VERSION,
       notifications,
+      browserDeps,
     });
-  } catch {
+  } catch (error) {
     // Errors are already logged to the session log; keep quiet to mirror stored-session behavior.
+    if (!isErrorLogged(error)) {
+      logLine(`ERROR: ${error instanceof Error ? error.message : String(error)}`);
+    }
   } finally {
     stream.end();
   }
@@ -3015,6 +3323,17 @@ async function finalizeSession(sessionId: string) {
 }
 
 function printDebugHelp(cliName: string): void {
+  console.log(
+    chalk.bold(
+      "🧿 oracle advanced help — Reviewed lanes: ChatGPT Pro Extended Reasoning, Fable xHigh, and Gemini 3.1 Deep Think.",
+    ),
+  );
+  console.log(
+    chalk.dim(
+      "Primary help stays lane-first; this page lists compatibility and browser-debug overrides.",
+    ),
+  );
+  console.log("");
   console.log(chalk.bold("Advanced Options"));
   printDebugOptionGroup([
     ["--search <on|off>", "Enable or disable the server-side search tool (default on)."],
@@ -3133,6 +3452,10 @@ async function main(): Promise<void> {
     process.exitCode = 1;
     return;
   }
+  if (isRootVerboseHelpRequest(routingCliArgs) || isRootDebugHelpRequest(routingCliArgs)) {
+    printDebugHelp("oracle");
+    return;
+  }
   const handleSigint = (): void => {
     console.log(chalk.yellow("\nCancelled."));
     process.exitCode = 130;
@@ -3153,7 +3476,7 @@ void main().catch((error: unknown) => {
   const exitCode = resolveTopLevelExitCode(error);
   const jsonMode = isJsonModeRequested(userCliArgs);
   const commanderControlFlow = isCommanderControlFlowError(error);
-  if (exitCode !== 0 && !(commanderControlFlow && commanderErrorPrinted && !jsonMode)) {
+  if (exitCode !== 0 && !jsonMode && !(commanderControlFlow && commanderErrorPrinted)) {
     emitTopLevelHumanError(error);
   }
   if (jsonMode && exitCode !== 0) {

@@ -11,13 +11,15 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=for-the-badge" alt="MIT License"></a>
 </p>
 
-Oracle bundles your prompt and files so another AI can answer with real context. It speaks GPT-5.5 Pro (default), GPT-5.5, GPT-5.4 Pro, GPT-5.4, GPT-5.1 Pro, GPT-5.1 Codex (API-only), GPT-5.1, GPT-5.2, Gemini 3.1 Pro, Gemini 3.5 Flash, Gemini 3.1 Flash-Lite, Claude Sonnet 4.6, Claude Opus 4.1, and more—and it can ask one or multiple models in a single run. Browser automation is available; use `--browser-model-strategy current` to keep the active ChatGPT model (or `ignore` to skip the picker). API remains the most reliable path, and `--copy` is an easy manual fallback.
+Oracle bundles your prompt and files so another AI can answer with real context. The current reviewed lanes are **ChatGPT Pro Extended Reasoning** through browser automation, **Fable xHigh** through the local Claude Code subscription CLI, and **Gemini 3.1 Deep Think** through browser automation. Older API and multi-model compatibility paths still exist, but they are not the primary agent-facing lane surface.
+
+`oracle doctor lanes --json` is the source of truth for explicit lane-template readiness in your checkout. ChatGPT/Gemini browser command forms can be used for live browser smokes even when their explicit `--lane ...` templates are doctor-gated as not-ready/deferred.
 
 > **ℹ️ This is a fork.** `etafund/oracle` tracks upstream [`steipete/oracle`](https://github.com/steipete/oracle), merges it regularly, and keeps the package name (`@steipete/oracle`), the `oracle` CLI, and all API-mode behavior identical. On top of that it layers reliability, in-session verification, recovery, and audit features for **browser-mode** consults — most importantly long-running **ChatGPT Pro (extended reasoning)** and **Gemini Deep Think** sessions that drive the official web apps in your own signed-in browser profile. Everything upstream still works as documented; the additions are opt-in commands/flags or automatic safety/quality improvements on browser runs. See **[What this fork adds over upstream](#what-this-fork-adds-over-upstream)** for the full, detailed breakdown.
 
 ## Setting up (macOS Browser Mode)
 
-Browser mode lets you use GPT-5.5 Pro without any API keys — it automates your Chrome browser directly.
+Browser mode lets you use ChatGPT Pro Extended Reasoning without API keys — it automates your signed-in Chrome browser directly. For remote agent use, run `oracle remote doctor --json` first to verify the router and browser hosts.
 
 ### First-time login
 
@@ -59,11 +61,19 @@ Requires Node 24+. Or use `npx -y @steipete/oracle …` (or pnpx).
 # Copy the bundle and paste into ChatGPT
 npx -y @steipete/oracle --render --copy -p "Review the TS data layer for schema drift" --file "src/**/*.ts,*/*.test.ts"
 
-# Minimal API run (expects OPENAI_API_KEY in your env)
-npx -y @steipete/oracle -p "Write a concise architecture note for the storage adapters" --file src/storage/README.md
+# ChatGPT Pro Extended Reasoning browser lane
+npx -y @steipete/oracle --engine browser --model gpt-5.5-pro \
+  --browser-thinking-time extended \
+  -p "Write a concise architecture note for the storage adapters" \
+  --file src/storage/README.md
 
-# Multi-model API run
-npx -y @steipete/oracle -p "Cross-check the data layer assumptions" --models gpt-5.1-pro,gemini-3-pro --file "src/**/*.ts"
+# Fable xHigh local lane
+npx -y @steipete/oracle --lane fable-local \
+  -p "Review this migration plan" --file docs/plan.md
+
+# Gemini 3.1 Deep Think browser lane
+npx -y @steipete/oracle --engine browser --provider gemini --gemini-deep-think \
+  -p "Cross-check the data layer assumptions" --file "src/**/*.ts"
 
 # Follow up from an existing OpenAI/Azure session id
 npx -y @steipete/oracle --engine api --model gpt-5.2-pro --followup release-readiness-audit --followup-model gpt-5.2-pro -p "Re-evaluate with this new context" --file "src/**/*.ts"
@@ -74,20 +84,17 @@ npx -y @steipete/oracle --engine api --model gpt-5.2-pro --followup resp_abc1234
 # Preview without spending tokens
 npx -y @steipete/oracle --dry-run summary -p "Check release notes" --file docs/release-notes.md
 
-# Check provider routing/readiness before an API panel
-npx -y @steipete/oracle doctor --providers --models gpt-5.5-pro,gemini-3-pro,claude-4.6-sonnet
-
-# Multi-model advisory panel with recoverable partial success
-npx -y @steipete/oracle --models gpt-5.5-pro,gemini-3-pro,claude-4.6-sonnet \
-  --allow-partial --write-output /tmp/panel.md \
-  -p "Review the naming options" --file docs/naming.md
+# Check the reviewed lane and remote-router contract
+npx -y @steipete/oracle doctor lanes --json
+npx -y @steipete/oracle remote doctor --json
 
 # Trace startup and time-to-first-output
 npx -y @steipete/oracle --perf-trace --perf-trace-path /tmp/oracle-perf.json \
   --dry-run summary -p "Quick smoke"
 
-# Browser run (no API key, will open ChatGPT)
-npx -y @steipete/oracle --engine browser -p "Walk through the UI smoke test" --file "src/**/*.ts"
+# Compatibility API paths are still available when explicitly needed
+npx -y @steipete/oracle --engine api --model gpt-5.2-pro \
+  -p "Walk through the UI smoke test" --file "src/**/*.ts"
 
 # Add explicit shared context to a ChatGPT Project without deleting anything
 npx -y @steipete/oracle project-sources add \
@@ -102,8 +109,9 @@ npx -y @steipete/oracle --engine browser --model gpt-5.5-pro \
   --browser-follow-up "Challenge your previous recommendation" \
   --browser-follow-up "Give the final decision"
 
-# Gemini browser mode (no API key; uses Chrome cookies from gemini.google.com)
-npx -y @steipete/oracle --engine browser --model gemini-3.1-pro --prompt "a cute robot holding a banana" --generate-image out.jpg --aspect 1:1
+# Gemini browser mode image generation remains a compatibility path
+npx -y @steipete/oracle --engine browser --model gemini-3.1-pro \
+  --prompt "a cute robot holding a banana" --generate-image out.jpg --aspect 1:1
 
 # Sessions (list and replay)
 npx -y @steipete/oracle status --hours 72
@@ -119,16 +127,19 @@ npx -y @steipete/oracle remote attach --host remote.host:9473 --token-env ORACLE
 npx -y @steipete/oracle tui
 ```
 
-Engine auto-picks API when `OPENAI_API_KEY` is set, otherwise browser; browser is stable on macOS and works on Linux and Windows. On Linux pass `--browser-chrome-path/--browser-cookie-path` if detection fails; on Windows prefer `--browser-manual-login` or inline cookies if decryption is blocked.
+For reviewed browser lanes, prefer explicit `--engine browser` or the protected Gemini flags instead of relying on API-key auto-pick. On Linux pass `--browser-chrome-path/--browser-cookie-path` if detection fails; on Windows prefer `--browser-manual-login` or inline cookies if decryption is blocked.
 
 ## Integration
 
 **CLI**
 
-- API mode expects API keys in your environment: `OPENAI_API_KEY` (GPT-5.x), `GEMINI_API_KEY` (Gemini 3.1 Pro / 3.5 Flash / 3.1 Flash-Lite), `ANTHROPIC_API_KEY` (Claude Sonnet 4.6 / Opus 4.1).
-- Gemini browser mode uses Chrome cookies instead of an API key—just be logged into `gemini.google.com` in Chrome (no Python/venv required).
-- Gemini browser mode accepts explicit `gemini-3.1-flash-lite`, `gemini-3.5-flash`, and `gemini-3.1-pro` IDs. Legacy `gemini-3-pro` browser runs target current Gemini 3.1 Pro. If your account can’t access the requested model, Oracle falls back to 3.1 Flash-Lite and logs the fallback in verbose mode.
-- Prefer API mode or `--copy` + manual paste; browser automation is experimental.
+- Reviewed lanes:
+  - ChatGPT Pro Extended Reasoning: `--engine browser --model gpt-5.5-pro --browser-thinking-time extended`.
+  - Fable xHigh: `--lane fable-local` on the local machine only; it does not use `oracle-router` or remote browser hosts.
+  - Gemini 3.1 Deep Think: `--engine browser --provider gemini --gemini-deep-think`.
+- Compatibility API mode still accepts API keys in your environment, but the old provider/model matrix is not the preferred agent-facing lane surface.
+- Gemini browser compatibility mode uses Chrome cookies instead of an API key—just be logged into `gemini.google.com` in Chrome (no Python/venv required).
+- Browser automation is a live browser path. Use `oracle doctor lanes --json`, `oracle capabilities --json`, and `oracle remote doctor --json` before remote browser smokes.
 - Browser support: stable on macOS; works on Linux (add `--browser-chrome-path/--browser-cookie-path` when needed) and Windows (manual-login or inline cookies recommended when app-bound cookies block decryption).
 - Remote browser service: `oracle serve` on a signed-in host; clients use `--remote-host/--remote-token`.
 - Browser artifacts: browser sessions save `transcript.md` and generated artifacts under `~/.oracle/sessions/<id>/artifacts/`. Deep Research saves `deep-research-report.md` when the report surface is captured; ChatGPT-generated images and downloadable files are saved with the active browser session when supported file URLs are present.
@@ -182,14 +193,14 @@ npx -y @steipete/oracle oracle-mcp
 
 ## Highlights
 
-- Bundle once, reuse anywhere (API or experimental browser).
-- Multi-model API runs with aggregated cost/usage, including OpenRouter IDs alongside first-party models.
+- Bundle once, send through the reviewed ChatGPT Pro Extended Reasoning, Fable xHigh, or Gemini 3.1 Deep Think lane.
+- ChatGPT/Gemini browser lanes can run locally or through `oracle serve` / `oracle-router`; Fable xHigh stays local-only through `--lane fable-local`.
 - Claude Code / MCP browser consults can use the `chatgpt-pro-heavy` preset for a compact ChatGPT Pro second-opinion workflow.
-- Render/copy bundles for manual paste into ChatGPT when automation is blocked.
-- GPT‑5 Pro API runs detach by default; reattach via `oracle session <id>` / `oracle status` or block with `--wait`.
-- Saved ChatGPT browser conversations and OpenAI/Azure API runs can continue from `--followup <sessionId|responseId>`; for multi-model API parents, add `--followup-model <model>`.
-- Azure endpoints supported via `--azure-endpoint/--azure-deployment/--azure-api-version` or `AZURE_OPENAI_*` envs; use `--provider openai` / `--no-azure` to force first-party OpenAI when Azure env vars are present.
-- Redacted provider checks via `oracle doctor --providers`, `--route`, and `--preflight` before spending API time.
+- Render/copy bundles for manual paste into ChatGPT, Claude, or Gemini when automation is blocked.
+- Long browser runs can be reattached via `oracle session <id>` / `oracle status` instead of restarted.
+- Saved ChatGPT browser conversations and OpenAI/Azure compatibility API runs can continue from `--followup <sessionId|responseId>`; for multi-model API parents, add `--followup-model <model>`.
+- Compatibility API and multi-model runs remain available, including Azure/OpenRouter-style routing, but they are not the primary reviewed lane surface.
+- Redacted provider checks via `oracle doctor --providers`, `--route`, and `--preflight` before spending compatibility API time.
 - File safety: globs/excludes, size guards, `--files-report`.
 - Sessions you can replay (`oracle status`, `oracle session <id> --render`).
 - Session logs and bundles live in `~/.oracle/sessions` (override with `ORACLE_HOME_DIR`).
@@ -207,21 +218,23 @@ This section is meant to be self-contained: you should be able to understand wha
 ```bash
 git remote add upstream https://github.com/steipete/oracle.git
 git fetch upstream
-git log --oneline upstream/main..HEAD   # commits this fork carries on top of upstream
-git diff --stat upstream/main...HEAD    # files and size of the divergence
+git log upstream/main..HEAD
+git diff upstream/main...HEAD
 ```
+
+Use the first command to inspect commits this fork carries on top of upstream, and the second to inspect the file-level divergence.
 
 ### Design principles
 
 Everything below follows the same handful of rules:
 
 - **Fail closed, never fake success.** If the fork can't confirm the right model/mode, or can't capture a complete answer, it returns a typed, recoverable error — not a guess dressed up as a result.
-- **Verify in the same session, before submitting.** For protected routes, the requested model and the highest visible reasoning control are confirmed in the live tab *before* the prompt is sent.
+- **Verify in the same session, before submitting.** For protected routes, the requested model and the highest visible reasoning control are confirmed in the live tab _before_ the prompt is sent.
 - **Capture the whole answer.** Output capture waits for genuinely long reasoning to finish, then checks the captured text for truncation.
 - **Recover, don't duplicate.** A dropped connection or a client timeout becomes a resumable session (`oracle session <id> --render`), not a lost run or an accidental second submission.
 - **Privacy by default.** Cookies, tokens, emails, raw prompts/outputs, and page DOM are never written to logs or artifacts — only hashes and structural metadata.
 - **Machine-readable everything.** New commands emit a uniform JSON envelope with `blocked_reason` / `next_command` / `fix_command` / `retry_safe`, so an agent or MCP driver can branch on results without scraping prose.
-- **Attest locally, don't overclaim.** Verification and evidence describe what the web UI showed and what was captured on *your* machine. They are a local confidence check for you; they make no claim about a provider's backend.
+- **Attest locally, don't overclaim.** Verification and evidence describe what the web UI showed and what was captured on _your_ machine. They are a local confidence check for you; they make no claim about a provider's backend.
 
 ### 1) Same-session model & reasoning-effort verification (browser mode)
 
@@ -238,7 +251,7 @@ Long reasoning runs are exactly where naive capture goes wrong. The fork adds:
 
 ### 3) Long-run resilience & recovery
 
-- **Reconnect / auto-reattach** — if the browser connection drops mid-run, Oracle decides between waiting, reattaching, backgrounding, or giving up, with bounded backoff. Exhausting retries yields a *recoverable* session, never a fabricated "no answer."
+- **Reconnect / auto-reattach** — if the browser connection drops mid-run, Oracle decides between waiting, reattaching, backgrounding, or giving up, with bounded backoff. Exhausting retries yields a _recoverable_ session, never a fabricated "no answer."
 - **Detached finalizer** — a background worker re-renders/attaches a long run until a real transcript is captured, rescuing sessions that would otherwise be left in an error/partial state after a client timeout.
 - **`oracle-await`** (shipped helper) — polls a session to completion with structured exit codes (ready / still-running / errored / unknown), so wrappers and agents can wait safely instead of re-running.
 - **Remote-run snapshots & heartbeats** — a long run delegated to `oracle serve` survives network drops as a typed, replayable snapshot, with one-JSON-line-per-beat liveness.
@@ -251,7 +264,7 @@ Long reasoning runs are exactly where naive capture goes wrong. The fork adds:
 
 - **`oracle evidence show|verify <session>`** and **`oracle evidence ledger show|verify|export <session>`** inspect a redacted record of what a browser run did.
 - The ledger is **append-only and hash-chained**, so reordering or editing is detectable, and `verify` re-hashes the stored artifacts to confirm they weren't altered.
-- This is a **local** confidence tool: it lets *you* confirm a run selected the model/effort you asked for and captured the answer intact. **Redaction is always on** — no cookies, tokens, emails, raw prompts/outputs, or DOM are ever stored, only hashes and structural metadata. `export` produces a sanitized, still-verifiable snapshot for handoff.
+- This is a **local** confidence tool: it lets _you_ confirm a run selected the model/effort you asked for and captured the answer intact. **Redaction is always on** — no cookies, tokens, emails, raw prompts/outputs, or DOM are ever stored, only hashes and structural metadata. `export` produces a sanitized, still-verifiable snapshot for handoff.
 
 ### 6) Browser-profile leases (single-flight)
 
@@ -259,7 +272,7 @@ Long reasoning runs are exactly where naive capture goes wrong. The fork adds:
 
 ### 7) Remote-browser hardening
 
-**`oracle remote doctor|status|attach`** and **`oracle bridge doctor --json`** diagnose a remote `oracle serve` endpoint. Access tokens are read from a **named environment variable** (`--token-env`), never passed on the command line, and the host is shown only as a short hash. The remote service uses constant-time token comparison, an allowlist for wire payloads (your local cookies/profile are never shipped to the host, which uses its own signed-in profile), and preserves model-selection metadata end-to-end so remote runs report the same evidence as local ones.
+**`oracle remote doctor|status|attach`** and **`oracle bridge doctor --json`** diagnose a remote `oracle serve` endpoint. Attach diagnostics read access tokens from a **named environment variable** (`--token-env`) so the token is not placed on argv, and the host is shown only as a short hash. Runtime commands still accept legacy token flags for compatibility; prefer `ORACLE_REMOTE_TOKEN` or `browser.remoteToken` in `~/.oracle/config.json`. The remote service uses constant-time token comparison, an allowlist for wire payloads (your local cookies/profile are never shipped to the host, which uses its own signed-in profile), and preserves model-selection metadata end-to-end so remote runs report the same evidence as local ones.
 
 ### 8) Diagnostics & agent ergonomics
 
@@ -293,29 +306,29 @@ The fork carries a contracts-first spec bundle (under `PLAN/`) plus several test
 
 ### New commands & key flags (quick reference)
 
-| Command / flag | What it does | Calls a provider? |
-| --- | --- | --- |
-| `oracle doctor [--json]` | Aggregate preflight diagnostics | No |
-| `oracle doctor chatgpt --pro --extended-reasoning [--json]` | ChatGPT Pro route readiness | No |
-| `oracle doctor gemini --deep-think [--json]` | Gemini Deep Think route readiness | No |
-| `oracle capabilities [--json]` | Static capability matrix | No |
-| `oracle robot-docs [--json]` | Machine-readable command registry | No |
-| `oracle preview` / `oracle visibility-status` | Estimate / roll-up before a run | No |
-| `oracle run --chatgpt-pro --extended-reasoning [--dry-run] [--json]` | Plan a protected route (no submit) | No |
-| `oracle browser leases plan\|status\|acquire\|release\|recover` | Single-flight profile locks | No |
-| `oracle evidence show\|verify <session>` | Inspect / verify redacted run evidence | No |
-| `oracle evidence ledger show\|verify\|export <session>` | Hash-chained audit ledger | No |
-| `oracle remote doctor\|status\|attach` | Diagnose remote `serve` endpoint | Network probe only |
-| `oracle follow-up <parentSessionId> [prompt]` | Continue a saved ChatGPT thread | Yes (browser) |
-| `--gemini-deep-think`, `--evidence redacted` (on the main run) | Protected Gemini Deep Think browser route | Yes (browser) |
+| Command / flag                                                       | What it does                              | Calls a provider?  |
+| -------------------------------------------------------------------- | ----------------------------------------- | ------------------ |
+| `oracle doctor [--json]`                                             | Aggregate preflight diagnostics           | No                 |
+| `oracle doctor chatgpt --pro --extended-reasoning [--json]`          | ChatGPT Pro route readiness               | No                 |
+| `oracle doctor gemini --deep-think [--json]`                         | Gemini Deep Think route readiness         | No                 |
+| `oracle capabilities [--json]`                                       | Static capability matrix                  | No                 |
+| `oracle robot-docs [--json]`                                         | Machine-readable command registry         | No                 |
+| `oracle preview` / `oracle visibility-status`                        | Estimate / roll-up before a run           | No                 |
+| `oracle run --chatgpt-pro --extended-reasoning [--dry-run] [--json]` | Plan a protected route (no submit)        | No                 |
+| `oracle browser leases plan\|status\|acquire\|release\|recover`      | Single-flight profile locks               | No                 |
+| `oracle evidence show\|verify <session>`                             | Inspect / verify redacted run evidence    | No                 |
+| `oracle evidence ledger show\|verify\|export <session>`              | Hash-chained audit ledger                 | No                 |
+| `oracle remote doctor\|status\|attach`                               | Diagnose remote `serve` endpoint          | Network probe only |
+| `oracle follow-up <parentSessionId> [prompt]`                        | Continue a saved ChatGPT thread           | Yes (browser)      |
+| `--gemini-deep-think`, `--evidence redacted` (on the main run)       | Protected Gemini Deep Think browser route | Yes (browser)      |
 
 ### What this fork does NOT change
 
 The package name (`@steipete/oracle`), the `oracle` command, API-mode behavior and model routing, and all upstream flags are unchanged. Everything above is additive: existing upstream workflows keep working exactly as documented, and the new behavior is either opt-in (new commands/flags) or an automatic safety/quality improvement on browser runs.
 
-## API provider checks
+## Compatibility API provider checks
 
-Use these before expensive API or multi-model runs:
+Use these before compatibility API or multi-model runs:
 
 ```bash
 oracle doctor --providers --models gpt-5.4,claude-4.6-sonnet,gemini-3-pro
@@ -409,55 +422,56 @@ Browser automation can open or control Chrome, so dry-runs and live runs print a
 
 ## Flags you’ll actually use
 
-| Flag                                                                           | Purpose                                                                                                                                                                                                                                                                                                                                   |
-| ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `-p, --prompt <text>`                                                          | Required prompt.                                                                                                                                                                                                                                                                                                                          |
-| `-f, --file <paths...>`                                                        | Attach files/dirs (globs + `!` excludes).                                                                                                                                                                                                                                                                                                 |
-| `-e, --engine <api\|browser>`                                                  | Choose API or browser (browser is experimental).                                                                                                                                                                                                                                                                                          |
-| `-m, --model <name>`                                                           | Built-ins (`gpt-5.5-pro` default, `gpt-5.5`, `gpt-5.4-pro`, `gpt-5.4`, `gpt-5.1-pro`, `gpt-5-pro`, `gpt-5.1`, `gpt-5.1-codex`, `gpt-5.2`, `gpt-5.2-instant`, `gpt-5.2-pro`, `gemini-3.1-pro` API + UI, `gemini-3-pro`, `claude-4.6-sonnet`, `claude-4.1-opus`) plus any OpenRouter id (e.g., `minimax/minimax-m2`, `openai/gpt-4o-mini`). |
-| `--models <list>`                                                              | Comma-separated API models (mix built-ins and OpenRouter ids) for multi-model runs.                                                                                                                                                                                                                                                       |
-| `--followup <sessionId\|responseId>`                                           | Continue a saved ChatGPT browser conversation or an OpenAI/Azure Responses API run from a stored Oracle session or `resp_...` response id.                                                                                                                                                                                                |
-| `--followup-model <model>`                                                     | For multi-model OpenAI/Azure parent sessions, choose which model response to continue from.                                                                                                                                                                                                                                               |
-| `--base-url <url>`                                                             | Point API runs at LiteLLM/Azure/OpenRouter/etc.                                                                                                                                                                                                                                                                                           |
-| `--chatgpt-url <url>`                                                          | Target a ChatGPT workspace/folder or Temporary Chat URL (browser).                                                                                                                                                                                                                                                                        |
-| `--browser-model-strategy <select\|current\|ignore>`                           | Control ChatGPT model selection in browser mode (current keeps the active model; ignore skips the picker).                                                                                                                                                                                                                                |
-| `--browser-manual-login`                                                       | Skip cookie copy; reuse a persistent automation profile and wait for manual ChatGPT login.                                                                                                                                                                                                                                                |
-| `--browser-attach-running`                                                     | Reuse your current local browser session through local `DevToolsActivePort` discovery; Oracle opens a dedicated tab instead of launching Chrome (defaults to `127.0.0.1:9222`, or combine with `--remote-chrome <host:port>` to hint a different local endpoint).                                                                         |
-| `--browser-tab <ref>`                                                          | Reuse an existing ChatGPT tab by `current`, target id, URL, or title substring instead of opening a new tab.                                                                                                                                                                                                                              |
-| `--browser-thinking-time <light\|standard\|extended\|heavy>`                   | Set ChatGPT thinking-time intensity (browser; Thinking/Pro models only).                                                                                                                                                                                                                                                                  |
-| `--browser-research deep`                                                      | Activate ChatGPT Deep Research for broad web research and cited reports (browser only).                                                                                                                                                                                                                                                   |
-| `--browser-follow-up <prompt>`                                                 | Browser-only multi-turn consult: submit an additional prompt in the same ChatGPT conversation after the initial answer. Repeat for challenge/revision/final-decision passes. Not supported with Deep Research mode.                                                                                                                       |
-| `--browser-archive <auto\|always\|never>`                                      | Archive completed ChatGPT browser conversations after local artifacts are saved. `auto` archives successful one-shot chats only, and skips project, Deep Research, multi-turn, failed, and incomplete sessions.                                                                                                                           |
-| `--browser-attachments <auto\|never\|always>`                                  | Control browser file delivery: `auto` pastes small text files inline and uploads larger or raw files, `never` requires inline-compatible text files, and `always` uploads files as ChatGPT attachments.                                                                                                                                   |
-| `--browser-bundle-files`, `--browser-bundle-format <auto\|text\|zip>`          | Bundle browser uploads into one attachment. `auto` uses a text bundle for text-only inputs and a byte-preserving ZIP when bundled inputs include raw files; `text` writes a Markdown-style text bundle; `zip` archives the original file bytes.                                                                                           |
-| `--browser-port <port>`                                                        | Pin the Chrome DevTools port (WSL/Windows firewall helper).                                                                                                                                                                                                                                                                               |
-| `--browser-inline-cookies[(-file)] <payload \| path>`                          | Supply cookies without Chrome/Keychain (browser).                                                                                                                                                                                                                                                                                         |
-| `--browser-timeout`, `--browser-input-timeout`, `--browser-attachment-timeout` | Control overall/browser input/attachment readiness timeouts (supports h/m/s/ms).                                                                                                                                                                                                                                                          |
-| `--browser-recheck-delay`, `--browser-recheck-timeout`                         | Delayed recheck for long Pro runs: wait then retry capture after timeout (supports h/m/s/ms).                                                                                                                                                                                                                                             |
-| `--heartbeat <seconds>`                                                        | Emit API and browser progress heartbeats. Browser mode reports ChatGPT Thinking/Reasoning sidecar liveness metadata when available, without logging reasoning text.                                                                                                                                                                       |
-| `--browser-reuse-wait`                                                         | Wait for a shared Chrome profile before launching (parallel browser runs).                                                                                                                                                                                                                                                                |
-| `--browser-profile-lock-timeout`                                               | Wait for the shared manual-login profile lock before sending (serializes parallel runs).                                                                                                                                                                                                                                                  |
-| `--browser-max-concurrent-tabs`                                                | Soft limit for simultaneous ChatGPT tabs sharing one manual-login profile (default 3).                                                                                                                                                                                                                                                    |
-| `--render`, `--copy`                                                           | Print and/or copy the assembled markdown bundle.                                                                                                                                                                                                                                                                                          |
-| `--wait`                                                                       | Block for background API runs (e.g., GPT‑5.1 Pro) instead of detaching.                                                                                                                                                                                                                                                                   |
-| `--timeout <seconds\|duration\|auto>`                                          | Overall API deadline (auto = 60m for pro, 120s otherwise; durations like `10m` derive HTTP/stale-session timeouts unless overridden).                                                                                                                                                                                                     |
-| `--background`, `--no-background`                                              | Force Responses API background mode (create + retrieve) for API runs.                                                                                                                                                                                                                                                                     |
-| `--http-timeout <ms\|s\|m\|h>`                                                 | Override the HTTP client timeout; if omitted, explicit `--timeout` values are reused for transport.                                                                                                                                                                                                                                       |
-| `--zombie-timeout <ms\|s\|m\|h>`                                               | Override stale-session cutoff used by `oracle status`.                                                                                                                                                                                                                                                                                    |
-| `--zombie-last-activity`                                                       | Use last log activity to detect stale sessions.                                                                                                                                                                                                                                                                                           |
-| `--write-output <path>`                                                        | Save only the final answer (multi-model adds `.<model>` and writes `<stem>.oracle.json`). Browser sessions also save transcripts and generated artifacts under `~/.oracle/sessions/<id>/artifacts/`.                                                                                                                                      |
-| `--allow-partial`, `--partial <fail\|ok>`                                      | Multi-model failure policy. Default `fail` exits 1 after printing a structured partial summary; `ok` exits 0 when at least one model succeeds.                                                                                                                                                                                            |
-| `--preflight`                                                                  | Check redacted provider readiness for requested API model(s), then exit without creating a session.                                                                                                                                                                                                                                       |
-| `--perf-trace`, `--perf-trace-path <path>`                                     | Write startup/first-output timing trace JSON; also accepts `--perf-trace=/tmp/oracle.json`, `ORACLE_PERF_TRACE=1`, or `ORACLE_PERF_TRACE=/tmp/oracle.json`.                                                                                                                                                                               |
-| `--files-report`                                                               | Print per-file token usage.                                                                                                                                                                                                                                                                                                               |
-| `--dry-run [summary\|json\|full]`                                              | Preview without sending.                                                                                                                                                                                                                                                                                                                  |
-| `--remote-host`, `--remote-token`                                              | Use a remote `oracle serve` host (browser).                                                                                                                                                                                                                                                                                               |
-| `--remote-chrome <host:port>`                                                  | Attach to an existing remote Chrome session (browser), or when combined with `--browser-attach-running` use this host:port as the local attach hint.                                                                                                                                                                                      |
-| `--youtube <url>`                                                              | YouTube video URL to analyze (Gemini browser mode).                                                                                                                                                                                                                                                                                       |
-| `--generate-image <file>`                                                      | Generate image and save to file (Gemini browser mode; ChatGPT browser mode saves downloadable image artifacts when present). Extra ChatGPT images save as numbered siblings.                                                                                                                                                              |
-| `--edit-image <file>`                                                          | Edit existing image with `--output` (Gemini browser mode). For ChatGPT browser mode, attach source images with `--file` and use `--generate-image` for the output path.                                                                                                                                                                   |
-| `--provider openai\|azure\|auto`, `--no-azure`, `--route`                      | Choose or inspect API provider routing; `openai` / `--no-azure` ignores Azure env/config for the run.                                                                                                                                                                                                                                     |
-| `--azure-endpoint`, `--azure-deployment`, `--azure-api-version`                | Target Azure OpenAI endpoints (picks Azure client automatically).                                                                                                                                                                                                                                                                         |
+| Flag                                                                           | Purpose                                                                                                                                                                                                                                                           |
+| ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-p, --prompt <text>`                                                          | Required prompt.                                                                                                                                                                                                                                                  |
+| `-f, --file <paths...>`                                                        | Attach files/dirs (globs + `!` excludes).                                                                                                                                                                                                                         |
+| `-e, --engine <api\|browser\|claude-code>`                                     | Choose the engine. Reviewed lanes use browser for ChatGPT/Gemini and `claude-code` through `--lane fable-local`.                                                                                                                                                  |
+| `--lane fable-local`                                                           | Run the Fable xHigh local lane. It is local-only and refuses remote/browser/API fan-out.                                                                                                                                                                          |
+| `-m, --model <name>`                                                           | For reviewed lanes, use `gpt-5.5-pro` with extended browser thinking, `fable` via `--lane fable-local`, or Gemini through `--provider gemini --gemini-deep-think`. Older API/browser aliases remain compatibility paths.                                          |
+| `--models <list>`                                                              | Compatibility-only API fan-out. Not part of the reviewed lane surface.                                                                                                                                                                                            |
+| `--followup <sessionId\|responseId>`                                           | Continue a saved ChatGPT browser conversation or an OpenAI/Azure Responses API run from a stored Oracle session or `resp_...` response id.                                                                                                                        |
+| `--followup-model <model>`                                                     | For multi-model OpenAI/Azure parent sessions, choose which model response to continue from.                                                                                                                                                                       |
+| `--base-url <url>`                                                             | Point API runs at LiteLLM/Azure/OpenRouter/etc.                                                                                                                                                                                                                   |
+| `--chatgpt-url <url>`                                                          | Target a ChatGPT workspace/folder or Temporary Chat URL (browser).                                                                                                                                                                                                |
+| `--browser-model-strategy <select\|current\|ignore>`                           | Control ChatGPT model selection in browser mode (current keeps the active model; ignore skips the picker).                                                                                                                                                        |
+| `--browser-manual-login`                                                       | Skip cookie copy; reuse a persistent automation profile and wait for manual ChatGPT login.                                                                                                                                                                        |
+| `--browser-attach-running`                                                     | Reuse your current local browser session through local `DevToolsActivePort` discovery; Oracle opens a dedicated tab instead of launching Chrome (defaults to `127.0.0.1:9222`, or combine with `--remote-chrome <host:port>` to hint a different local endpoint). |
+| `--browser-tab <ref>`                                                          | Reuse an existing ChatGPT tab by `current`, target id, URL, or title substring instead of opening a new tab.                                                                                                                                                      |
+| `--browser-thinking-time <light\|standard\|extended\|heavy>`                   | Set ChatGPT thinking-time intensity (browser; Thinking/Pro models only).                                                                                                                                                                                          |
+| `--browser-research deep`                                                      | Activate ChatGPT Deep Research for broad web research and cited reports (browser only).                                                                                                                                                                           |
+| `--browser-follow-up <prompt>`                                                 | Browser-only multi-turn consult: submit an additional prompt in the same ChatGPT conversation after the initial answer. Repeat for challenge/revision/final-decision passes. Not supported with Deep Research mode.                                               |
+| `--browser-archive <auto\|always\|never>`                                      | Archive completed ChatGPT browser conversations after local artifacts are saved. `auto` archives successful one-shot chats only, and skips project, Deep Research, multi-turn, failed, and incomplete sessions.                                                   |
+| `--browser-attachments <auto\|never\|always>`                                  | Control browser file delivery: `auto` pastes small text files inline and uploads larger or raw files, `never` requires inline-compatible text files, and `always` uploads files as ChatGPT attachments.                                                           |
+| `--browser-bundle-files`, `--browser-bundle-format <auto\|text\|zip>`          | Bundle browser uploads into one attachment. `auto` uses a text bundle for text-only inputs and a byte-preserving ZIP when bundled inputs include raw files; `text` writes a Markdown-style text bundle; `zip` archives the original file bytes.                   |
+| `--browser-port <port>`                                                        | Pin the Chrome DevTools port (WSL/Windows firewall helper).                                                                                                                                                                                                       |
+| `--browser-inline-cookies[(-file)] <payload \| path>`                          | Supply cookies without Chrome/Keychain (browser).                                                                                                                                                                                                                 |
+| `--browser-timeout`, `--browser-input-timeout`, `--browser-attachment-timeout` | Control overall/browser input/attachment readiness timeouts (supports h/m/s/ms).                                                                                                                                                                                  |
+| `--browser-recheck-delay`, `--browser-recheck-timeout`                         | Delayed recheck for long Pro runs: wait then retry capture after timeout (supports h/m/s/ms).                                                                                                                                                                     |
+| `--heartbeat <seconds>`                                                        | Emit API and browser progress heartbeats. Browser mode reports ChatGPT Thinking/Reasoning sidecar liveness metadata when available, without logging reasoning text.                                                                                               |
+| `--browser-reuse-wait`                                                         | Wait for a shared Chrome profile before launching (parallel browser runs).                                                                                                                                                                                        |
+| `--browser-profile-lock-timeout`                                               | Wait for the shared manual-login profile lock before sending (serializes parallel runs).                                                                                                                                                                          |
+| `--browser-max-concurrent-tabs`                                                | Soft limit for simultaneous ChatGPT tabs sharing one manual-login profile (default 3).                                                                                                                                                                            |
+| `--render`, `--copy`                                                           | Print and/or copy the assembled markdown bundle.                                                                                                                                                                                                                  |
+| `--wait`                                                                       | Block for background API runs (e.g., GPT‑5.1 Pro) instead of detaching.                                                                                                                                                                                           |
+| `--timeout <seconds\|duration\|auto>`                                          | Overall API deadline (auto = 60m for pro, 120s otherwise; durations like `10m` derive HTTP/stale-session timeouts unless overridden).                                                                                                                             |
+| `--background`, `--no-background`                                              | Force Responses API background mode (create + retrieve) for API runs.                                                                                                                                                                                             |
+| `--http-timeout <ms\|s\|m\|h>`                                                 | Override the HTTP client timeout; if omitted, explicit `--timeout` values are reused for transport.                                                                                                                                                               |
+| `--zombie-timeout <ms\|s\|m\|h>`                                               | Override stale-session cutoff used by `oracle status`.                                                                                                                                                                                                            |
+| `--zombie-last-activity`                                                       | Use last log activity to detect stale sessions.                                                                                                                                                                                                                   |
+| `--write-output <path>`                                                        | Save only the final answer (multi-model adds `.<model>` and writes `<stem>.oracle.json`). Browser sessions also save transcripts and generated artifacts under `~/.oracle/sessions/<id>/artifacts/`.                                                              |
+| `--allow-partial`, `--partial <fail\|ok>`                                      | Multi-model failure policy. Default `fail` exits 1 after printing a structured partial summary; `ok` exits 0 when at least one model succeeds.                                                                                                                    |
+| `--preflight`                                                                  | Check redacted provider readiness for requested API model(s), then exit without creating a session.                                                                                                                                                               |
+| `--perf-trace`, `--perf-trace-path <path>`                                     | Write startup/first-output timing trace JSON; also accepts `--perf-trace=/tmp/oracle.json`, `ORACLE_PERF_TRACE=1`, or `ORACLE_PERF_TRACE=/tmp/oracle.json`.                                                                                                       |
+| `--files-report`                                                               | Print per-file token usage.                                                                                                                                                                                                                                       |
+| `--dry-run [summary\|json\|full]`                                              | Preview without sending.                                                                                                                                                                                                                                          |
+| `--remote-host`, `--remote-token`                                              | Use a remote `oracle serve` host (browser). Prefer `ORACLE_REMOTE_TOKEN` or `browser.remoteToken` over putting tokens on argv.                                                                                                                                    |
+| `--remote-chrome <host:port>`                                                  | Attach to an existing remote Chrome session (browser), or when combined with `--browser-attach-running` use this host:port as the local attach hint.                                                                                                              |
+| `--youtube <url>`                                                              | YouTube video URL to analyze (Gemini browser mode).                                                                                                                                                                                                               |
+| `--generate-image <file>`                                                      | Generate image and save to file (Gemini browser mode; ChatGPT browser mode saves downloadable image artifacts when present). Extra ChatGPT images save as numbered siblings.                                                                                      |
+| `--edit-image <file>`                                                          | Edit existing image with `--output` (Gemini browser mode). For ChatGPT browser mode, attach source images with `--file` and use `--generate-image` for the output path.                                                                                           |
+| `--provider openai\|azure\|auto`, `--no-azure`, `--route`                      | Choose or inspect API provider routing; `openai` / `--no-azure` ignores Azure env/config for the run.                                                                                                                                                             |
+| `--azure-endpoint`, `--azure-deployment`, `--azure-api-version`                | Target Azure OpenAI endpoints (picks Azure client automatically).                                                                                                                                                                                                 |
 
 ## Configuration
 
@@ -491,15 +505,20 @@ Advanced flags
 Remote browser example
 
 ```bash
+export ORACLE_REMOTE_TOKEN="<shared remote bearer token>"
+
 # Host (signed-in Chrome): launch serve
-oracle serve --host 0.0.0.0:9473 --token secret123
+oracle serve --host 0.0.0.0:9473 --token "$ORACLE_REMOTE_TOKEN"
 
 # Client: target that host
-oracle --engine browser --remote-host 192.168.1.10:9473 --remote-token secret123 -p "Run the UI smoke" --file "src/**/*.ts"
+oracle --engine browser --remote-host 192.168.1.10:9473 \
+  -p "Run the UI smoke" --file "src/**/*.ts"
 
 # If cookies can’t sync, pass them inline (JSON/base64)
 oracle --engine browser --browser-inline-cookies-file ~/.oracle/cookies.json -p "Run the UI smoke" --file "src/**/*.ts"
 ```
+
+Remote browser hosts and `oracle-router` are transport for ChatGPT Pro Extended Reasoning and Gemini 3.1 Deep Think browser lanes. Fable xHigh stays local-only through `--lane fable-local`.
 
 Session management
 

@@ -4,7 +4,7 @@ import {
   runAggregateDoctor,
   type AggregateDoctorCheck,
 } from "../../../src/cli/commands/doctor/aggregate.js";
-import { registerDoctorCommand } from "../../../src/cli/commands/doctor/index.js";
+import { registerDoctorCommand, runLaneDoctor } from "../../../src/cli/commands/doctor/index.js";
 import type { ProviderDoctorEnvelope } from "../../../src/cli/commands/doctor/chatgpt.js";
 
 function providerEnvelope(provider: "chatgpt" | "gemini", ok = true): ProviderDoctorEnvelope {
@@ -72,6 +72,7 @@ describe("aggregate doctor", () => {
     expect(result.data.checks.map((entry) => entry.component)).toEqual([
       "chatgpt_doctor",
       "gemini_doctor",
+      "lane_policy",
       "remote_bridge",
       "session_storage",
       "provider_docs",
@@ -173,6 +174,67 @@ describe("aggregate doctor", () => {
     });
 
     const doctor = program.commands.find((command) => command.name() === "doctor");
-    expect(doctor?.commands.map((command) => command.name()).sort()).toEqual(["chatgpt", "gemini"]);
+    expect(doctor?.commands.map((command) => command.name()).sort()).toEqual([
+      "chatgpt",
+      "gemini",
+      "lanes",
+    ]);
+  });
+
+  test("registered doctor action passes --json from Commander options", async () => {
+    const program = new Command();
+    registerDoctorCommand(program, {
+      aggregate: {
+        sessionStore: fakeStore,
+        chatgptDoctor: async () => providerEnvelope("chatgpt"),
+        geminiDoctor: async () => providerEnvelope("gemini"),
+        remoteBridgeDoctor: async () => check("remote_bridge"),
+        sessionStorageCheck: async () => check("session_storage"),
+      },
+    });
+    const output: string[] = [];
+    const originalLog = console.log;
+    console.log = (message?: unknown) => {
+      output.push(String(message ?? ""));
+    };
+    try {
+      await program.parseAsync(["node", "oracle", "doctor", "--json"]);
+    } finally {
+      console.log = originalLog;
+    }
+    expect(JSON.parse(output.join("\n"))).toMatchObject({ schema_version: "json_envelope.v1" });
+  });
+
+  test("lane doctor emits the reviewed lane policy as JSON", () => {
+    const output: string[] = [];
+    const originalLog = console.log;
+    console.log = (message?: unknown) => {
+      output.push(String(message ?? ""));
+    };
+    try {
+      runLaneDoctor({ json: true });
+    } finally {
+      console.log = originalLog;
+    }
+    const parsed = JSON.parse(output.join("\n"));
+    expect(parsed.data.schema_version).toBe("agent-lanes.v1");
+    expect(parsed.data.lanes.map((entry: { lane: string }) => entry.lane)).toEqual([
+      "chatgpt-pro",
+      "gemini-deep-think",
+      "fable-local",
+    ]);
+    expect(parsed.data.lanes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          lane: "chatgpt-pro",
+          doctor_command:
+            "oracle doctor chatgpt --pro --extended-reasoning --remote-browser preferred --json",
+        }),
+        expect.objectContaining({
+          lane: "gemini-deep-think",
+          doctor_command: "oracle doctor gemini --deep-think --remote-browser preferred --json",
+        }),
+      ]),
+    );
   });
 });

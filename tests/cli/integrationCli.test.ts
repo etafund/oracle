@@ -65,6 +65,19 @@ function execCli(
   });
 }
 
+function productionCliEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    FORCE_COLOR: "0",
+    NO_COLOR: "1",
+    ORACLE_DISABLE_KEYTAR: "1",
+    ORACLE_NO_DETACH: "1",
+    ...overrides,
+  };
+  delete env.ORACLE_TEST_ALLOW_LEGACY_ROUTES;
+  return env;
+}
+
 type CliChild = ChildProcessByStdio<null, Readable, Readable>;
 
 function waitForChildExit(
@@ -1211,6 +1224,10 @@ module.exports = () => ({
         OPENROUTER_API_KEY: "or-integration",
         // biome-ignore lint/style/useNamingConvention: env var name
         ORACLE_DISABLE_KEYTAR: "1",
+        // biome-ignore lint/style/useNamingConvention: env var name
+        ORACLE_REMOTE_HOST: "127.0.0.1:65535",
+        // biome-ignore lint/style/useNamingConvention: env var name
+        ORACLE_REMOTE_TOKEN: "test-token",
       };
 
       try {
@@ -1839,10 +1856,8 @@ module.exports = () => ({
       await writeFile(archivePath, Buffer.alloc(1_100_000));
 
       const env = {
-        ...process.env,
+        ...productionCliEnv(),
         ORACLE_HOME_DIR: oracleHome,
-        ORACLE_DISABLE_KEYTAR: "1",
-        ORACLE_NO_DETACH: "1",
       };
 
       const result = await execCli(
@@ -1850,7 +1865,7 @@ module.exports = () => ({
           "--engine",
           "browser",
           "--remote-host",
-          "http://127.0.0.1:9",
+          "127.0.0.1:9",
           "--remote-token",
           "test-token",
           "--browser-attachments",
@@ -1865,7 +1880,113 @@ module.exports = () => ({
 
       const output = `${result.stdout}\n${result.stderr}`;
       expect(result.code).toBe(1);
+      expect(output).toContain("Remote browser host detected: 127.0.0.1:9");
+      expect(output).toContain("Routing browser automation to remote host 127.0.0.1:9");
       expect(output).not.toMatch(/exceed the 1 MB limit|file-validation/i);
+      expect(output).not.toMatch(/Oracle v1 agent runs are gated|agent_lane_blocked/i);
+      expect(output).toMatch(/127\.0\.0\.1:9|fetch failed|ECONNREFUSED/i);
+
+      await rm(oracleHome, { recursive: true, force: true });
+    },
+    INTEGRATION_TIMEOUT,
+  );
+
+  test(
+    "ignores ambient remote browser config for local fable-lane dry runs",
+    async () => {
+      for (const token of ["test-token", undefined]) {
+        const env = productionCliEnv({
+          ORACLE_HOME_DIR: path.join(os.tmpdir(), `oracle-fable-local-${Date.now()}`),
+          ORACLE_REMOTE_HOST: "127.0.0.1:9470",
+          ORACLE_REMOTE_BROWSER: "required",
+          ...(token ? { ORACLE_REMOTE_TOKEN: token } : {}),
+        });
+        delete env.ORACLE_ENGINE;
+        if (!token) {
+          delete env.ORACLE_REMOTE_TOKEN;
+        }
+
+        const result = await execCli(
+          [
+            "--lane",
+            "fable-local",
+            "--prompt",
+            "Remote config should not reroute local Fable",
+            "--file",
+            "README.md",
+            "--dry-run",
+            "json",
+          ],
+          { env, timeout: INTEGRATION_TIMEOUT },
+        );
+
+        expect(result.code).toBe(0);
+        expect(`${result.stdout}\n${result.stderr}`).not.toMatch(
+          /agent_lane_blocked|route-block|remote_browser_token_missing/i,
+        );
+        expect(result.stdout).toContain("would run Claude Code local mode (fable)");
+        expect(result.stdout).toContain("Route: claude-code/local; model=fable");
+      }
+    },
+    INTEGRATION_TIMEOUT,
+  );
+
+  test.each([
+    {
+      label: "cli remote host",
+      args: ["--remote-host", "127.0.0.1:9", "--remote-token", "test-token"],
+      env: {},
+      config: null,
+    },
+    {
+      label: "env remote host",
+      args: [],
+      env: {
+        ORACLE_REMOTE_HOST: "127.0.0.1:9",
+        ORACLE_REMOTE_TOKEN: "test-token",
+      },
+      config: null,
+    },
+    {
+      label: "config remote host",
+      args: [],
+      env: {},
+      config: {
+        browser: {
+          remoteHost: "127.0.0.1:9",
+          remoteToken: "test-token",
+        },
+      },
+    },
+  ])(
+    "routes ordinary browser runs from $label before remote transport failure",
+    async ({ args, env: envOverrides, config }) => {
+      const oracleHome = await mkdtemp(path.join(os.tmpdir(), "oracle-remote-route-"));
+      if (config) {
+        await writeFile(path.join(oracleHome, "config.json"), JSON.stringify(config), "utf8");
+      }
+      const env = productionCliEnv({
+        ORACLE_HOME_DIR: oracleHome,
+        ...envOverrides,
+      });
+      delete env.ORACLE_ENGINE;
+
+      const result = await execCli(
+        [
+          ...args,
+          "--model",
+          "gpt-5.1",
+          "--prompt",
+          "Remote router production-mode regression check",
+        ],
+        { env, timeout: INTEGRATION_TIMEOUT },
+      );
+
+      const output = `${result.stdout}\n${result.stderr}`;
+      expect(result.code).toBe(1);
+      expect(output).toContain("Remote browser host detected: 127.0.0.1:9");
+      expect(output).toContain("Routing browser automation to remote host 127.0.0.1:9");
+      expect(output).not.toMatch(/Oracle v1 agent runs are gated|agent_lane_blocked/i);
       expect(output).toMatch(/127\.0\.0\.1:9|fetch failed|ECONNREFUSED/i);
 
       await rm(oracleHome, { recursive: true, force: true });
