@@ -2,10 +2,10 @@
 
 Date: 2026-07-02
 Coordinator: RubyCliff
-Source plan: `SPIKE.md`
+Source plan: `docs/plans/SPIKE.md`
 Evidence root: `.planning-runs/claude-code-spike-execution-2026-07-02/`
 
-Live addendum: after the initial no-live report was pushed, the operator approved minimal Claude Code live probes and ChatGPT Pro browser prompt smoke. Sanitized results are recorded in `.planning-runs/claude-code-spike-execution-2026-07-02/coordinator-live/LIVE-GATE-RESULTS.md`. Gemini Deep Think remained intentionally skipped, MCP `fable-local` was narrowed to CLI-only, and MCP overflow / raw purge policy decisions remain deferred.
+Live addendum: after the initial no-live report was pushed, the operator approved minimal Claude Code live probes and ChatGPT Pro browser prompt smoke. Sanitized results are recorded in `.planning-runs/claude-code-spike-execution-2026-07-02/coordinator-live/LIVE-GATE-RESULTS.md`. A follow-up system-prompt spike is recorded in `.planning-runs/claude-code-spike-execution-2026-07-02/coordinator-live/SYSTEM-PROMPT-SPIKE.md`. Gemini Deep Think remained intentionally skipped, MCP `fable-local` was narrowed to CLI-only, and MCP overflow / raw purge policy decisions remain deferred.
 
 ## Executive Summary
 
@@ -19,6 +19,8 @@ The hardest negative findings are:
 - Do not add `fable` to shared API/browser model resolution. Current Oracle routing can reinterpret `fable` as OpenRouter API, Anthropic API-like, or browser GPT depending on inputs.
 - Do not reuse existing MCP `consult` log-tail output or generic session artifacts for raw Claude streams. They do not satisfy complete visible-event semantics or raw-stream privacy requirements.
 - Do not include remote browser, `oracle serve`, router/bridge, detached session workers, or unproven network MCP contexts in v1.
+
+The strongest positive live finding is that `claude -p --system-prompt <tiny Oracle prompt>` preserved the Fable/subscription path while cutting prompt-side token footprint from about `4863` tokens to `2019` tokens. Hidden alpha should use a tiny Oracle-owned system prompt rather than Claude Code's default system prompt.
 
 ## Worker Coverage
 
@@ -51,7 +53,7 @@ No-live validation completed before this report:
 | ---: | --- | --- |
 | 1 | Partial, live-gated | `claude` exists at `/home/ubuntu/.local/bin/claude`, version `2.1.198 (Claude Code)`, and help exposes the needed non-interactive flags. Live `system/init` and `result` stream fields remain blocked without opt-in. |
 | 2 | Complete | A central lane start gate is feasible if it runs before CLI/MCP run-option resolution, provider route planning, browser/remote setup, session creation, workers, and router requests. Harnessed route blocks had `noBackendStarted: true`. |
-| 3 | Partial, live-gated | Candidate containment flags exist, including `--tools ""`, `--safe-mode`, `--disable-slash-commands`, `--strict-mcp-config`, `--no-chrome`, and `--no-session-persistence`. Runtime proof of empty tools/config surfaces still needs live stream fixtures. |
+| 3 | Partial, live-supported | Candidate containment flags exist, including `--tools ""`, `--safe-mode`, `--disable-slash-commands`, `--strict-mcp-config`, `--no-chrome`, and `--no-session-persistence`. Live probes confirmed empty tools, MCP servers, slash commands, skills, and plugins for exact-token prompts; adversarial containment still needs fixtures. |
 | 4 | Complete with conservative policy | Hard-refuse API/provider env and settings before executable resolution. `ANTHROPIC_MODEL` should refuse until live precedence is proven. Do not silently unset auth/billing variables. |
 | 5 | Complete | Raw stdout/stderr preservation is feasible with byte offsets computed from `Buffer` lengths, not decoded string lengths. Parse failures and invalid UTF-8 can be preserved without byte loss. |
 | 6 | Complete with policy default | Use a 1 MiB default MCP inline visible-byte limit. On overflow, finish the run if practical, persist complete raw artifacts, return typed non-success, set `eventsComplete: false`, and provide resource URIs. |
@@ -60,7 +62,7 @@ No-live validation completed before this report:
 | 9 | Partial, live-gated | Startup verifier must fail closed on missing/unknown auth, model, tools, MCP, permission, Chrome, persistence, hooks/plugins/skills, fallback, or result fields. Requested-only `--model fable` is not proof. |
 | 10 | Complete | A fake-run vertical slice can exercise session creation, raw artifacts, normalized events, adapter metadata, final answer extraction, MCP structured output, parse failure, startup mismatch, and nonzero exit without live quota. |
 | 11 | Complete | Attached process-group lifecycle plus a single-flight lock is feasible. Harnesses killed timeout, flood, verifier-failure, and grandchild cases, preserved partial bytes, and recovered stale locks while refusing corrupt locks. |
-| 12 | Complete with hardening required | Existing prompt/file assembly can supply useful context through stdin with no Claude Code file tools. Add binary/sensitive-file guards, manifest metadata, context budget, and a read-only lane prefix. |
+| 12 | Complete with hardening required | Existing prompt/file assembly can supply useful context through stdin with no Claude Code file tools. A live `--system-prompt` spike preserved Fable/subscription behavior and cut prompt-side tokens by about 58.5%; hidden alpha should use a tiny Oracle-owned supplied-context system prompt. Add binary/sensitive-file guards, manifest metadata, and context budget. |
 | 13 | Complete | Keep `fable` and `claude_code_fable_5` isolated from shared API model registries, OpenRouter/custom passthrough, Anthropic API routing, and `--models` fan-out. |
 | 14 | Partial, browser-live-gated | Browser selector-state proof is strong in fake/FSM tests. Live readiness remains unknown because default doctors skip live UI probes and report unknown/not-ready when not opted in. |
 | 15 | Partial | ChatGPT pre-submit drift gating is strong. Gemini Deep Think should add a live DOM synthesis/re-probe immediately before submit before claiming equivalent drift resistance. |
@@ -110,6 +112,7 @@ Post-approval live findings:
 - Built-in `agents` remained listed in startup fields despite safe mode and disabled slash commands; no tools or agents were invoked.
 - ChatGPT Pro remote-browser smoke selected `Pro Extended`, verified the model selection, returned `CHECK_CHATGPT_PRO_OK_20260702`, archived the conversation, and saved output under the coordinator live artifacts.
 - `oracle doctor chatgpt` still reports degraded without a live UI probe, and the Vitest live smoke skipped because it preflights local Chrome cookies instead of the configured `oracle serve` router.
+- Follow-up `--system-prompt` spike returned `ORACLE_SPIKE_SYSTEM_PROMPT_OK_20260702` exactly, preserved startup `model: "claude-fable-5"` and `apiKeySource: "none"`, kept `tools: []` and `mcp_servers: []`, and reduced prompt-side token footprint from about `4863` to `2019`.
 
 ## Key Architectural Findings
 
@@ -131,6 +134,7 @@ Candidate non-live argv shape, subject to live startup verification:
 
 ```bash
 claude -p \
+  --system-prompt "You are Oracle's supplied-context reviewer. Answer only from the user-provided prompt and attached context. Do not use tools." \
   --model fable \
   --effort xhigh \
   --output-format stream-json \
@@ -149,6 +153,18 @@ claude -p \
 ```
 
 Do not emit `--bare` by default. Do not emit `--max-turns` for this installed CLI version unless feature detection later proves support.
+
+### System Prompt
+
+The live system-prompt spike tested a tiny Oracle-owned prompt:
+
+```text
+You are Oracle's supplied-context reviewer. Answer only from the user-provided prompt and attached context. Do not use tools.
+```
+
+That command preserved the observed Fable/subscription path: startup model and assistant primary model stayed `claude-fable-5`, `apiKeySource` stayed `none`, no tools or MCP servers were exposed, and the exact final token was returned. Prompt-side token footprint dropped from the recorded default-system-prompt baseline of about `4863` tokens to `2019` tokens, a reduction of about `58.5%`.
+
+Decision: hidden alpha should use the tiny Oracle-owned `--system-prompt`. The verifier should still check startup/result fields every run and should tolerate auxiliary non-Fable bookkeeping keys in `modelUsage` only when the primary startup/message/result evidence proves Fable.
 
 ### Auth And Billing Guards
 
@@ -193,19 +209,20 @@ Do not write raw Claude streams through current generic `SessionArtifact.kind: "
 5. Move passive command detection before active lane resolution so status/session/render/evidence resources remain route-neutral.
 6. Add hard parent-env and settings refusal before resolving or spawning `claude`.
 7. Add a safe Claude Code executable resolver with absolute realpath, ownership/mode/symlink-chain recording, repo-local refusal, world-writable refusal, and `shell: false`.
-8. Add attached-only process-group cleanup plus a Fable single-flight lock. Default lock contention should fail fast.
-9. Build raw stream persistence before parsing and make parser offsets byte-based only.
-10. Add typed raw artifact kinds, owner-only modes, redacted-export exclusion, resource URIs, and typed purge.
-11. Implement MCP `fable-local` only after CLI fake and live local paths pass and launch context can prove same-user local execution.
-12. Add default non-submitting browser doctor UI probes; unknown selector state must be not-ready.
-13. Add Gemini pre-submit DOM re-verification analogous to ChatGPT.
-14. Keep public docs/beta release blocked until the compliance wording is accepted.
+8. Use a tiny Oracle-owned `--system-prompt` for `fable-local` hidden alpha to avoid Claude Code default system prompt bloat.
+9. Add attached-only process-group cleanup plus a Fable single-flight lock. Default lock contention should fail fast.
+10. Build raw stream persistence before parsing and make parser offsets byte-based only.
+11. Add typed raw artifact kinds, owner-only modes, redacted-export exclusion, resource URIs, and typed purge.
+12. Keep MCP `fable-local` out of hidden alpha; the operator chose CLI-only.
+13. Add default non-submitting browser doctor UI probes; unknown selector state must be not-ready.
+14. Add Gemini pre-submit DOM re-verification analogous to ChatGPT, but keep Gemini skipped until there is an active lane/subscription.
+15. Keep public docs/beta release blocked until the compliance wording is accepted.
 
 ## Remaining Open Risks
 
-- Live Claude Code stream fields are unknown. The startup verifier still needs real `system/init` and final `result` fixtures for auth source, model, tools, MCP, config surfaces, usage, and fallback evidence.
-- `--tools ""`, empty MCP config, no Chrome, no session persistence, and permission mode containment still need runtime proof.
-- `ANTHROPIC_MODEL` CLI precedence over `--model fable` needs proof before any child-scrub policy is allowed.
+- Live Claude Code stream fields are now known for minimal exact-token probes, including default system prompt, `ANTHROPIC_MODEL` precedence, and tiny `--system-prompt` variants. The startup verifier still needs fixture coverage for negative cases, adversarial prompts, startup mismatches, and missing/unknown fields.
+- `--tools ""`, empty MCP config, no Chrome, no session persistence, and permission mode containment have minimal runtime proof. They still need adversarial no-tool/no-read/no-shell/no-agent fixtures before product claims are broadened.
+- `ANTHROPIC_MODEL` CLI precedence over `--model fable` was proven for Claude Code `2.1.198`; product still needs a policy choice between hard-refusal and child-scrub-with-warning.
 - macOS and Windows executable/process-tree behavior were not exercised on this Linux host.
 - Real MCP client launch contexts remain unproven.
 - Real MCP client tolerance for 1 MiB inline events should still be tested.
@@ -225,7 +242,7 @@ Phase 1: fake-run lane skeleton.
 Phase 2: supplied-context vertical slice.
 
 - Reuse Oracle prompt/file assembly.
-- Add sensitive filename policy, binary rejection or summarization, manifest metadata, context-size budget, read-only lane prefix, and stdin-only child protocol.
+- Add sensitive filename policy, binary rejection or summarization, manifest metadata, context-size budget, tiny Oracle-owned `--system-prompt`, and stdin-only child protocol.
 - Persist raw stdout/stderr and normalized events for fake child runs.
 
 Phase 3: opt-in local Claude Code CLI.

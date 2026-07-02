@@ -1,4 +1,4 @@
-# Plan: Local Claude Code Subscription Adapter for Fable 5
+# Plan: Experimental Local Claude Code CLI Lane for Fable 5
 
 Status: draft plan for `etafund/oracle`
 Date: 2026-07-02
@@ -29,17 +29,17 @@ This plan adds a third path:
 
 - Claude Code local mode: Oracle runs the user's own local `claude` command in headless mode and captures the visible stream that the official Claude Code CLI prints.
 
-The goal is to let the local owner use their Claude subscription plan's Fable 5 usage allotment, while avoiding Anthropic API billing. As of 2026-07-01, the user specifically wants to use their plan-related Fable usage window through 2026-07-07. The design should not be hardcoded to that date. The feature should still make sense after that window ends, as long as Claude Code still exposes subscription-backed Fable access.
+The goal is to let the local owner use their official local Claude Code CLI with Fable 5, while avoiding Anthropic API billing paths. As of 2026-07-01, the user specifically wants to use their plan-related Fable usage window through 2026-07-07. The design should not be hardcoded to that date. The feature should still make sense after that window ends, as long as Claude Code still exposes local Fable access through the user's logged-in Claude Code install.
 
-This feature is not a proxy. It is not a hosted service. It is not an Anthropic API adapter. It is a local wrapper around the user's own installed and logged-in Claude Code CLI.
+This feature is not a proxy. It is not a hosted service. It is not an Anthropic API adapter. It is a local wrapper around the user's own installed and logged-in Claude Code CLI. Public wording should call it a local Claude Code CLI lane or local Claude Code review mode, not a "subscription adapter" or "API bypass."
 
-This plan also adds a broader v1 CLI shape change: the revised agent-facing Oracle CLI should guide and gate agents into exactly three reviewed lanes:
+This plan also adds a broader lane-registry shape change: the revised agent-facing Oracle CLI should define reviewed lane templates, then expose only the templates whose readiness gates have passed. The target registry includes:
 
 - ChatGPT Pro (Extended Reasoning) through browser automation, with GPT Pro requests automatically normalized to browser mode plus `--browser-thinking-time extended`.
 - Gemini Pro with Deep Think through browser automation.
 - Fable (xHigh effort) through local Claude Code `claude -p`.
 
-The broader Oracle feature set should stay in the fork. API providers, browser machinery, session storage, MCP plumbing, docs, tests, and future model support are not being deleted. The change is that normal agent-facing discovery, help text, MCP schema hints, and error messages should steer agents to the three reviewed lanes, and other routes should fail with a clear route-block error for now.
+Spike results narrowed the first implementation. Hidden alpha should expose only the local CLI Fable path, and only after fake-run and supplied-context gates pass. MCP `fable-local`, public browser-lane claims, Gemini Deep Think, and broad live-smoke claims remain deferred until their own readiness gates are implemented and proven. The broader Oracle feature set should stay in the fork. API providers, browser machinery, session storage, MCP plumbing, docs, tests, and future model support are not being deleted. The change is that normal agent-facing discovery, help text, schema hints, and error messages should steer agents to enabled reviewed lane templates, and other active routes should fail with a clear route-block error for now.
 
 The first version must be strict:
 
@@ -47,10 +47,10 @@ The first version must be strict:
 - Read-only review only.
 - Use Claude Code subscription auth only.
 - Refuse to run if `ANTHROPIC_API_KEY` is present.
-- Return all visible Claude Code events inline to the caller.
+- Return all visible Claude Code events inline to the CLI caller in hidden alpha.
 - Persist the full raw visible event stream under the Oracle session directory.
 - Never claim to capture hidden reasoning or private chain-of-thought.
-- Make the three reviewed lanes the only normal agent-invocable lanes in v1.
+- Define the three reviewed lane templates, but enable only the gates that are ready.
 - Preserve non-lane features behind a clear gate instead of silently deleting or silently routing them.
 
 ## Source Facts This Plan Depends On
@@ -67,13 +67,13 @@ These facts are the base of the design. They should be checked again before impl
    Anthropic's support docs say if `ANTHROPIC_API_KEY` is set, Claude Code uses that API key instead of the Claude subscription plan, causing API usage charges.
 
 4. The local Claude Code install was checked during planning.
-   On this machine, `claude --version` returned `2.1.198 (Claude Code)`. `claude -p --help` showed `--output-format stream-json`, `--include-partial-messages`, `--include-hook-events`, `--model`, `--permission-mode`, `--tools`, `--allowedTools`, `--disallowedTools`, `--safe-mode`, `--bare`, `--no-chrome`, `--no-session-persistence`, and dangerous bypass flags. It did not show `--max-turns` in the checked help output. The implementation must not rely on this remembered check alone. It must paste a fresh empirical CLI contract into this plan or an appendix before coding.
+   On this machine, `claude --version` returned `2.1.198 (Claude Code)`. `claude -p --help` showed `--output-format stream-json`, `--include-partial-messages`, `--include-hook-events`, `--model`, `--permission-mode`, `--tools`, `--allowedTools`, `--disallowedTools`, `--safe-mode`, `--bare`, `--no-chrome`, `--no-session-persistence`, and dangerous bypass flags. It did not show `--max-turns` in the checked help output. Later live probes confirmed the supported hidden-alpha command shape on this Linux host. The implementation must still refresh the empirical contract when Claude Code version, host OS, or target machine changes.
 
 5. Claude Code has several configuration surfaces that can affect a headless run.
    Current Claude Code docs describe flags and settings for hooks, plugins, skills, MCP servers, Chrome integration, custom commands, custom agents, background sessions, fallback models, and session persistence. This plan must neutralize those surfaces for v1 instead of assuming `claude -p` is a plain text API.
 
 6. Claude Code has stream fields that can help verify the run.
-   Current docs say model warnings may be suppressed in `stream-json`, and the actual model should be read from the result message's `modelUsage` field when available. The TypeScript SDK stream also exposes system initialization data that can include auth and tool information. The implementation must parse startup and result events and fail closed when they do not match the expected local subscription review shape.
+   Current docs say model warnings may be suppressed in `stream-json`, and the actual model should be read from visible startup/message/result fields when available. Live results showed `modelUsage` can include the primary Fable key plus a small auxiliary Haiku bookkeeping key, so the verifier must distinguish primary assistant evidence from auxiliary Claude Code bookkeeping. The TypeScript SDK stream also exposes system initialization data that can include auth and tool information. The implementation must parse startup and result events and fail closed when they do not match the expected local CLI review shape.
 
 7. Oracle already has a provider boundary that says Claude subscription CLI is not Oracle-owned and must not be replaced with Anthropic API.
    This is fork-local to `etafund/oracle`.
@@ -91,7 +91,7 @@ These facts are the base of the design. They should be checked again before impl
 
 ## Empirical CLI Contract
 
-Do not start implementation until this contract is filled with fresh output from the target machine.
+Do not start product implementation until this contract is represented in fixtures and refreshed for the target machine.
 
 The goal of this step is simple: the code must be generated from observed Claude Code behavior, not from guessed docs or stale memory.
 
@@ -103,11 +103,45 @@ claude --help 2>&1
 claude -p --help 2>&1
 ```
 
-Then run these opt-in probes on a subscription-authenticated machine:
+The 2026-07-02 live probes on this Linux host used Claude Code `2.1.198` and established the first hidden-alpha baseline:
+
+- Subscription path startup fields included `apiKeySource: "none"`, `model: "claude-fable-5"`, `permissionMode: "plan"`, `tools: []`, `mcp_servers: []`, `slash_commands: []`, `skills: []`, `plugins: []`, and `fast_mode_state: "off"`.
+- Built-in `agents` were still listed as `["claude", "Explore", "general-purpose", "Plan"]`; no agent or tool was invoked. The verifier must not fail solely because these built-ins are listed.
+- `--mcp-config '{}'` is invalid. The strict empty MCP config shape is `--mcp-config '{"mcpServers":{}}'`.
+- `--bare` must not be used by default. Installed help says bare/simple mode does not read OAuth/keychain credentials and instead requires `ANTHROPIC_API_KEY` or `apiKeyHelper`.
+- `--max-turns` was not present in checked help output. Do not emit any turn-cap flag unless future feature detection proves the installed CLI supports it.
+- `ANTHROPIC_MODEL=claude-haiku-4-5-20251001` did not override `--model fable` for the main assistant run on Claude Code `2.1.198`.
+- `modelUsage` included `["claude-fable-5", "claude-haiku-4-5-20251001"]`; the primary assistant model evidence remained Fable.
+- Redacted `claude auth status --json` fields included `loggedIn: true`, `authMethod: "claude.ai"`, `apiProvider: "firstParty"`, and `subscriptionType: "max"`.
+- A rate-limit event included `status: "allowed"`, `rateLimitType: "five_hour"`, `overageStatus: "rejected"`, and `isUsingOverage: false`.
+- A tiny Oracle-owned `--system-prompt` preserved the Fable/subscription path and reduced prompt-side token footprint from about `4863` to `2019` tokens, about `58.5%` lower.
+
+The checked hidden-alpha command shape is:
+
+```bash
+claude -p \
+  --system-prompt "You are Oracle's supplied-context reviewer. Answer only from the user-provided prompt and attached context. Do not use tools." \
+  --model fable \
+  --effort xhigh \
+  --output-format stream-json \
+  --verbose \
+  --include-partial-messages \
+  --include-hook-events \
+  --permission-mode plan \
+  --safe-mode \
+  --disable-slash-commands \
+  --strict-mcp-config \
+  --mcp-config '{"mcpServers":{}}' \
+  --disallowedTools 'mcp__*' \
+  --no-chrome \
+  --no-session-persistence \
+  --tools ''
+```
+
+Keep these opt-in probes as refresh checks for future target machines:
 
 ```bash
 printf 'reply exactly: ok\n' | claude -p --model fable --output-format stream-json --verbose
-printf 'reply exactly: ok\n' | claude --bare -p --model fable --output-format stream-json --verbose
 printf 'reply exactly: ok\n' | ANTHROPIC_MODEL=some-other-model claude -p --model fable --output-format stream-json --verbose
 printf 'reply exactly: ok\n' | claude -p --model fable --output-format stream-json --verbose --tools ""
 ```
@@ -118,13 +152,14 @@ The implementation must record:
 
 - Exact Claude Code version.
 - Exact supported flags.
-- Whether `--bare` preserves subscription auth.
+- Whether the installed version still warns that `--bare` does not read OAuth/keychain credentials.
 - Whether `--tools ""` yields an empty startup tool list.
 - Exact subscription auth value in `apiKeySource`.
 - Exact API-key/provider auth values that must be refused.
 - Exact startup fields for tools, MCP servers, hooks, plugins, skills, slash commands, Chrome integration, custom agents, permission mode, fallback model, and session persistence.
 - Exact result fields for `modelUsage`, `total_cost_usd`, and final text.
 - Whether `--model fable` overrides `ANTHROPIC_MODEL`.
+- Redacted auth-status and rate-limit fields when visible.
 
 If a claimed safety flag is absent or ignored, do not emit it and do not pretend it protects the run. Replace it with startup verification or mark the feature blocked.
 
@@ -161,7 +196,8 @@ Recommended docs wording:
 
 ```text
 Claude Code local mode
-local Claude Code subscription adapter
+local Claude Code CLI lane
+experimental local Claude Code review mode
 visible Claude Code event stream
 ```
 
@@ -232,15 +268,15 @@ The implementation must also reject or prove safe any other API/provider auth so
 
 Treat model-default controls separately from auth/provider controls:
 
-- If empirical testing proves `--model fable` overrides `ANTHROPIC_MODEL`, scrub `ANTHROPIC_MODEL` from the child env instead of hard-refusing the parent env.
-- If empirical testing does not prove that, refuse when `ANTHROPIC_MODEL` is present.
+- The 2026-07-02 live probe proved `--model fable` overrides `ANTHROPIC_MODEL` for the main assistant run on Claude Code `2.1.198`.
+- Product policy still must choose one of two safe behaviors for `ANTHROPIC_MODEL`: keep a conservative hard refusal, or scrub it from the child environment after recording a warning that the parent env contained a model default.
 - Keep `ANTHROPIC_DEFAULT_*` refused unless each specific variable is proven inert for this run.
 
 For v1, prefer refusal when a source is ambiguous. The feature is useful only when Oracle can say it made a serious effort to avoid API billing.
 
 ### Goal 3: Read-Only Review Only
 
-The first version must be for review of Oracle-supplied context. It must not let Claude Code edit files, run shell commands, mutate the repo, browse, call MCP tools, start subagents, schedule tasks, or read extra files from disk.
+The first version must be for review of Oracle-supplied context through the local CLI only. It must not let Claude Code edit files, run shell commands, mutate the repo, browse, call MCP tools, start subagents, schedule tasks, or read extra files from disk.
 
 Claude Code is an agentic local tool. That makes it more powerful and more risky than an API call. The safe MVP should allow only read-style behavior.
 
@@ -249,14 +285,15 @@ The v1 command should use a defensive no-tool shape:
 - Disable Claude Code tools entirely if the CLI supports that.
 - Do not use `Read`, `Grep`, `Glob`, or any other file tool in v1.
 - Paste all requested file context into the prompt from Oracle's normal file attachment path.
-- Use `--permission-mode dontAsk` or `--permission-mode plan`, whichever empirical testing proves safer for unattended supplied-context review.
+- Use `--permission-mode plan`, the mode observed in the successful live probes, unless a future empirical contract proves a stricter supported mode.
 - Use `--safe-mode`.
 - Use `--disable-slash-commands`.
-- Use `--strict-mcp-config` with no MCP config.
-- Use `--disallowedTools mcp__*`.
+- Use `--strict-mcp-config` with `--mcp-config '{"mcpServers":{}}'`.
+- Use `--disallowedTools 'mcp__*'`.
 - Use `--no-chrome`.
 - Use `--no-session-persistence`.
-- Use a conservative turn cap only if the installed CLI exposes a safe flag for it.
+- Do not emit `--bare` by default.
+- Do not emit a turn cap unless the installed CLI exposes a safe flag for it.
 - Use explicit denial for all non-approved tools if tools cannot be disabled as a set.
 - No permission bypass flags.
 - No `--dangerously-skip-permissions`.
@@ -273,13 +310,13 @@ The user wants the calling agent to receive the full visible turn, not only the 
 
 For CLI use, that means Oracle should print the visible event stream as it arrives, or print it in a stable format after completion if the output target is not a live TTY.
 
-For MCP use, that means the `consult` result must include all visible events in `structuredContent`, not only artifact paths.
+For hidden-alpha CLI use, that means Oracle should display and persist the complete visible event stream. MCP `fable-local` is deferred by operator decision. For future MCP use, the `consult` result must include all visible events in `structuredContent`, not only artifact paths.
 
 The feature must not silently truncate.
 
 If a transport or caller cannot accept the full inline stream, the run should fail closed with a clear error and point to the persisted raw event stream. It should not return a partial stream while labeling it complete.
 
-For MCP, a successful `claude-code` response must include both visible stdout events and visible stderr chunks inline. `eventsComplete: true` is allowed only when both streams are complete and included.
+For future MCP, a successful `claude-code` response must include both visible stdout events and visible stderr chunks inline. `eventsComplete: true` is allowed only when both streams are complete and included.
 
 Each returned event should have enough data to prove order and source:
 
@@ -322,6 +359,8 @@ The docs must warn that raw event streams can contain sensitive local paths, fil
 
 The session directory and artifact files should be owner-only where the platform supports it. Do not include raw Claude Code streams in any redacted evidence export by default.
 
+Regular Oracle cleanup may eventually remove whole sessions, but that is not a scoped raw-stream retention control. A selective raw-stream purge remains deferred until typed Claude Code artifact kinds and an explicit typed purge path are implemented.
+
 ### Goal 6: Keep Oracle's Existing API and Browser Behavior Stable Behind the Gate
 
 Existing API mode should stay in the codebase and keep its test coverage.
@@ -330,7 +369,7 @@ Existing browser mode should stay in the codebase and keep its test coverage.
 
 Existing Anthropic API models such as `claude-4.6-sonnet` and `claude-4.1-opus` should not be converted into Claude Code subscription runs.
 
-The lane gate changes what normal agent-facing invocations may run in v1. If an agent asks for an unsupported provider, engine, model, or feature, Oracle should refuse with a route-block error and show exact replacement commands for the three reviewed lanes.
+The lane gate changes what normal agent-facing invocations may run in v1. If an agent asks for an unsupported provider, engine, model, disabled template, or feature, Oracle should refuse with a route-block error and show exact replacement commands for enabled reviewed lanes plus status for deferred templates.
 
 That refusal is not a deletion of the underlying feature. It is a temporary product boundary for the revised CLI surface.
 
@@ -341,9 +380,9 @@ The implementation must avoid silent fallback. For example:
 - `oracle --model gpt-5.5-pro` must normalize to the ChatGPT Pro browser lane with extended thinking, not silently run through API mode or default browser thinking.
 - `oracle --model gemini-*` must not silently run if the request does not resolve to the Gemini Pro Deep Think browser lane.
 
-If a legacy or expert invocation exactly resolves to one of the three reviewed lanes, Oracle may accept it and emit a short diagnostic that shows the canonical `--lane` form.
+If a legacy or expert invocation exactly resolves to an enabled reviewed lane, Oracle may accept it and emit a short diagnostic that shows the canonical `--lane` form.
 
-If it does not exactly resolve to one of the three reviewed lanes, Oracle must refuse before starting an API request, browser run, local Claude Code process, MCP tool call, router request, or session worker.
+If it does not exactly resolve to an enabled reviewed lane, Oracle must refuse before starting an API request, browser run, local Claude Code process, MCP tool call, router request, or session worker.
 
 ### Goal 7: Be Honest About What Was Captured
 
@@ -406,7 +445,7 @@ Recommended public flag:
 --lane <chatgpt-pro|gemini-deep-think|fable-local>
 ```
 
-The three supported v1 lanes are:
+The three target lane templates are:
 
 | Public lane | Canonical internal id | Access path | Required shape |
 |-------------|-----------------------|-------------|----------------|
@@ -414,7 +453,9 @@ The three supported v1 lanes are:
 | `gemini-deep-think` | `gemini_pro_deep_think_browser` | `gemini_pro_deep_think_browser_automation` | Gemini Pro Deep Think via browser automation |
 | `fable-local` | `claude_code_fable_local` | `claude_code_subscription_cli` | Fable (xHigh effort) via local `claude -p` |
 
-The ChatGPT Pro lane is not just a label. Every accepted GPT Pro request must resolve to the standard browser runner shape for ChatGPT Pro Extended Reasoning. The user should be able to run the short lane command, and the lane policy should normalize it as though the fully spelled-out command included `--engine browser --model gpt-5.5-pro --browser-thinking-time extended --browser-model-strategy select --browser-archive auto --browser-attachments auto`.
+Hidden alpha enables only `fable-local` through the local CLI. The ChatGPT Pro lane is live-smoke-positive through the current remote browser router, but default doctor readiness remains degraded until a non-submitting live UI probe proves selector state. Gemini Deep Think is a deferred template because there is no active Gemini lane/subscription and no live Deep Think proof.
+
+The ChatGPT Pro lane is not just a label once enabled. Every accepted GPT Pro request must resolve to the standard browser runner shape for ChatGPT Pro Extended Reasoning. The user should be able to run the short lane command, and the lane policy should normalize it as though the fully spelled-out command included `--engine browser --model gpt-5.5-pro --browser-thinking-time extended --browser-model-strategy select --browser-archive auto --browser-attachments auto`.
 
 `--browser-archive` is the correct flag name. Do not document or accept the misspelled `--brower-archive` alias.
 
@@ -431,7 +472,7 @@ These lane names should be the first names agents see in:
 
 The lane gate must be central. Do not implement it as scattered `if` checks in each provider. A single policy helper should take parsed CLI or MCP run options, produce either a resolved lane or a route-block error, and run before any backend starts.
 
-The helper should accept exact legacy forms only when the intent is unambiguous:
+The helper should accept exact legacy forms only when the intent is unambiguous and the target lane is enabled:
 
 ```text
 --lane chatgpt-pro
@@ -550,7 +591,7 @@ Do not erase unsupported models from internal registries if tests or future work
 
 Do not make the route-block error pretend the feature does not exist. It should say the feature is retained but gated for v1.
 
-Do not bury the three reviewed lanes under a long model catalog. Agents should see the reviewed lanes first.
+Do not bury the enabled lane and deferred lane statuses under a long model catalog. Agents should see the lane gate first.
 
 Do not add a casual `--unsafe-ungated` or `--bypass-lane-gate` flag in v1. If a future human-only advanced surface is needed, it should have a separate design and explicit tests proving agents do not discover it as the normal path.
 
@@ -558,7 +599,7 @@ Do not add a casual `--unsafe-ungated` or `--bypass-lane-gate` flag in v1. If a 
 
 ### CLI: Agent-Facing Lane Commands
 
-These are the first commands `oracle --help` should teach:
+These are the lane-template commands `oracle --help` should eventually teach. During hidden alpha, only `fable-local` should be enabled, and browser lane templates should be shown as not ready unless their non-submitting doctor checks pass.
 
 ```bash
 oracle --lane chatgpt-pro \
@@ -612,6 +653,8 @@ oracle --lane gemini-deep-think \
   --prompt "Review this design from first principles." \
   --file scratch/design.md
 ```
+
+Gemini Deep Think should remain a deferred template until there is an active Gemini lane/subscription and a live pre-submit DOM re-probe proves the selected state.
 
 ```bash
 oracle --lane fable-local \
@@ -690,9 +733,13 @@ MVP recommendation:
 
 - CLI default: human-readable progress plus final answer, with raw JSONL persisted.
 - Machine flag: `--claude-code-inline-events jsonl` to print raw events.
-- MCP default: structured full events inline, because the user cares most about calling agents.
+- Future MCP default: structured full events inline, because the user cares most about calling agents. Hidden alpha route-blocks MCP `fable-local`.
 
-### MCP: Local Fable Review
+### Future MCP: Local Fable Review (Deferred)
+
+Do not implement or advertise MCP `fable-local` in the hidden alpha. MCP should route-block `lane: "fable-local"` with `agent_lane_blocked` until a later phase proves launch-context identity, local-owner checks, Claude auth verifier behavior, complete inline event return, overflow semantics, and raw resource URI behavior.
+
+The future intended MCP shape remains:
 
 ```json
 {
@@ -753,6 +800,8 @@ Expected MCP structured output:
 
 The exact event schema must match what Claude Code prints. Oracle should not invent provider fields that were not visible.
 
+Default future MCP inline visible-byte limit: `1 MiB`. On overflow, finish the run if practical, persist complete raw artifacts, return typed non-success, set `eventsComplete: false`, and provide resource URIs. Never reuse the existing 4 KB log-tail path as the full event return.
+
 For MCP, prefer Oracle resource URIs over absolute local paths. Absolute paths are acceptable for CLI output, but network-facing or shared transports must not receive local filesystem paths.
 
 Expert MCP compatibility form:
@@ -809,7 +858,7 @@ Session render should show:
 
 Do not dump huge raw event streams by default in `oracle session --render`. Add an explicit flag or resource for raw events.
 
-Possible CLI:
+Possible future CLI:
 
 ```bash
 oracle session <session-id> --raw-events stdout
@@ -818,7 +867,7 @@ oracle session <session-id> --normalized-events
 oracle session <session-id> --purge-claude-code-artifacts
 ```
 
-Use viewing flags for inspection and a separate purge flag for deletion. Do not overload `--raw-events` to delete anything.
+Use viewing flags for inspection and a separate purge flag for deletion. Do not overload `--raw-events` to delete anything. The purge command is deferred; regular session cleanup may remove whole sessions, but it is not a selective raw-stream retention policy.
 
 MCP resources should support:
 
@@ -997,8 +1046,8 @@ Current state and routing decisions:
 | Legacy CLI `--browser` | Forces browser mode | Keep as browser only; never maps to `claude-code` |
 | `ORACLE_ENGINE` | Normalizes to `api` or `browser` | Refuse `ORACLE_ENGINE=claude-code` in v1; require explicit CLI flag |
 | `~/.oracle/config.json` `engine` | Can influence default engine | Refuse config-only `engine: "claude-code"` in v1; require explicit per-run request |
-| MCP `lane` field | Does not exist yet | Add `fable-local`; this is the preferred MCP entry |
-| MCP `engine` field | Zod enum currently accepts `api` or `browser` | Add `claude-code` only as compatibility, only when it resolves to `fable-local`, and only for local stdio or same-user local socket transports |
+| MCP `lane` field | Does not exist yet | Add as a future schema template, but hidden alpha route-blocks `fable-local` over MCP |
+| MCP `engine` field | Zod enum currently accepts `api` or `browser` | Add `claude-code` only in the later MCP phase, only as compatibility, only when it resolves to `fable-local`, and only for local stdio or same-user local socket transports |
 | API provider flags | Can force API routing | Refuse when combined with `--engine claude-code` |
 | `apiProviderRequested` internal path | Forces API routing | Must not override explicit `claude-code`; mixed API-provider request must fail |
 
@@ -1072,55 +1121,65 @@ Suggested behavior:
 buildClaudeCodeCommand({
   executable: "claude",
   model: "fable",
-  permissionMode: "dontAsk",
+  systemPrompt: "tiny-oracle-supplied-context-reviewer",
+  permissionMode: "plan",
   outputFormat: "stream-json",
   includePartialMessages: true,
-  includeHookEvents: "if-confirmed",
+  includeHookEvents: true,
   verbose: true,
   readOnly: true,
   toolMode: "none",
-  bareMode: "use-if-subscription-auth-still-works",
-  safeMode: "if-confirmed-and-not-using-bare",
+  bareMode: "off",
+  safeMode: true,
   disableSlashCommands: true,
   strictMcpConfig: true,
+  mcpConfig: { mcpServers: {} },
   noChrome: true,
   noSessionPersistence: true,
-  turnCap: "if-confirmed",
+  turnCap: "off-unless-feature-detected",
   promptSource: "stdin"
 })
 ```
 
-Candidate baseline v1 argv shape after empirical confirmation:
+Live-supported hidden-alpha argv shape:
 
 ```bash
 claude -p \
+  --system-prompt "You are Oracle's supplied-context reviewer. Answer only from the user-provided prompt and attached context. Do not use tools." \
   --model fable \
+  --effort xhigh \
   --output-format stream-json \
   --verbose \
   --include-partial-messages \
-  --permission-mode dontAsk \
+  --include-hook-events \
+  --permission-mode plan \
+  --safe-mode \
   --disable-slash-commands \
   --strict-mcp-config \
-  --disallowedTools mcp__* \
+  --mcp-config '{"mcpServers":{}}' \
+  --disallowedTools 'mcp__*' \
   --no-chrome \
   --no-session-persistence \
-  --tools ""
+  --tools ''
 ```
 
 Every flag in this candidate argv must be confirmed by the empirical CLI contract before the command builder emits it. If `--no-chrome` is absent, startup verification must prove Chrome integration is inactive or the run refuses. If `--no-session-persistence` is absent, startup verification must prove session persistence is inactive or the run refuses.
 
-Use `--permission-mode dontAsk` if the empirical CLI check confirms it denies rather than prompts in unattended print mode. If `dontAsk` is not safer on the installed CLI, use `--permission-mode plan` and document the reason in the empirical appendix.
+Use `--permission-mode plan` for hidden alpha because that is the live-proven mode. Consider another mode only after a future empirical contract proves it is stricter and still preserves the supplied-context behavior.
 
 Add these flags only when the empirical CLI contract confirms they exist and work as expected:
 
 ```text
 --include-hook-events
 --safe-mode
---bare
 <turn-cap flag if one exists>
 ```
 
 Do not emit unsupported flags just because this plan mentions them.
+
+Do not emit `--bare` by default. The installed CLI help says bare/simple mode does not read OAuth/keychain credentials and instead requires `ANTHROPIC_API_KEY` or `apiKeyHelper`, which conflicts with this lane's subscription-auth goal.
+
+Do not emit a `--max-turns` or other turn-cap flag for Claude Code `2.1.198` unless future feature detection proves support.
 
 The v1 no-tool syntax is:
 
@@ -1136,12 +1195,7 @@ Do not use `--allowedTools` as the safety boundary. Claude Code docs say `--allo
 
 Do not expose a raw `--claude-code-args` or extra-args option in v1. The command builder must own the whole argv.
 
-Test `--bare` before implementation:
-
-- If `claude --bare -p --output-format stream-json --verbose` preserves subscription auth and reduces hooks, plugins, skills, MCP servers, custom agents, and other config surfaces, use `--bare` as the primary config-surface mitigation.
-- If `--bare` breaks subscription auth or hides fields Oracle needs for verification, document the failure and use the verifier-based mitigation instead.
-
-After startup, parse the visible initialization event and assert that the available tools, MCP servers, hooks, plugins, skills, slash commands, Chrome integration, agents, permission mode, model, and auth source match the intended v1 shape. If they do not, stop the run and mark it non-success.
+After startup, parse the visible initialization event and assert that the available tools, MCP servers, hooks, plugins, skills, slash commands, Chrome integration, permission mode, model, and auth source match the intended v1 shape. Built-in `agents` may be listed, as observed in the live probe, but custom/unknown/active agent use or tool invocation must stop the run. If the startup shape does not match, stop the run and mark it non-success.
 
 Never use `shell: true`.
 
@@ -1194,8 +1248,8 @@ Mandatory auth and provider-routing refusals:
 
 Model-default controls:
 
-- If `ANTHROPIC_MODEL` is set and the empirical CLI contract proves `--model fable` wins, scrub `ANTHROPIC_MODEL` from the child env and continue.
-- If `ANTHROPIC_MODEL` is set and that precedence is not proven, refuse.
+- If `ANTHROPIC_MODEL` is set, the 2026-07-02 live contract says `--model fable` wins for the main assistant run on Claude Code `2.1.198`.
+- The product decision remains: either keep a conservative parent-env refusal, or scrub `ANTHROPIC_MODEL` from the child env and continue with a recorded warning. Do not silently ignore it.
 - If `ANTHROPIC_DEFAULT_*` is set, refuse unless each exact variable is proven inert for this run.
 
 Because the user asked for hard refusal on `ANTHROPIC_API_KEY`, the implementation must run this guard before any `claude` subprocess, including doctor and dry-run probes.
@@ -1211,6 +1265,7 @@ Refuse these combinations:
 - `--engine claude-code --remote-chrome ...`
 - `--engine claude-code --browser-*`
 - MCP `engine: "claude-code"` when configured remote browser service is active, if the request would run on a remote host.
+- All MCP `fable-local` requests in hidden alpha. MCP support waits for the later launch-context proof phase.
 
 The wording should be simple:
 
@@ -1237,7 +1292,7 @@ Recommended checks:
 - Refuse unsafe executable symlinks.
 - Refuse if the process appears to be running inside a remote `oracle serve` or router request.
 - Refuse network-bound MCP, server, bridge, router, and remote transports for `engine: "claude-code"`.
-- Allow MCP use only over local stdio or a same-user local socket after owner checks pass.
+- In the later MCP phase, allow MCP use only over local stdio or a same-user local socket after owner checks pass.
 
 Recommended metadata:
 
@@ -1268,7 +1323,7 @@ Suggested metadata:
 {
   "claudeCode": {
     "readOnly": true,
-    "permissionMode": "dontAsk-or-plan-after-empirical-check",
+    "permissionMode": "plan",
     "toolMode": "none",
     "allowedTools": [],
     "blockedTools": ["*"],
@@ -1354,15 +1409,19 @@ Expected startup shape for v1:
 {
   "type": "system",
   "subtype": "init",
-  "apiKeySource": "<captured subscription value>",
-  "model": "fable-or-claude-fable-5",
+  "apiKeySource": "none",
+  "model": "claude-fable-5",
   "tools": [],
   "mcp_servers": [],
-  "permissionMode": "dontAsk-or-plan"
+  "permissionMode": "plan",
+  "slash_commands": [],
+  "skills": [],
+  "plugins": [],
+  "fast_mode_state": "off"
 }
 ```
 
-Current docs and SDK examples use fields like `apiKeySource`, `model`, `tools`, and MCP server metadata on system initialization events. The implementation must confirm the exact casing and exact values against the installed Claude Code version.
+Current docs and SDK examples use fields like `apiKeySource`, `model`, `tools`, and MCP server metadata on system initialization events. The implementation must confirm the exact casing and exact values against the installed Claude Code version. The values above are the 2026-07-02 live baseline for Claude Code `2.1.198` on this Linux host.
 
 Do not guess the subscription value. Real Claude Code builds may report subscription/OAuth login as values such as `none`, `claude.ai`, or another string. The empirical CLI contract must capture the exact value. The verifier allowlist must be built from that capture.
 
@@ -1371,13 +1430,14 @@ Hard verifier rules:
 - If no startup event appears before assistant output, stop and mark non-success.
 - If `apiKeySource` is missing, stop and mark non-success.
 - If `apiKeySource` is an API key, auth token, `env`, helper, Bedrock, Vertex, Foundry, AWS, Console/API, or unknown source, stop and mark non-success.
-- If `apiKeySource` matches the empirically captured subscription/OAuth value, continue.
+- If `apiKeySource` matches the empirically captured subscription/OAuth value, continue. The current captured value is `"none"`, while `claude auth status --json` reported a logged-in first-party Claude account with `authMethod: "claude.ai"` and `subscriptionType: "max"`.
 - If `model` is missing, keep `modelVerificationStatus: "requested_only"` but require the final result event to prove model compatibility if it exposes `modelUsage`.
 - If `model` is present and not Fable-compatible, stop and mark non-success.
 - If `tools` is missing, stop and mark non-success.
 - If `tools` is not an empty list, stop and mark non-success.
 - If MCP server metadata is present and non-empty, stop and mark non-success.
 - If hooks, plugins, skills, slash commands, Chrome integration, custom agents, background agents, fallback model, or session persistence metadata is present and active, stop and mark non-success.
+- If startup `agents` lists the built-ins observed in the live probe (`claude`, `Explore`, `general-purpose`, `Plan`), do not fail on that fact alone. Fail if a custom/unknown agent is active, invoked, or cannot be classified.
 - If any critical field is missing because Claude Code changed the schema, stop and mark non-success until the schema is updated.
 
 Expected result shape for model verification:
@@ -1392,7 +1452,7 @@ Expected result shape for model verification:
 }
 ```
 
-If a result event exposes `modelUsage`, success requires Fable-compatible usage. If it exposes a non-Fable model, mark non-success. If it does not expose model usage, do not claim `observed`; leave `modelVerificationStatus: "requested_only"` and rely on startup verification.
+If a result event exposes `modelUsage`, success requires Fable-compatible primary assistant evidence. Live probes showed an auxiliary `claude-haiku-4-5-20251001` key alongside `claude-fable-5`; tolerate auxiliary non-Fable bookkeeping keys only when startup/message/result evidence proves the assistant run was Fable. If the primary assistant model is non-Fable, or if the verifier cannot classify the non-Fable key as auxiliary bookkeeping, mark non-success. If the result does not expose model usage, do not claim `observed`; leave `modelVerificationStatus: "requested_only"` and rely on startup verification.
 
 Always store both the requested alias and observed/resolved model data when visible:
 
@@ -1400,7 +1460,8 @@ Always store both the requested alias and observed/resolved model data when visi
 {
   "model_requested": "fable",
   "model_resolved_from_init": "claude-fable-5",
-  "model_usage_keys": ["claude-fable-5"]
+  "model_usage_keys": ["claude-fable-5", "claude-haiku-4-5-20251001"],
+  "model_usage_auxiliary_keys": ["claude-haiku-4-5-20251001"]
 }
 ```
 
@@ -1416,11 +1477,23 @@ The Claude Code adapter should reuse the same prompt assembly path as API mode w
 
 - Read `--file` inputs.
 - Apply max file size checks.
+- Apply sensitive filename policy before bundling.
+- Reject binary files or summarize them through an explicit safe path; do not blindly paste binary content.
+- Include manifest metadata for attached paths, sizes, truncation/exclusion reasons, and bundle byte/token estimates.
+- Enforce a context-size budget before spawning Claude Code.
 - Use existing markdown bundle style.
-- Include system prompt if the CLI already supports one.
+- Use a tiny Oracle-owned `--system-prompt`.
 - Include prompt suffix config if current CLI behavior does.
 
 The adapter should send one prompt to Claude Code through stdin. The prompt should say the run is read-only.
+
+Hidden-alpha system prompt:
+
+```text
+You are Oracle's supplied-context reviewer. Answer only from the user-provided prompt and attached context. Do not use tools.
+```
+
+The live system-prompt spike returned the exact expected token, preserved startup `model: "claude-fable-5"` and `apiKeySource: "none"`, kept `tools: []` and `mcp_servers: []`, and reduced prompt-side token footprint from about `4863` to `2019`. This still carries about 2k prompt-side tokens; it is a material reduction, not a claim that only the tiny prompt is sent.
 
 Before implementation, prove the exact stdin shape with a fake runner and one opt-in real smoke. Docs show piped stdin works with `claude -p`, but Oracle should not assume the exact invocation without a test.
 
@@ -1606,20 +1679,39 @@ Suggested adapter metadata:
   "total_cost_usd_observed": null,
   "subscription_billing_uncertain": true,
   "credit_billing_warning_emitted": false,
+  "auth_status_observed": {
+    "logged_in": true,
+    "auth_method": "claude.ai",
+    "api_provider": "firstParty",
+    "subscription_type": "max"
+  },
+  "rate_limit_observed": {
+    "status": "allowed",
+    "rate_limit_type": "five_hour",
+    "overage_status": "rejected",
+    "is_using_overage": false
+  },
   "command": {
     "executable": "claude",
     "args_redacted": [
       "-p",
+      "--system-prompt",
+      "<tiny Oracle-owned supplied-context reviewer prompt>",
       "--model",
       "fable",
+      "--effort",
+      "xhigh",
       "--output-format",
       "stream-json",
       "--verbose",
       "--include-partial-messages",
       "--permission-mode",
-      "dontAsk",
+      "plan",
+      "--safe-mode",
       "--disable-slash-commands",
       "--strict-mcp-config",
+      "--mcp-config",
+      "{\"mcpServers\":{}}",
       "--disallowedTools",
       "mcp__*",
       "--no-chrome",
@@ -1638,6 +1730,7 @@ Suggested adapter metadata:
   "transcript_fidelity": "visible_cli_stream",
   "hidden_reasoning_captured": false,
   "visible_thinking_captured": "unknown",
+  "model_usage_auxiliary_keys": [],
   "started_at": "2026-07-01T00:00:00.000Z",
   "completed_at": "2026-07-01T00:00:30.000Z",
   "exit_code": 0,
@@ -1653,7 +1746,7 @@ Suggested adapter metadata:
 }
 ```
 
-The exact `args_redacted` list must come from the empirical CLI contract. If `--bare`, `--safe-mode`, `--include-hook-events`, or a turn-cap flag is confirmed and selected, include it. If a flag is not confirmed, do not emit it and do not list it here.
+The exact `args_redacted` list must come from the empirical CLI contract. For hidden alpha, include `--system-prompt`, `--safe-mode`, `--include-hook-events`, `--permission-mode plan`, and the strict empty MCP config shape shown above. Do not include `--bare`. If a future turn-cap flag is not confirmed, do not emit it and do not list it here.
 
 Suggested normalized event:
 
@@ -1673,9 +1766,9 @@ Suggested normalized event:
 
 The normalized event duplicates the decoded raw text on purpose when decoding is safe. That makes MCP responses self-contained while the raw artifacts remain the source of truth. If decoding is not safe, use `raw_base64` instead.
 
-### Feature 12: Inline Event Return
+### Feature 12: Future MCP Inline Event Return
 
-For MCP, add `claudeCode.events` to the `consult` structured result.
+For hidden alpha, keep `fable-local` CLI-only. In the later MCP phase, add `claudeCode.events` to the `consult` structured result.
 
 Important rule:
 
@@ -1723,8 +1816,8 @@ claudeCode: {
 Because inline payloads can be very large, include a fail-closed size check:
 
 - Add a config/env value such as `ORACLE_CLAUDE_CODE_MAX_INLINE_BYTES`.
-- Default should be large enough for the user's desired local use.
-- If the stream exceeds it, either abort immediately or let the child finish and return a typed non-success result.
+- Default to `1 MiB` of visible inline bytes unless later client measurements justify a different number.
+- If the stream exceeds it, finish the run if practical, persist complete raw artifacts, and return a typed non-success overflow result.
 - The raw artifact still exists.
 - Do not keep buffering unbounded events after the limit is crossed.
 - The error must say exactly how many bytes were needed and how to raise the limit.
@@ -1778,7 +1871,7 @@ claudeCode?: {
   readOnly: true;
   inlineEvents: true;
   outputFormat: "stream-json";
-  permissionMode: "dontAsk" | "plan";
+  permissionMode: "plan";
   toolMode: "none";
   bareMode?: boolean;
   safeMode?: boolean;
@@ -1942,7 +2035,7 @@ Checks:
 - Does current documentation and the installed binary support the required flags?
 - Has the empirical CLI contract been captured for this machine?
 - Does the captured `system/init` event show the expected subscription auth value?
-- Does the captured `--bare` probe pass or fail subscription auth?
+- Does the installed help still say `--bare`/simple mode does not read OAuth/keychain credentials?
 - Does the captured `--tools ""` probe prove an empty tool list?
 - Does the captured `ANTHROPIC_MODEL` probe prove argv model precedence?
 - Does a harmless no-model-submit command check show expected flag parsing?
@@ -1983,7 +2076,7 @@ Docs must say:
 - MCP success includes visible stdout and visible stderr inline.
 - Raw event streams are persisted and may contain sensitive data.
 - Raw event streams are owner-local artifacts and are not included in redacted exports by default.
-- Users can delete session artifacts with the normal Oracle session cleanup path, or with a new explicit purge command if the current cleanup path is not enough.
+- Regular session cleanup can remove whole sessions by the existing Oracle retention policy. Do not document selective raw-stream deletion until typed Claude Code raw artifact kinds and an explicit purge command exist.
 - Claude Code's own session persistence is disabled in v1 with a confirmed flag such as `--no-session-persistence`, or the run refuses.
 - Restart, follow-up, background, and resume are refused in v1.
 - Remote service and Oracle Router are not supported.
@@ -2003,6 +2096,7 @@ src/cli/lanePolicy.ts
 The registry should be the only source for:
 
 - Public lane names.
+- Readiness state, such as `enabled`, `hidden_alpha_only`, `deferred`, or `not_ready`.
 - Canonical internal ids.
 - Engine and access path mappings.
 - Canonical engine/model/thinking-time option expansion for each lane.
@@ -2043,6 +2137,7 @@ interface ResolvedOracleLane {
   transportEligibility:
     | "local-only"
     | "browser-automation-local-or-approved-remote";
+  readiness: "enabled" | "hidden-alpha-only" | "deferred" | "not-ready";
   runtimeAssertions: string[];
   replacementCommand: string;
   normalizedEngineOptions: Record<string, unknown>;
@@ -2063,9 +2158,14 @@ interface LaneRouteBlock {
   blockedReason: string;
   normalizedOptions: unknown;
   sourcePrecedence: string[];
-  supportedLanes: Array<{
+  enabledLanes: Array<{
     lane: OracleLane;
     command: string;
+  }>;
+  deferredLanes: Array<{
+    lane: OracleLane;
+    status: "not-ready" | "deferred";
+    reason: string;
   }>;
   noBackendStarted: true;
 }
@@ -2090,7 +2190,7 @@ oracle --lane gemini-deep-think --prompt "Review this" --file README.md
 oracle --lane fable-local --prompt "Review this" --file README.md
 ```
 
-The `chatgpt-pro` form must normalize to the standard Oracle browser command shape:
+When enabled, the `chatgpt-pro` form must normalize to the standard Oracle browser command shape:
 
 ```bash
 oracle --engine browser --model gpt-5.5-pro \
@@ -2103,7 +2203,7 @@ oracle --engine browser --model gpt-5.5-pro \
 
 Exact legacy forms may be accepted only when they map cleanly to a reviewed lane. Every accepted legacy form should record the same resolved lane metadata as the `--lane` form.
 
-The exact ChatGPT Pro legacy forms are `--model gpt-5.5-pro` and `--engine browser --model gpt-5.5-pro --browser-thinking-time extended`. Both must resolve to `lane: "chatgpt-pro"` and must include extended thinking before the browser runner starts. The normalized top-level browser request should also materialize the current safe defaults `browserModelStrategy: "select"`, `browserArchive: "auto"`, and `browserAttachments: "auto"` so dry runs, capabilities, route-block replacements, and tests all describe the same run shape. Placeholder wording like `--engine browser <exact ChatGPT Pro browser options>` is not enough. Define the Gemini Deep Think legacy form after checking the current Oracle browser CLI flags. Until then, only the `--lane` browser forms should be advertised for Gemini.
+The exact ChatGPT Pro legacy forms are `--model gpt-5.5-pro` and `--engine browser --model gpt-5.5-pro --browser-thinking-time extended`. Both must resolve to `lane: "chatgpt-pro"` and must include extended thinking before the browser runner starts once the lane is enabled. The normalized top-level browser request should also materialize the current safe defaults `browserModelStrategy: "select"`, `browserArchive: "auto"`, and `browserAttachments: "auto"` so dry runs, capabilities, route-block replacements, and tests all describe the same run shape. Placeholder wording like `--engine browser <exact ChatGPT Pro browser options>` is not enough. The current spike proved one direct remote-browser ChatGPT Pro exact-token smoke, but doctor readiness remains degraded without a default non-submitting live UI probe. Define the Gemini Deep Think legacy form after checking the current Oracle browser CLI flags and an active Gemini lane/subscription. Until then, keep Gemini as a deferred template.
 
 `--slug` is not a route invariant. It is caller-owned session metadata. The lane policy must accept and preserve it when present, must include it in normalized request metadata, and must leave it absent when the caller omitted it so the existing session layer can derive the default slug from the prompt.
 
@@ -2111,7 +2211,7 @@ Do not include debug, recovery, or account-specific browser controls in the norm
 
 Do not mix the ordinary top-level normalized request with the protected-route helper command surface unless the implementation deliberately switches this lane to that subcommand. Current protected helpers can express ChatGPT Pro as `--provider chatgpt --model chatgpt-pro-latest --chatgpt-pro --extended-reasoning`, but today's standard top-level browser run shape is still `--engine browser --model gpt-5.5-pro --browser-thinking-time extended` plus the browser defaults above.
 
-Do not infer a reviewed lane from vague input. For example, `--model gemini`, `--model gpt`, `--engine browser`, or `--engine api` are not enough. They should route-block and show the exact lane commands. Exact GPT Pro requests are the exception: `--model gpt-5.5-pro` is a reviewed legacy form and must normalize to the `chatgpt-pro` lane with extended thinking.
+Do not infer an enabled reviewed lane from vague input. For example, `--model gemini`, `--model gpt`, `--engine browser`, or `--engine api` are not enough. They should route-block and show the exact enabled lane commands plus deferred lane status. Exact GPT Pro requests are the exception only after the ChatGPT Pro lane is enabled: `--model gpt-5.5-pro` is a reviewed legacy form and must normalize to the `chatgpt-pro` lane with extended thinking.
 
 There is no default lane in v1. These examples must route-block:
 
@@ -2163,6 +2263,7 @@ For `chatgpt-pro`, require:
 - The selected model or mode is the intended ChatGPT Pro mode immediately before prompt submission.
 - If the UI selector changes after lane resolution and before submit, abort before sending the prompt.
 - Do not click "Answer now" as part of doctor, preflight, smoke, or runtime verification.
+- The 2026-07-02 direct remote-browser smoke through `127.0.0.1:9470` returned the expected token and verified `Pro Extended`, but the Vitest live smoke skipped because its preflight checked local Chrome cookies rather than the configured `oracle serve` router. Fix or document that preflight before treating the test as browser-lane readiness proof.
 
 For `gemini-deep-think`, require:
 
@@ -2201,16 +2302,18 @@ Suggested top-level help shape:
 
 ```text
 Agent-ready lanes (v1):
-  oracle --lane chatgpt-pro --prompt "..." [--file path]
-  oracle --lane gemini-deep-think --prompt "..." [--file path]
   oracle --lane fable-local --prompt "..." [--file path]
+
+Deferred templates:
+  chatgpt-pro        waiting on default non-submitting Pro selector doctor
+  gemini-deep-think  waiting on active Gemini lane/subscription and Deep Think probe
 
 Other engines and models are retained in this fork but gated for now.
 Use `oracle capabilities --json` for the machine-readable lane contract.
 Use `oracle doctor lanes --json` to check whether each lane is ready.
 ```
 
-The top-level help must not make unsupported API models look like equal first-class choices. It can mention that broader features exist, but the copy should explain that v1 agent runs are gated to the three reviewed lanes.
+The top-level help must not make unsupported API models look like equal first-class choices. It can mention that broader features exist, but the copy should explain that v1 agent runs are gated to enabled reviewed lanes and deferred templates.
 
 Subcommand help should follow the same rule:
 
@@ -2241,7 +2344,7 @@ Suggested lane fields:
     "routeBlockExitCode": 2,
     "broaderFeaturesRetained": true,
     "unsupportedRoutesHiddenFromTopLevelHelp": true,
-    "supportedLanes": [
+    "laneTemplates": [
       {
         "lane": "chatgpt-pro",
         "canonicalId": "chatgpt_pro_browser",
@@ -2262,6 +2365,7 @@ Suggested lane fields:
           "slug": "caller supplied when present"
         },
         "doctorCommand": "oracle doctor lanes --json",
+        "readiness": "not-ready-until-selector-doctor",
         "refusedPatterns": ["--engine api", "--models", "--engine claude-code", "gemini-*", "fable"]
       },
       {
@@ -2271,6 +2375,7 @@ Suggested lane fields:
         "accessPath": "gemini_pro_deep_think_browser_automation",
         "command": "oracle --lane gemini-deep-think --prompt \"...\" --file path",
         "doctorCommand": "oracle doctor lanes --json",
+        "readiness": "deferred-no-active-subscription",
         "refusedPatterns": ["--engine api", "--models", "--engine claude-code", "chatgpt-*", "fable"]
       },
       {
@@ -2280,6 +2385,7 @@ Suggested lane fields:
         "accessPath": "claude_code_subscription_cli",
         "command": "oracle --lane fable-local --prompt \"...\" --file path",
         "doctorCommand": "oracle doctor lanes --json",
+        "readiness": "hidden-alpha-cli-only",
         "refusedPatterns": ["--engine api", "--models", "--browser-*", "--remote-host", "chatgpt-*", "gemini-*"]
       }
     ]
@@ -2310,13 +2416,15 @@ agent_lane_blocked
 Suggested human stderr:
 
 ```text
-Oracle v1 agent runs are gated to three reviewed lanes.
+Oracle v1 agent runs are gated to enabled reviewed lanes.
 Your request resolved to: <attempted-route>
 
-Use one of:
-  oracle --lane chatgpt-pro --prompt "..." --file path
-  oracle --lane gemini-deep-think --prompt "..." --file path
+Enabled now:
   oracle --lane fable-local --prompt "..." --file path
+
+Deferred templates:
+  chatgpt-pro        not ready: selector_state_unknown
+  gemini-deep-think  deferred: no active Gemini lane/subscription
 
 The broader Oracle feature set is still present, but this route is gated for now.
 Machine-readable contract: oracle capabilities --json
@@ -2331,7 +2439,7 @@ Suggested JSON error envelope when `--json`, MCP, or robot output is requested:
     "code": "agent_lane_blocked",
     "category": "route-block",
     "exitCode": 2,
-    "message": "Oracle v1 agent runs are gated to three reviewed lanes.",
+    "message": "Oracle v1 agent runs are gated to enabled reviewed lanes.",
     "policyVersion": "agent-lanes.v1",
     "attemptedRoute": {
       "engine": "api",
@@ -2345,18 +2453,22 @@ Suggested JSON error envelope when `--json`, MCP, or robot output is requested:
     },
     "sourcePrecedence": ["cli", "env", "config", "defaults"],
     "noBackendStarted": true,
-    "supportedLanes": [
-      {
-        "lane": "chatgpt-pro",
-        "command": "oracle --lane chatgpt-pro --prompt \"...\" --file path"
-      },
-      {
-        "lane": "gemini-deep-think",
-        "command": "oracle --lane gemini-deep-think --prompt \"...\" --file path"
-      },
+    "enabledLanes": [
       {
         "lane": "fable-local",
         "command": "oracle --lane fable-local --prompt \"...\" --file path"
+      }
+    ],
+    "deferredLanes": [
+      {
+        "lane": "chatgpt-pro",
+        "status": "not-ready",
+        "reason": "selector_state_unknown"
+      },
+      {
+        "lane": "gemini-deep-think",
+        "status": "deferred",
+        "reason": "no_active_gemini_lane_or_subscription"
       }
     ],
     "capabilitiesCommand": "oracle capabilities --json"
@@ -2376,15 +2488,16 @@ lane: z.enum(["chatgpt-pro", "gemini-deep-think", "fable-local"]).optional()
 
 MCP behavior:
 
+- During hidden alpha, `lane: "fable-local"` route-blocks because operator policy is CLI-only.
 - If `lane` is present, use it as the primary route and ignore only compatible defaults.
 - If `lane` is present and an explicit `engine`, `model`, provider, or transport field conflicts with it, refuse with `agent_lane_blocked`.
 - If `engine` and `model` are present without `lane`, map them only when they exactly match a reviewed lane.
 - If `lane` and `engine` disagree, refuse with `agent_lane_blocked`.
 - If `lane` is absent and the request is ambiguous, refuse with `agent_lane_blocked`.
 - Return `resolvedLane` in every successful structured result.
-- Include `supportedLanes` in structured route-block errors.
+- Include `enabledLanes` and `deferredLanes` in structured route-block errors.
 
-MCP schemas and docs should show `lane` first. `engine` and `model` remain for compatibility and internal metadata, not as the first thing agents should reach for.
+MCP schemas and docs should show `lane` first when MCP lanes are enabled. `engine` and `model` remain for compatibility and internal metadata, not as the first thing agents should reach for. Until the later MCP phase, docs must not advertise MCP `fable-local` as a hidden-alpha path.
 
 #### Doctor and Preflight
 
@@ -2402,15 +2515,17 @@ Suggested output:
 {
   "agentLaneGate": {
     "enabled": true,
-    "supportedLanes": [
+    "laneTemplates": [
       {
         "lane": "chatgpt-pro",
-        "ready": true,
+        "ready": false,
         "checks": {
           "browserAutomationAvailable": true,
           "chatgptSessionAvailable": true,
-          "proModelSelectable": true
-        }
+          "proModelSelectable": "unknown"
+        },
+        "reason": "selector_state_unknown",
+        "nextStep": "Add a default non-submitting live UI probe. The 2026-07-02 remote smoke was positive, but doctor remains degraded."
       },
       {
         "lane": "gemini-deep-think",
@@ -2420,7 +2535,7 @@ Suggested output:
           "geminiSessionAvailable": false,
           "deepThinkSelectable": "unknown"
         },
-        "nextStep": "Run a Gemini browser login smoke, then rerun doctor."
+        "nextStep": "Wait for an active Gemini lane/subscription, then add Deep Think pre-submit DOM re-probe."
       },
       {
         "lane": "fable-local",
@@ -2428,9 +2543,10 @@ Suggested output:
         "checks": {
           "anthropicApiKeyAbsent": true,
           "claudeExecutableSafe": true,
-          "empiricalCliContractCaptured": false
+          "empiricalCliContractCaptured": true,
+          "mcpHiddenAlphaEnabled": false
         },
-        "nextStep": "Capture the empirical Claude Code CLI contract before live use."
+        "nextStep": "Run fake and supplied-context vertical-slice gates before live CLI use."
       }
     ]
   }
@@ -2585,7 +2701,7 @@ tests/oracle/v18/provider_boundaries.test.ts
    - API provider routing flags
    - unsafe Claude Code flags if exposed
 
-5. Oracle checks that the empirical CLI contract exists and is current enough for this machine.
+5. Oracle checks that the empirical CLI contract exists and is current enough for this machine. The 2026-07-02 Linux baseline is enough for hidden-alpha design but must be fixture-backed before product code ships.
 
 6. Oracle checks `ANTHROPIC_API_KEY`.
 
@@ -2618,8 +2734,11 @@ tests/oracle/v18/provider_boundaries.test.ts
 
     - `shell: false`
     - prompt over stdin
+    - tiny Oracle-owned `--system-prompt`
     - no-tool read-only flags
     - stream JSON flags
+    - `--permission-mode plan`
+    - `--mcp-config '{"mcpServers":{}}'`
     - scrubbed child environment
 
 16. Oracle writes stdout bytes to raw stdout artifact as they arrive.
@@ -2670,7 +2789,9 @@ tests/oracle/v18/provider_boundaries.test.ts
     - Surface a clear error.
     - Release the single-flight lock.
 
-### MCP Flow
+### Future MCP Flow (Deferred)
+
+Hidden alpha does not run this flow. MCP `fable-local` route-blocks until CLI proof, MCP launch-context proof, local owner/client identity facts, Claude auth verifier behavior, complete inline/overflow semantics, and raw resource URIs are implemented.
 
 1. MCP caller sends:
 
@@ -2737,13 +2858,15 @@ agent_lane_blocked
 Message:
 
 ```text
-Oracle v1 agent runs are gated to three reviewed lanes.
+Oracle v1 agent runs are gated to enabled reviewed lanes.
 Your request resolved to: <attempted-route>
 
-Use one of:
-  oracle --lane chatgpt-pro --prompt "..." --file path
-  oracle --lane gemini-deep-think --prompt "..." --file path
+Enabled now:
   oracle --lane fable-local --prompt "..." --file path
+
+Deferred templates:
+  chatgpt-pro        not ready: selector_state_unknown
+  gemini-deep-think  deferred: no active Gemini lane/subscription
 
 The broader Oracle feature set is still present, but this route is gated for now.
 Machine-readable contract: oracle capabilities --json
@@ -2808,7 +2931,7 @@ Examples:
 - fallback model setting
 - Console/API auth mode
 
-`ANTHROPIC_MODEL` is handled as a model-default control. Refuse if empirical testing has not proved argv model precedence. If precedence is proven, scrub it from the child env instead.
+`ANTHROPIC_MODEL` is handled as a model-default control. The 2026-07-02 live probe proved argv precedence for Claude Code `2.1.198`; implementation still needs an explicit policy choice between conservative hard refusal and child-env scrub with warning.
 
 No child process should start when the source can be detected before spawning. If the source is discovered only in the startup event, stop the run immediately and mark it non-success.
 
@@ -2949,7 +3072,7 @@ For v1, success requires observed model compatibility when Claude Code exposes t
 
 ### Startup Shape Mismatch
 
-If the visible startup event shows unexpected auth source, tools, MCP servers, hooks, plugins, skills, slash commands, Chrome integration, agents, fallback model, permission mode, or model, stop the run.
+If the visible startup event shows unexpected auth source, tools, MCP servers, hooks, plugins, skills, slash commands, Chrome integration, active/custom agents, fallback model, permission mode, or model, stop the run. Built-in agents listed in the 2026-07-02 live probe are not a failure by themselves unless they are active, invoked, unknown, or unclassifiable.
 
 Status:
 
@@ -3116,11 +3239,11 @@ Claude Code can load settings, hooks, plugins, skills, MCP servers, commands, cu
 
 For v1:
 
-- Prefer `--bare` if empirical testing proves it preserves subscription auth.
-- Use `--safe-mode` if empirical testing confirms it is supported and `--bare` is not used.
+- Do not use `--bare` by default; installed help says bare/simple mode does not read OAuth/keychain credentials.
+- Use `--safe-mode`, which is present in the live-supported command shape.
 - Use `--disable-slash-commands`.
-- Use `--strict-mcp-config` without loading any MCP config.
-- Use `--disallowedTools mcp__*`.
+- Use `--strict-mcp-config --mcp-config '{"mcpServers":{}}'`.
+- Use `--disallowedTools 'mcp__*'`.
 - Use `--no-chrome`.
 - Use `--no-session-persistence`.
 - Refuse if startup verification shows any of these surfaces are still active.
@@ -3184,7 +3307,7 @@ Create files atomically with owner-only mode where possible. Refuse to write thr
 
 Do not upload these artifacts, attach them to remote bug reports, or include them in redacted evidence exports unless the user explicitly asks.
 
-Provide a clear purge path. If existing Oracle session cleanup is enough, document it. If it is not enough, add a focused command such as:
+Provide a clear purge path after the raw artifact kinds are typed. Existing Oracle session cleanup can remove whole sessions, but it is not a scoped raw-stream policy. The raw purge scope remains deferred; one possible future command is:
 
 ```bash
 oracle session <id> --purge-claude-code-artifacts
@@ -3232,22 +3355,22 @@ Use fake Claude binaries or injected spawn functions.
 
 Test:
 
-- `LaneRegistry` has exactly three v1 lanes: `chatgpt-pro`, `gemini-deep-think`, and `fable-local`.
-- Each lane has one public name, canonical id, engine, access path, replacement command, doctor command, transport eligibility, refused patterns, and runtime assertion list.
+- `LaneRegistry` has exactly three lane templates: `chatgpt-pro`, `gemini-deep-think`, and `fable-local`.
+- Each lane has one public name, canonical id, engine, access path, replacement command, doctor command, transport eligibility, readiness state, refused patterns, and runtime assertion list.
 - Help text, capabilities data, MCP enum values, and route-block supported-lane output are generated from the same registry or snapshot-tested against it.
-- `lanePolicy.resolve()` accepts `--lane chatgpt-pro` and returns `canonicalId: "chatgpt_pro_browser"`, `engine: "browser"`, `accessPath: "chatgpt_pro_browser_automation"`, `policyVersion: "agent-lanes.v1"`, and the canonical replacement command.
+- `lanePolicy.resolve()` accepts `--lane chatgpt-pro` only when the ChatGPT Pro readiness gate is enabled, and otherwise route-blocks with the lane status and next step.
 - `lanePolicy.resolve()` accepts `--lane chatgpt-pro --prompt "Refactor this hot path" --file "src/render/**"` and normalizes the execution shape to `--engine browser --model gpt-5.5-pro --browser-thinking-time extended --browser-model-strategy select --browser-archive auto --browser-attachments auto` with the same prompt and file inputs.
 - `lanePolicy.resolve()` accepts `--lane chatgpt-pro --prompt "Refactor this hot path" --file "src/render/**" --slug "render hot path"` and preserves the slug in normalized request metadata and the replacement command.
 - `lanePolicy.resolve()` accepts explicit `--browser-archive never` or `--browser-archive always` for `chatgpt-pro` only if the archive mode is carried into normalized request metadata; the default is `auto`.
 - `lanePolicy.resolve()` rejects the misspelled `--brower-archive`.
-- `lanePolicy.resolve()` accepts `--lane gemini-deep-think` and returns `canonicalId: "gemini_pro_deep_think_browser"`, `engine: "browser"`, `accessPath: "gemini_pro_deep_think_browser_automation"`, `policyVersion: "agent-lanes.v1"`, and the canonical replacement command.
+- `lanePolicy.resolve()` keeps `gemini-deep-think` as a deferred template until an active Gemini lane/subscription and Deep Think probe exist.
 - `lanePolicy.resolve()` accepts `--lane fable-local` and returns `canonicalId: "claude_code_fable_local"`, `engine: "claude-code"`, `accessPath: "claude_code_subscription_cli"`, `policyVersion: "agent-lanes.v1"`, and the canonical replacement command.
 - Exact approved legacy aliases resolve to the canonical lane and record `inferredFrom`.
 - Vague inputs route-block: `--engine browser`, `--engine api`, `--model gpt`, `--model gemini`, `--model gemini-*`, `--model claude-4.6-sonnet`, and `--model some-new-model`.
 - Exact GPT Pro legacy input `--model gpt-5.5-pro` normalizes to `lane: "chatgpt-pro"` and includes `--browser-thinking-time extended`, `--browser-model-strategy select`, `--browser-archive auto`, and `--browser-attachments auto`; it must never run as an API request or a browser request with default/fast thinking.
 - No-default inputs route-block: `oracle --prompt "Review this"` and MCP `consult` with only `prompt`.
 - Conflict inputs route-block: `--lane fable-local --engine browser`, `--lane fable-local --remote-host x`, `--lane chatgpt-pro --engine claude-code --model fable`, `--lane gemini-deep-think --model gpt-5.5-pro`, and MCP `{ "lane": "chatgpt-pro", "engine": "claude-code" }`.
-- Route-block decisions include `attemptedRoute`, `blockedReason`, `policyVersion`, `normalizedOptions`, `supportedLanes`, `sourcePrecedence`, and `noBackendStarted: true`.
+- Route-block decisions include `attemptedRoute`, `blockedReason`, `policyVersion`, `normalizedOptions`, `enabledLanes`, `deferredLanes`, `sourcePrecedence`, and `noBackendStarted: true`.
 - Route-block uses exit code `2`.
 - Unsupported routes do not call API provider selection, browser launch, browser model selection, Claude Code spawn, MCP run mapping, session worker start, or router request creation.
 - `ORACLE_ENGINE=claude-code` without `--lane` refuses.
@@ -3280,19 +3403,23 @@ Test:
 Test:
 
 - Builds `claude -p`.
+- Includes the tiny Oracle-owned `--system-prompt`.
 - Includes `--model fable`.
+- Includes `--effort xhigh`.
 - Includes `--output-format stream-json`.
 - Includes `--verbose`.
 - Includes `--include-partial-messages`.
 - Includes only flags selected by the empirical CLI contract.
-- Includes `--permission-mode dontAsk` when empirically safer, otherwise `--permission-mode plan` with documented reason.
+- Includes `--permission-mode plan` for hidden alpha.
 - Includes `--disable-slash-commands`.
 - Includes `--strict-mcp-config`.
-- Includes `--disallowedTools mcp__*`.
+- Includes `--mcp-config '{"mcpServers":{}}'`.
+- Includes `--disallowedTools 'mcp__*'`.
 - Includes `--no-chrome` only if confirmed by the empirical CLI contract; otherwise startup verification must reject active Chrome integration.
 - Includes `--no-session-persistence` only if confirmed by the empirical CLI contract; otherwise startup verification must reject active session persistence.
-- Includes `--bare` only if the empirical `--bare` probe preserves subscription auth.
-- Includes `--safe-mode`, `--include-hook-events`, and any turn-cap flag only if confirmed.
+- Does not include `--bare` by default.
+- Includes `--safe-mode` and `--include-hook-events` for the live-supported hidden-alpha shape.
+- Includes any turn-cap flag only if future feature detection confirms support.
 - Disables all Claude Code tools.
 - Does not include `Read`, `Grep`, `Glob`, `LS`, `Bash`, `Edit`, `Write`, `Agent`, `Cron*`, `Skill`, `WebFetch`, `WebSearch`, or any `mcp__*` tool.
 - Does not include dangerous flags.
@@ -3311,8 +3438,7 @@ Test:
 - Non-empty `ANTHROPIC_API_KEY` refuses.
 - `ANTHROPIC_AUTH_TOKEN` refuses.
 - `ANTHROPIC_BASE_URL` refuses.
-- `ANTHROPIC_MODEL` is scrubbed when argv model precedence is proven.
-- `ANTHROPIC_MODEL` refuses when argv model precedence is not proven.
+- `ANTHROPIC_MODEL` follows the chosen policy: either conservative refusal, or child-env scrub with warning after the Claude Code `2.1.198` argv precedence proof.
 - `ANTHROPIC_DEFAULT_*` refuses.
 - `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_FOUNDRY`, and `CLAUDE_CODE_USE_ANTHROPIC_AWS` refuse.
 - Env refusal happens before any `claude` subprocess.
@@ -3403,6 +3529,8 @@ Test:
 - Fallback model active refuses.
 - Model mismatch refuses.
 - Expected Fable model passes.
+- Auxiliary non-Fable `modelUsage` bookkeeping keys are tolerated only when primary assistant evidence proves Fable.
+- The live-observed built-in `agents` list is tolerated when no agent is active or invoked.
 - Missing critical startup fields refuse.
 - The accepted subscription auth value comes from the empirical CLI contract.
 - `model_resolved_from_init`, `model_usage_keys`, `total_cost_usd`, and visible thinking status are extracted when present.
@@ -3432,17 +3560,18 @@ Test:
 - Stops if visible events show a read-only policy violation.
 - Releases the single-flight lock on every exit path.
 - Does not buffer unbounded output without size checks.
+- Adversarial supplied context that asks for file reads, shell, tools, agents, browser use, or MCP calls does not produce visible tool/read/write/shell/agent/browser/MCP events in fake fixtures.
 
 ### CLI Tests
 
 Test:
 
-- `--lane chatgpt-pro` routes to the ChatGPT browser lane.
-- `--lane chatgpt-pro --prompt "Refactor this hot path" --file "src/render/**"` routes as `--engine browser --model gpt-5.5-pro --browser-thinking-time extended --browser-model-strategy select --browser-archive auto --browser-attachments auto` with the prompt and file preserved.
+- Hidden alpha route-blocks `--lane chatgpt-pro` with not-ready status until default non-submitting Pro selector doctor exists.
+- When enabled, `--lane chatgpt-pro --prompt "Refactor this hot path" --file "src/render/**"` routes as `--engine browser --model gpt-5.5-pro --browser-thinking-time extended --browser-model-strategy select --browser-archive auto --browser-attachments auto` with the prompt and file preserved.
 - `--lane chatgpt-pro --prompt "Refactor this hot path" --file "src/render/**" --slug "render hot path"` preserves the caller slug.
 - `--lane chatgpt-pro --prompt "Refactor this hot path" --file "src/render/**" --browser-archive never` preserves the explicit archive policy, while omitted archive mode normalizes to `auto`.
 - `--brower-archive auto` is rejected as an unknown or invalid flag.
-- `--lane gemini-deep-think` routes to the Gemini Deep Think browser lane.
+- Hidden alpha route-blocks `--lane gemini-deep-think` with deferred status until there is an active Gemini lane/subscription and Deep Think probe.
 - `--lane fable-local` routes to the local Claude Code runner.
 - `--engine claude-code --model fable` is accepted only as an expert compatibility alias and resolves to `lane: "fable-local"`.
 - Exact approved ChatGPT browser legacy form `--engine browser --model gpt-5.5-pro --browser-thinking-time extended` resolves to `lane: "chatgpt-pro"` and normalizes `--browser-model-strategy select --browser-archive auto --browser-attachments auto`.
@@ -3453,7 +3582,7 @@ Test:
 - `--engine api --model fable` route-blocks and does not use subscription mode.
 - `--engine api --model claude-4.6-sonnet` route-blocks for normal agent-facing v1 runs.
 - `oracle --prompt "Review this"` route-blocks instead of choosing a default lane.
-- `--model gpt-5.5-pro` normalizes to `lane: "chatgpt-pro"` with extended thinking, model strategy `select`, archive policy `auto`, attachment mode `auto`, and must not run any other backend shape.
+- `--model gpt-5.5-pro` normalizes to `lane: "chatgpt-pro"` with extended thinking only after the ChatGPT Pro lane is enabled; hidden alpha route-blocks it with the not-ready status.
 - `ORACLE_ENGINE=claude-code` is refused in v1.
 - Config-file `engine: "claude-code"` is refused in v1.
 - Dry run for `--lane fable-local` prints local mode plan and does not spawn.
@@ -3471,13 +3600,13 @@ Test:
 
 Test:
 
-- `consultInputSchema` accepts `lane: "chatgpt-pro"`, `lane: "gemini-deep-think"`, and `lane: "fable-local"`.
+- `consultInputSchema` can define `lane: "chatgpt-pro"`, `lane: "gemini-deep-think"`, and `lane: "fable-local"` as lane templates, but hidden alpha route-blocks MCP `fable-local`.
 - `consultInputSchema` accepts `engine: "claude-code"` only as compatibility when it resolves to `lane: "fable-local"`.
 - MCP ambiguous requests without `lane` route-block.
 - MCP requests with conflicting explicit `lane`, `engine`, `model`, provider, or transport fields route-block.
-- MCP successful results include `resolvedLane`.
-- MCP structured route-block errors include `supportedLanes`.
-- MCP returns `claudeCode.events`.
+- MCP successful results include `resolvedLane` only after the later MCP phase is enabled.
+- MCP structured route-block errors include `enabledLanes` and `deferredLanes`.
+- Future MCP returns `claudeCode.events`.
 - `eventsComplete` is true only when stdout and stderr visible streams are both complete and inline.
 - All events from fake stream appear in structured content.
 - MCP does not return only the 4 KB session log tail for this engine.
@@ -3555,19 +3684,21 @@ Expected:
 - `total_cost_usd_observed` is stored when visible.
 - Final answer contains the smoke token.
 
-Add an MCP launch-context smoke:
+Defer the MCP launch-context smoke until after CLI proof:
 
 - Launch `oracle-mcp` from a fresh MCP client, not from the user's shell.
 - Invoke `consult` with `lane: "fable-local"`.
 - Confirm subscription auth still works from that launch context.
 - If it does not, document the workaround, such as logging in from `claude` in the same context or limiting the MCP path to supported launch contexts.
 
-Add browser lane smokes only when the user opts in:
+Add browser lane smokes only when the user opts in and the non-submitting doctor proves selector state:
 
 - `oracle --lane chatgpt-pro --prompt "Reply exactly: chatgpt pro lane ok"`
 - `oracle --lane gemini-deep-think --prompt "Reply exactly: gemini deep think lane ok"`
 
 Before each browser smoke, doctor must prove the selector state without submitting a prompt. If doctor cannot prove it, skip the smoke and fix the selector-state check first.
+
+Current spike status: ChatGPT Pro had one successful direct remote-browser exact-token smoke through `127.0.0.1:9470`, but `oracle doctor chatgpt` still reports degraded without a default live UI probe. Gemini Deep Think was intentionally skipped.
 
 ## Rollout Plan
 
@@ -3575,69 +3706,65 @@ Before each browser smoke, doctor must prove the selector state without submitti
 
 - Land this plan.
 - Review it on GitHub.
-- Confirm final command-line shape against current Claude Code docs and the installed CLI.
-- Confirm the no-tool v1 shape works or refuse implementation until a safe equivalent exists.
-- Confirm subscription-auth proof and API-provider refusal logic.
-- Confirm local-only MCP transport guard.
-- Confirm raw byte persistence semantics.
+- Preserve the spike evidence in `docs/plans/SPIKE.md`, `docs/plans/SPIKE-RESULT.md`, and the planning-run evidence directory.
+- Keep public wording local-owner-only and avoid "subscription adapter", "API bypass", hosted/proxy, credential routing, or billing guarantees.
 - Complete a short compliance check: local owner only, not hosted, not multi-user, not a proxy, not a subscription relay.
 
-### Phase 0.5: Empirical CLI Contract
+### Phase 0.5: Empirical CLI Contract Fixtures
 
-- Capture `claude --version`, `claude --help`, and `claude -p --help`.
-- Capture one normal subscription-authenticated `system/init` event.
-- Capture one `--bare` subscription-authenticated `system/init` event.
-- Capture one `--tools ""` run and prove startup tools are empty.
-- Capture one `ANTHROPIC_MODEL` override test and prove whether argv model wins.
-- Capture result-event fields for `modelUsage`, `total_cost_usd`, and final text.
-- Update command-builder fixtures from those captures.
-- Do not start code implementation until this phase is complete.
+- Turn the 2026-07-02 live captures into sanitized fixtures for Claude Code `2.1.198`.
+- Include the normal command, `ANTHROPIC_MODEL` precedence run, invalid `--mcp-config '{}'` failure, and tiny `--system-prompt` run.
+- Record that `--bare` is not a hidden-alpha default because installed help says it does not read OAuth/keychain credentials.
+- Record that `--max-turns` is unavailable in the checked help output and must not be emitted.
+- Record `apiKeySource: "none"`, `permissionMode: "plan"`, `tools: []`, `mcp_servers: []`, built-in `agents`, auxiliary Haiku `modelUsage`, and `fast_mode_state: "off"`.
 
-### Phase 1: Internal Adapter Behind Explicit Engine
+### Phase 1: Fake-Run Lane Skeleton
 
-- Add `--engine claude-code`.
+- Add `LaneRegistry`, `lanePolicy.resolve()`, route-block errors, and passive-command bypass.
+- Add `--lane fable-local` as the only hidden-alpha enabled lane.
+- Keep ChatGPT Pro and Gemini Deep Think as not-ready/deferred templates.
+- Add `--engine claude-code --model fable` only as hidden expert compatibility.
 - Add fake-run tests.
+- Prove blocked routes happen before provider selection, browser launch, session creation, workers, router requests, MCP mapping, or subprocess spawn.
+- Keep existing API/browser tests green.
+
+### Phase 2: Supplied-Context Vertical Slice
+
+- Reuse Oracle prompt/file assembly.
+- Add sensitive filename policy, binary rejection or summarization, manifest metadata, and context-size budget.
+- Add the tiny Oracle-owned `--system-prompt`.
+- Add stdin-only child protocol.
 - Add no-tool command builder.
-- Add auth/config/executable/local-owner/startup guards.
-- No docs claim broad support yet.
+- Persist raw stdout/stderr and normalized events for fake child runs.
 - Keep live tests opt-in.
 
-### Phase 1.5: Agent Lane Gate Before Public Use
+### Phase 3: Opt-In Local Claude Code CLI
 
-- Add `LaneRegistry`.
-- Add `--lane chatgpt-pro`, `--lane gemini-deep-think`, and `--lane fable-local`.
-- Add route-block errors and exit code `2`.
-- Add top-level help, MCP schema, capabilities, and doctor lane output from the registry.
-- Define or defer exact browser legacy forms. Do not accept vague browser model aliases.
-- Add lane conflict matrix tests.
-- Add no-default-lane tests.
-- Add no-backend-started route-block tests.
-- Add browser selector-state doctor and runtime verification tests.
-- Keep broader providers in code, but hide or mark them gated in normal agent help.
-- Do not begin an agent-facing release until this phase passes.
-
-### Phase 2: MCP Full Inline Events
-
-- Extend MCP schema.
-- Return all events inline.
-- Add max-inline fail-closed behavior.
-- Add session resources for raw artifacts.
-
-### Phase 3: Docs and Doctor
-
-- Add docs.
+- Add auth/config/executable/local-owner/startup guards.
+- Add process cleanup and single-flight lock.
 - Add `doctor claude-code`.
-- Add `doctor lanes --json`.
-- Add manual smoke instructions.
-
-### Phase 4: Live Local Smoke
-
-- Run one local smoke with Fable if the user wants to spend subscription usage.
+- Run one local smoke with Fable only after explicit opt-in.
 - Verify raw event artifacts.
 - Verify no API key was present.
 - Verify session render.
+- Fail closed on missing or ambiguous startup/result evidence.
 
-### Phase 5: Tighten From Real Output
+### Phase 4: MCP After CLI Proof
+
+- Add MCP `lane` only after launch-context facts and local-client identity are available.
+- Add full inline/overflow semantics with the default `1 MiB` recommendation.
+- Add raw resource URIs and typed non-success overflow.
+- Do not reuse the 4 KB log-tail path.
+
+### Phase 5: Browser and Public Release
+
+- Add default non-submitting live doctor probes.
+- Keep ChatGPT Pro exact-token smoke opt-in and never click "Answer now."
+- Add Gemini pre-submit DOM re-probe after an active Gemini lane/subscription exists.
+- Run explicit live browser smokes only after human opt-in.
+- Update docs/changelog only when the feature is user-facing and the sponsor accepts the release posture.
+
+### Phase 6: Tighten From Real Output
 
 - Inspect real Claude Code stream shapes.
 - Update parser tests with sanitized fixtures.
@@ -3648,17 +3775,17 @@ Before each browser smoke, doctor must prove the selector state without submitti
 
 These are tuning questions. They must not weaken the v1 safety contract above.
 
-1. What should the default MCP max inline byte limit be?
+1. Should the future MCP max inline byte limit stay at the spike recommendation of `1 MiB`, or should product measurements choose a different default?
 
-2. If inline overflow happens, should Oracle abort immediately or let the run finish and return a typed non-success overflow result?
+2. If inline overflow happens, the spike recommendation is to finish when practical and return typed non-success after raw persistence. What exact user-facing wording and override knob should ship?
 
 3. What exact owner-only file mode behavior is portable enough for macOS and Linux?
 
-4. Should the raw event purge command delete only Claude Code artifacts or the whole Oracle session?
+4. Should the raw event purge command delete only typed Claude Code raw artifacts or the whole Oracle session? This remains deferred; regular cleanup is not a scoped raw-stream retention control.
 
 5. Should `--write-output` write only final answer, or also support raw events with a new flag?
 
-6. Which exact legacy browser form, if any, should be accepted for `gemini-deep-think` after the registry is in place? The ChatGPT Pro legacy forms are already defined as `--model gpt-5.5-pro` and `--engine browser --model gpt-5.5-pro --browser-thinking-time extended`.
+6. Which exact legacy browser form, if any, should be accepted for `gemini-deep-think` after there is an active Gemini lane/subscription and Deep Think probe? The ChatGPT Pro legacy forms are already defined as `--model gpt-5.5-pro` and `--engine browser --model gpt-5.5-pro --browser-thinking-time extended`, but they should remain not-ready until default non-submitting doctor probes exist.
 
 7. Should `fable` be accepted through `--engine claude-code --model fable` only as compatibility, or should all engine/model compatibility forms be hidden from help entirely?
 
@@ -3668,19 +3795,21 @@ These are tuning questions. They must not weaken the v1 safety contract above.
 
 10. What design is needed for future Windows support: ACL ownership checks, credential stores, executable trust, symlink safety, and process-tree termination?
 
-11. Are remote browser workers allowed for the ChatGPT Pro and Gemini Deep Think lanes, or should all three lanes be local-only for v1?
+11. Are remote browser workers allowed for the ChatGPT Pro and Gemini Deep Think lanes once enabled, or should browser lane templates require local browser proof for the first public release?
+
+12. For `ANTHROPIC_MODEL`, should hidden alpha keep conservative hard refusal, or scrub it from the child environment with a warning now that argv precedence was proven for Claude Code `2.1.198`?
 
 ## Recommended Decisions
 
 These are the current recommended answers.
 
-1. Add explicit `--lane chatgpt-pro`, `--lane gemini-deep-think`, and `--lane fable-local`.
+1. Add explicit lane templates for `--lane chatgpt-pro`, `--lane gemini-deep-think`, and `--lane fable-local`, but enable only `fable-local` for hidden alpha.
 
-2. Add `LaneRegistry` as the source for help, capabilities, MCP schema, doctor lane list, route-block errors, accepted legacy mappings, and lane tests.
+2. Add `LaneRegistry` as the source for help, capabilities, doctor lane list, route-block errors, accepted legacy mappings, readiness states, and lane tests. MCP schema exposure for `fable-local` waits for the later MCP phase.
 
 3. Accept `--engine claude-code --model fable` only as an expert compatibility form that normalizes to `lane: "fable-local"`.
 
-4. Define and test exact GPT Pro legacy forms so `--model gpt-5.5-pro` and `--engine browser --model gpt-5.5-pro --browser-thinking-time extended` both normalize to ChatGPT Pro Extended Reasoning with `--browser-model-strategy select --browser-archive auto --browser-attachments auto`; preserve caller `--slug` and explicit valid `--browser-archive` overrides; do not accept vague browser model aliases, and leave Gemini Deep Think legacy forms undefined until they are checked and tested.
+4. Define and test exact GPT Pro legacy forms so `--model gpt-5.5-pro` and `--engine browser --model gpt-5.5-pro --browser-thinking-time extended` both normalize to ChatGPT Pro Extended Reasoning with `--browser-model-strategy select --browser-archive auto --browser-attachments auto` after the lane is enabled; preserve caller `--slug` and explicit valid `--browser-archive` overrides; do not accept vague browser model aliases, and leave Gemini Deep Think legacy forms undefined until they are checked and tested.
 
 5. Use exit code `2` and code `agent_lane_blocked` for unsupported active run routes.
 
@@ -3688,11 +3817,11 @@ These are the current recommended answers.
 
 7. Treat blank, whitespace, and Windows case variants of `ANTHROPIC_API_KEY` as present.
 
-8. Refuse known API/provider auth sources and fallback settings in v1; scrub `ANTHROPIC_MODEL` only if argv precedence is empirically proven.
+8. Refuse known API/provider auth sources and fallback settings in v1; choose and document either conservative refusal or scrub-with-warning for `ANTHROPIC_MODEL` after the Claude Code `2.1.198` argv precedence proof.
 
 9. Refuse remote flags and browser flags for `fable-local`.
 
-10. Refuse network-bound MCP/server/router/bridge transports for `fable-local`.
+10. Refuse all MCP `fable-local` requests in hidden alpha, and later refuse network-bound MCP/server/router/bridge transports for `fable-local`.
 
 11. Refuse `--models` in v1.
 
@@ -3704,9 +3833,9 @@ These are the current recommended answers.
 
 15. Persist raw stdout and raw stderr bytes always.
 
-16. Return all visible stdout and stderr events inline for MCP, with fail-closed overflow.
+16. Keep MCP `fable-local` deferred. In the later MCP phase, return all visible stdout and stderr events inline, with the `1 MiB` default recommendation and fail-closed overflow.
 
-17. Use empirically confirmed no-tool command flags in v1 and test that dangerous flags are absent.
+17. Use the live-supported no-tool command flags in hidden alpha, including tiny `--system-prompt`, `--permission-mode plan`, `--mcp-config '{"mcpServers":{}}'`, and no `--bare`; test that dangerous flags are absent.
 
 18. Disable Claude Code session persistence in v1.
 
@@ -3736,38 +3865,38 @@ These are the current recommended answers.
 
 The feature is ready only when all items below are true.
 
-- [ ] `oracle --lane chatgpt-pro` exists and resolves to `chatgpt_pro_browser`.
-- [ ] `oracle --lane chatgpt-pro --prompt "Refactor this hot path" --file "src/render/**"` normalizes to `--engine browser --model gpt-5.5-pro --browser-thinking-time extended --browser-model-strategy select --browser-archive auto --browser-attachments auto` with the prompt and file inputs preserved.
-- [ ] `oracle --lane gemini-deep-think` exists and resolves to `gemini_pro_deep_think_browser`.
-- [ ] `oracle --lane fable-local` exists and resolves to `claude_code_fable_local`.
-- [ ] `LaneRegistry` is the source for help, capabilities, MCP schema, doctor lane list, route-block errors, accepted legacy mappings, and lane tests.
-- [ ] Top-level `oracle --help` shows the three reviewed lanes before unsupported engines and models.
-- [ ] `oracle capabilities --json` exposes the lane gate, supported lanes, replacement commands, refused patterns, and exit code dictionary.
+- [ ] `oracle --lane fable-local` exists and resolves to `claude_code_fable_local` for hidden alpha.
+- [ ] `oracle --lane chatgpt-pro` exists as a lane template but route-blocks with not-ready status until default non-submitting Pro selector doctor exists.
+- [ ] When enabled, `oracle --lane chatgpt-pro --prompt "Refactor this hot path" --file "src/render/**"` normalizes to `--engine browser --model gpt-5.5-pro --browser-thinking-time extended --browser-model-strategy select --browser-archive auto --browser-attachments auto` with the prompt and file inputs preserved.
+- [ ] `oracle --lane gemini-deep-think` exists as a deferred lane template and route-blocks until there is an active Gemini lane/subscription and Deep Think probe.
+- [ ] `LaneRegistry` is the source for help, capabilities, doctor lane list, route-block errors, accepted legacy mappings, readiness states, and lane tests.
+- [ ] Top-level `oracle --help` shows the enabled lane and deferred lane statuses before unsupported engines and models.
+- [ ] `oracle capabilities --json` exposes the lane gate, enabled/deferred/not-ready lane status, replacement commands, refused patterns, and exit code dictionary.
 - [ ] `oracle doctor lanes --json` checks all three lanes without submitting prompts.
 - [ ] There is no default lane for bare prompt, config-only engine, env-only engine, or prior-session model.
 - [ ] Unsupported active run routes fail with `agent_lane_blocked` and exit code `2`.
 - [ ] Route-block errors include exact replacement commands for all three lanes.
-- [ ] Route-block JSON includes `attemptedRoute`, `blockedReason`, `policyVersion`, `normalizedOptions`, `sourcePrecedence`, `supportedLanes`, and `noBackendStarted: true`.
+- [ ] Route-block JSON includes `attemptedRoute`, `blockedReason`, `policyVersion`, `normalizedOptions`, `sourcePrecedence`, `enabledLanes`, `deferredLanes`, and `noBackendStarted: true`.
 - [ ] Route-block happens before API provider selection, browser launch, browser model selection, Claude Code spawn, MCP run mapping, session worker start, and router request creation.
 - [ ] `--models` fan-out route-blocks in v1 even when every listed model resembles a reviewed lane.
 - [ ] `oracle --engine claude-code --model fable` exists only as an expert compatibility form and normalizes to `lane: "fable-local"`.
-- [ ] Exact ChatGPT Pro legacy forms are defined and tested as `--model gpt-5.5-pro` and `--engine browser --model gpt-5.5-pro --browser-thinking-time extended`, with normalized `--browser-model-strategy select --browser-archive auto --browser-attachments auto`.
+- [ ] Exact ChatGPT Pro legacy forms are defined and tested as `--model gpt-5.5-pro` and `--engine browser --model gpt-5.5-pro --browser-thinking-time extended`, with normalized `--browser-model-strategy select --browser-archive auto --browser-attachments auto`, but remain not-ready until the selector doctor gate is implemented.
 - [ ] Caller-supplied `--slug` survives ChatGPT Pro lane normalization and omitted slug remains omitted until session creation derives the default.
 - [ ] Caller-supplied `--browser-archive never` and `--browser-archive always` survive ChatGPT Pro lane normalization; omitted archive mode normalizes to `auto`.
 - [ ] Misspelled `--brower-archive` is rejected and is not documented as an alias.
 - [ ] Exact Gemini Deep Think browser legacy form is either defined and tested or not accepted.
 - [ ] Explicit lane conflicts route-block instead of being ignored.
-- [ ] ChatGPT Pro lane verifies signed-in state and Pro selector state before prompt submission.
-- [ ] Gemini Deep Think lane verifies signed-in state and Deep Think selector state before prompt submission.
+- [ ] ChatGPT Pro lane verifies signed-in state and Pro selector state before prompt submission before it is enabled.
+- [ ] Gemini Deep Think lane verifies signed-in state and Deep Think selector state before prompt submission before it is enabled.
 - [ ] Browser lane doctor reports `ready: false` with `selector_state_unknown` when selector state cannot be proven without submitting.
 - [ ] Browser runners abort before prompt submission if selector state changes after lane resolution.
 - [ ] Provider boundary slot `claude_code_fable_5` exists.
 - [ ] The path refuses when `ANTHROPIC_API_KEY` is present, even blank or whitespace.
 - [ ] Windows case variants of `ANTHROPIC_API_KEY` are refused.
 - [ ] Other known API/provider auth sources are refused.
-- [ ] `ANTHROPIC_MODEL` is scrubbed only after argv model precedence is empirically proven; otherwise it is refused.
+- [ ] `ANTHROPIC_MODEL` policy is explicit: conservative refusal, or child-env scrub with warning after the Claude Code `2.1.198` argv precedence proof.
 - [ ] Refusal happens before any `claude` subprocess.
-- [ ] The empirical CLI contract has been captured before implementation.
+- [ ] The empirical CLI contract is represented in sanitized fixtures before implementation.
 - [ ] The child environment omits Anthropic API variables.
 - [ ] Local-owner checks run before spawning `claude`.
 - [ ] Effective uid 0 is refused; non-root `SUDO_USER` warns instead of hard-refusing.
@@ -3782,16 +3911,18 @@ The feature is ready only when all items below are true.
 - [ ] The prompt is sent over stdin, not argv.
 - [ ] The path is no-tool by command policy in v1.
 - [ ] The command builder uses `--tools ""` in v1.
-- [ ] `--bare` is used only if the empirical probe proves subscription auth still works.
+- [ ] `--bare` is not emitted by default.
+- [ ] `--max-turns` or any turn-cap flag is not emitted unless future feature detection proves support.
 - [ ] Unsupported Claude Code flags are not emitted.
 - [ ] Claude Code session persistence is disabled or the run refuses.
-- [ ] Startup verification proves tools, MCP, hooks, plugins, skills, slash commands, Chrome integration, agents, fallback model, and unexpected permission mode are inactive.
+- [ ] Startup verification proves tools, MCP, hooks, plugins, skills, slash commands, Chrome integration, fallback model, and unexpected permission mode are inactive.
+- [ ] Startup verification tolerates the live-observed built-in `agents` list only when no agent is active or invoked.
 - [ ] Startup verification treats missing critical startup fields as non-success.
 - [ ] Startup verification rejects API/provider auth sources and unknown auth sources.
 - [ ] Dangerous Claude Code flags are impossible in v1.
 - [ ] Raw Claude Code pass-through args are impossible in v1.
 - [ ] Observed non-Fable model is non-success by default.
-- [ ] Requested alias, resolved init model, and result `modelUsage` keys are all stored when visible.
+- [ ] Requested alias, resolved init model, result `modelUsage` keys, and classified auxiliary model usage keys are all stored when visible.
 - [ ] Visible thinking status is recorded when thinking or thinking-summary events appear.
 - [ ] `total_cost_usd` is stored when visible, and credit/subscription uncertainty is surfaced.
 - [ ] Visible read-only policy violation events stop the run.
@@ -3799,11 +3930,12 @@ The feature is ready only when all items below are true.
 - [ ] Raw stderr visible bytes are persisted exactly or with documented byte-safe encoding.
 - [ ] Normalized event records include sequence numbers and byte offsets.
 - [ ] Multibyte split chunks, CRLF, invalid UTF-8, and final partial lines are tested.
-- [ ] MCP returns every visible stdout event and stderr chunk inline on success.
-- [ ] MCP never marks partial inline events as complete.
-- [ ] MCP does not use the existing 4 KB log tail as the full event return.
-- [ ] MCP output includes access path, provider family, model requested, model observed, model verification status, read-only state, local-owner state, API-key state, and exit code.
-- [ ] MCP returns resource URIs for raw artifacts and does not expose local absolute paths over network transports.
+- [ ] Hidden alpha MCP `fable-local` route-blocks.
+- [ ] Future MCP returns every visible stdout event and stderr chunk inline on success.
+- [ ] Future MCP never marks partial inline events as complete.
+- [ ] Future MCP does not use the existing 4 KB log tail as the full event return.
+- [ ] Future MCP output includes access path, provider family, model requested, model observed, model verification status, read-only state, local-owner state, API-key state, and exit code.
+- [ ] Future MCP returns resource URIs for raw artifacts and does not expose local absolute paths over network transports.
 - [ ] CLI output is clear and useful.
 - [ ] CLI pretty mode assembles text deltas and does not dump raw NDJSON by default.
 - [ ] Session replay shows artifact paths and final answer.
@@ -3816,7 +3948,7 @@ The feature is ready only when all items below are true.
 - [ ] Raw event artifacts are owner-only where the platform supports it.
 - [ ] Raw artifact creation refuses symlink redirection.
 - [ ] Typed raw event artifact kinds are not included in redacted exports by default.
-- [ ] There is a documented purge path for raw event artifacts.
+- [ ] Raw artifact purge scope is documented as deferred, or a typed purge path is implemented.
 - [ ] Compliance review confirms local-owner-only, not hosted, not multi-user, not a proxy, and not a subscription relay.
 - [ ] Existing API and browser tests pass.
 - [ ] New fake-run tests pass without using real Fable quota.
@@ -3840,6 +3972,9 @@ Fork-local `etafund/oracle` references:
 
 - Current Oracle provider boundary: `src/oracle/v18/provider_boundaries.ts`
 - Current Oracle API substitution guard: `src/oracle/api_substitution_guard.ts`
+- Spike portfolio: `docs/plans/SPIKE.md`
+- Spike synthesis and live addendum: `docs/plans/SPIKE-RESULT.md`
+- System prompt live spike artifact: `.planning-runs/claude-code-spike-execution-2026-07-02/coordinator-live/SYSTEM-PROMPT-SPIKE.md`
 
 Upstream-visible Oracle references:
 

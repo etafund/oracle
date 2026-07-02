@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This is a planning-phase portfolio for the local Claude Code subscription adapter and the three reviewed Oracle agent lanes described in `docs/plans/claude-code-subscription-adapter.md`. It is not an implementation plan, product requirement, ADR, or doctrine update.
+This is a planning-phase portfolio for the local Claude Code CLI lane and the reviewed Oracle agent-lane templates described in `docs/plans/claude-code-subscription-adapter.md`. It is not an implementation plan, product requirement, ADR, or doctrine update.
 
 The goal is to find the problems before implementation begins. Every spike below is an experiment, prototype, fixture capture, route audit, or concrete validation that can fail and change a decision. Clean negative outcomes count as successful spikes when they kill, defer, narrow, or reorder risky implementation work.
 
@@ -646,4 +646,4 @@ KERNEL clusters preserved in the synthesis record:
 - Local-only, executable trust, and MCP transport are pre-spawn blockers.
 - Browser lane readiness is separate from Fable adapter viability.
 
-This `SPIKE.md` is intentionally additive and planning-only. It does not amend the current plan or decide sponsor policy.
+This `docs/plans/SPIKE.md` is intentionally additive and planning-only. It does not amend the current plan or decide sponsor policy.
