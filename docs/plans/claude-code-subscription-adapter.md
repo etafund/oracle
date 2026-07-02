@@ -5,6 +5,19 @@ Date: 2026-07-01
 Audience: a new maintainer who has not read Oracle, Oracle Router, or this chat
 Scope: plan only, not implementation
 
+## Repo Scope
+
+This plan targets the `etafund/oracle` fork.
+
+Some cited files are fork-local and are not present in the public `steipete/oracle` upstream repo. In particular:
+
+- `src/oracle/v18/provider_boundaries.ts`
+- `src/oracle/api_substitution_guard.ts`
+
+Other cited files, such as `src/cli/engine.ts`, `src/cli/runOptions.ts`, `src/mcp/tools/consult.ts`, `src/sessionManager.ts`, `docs/anthropic.md`, `docs/mcp.md`, and `docs/cli-reference.md`, also exist in the public upstream repo and may be useful for orientation.
+
+When a path below is marked "fork-local", look in `etafund/oracle`. When a path is marked "upstream-visible", a maintainer can cross-check it against `steipete/oracle` as well.
+
 ## Short Summary
 
 Oracle today can ask models in two main ways:
@@ -44,7 +57,7 @@ These facts are the base of the design. They should be checked again before impl
    Anthropic's support docs say if `ANTHROPIC_API_KEY` is set, Claude Code uses that API key instead of the Claude subscription plan, causing API usage charges.
 
 4. The local Claude Code install was checked during planning.
-   On this machine, `claude --version` returned `2.1.198 (Claude Code)`. `claude -p --help` showed `--output-format stream-json`, `--include-partial-messages`, `--model`, `--permission-mode`, `--tools`, `--allowedTools`, `--disallowedTools`, and dangerous bypass flags. The implementation must check these again because local CLI versions change.
+   On this machine, `claude --version` returned `2.1.198 (Claude Code)`. `claude -p --help` showed `--output-format stream-json`, `--include-partial-messages`, `--include-hook-events`, `--model`, `--permission-mode`, `--tools`, `--allowedTools`, `--disallowedTools`, `--safe-mode`, `--bare`, `--no-chrome`, `--no-session-persistence`, and dangerous bypass flags. It did not show `--max-turns` in the checked help output. The implementation must not rely on this remembered check alone. It must paste a fresh empirical CLI contract into this plan or an appendix before coding.
 
 5. Claude Code has several configuration surfaces that can affect a headless run.
    Current Claude Code docs describe flags and settings for hooks, plugins, skills, MCP servers, Chrome integration, custom commands, custom agents, background sessions, fallback models, and session persistence. This plan must neutralize those surfaces for v1 instead of assuming `claude -p` is a plain text API.
@@ -53,9 +66,11 @@ These facts are the base of the design. They should be checked again before impl
    Current docs say model warnings may be suppressed in `stream-json`, and the actual model should be read from the result message's `modelUsage` field when available. The TypeScript SDK stream also exposes system initialization data that can include auth and tool information. The implementation must parse startup and result events and fail closed when they do not match the expected local subscription review shape.
 
 7. Oracle already has a provider boundary that says Claude subscription CLI is not Oracle-owned and must not be replaced with Anthropic API.
+   This is fork-local to `etafund/oracle`.
    In the current repo, `src/oracle/v18/provider_boundaries.ts` marks Claude as `ownership: "user_cli"`, `oracle_owned: false`, `api_substitution_allowed: false`, and `required_access_path: "claude_code_subscription_cli"`.
 
 8. Oracle already has an API substitution guard.
+   This is fork-local to `etafund/oracle`.
    In the current repo, `src/oracle/api_substitution_guard.ts` says `claude_code_*` slots must use `claude_code_subscription_cli`, never `anthropic_api`.
 
 9. Oracle session storage already exists.
@@ -63,6 +78,45 @@ These facts are the base of the design. They should be checked again before impl
 
 10. Oracle MCP already mirrors CLI sessions.
    The MCP `consult` tool currently returns a session id, status, output text, model summaries, and artifact summaries. It also shares the same session store as the CLI.
+
+## Empirical CLI Contract
+
+Do not start implementation until this contract is filled with fresh output from the target machine.
+
+The goal of this step is simple: the code must be generated from observed Claude Code behavior, not from guessed docs or stale memory.
+
+Run these commands with no `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, provider-routing variables, or other blocked auth sources present:
+
+```bash
+claude --version
+claude --help 2>&1
+claude -p --help 2>&1
+```
+
+Then run these opt-in probes on a subscription-authenticated machine:
+
+```bash
+printf 'reply exactly: ok\n' | claude -p --model fable --output-format stream-json --verbose
+printf 'reply exactly: ok\n' | claude --bare -p --model fable --output-format stream-json --verbose
+printf 'reply exactly: ok\n' | ANTHROPIC_MODEL=some-other-model claude -p --model fable --output-format stream-json --verbose
+printf 'reply exactly: ok\n' | claude -p --model fable --output-format stream-json --verbose --tools ""
+```
+
+Paste the raw `system/init` event and the final result event from each probe into an appendix or checked fixture.
+
+The implementation must record:
+
+- Exact Claude Code version.
+- Exact supported flags.
+- Whether `--bare` preserves subscription auth.
+- Whether `--tools ""` yields an empty startup tool list.
+- Exact subscription auth value in `apiKeySource`.
+- Exact API-key/provider auth values that must be refused.
+- Exact startup fields for tools, MCP servers, hooks, plugins, skills, slash commands, Chrome integration, custom agents, permission mode, fallback model, and session persistence.
+- Exact result fields for `modelUsage`, `total_cost_usd`, and final text.
+- Whether `--model fable` overrides `ANTHROPIC_MODEL`.
+
+If a claimed safety flag is absent or ignored, do not emit it and do not pretend it protects the run. Replace it with startup verification or mark the feature blocked.
 
 ## Names
 
@@ -155,7 +209,6 @@ The implementation must also reject or prove safe any other API/provider auth so
 
 - `ANTHROPIC_AUTH_TOKEN`
 - `ANTHROPIC_BASE_URL`
-- `ANTHROPIC_MODEL`
 - `ANTHROPIC_DEFAULT_*`
 - `CLAUDE_CODE_USE_BEDROCK`
 - `CLAUDE_CODE_USE_VERTEX`
@@ -166,6 +219,12 @@ The implementation must also reject or prove safe any other API/provider auth so
 - Claude Code API-key helper settings
 - Console/API auth mode
 - fallback model settings
+
+Treat model-default controls separately from auth/provider controls:
+
+- If empirical testing proves `--model fable` overrides `ANTHROPIC_MODEL`, scrub `ANTHROPIC_MODEL` from the child env instead of hard-refusing the parent env.
+- If empirical testing does not prove that, refuse when `ANTHROPIC_MODEL` is present.
+- Keep `ANTHROPIC_DEFAULT_*` refused unless each specific variable is proven inert for this run.
 
 For v1, prefer refusal when a source is ambiguous. The feature is useful only when Oracle can say it made a serious effort to avoid API billing.
 
@@ -180,14 +239,14 @@ The v1 command should use a defensive no-tool shape:
 - Disable Claude Code tools entirely if the CLI supports that.
 - Do not use `Read`, `Grep`, `Glob`, or any other file tool in v1.
 - Paste all requested file context into the prompt from Oracle's normal file attachment path.
-- Use `--permission-mode plan`.
+- Use `--permission-mode dontAsk` or `--permission-mode plan`, whichever empirical testing proves safer for unattended supplied-context review.
 - Use `--safe-mode`.
 - Use `--disable-slash-commands`.
 - Use `--strict-mcp-config` with no MCP config.
 - Use `--disallowedTools mcp__*`.
 - Use `--no-chrome`.
 - Use `--no-session-persistence`.
-- Use a conservative `--max-turns` value.
+- Use a conservative turn cap only if the installed CLI exposes a safe flag for it.
 - Use explicit denial for all non-approved tools if tools cannot be disabled as a set.
 - No permission bypass flags.
 - No `--dangerously-skip-permissions`.
@@ -272,9 +331,12 @@ It does not capture:
 - Hidden chain-of-thought.
 - Hidden model planner state.
 - Provider-side logs.
-- Billing records.
+- Provider billing records.
 - Claude account metadata unless Claude Code itself prints it.
 - A guaranteed proof that Fable served every token if Claude Code falls back internally and does not expose that fact.
+- A guaranteed proof that the subscription is still inside quota rather than consuming separate usage credits, unless Claude Code visibly exposes that distinction.
+
+For extended-thinking models, Claude Code may visibly emit thinking or thinking-summary events. If those events are on stdout, Oracle must preserve them because the user asked for full visible streams. That is different from capturing hidden reasoning.
 
 The metadata should say:
 
@@ -282,9 +344,15 @@ The metadata should say:
 {
   "transcript_fidelity": "visible_cli_stream",
   "hidden_reasoning_captured": false,
+  "visible_thinking_captured": "true|false|unknown",
   "model_requested": "fable",
   "model_observed": null,
-  "model_verification_status": "requested_only"
+  "model_resolved_from_init": null,
+  "model_usage_keys": [],
+  "model_verification_status": "requested_only",
+  "subscription_billing_uncertain": true,
+  "total_cost_usd_observed": null,
+  "credit_billing_warning_emitted": false
 }
 ```
 
@@ -298,6 +366,8 @@ unknown
 ```
 
 Use `observed` only when Claude Code visibly says which model served the run. Use `fallback_observed` only when Claude Code visibly says fallback happened. Otherwise use `requested_only` or `unknown`.
+
+Subscription quota and credit billing are also only partially visible. If Claude Code emits `total_cost_usd`, store it. If that value is non-zero, warn that the run may have consumed credits or billable capacity. If Claude Code does not expose whether the run used subscription quota or credits, set `subscription_billing_uncertain: true` and say so plainly.
 
 ## Anti-Goals
 
@@ -466,13 +536,19 @@ Expected MCP structured output:
     "providerFamily": "claude",
     "modelRequested": "fable",
     "modelObserved": null,
+    "modelResolvedFromInit": null,
+    "modelUsageKeys": [],
     "modelVerificationStatus": "requested_only",
+    "totalCostUsdObserved": null,
+    "subscriptionBillingUncertain": true,
+    "creditBillingWarningEmitted": false,
     "commandVersion": "2.1.198 (Claude Code)",
     "readOnly": true,
     "localOwnerVerified": true,
     "anthropicApiKeyPresent": false,
     "transcriptFidelity": "visible_cli_stream",
     "hiddenReasoningCaptured": false,
+    "visibleThinkingCaptured": "unknown",
     "exitCode": 0,
     "eventsComplete": true,
     "events": [
@@ -488,10 +564,10 @@ Expected MCP structured output:
       }
     ],
     "artifacts": {
-      "rawStdoutPath": "oracle-session://.../claude-code-stdout-raw",
-      "rawStderrPath": "oracle-session://.../claude-code-stderr-raw",
-      "normalizedEventsPath": "/home/user/.oracle/sessions/.../artifacts/claude-code-events.normalized.ndjson",
-      "adapterPath": "/home/user/.oracle/sessions/.../artifacts/claude-code-adapter.json"
+      "rawStdoutResource": "oracle-session://.../claude-code-stdout-raw",
+      "rawStderrResource": "oracle-session://.../claude-code-stderr-raw",
+      "normalizedEventsResource": "oracle-session://.../claude-code-events-normalized",
+      "adapterResource": "oracle-session://.../claude-code-adapter"
     }
   }
 }
@@ -524,6 +600,8 @@ Dry run should report:
 - The artifact paths that would be used.
 - The read-only policy that would be enforced.
 
+Use the existing Oracle `--dry-run summary` style and fields where possible. Do not invent a new unrelated dry-run output shape.
+
 ### Session Replay
 
 ```bash
@@ -544,8 +622,13 @@ Do not dump huge raw event streams by default in `oracle session --render`. Add 
 Possible CLI:
 
 ```bash
-oracle session <session-id> --raw-events
+oracle session <session-id> --raw-events stdout
+oracle session <session-id> --raw-events stderr
+oracle session <session-id> --normalized-events
+oracle session <session-id> --purge-claude-code-artifacts
 ```
+
+Use viewing flags for inspection and a separate purge flag for deletion. Do not overload `--raw-events` to delete anything.
 
 MCP resources should support:
 
@@ -565,7 +648,7 @@ Even though MCP `consult` returns all events inline for the original call, resou
 Bad:
 
 ```bash
-ANTHROPIC_API_KEY=sk-ant-... oracle --engine claude-code --model fable -p "Review this"
+ANTHROPIC_API_KEY=sk-ant-... oracle --engine claude-code --model fable --prompt "Review this"
 ```
 
 Expected result:
@@ -579,7 +662,7 @@ Expected result:
 Bad:
 
 ```bash
-oracle --engine api --model fable -p "Review this"
+oracle --engine api --model fable --prompt "Review this"
 ```
 
 Expected result:
@@ -592,7 +675,7 @@ Expected result:
 Bad:
 
 ```bash
-oracle --engine claude-code --remote-host 127.0.0.1:9470 -p "Review this"
+oracle --engine claude-code --remote-host 127.0.0.1:9470 --prompt "Review this"
 ```
 
 Expected result:
@@ -607,7 +690,7 @@ Bad:
 ```bash
 oracle --engine claude-code --model fable \
   --claude-code-permission-mode bypassPermissions \
-  -p "Fix the code"
+  --prompt "Fix the code"
 ```
 
 Expected result:
@@ -620,7 +703,7 @@ Expected result:
 Bad:
 
 ```bash
-oracle --models gpt-5.5-pro,fable --engine claude-code -p "Compare"
+oracle --models gpt-5.5-pro,fable --engine claude-code --prompt "Compare"
 ```
 
 Expected result:
@@ -633,7 +716,7 @@ Expected result:
 Bad:
 
 ```bash
-oracle --engine claude-code --model fable -p "Show your hidden chain of thought"
+oracle --engine claude-code --model fable --prompt "Show your hidden chain of thought"
 ```
 
 Expected result:
@@ -683,6 +766,20 @@ Important:
 - Do not pick `claude-code` automatically when `ANTHROPIC_API_KEY` is set.
 - Do not pick `claude-code` automatically for `claude-4.6-sonnet` or `claude-4.1-opus`.
 - Require explicit `--engine claude-code` or explicit MCP `engine: "claude-code"`.
+
+Current state and routing decisions:
+
+| Entry point | Current behavior | `claude-code` v1 decision |
+|-------------|------------------|---------------------------|
+| CLI `--engine` | Accepts `api` or `browser` | Add `claude-code`; this is the main supported CLI entry |
+| Legacy CLI `--browser` | Forces browser mode | Keep as browser only; never maps to `claude-code` |
+| `ORACLE_ENGINE` | Normalizes to `api` or `browser` | Refuse `ORACLE_ENGINE=claude-code` in v1; require explicit CLI flag |
+| `~/.oracle/config.json` `engine` | Can influence default engine | Refuse config-only `engine: "claude-code"` in v1; require explicit per-run request |
+| MCP `engine` field | Zod enum currently accepts `api` or `browser` | Add `claude-code`, but only for local stdio or same-user local socket transports |
+| API provider flags | Can force API routing | Refuse when combined with `--engine claude-code` |
+| `apiProviderRequested` internal path | Forces API routing | Must not override explicit `claude-code`; mixed API-provider request must fail |
+
+Add or update schema snapshots and fixtures anywhere the `engine` enum appears, especially MCP consult input tests and CLI option tests.
 
 Also add a provider boundary slot for this local subscription path:
 
@@ -752,24 +849,25 @@ Suggested behavior:
 buildClaudeCodeCommand({
   executable: "claude",
   model: "fable",
-  permissionMode: "plan",
+  permissionMode: "dontAsk",
   outputFormat: "stream-json",
   includePartialMessages: true,
-  includeHookEvents: true,
+  includeHookEvents: "if-confirmed",
   verbose: true,
   readOnly: true,
   toolMode: "none",
-  safeMode: true,
+  bareMode: "use-if-subscription-auth-still-works",
+  safeMode: "if-confirmed-and-not-using-bare",
   disableSlashCommands: true,
   strictMcpConfig: true,
   noChrome: true,
   noSessionPersistence: true,
-  maxTurns: 2,
+  turnCap: "if-confirmed",
   promptSource: "stdin"
 })
 ```
 
-Required v1 argv shape:
+Candidate baseline v1 argv shape after empirical confirmation:
 
 ```bash
 claude -p \
@@ -777,17 +875,29 @@ claude -p \
   --output-format stream-json \
   --verbose \
   --include-partial-messages \
-  --include-hook-events \
-  --permission-mode plan \
-  --safe-mode \
+  --permission-mode dontAsk \
   --disable-slash-commands \
   --strict-mcp-config \
   --disallowedTools mcp__* \
   --no-chrome \
   --no-session-persistence \
-  --max-turns 2 \
   --tools ""
 ```
+
+Every flag in this candidate argv must be confirmed by the empirical CLI contract before the command builder emits it. If `--no-chrome` is absent, startup verification must prove Chrome integration is inactive or the run refuses. If `--no-session-persistence` is absent, startup verification must prove session persistence is inactive or the run refuses.
+
+Use `--permission-mode dontAsk` if the empirical CLI check confirms it denies rather than prompts in unattended print mode. If `dontAsk` is not safer on the installed CLI, use `--permission-mode plan` and document the reason in the empirical appendix.
+
+Add these flags only when the empirical CLI contract confirms they exist and work as expected:
+
+```text
+--include-hook-events
+--safe-mode
+--bare
+<turn-cap flag if one exists>
+```
+
+Do not emit unsupported flags just because this plan mentions them.
 
 The v1 no-tool syntax is:
 
@@ -803,7 +913,10 @@ Do not use `--allowedTools` as the safety boundary. Claude Code docs say `--allo
 
 Do not expose a raw `--claude-code-args` or extra-args option in v1. The command builder must own the whole argv.
 
-Do not use `--bare` in v1 unless subscription auth is proven to keep working with it. Current docs say `--bare` skips many configuration surfaces, but it changes auth/config behavior in ways that need separate proof.
+Test `--bare` before implementation:
+
+- If `claude --bare -p --output-format stream-json --verbose` preserves subscription auth and reduces hooks, plugins, skills, MCP servers, custom agents, and other config surfaces, use `--bare` as the primary config-surface mitigation.
+- If `--bare` breaks subscription auth or hides fields Oracle needs for verification, document the failure and use the verifier-based mitigation instead.
 
 After startup, parse the visible initialization event and assert that the available tools, MCP servers, hooks, plugins, skills, slash commands, Chrome integration, agents, permission mode, model, and auth source match the intended v1 shape. If they do not, stop the run and mark it non-success.
 
@@ -812,6 +925,8 @@ Never use `shell: true`.
 Use `spawn(file, args, { shell: false })`.
 
 Pass the prompt through stdin.
+
+After writing the prompt, call `child.stdin.end()` to signal EOF. Do not pass `--input-format stream-json` in v1; Oracle sends plain text on stdin and requests only `--output-format stream-json`.
 
 Do not put the full prompt on argv, because argv can be visible to process lists.
 
@@ -846,14 +961,19 @@ Do not include the full parent environment by default.
 
 This is important because a later code change could accidentally add API-oriented variables. The rule is still refusal first, scrub second.
 
-Mandatory provider-auth refusals:
+Mandatory auth and provider-routing refusals:
 
 - If `ANTHROPIC_AUTH_TOKEN` is set, refuse.
 - If `ANTHROPIC_BASE_URL` is set, refuse.
-- If `ANTHROPIC_MODEL` or `ANTHROPIC_DEFAULT_*` is set, refuse unless the implementation proves it cannot affect this run.
 - If `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_FOUNDRY`, or `CLAUDE_CODE_USE_ANTHROPIC_AWS` is set, refuse.
 - If Bedrock, Vertex, Foundry, or other API provider credentials are active for this run, refuse.
 - If Claude Code settings define an API-key helper, console/API auth source, or fallback model for this run, refuse.
+
+Model-default controls:
+
+- If `ANTHROPIC_MODEL` is set and the empirical CLI contract proves `--model fable` wins, scrub `ANTHROPIC_MODEL` from the child env and continue.
+- If `ANTHROPIC_MODEL` is set and that precedence is not proven, refuse.
+- If `ANTHROPIC_DEFAULT_*` is set, refuse unless each exact variable is proven inert for this run.
 
 Because the user asked for hard refusal on `ANTHROPIC_API_KEY`, the implementation must run this guard before any `claude` subprocess, including doctor and dry-run probes.
 
@@ -881,7 +1001,8 @@ Also verify that the local session belongs to the current user.
 Recommended checks:
 
 - Refuse if running as root by accident, unless a future explicit override is designed.
-- Refuse if `SUDO_USER` is set, because the real account owner is ambiguous.
+- If `SUDO_USER` is set and the effective uid is root, refuse.
+- If `SUDO_USER` is set and the effective uid is non-root, warn and continue after the normal owner and path checks pass.
 - Resolve `HOME` and Oracle home with `realpath`.
 - Refuse if Oracle home is world-writable.
 - Refuse if the session directory is not owned by the current uid on platforms that expose uid.
@@ -924,7 +1045,7 @@ Suggested metadata:
 {
   "claudeCode": {
     "readOnly": true,
-    "permissionMode": "plan",
+    "permissionMode": "dontAsk-or-plan-after-empirical-check",
     "toolMode": "none",
     "allowedTools": [],
     "blockedTools": ["*"],
@@ -1010,22 +1131,24 @@ Expected startup shape for v1:
 {
   "type": "system",
   "subtype": "init",
-  "apiKeySource": "oauth",
+  "apiKeySource": "<captured subscription value>",
   "model": "fable-or-claude-fable-5",
   "tools": [],
   "mcp_servers": [],
-  "permissionMode": "plan"
+  "permissionMode": "dontAsk-or-plan"
 }
 ```
 
-Current docs and SDK examples use fields like `apiKeySource`, `model`, `tools`, and MCP server metadata on system initialization events. The implementation must confirm the exact casing against the installed Claude Code version.
+Current docs and SDK examples use fields like `apiKeySource`, `model`, `tools`, and MCP server metadata on system initialization events. The implementation must confirm the exact casing and exact values against the installed Claude Code version.
+
+Do not guess the subscription value. Real Claude Code builds may report subscription/OAuth login as values such as `none`, `claude.ai`, or another string. The empirical CLI contract must capture the exact value. The verifier allowlist must be built from that capture.
 
 Hard verifier rules:
 
 - If no startup event appears before assistant output, stop and mark non-success.
 - If `apiKeySource` is missing, stop and mark non-success.
-- If `apiKeySource` is an API key, auth token, Bedrock, Vertex, Foundry, AWS, Console/API, helper, or unknown source, stop and mark non-success.
-- If `apiKeySource` is subscription/OAuth, continue.
+- If `apiKeySource` is an API key, auth token, `env`, helper, Bedrock, Vertex, Foundry, AWS, Console/API, or unknown source, stop and mark non-success.
+- If `apiKeySource` matches the empirically captured subscription/OAuth value, continue.
 - If `model` is missing, keep `modelVerificationStatus: "requested_only"` but require the final result event to prove model compatibility if it exposes `modelUsage`.
 - If `model` is present and not Fable-compatible, stop and mark non-success.
 - If `tools` is missing, stop and mark non-success.
@@ -1041,11 +1164,24 @@ Expected result shape for model verification:
   "type": "result",
   "modelUsage": {
     "fable-or-claude-fable-5": {}
-  }
+  },
+  "total_cost_usd": 0
 }
 ```
 
 If a result event exposes `modelUsage`, success requires Fable-compatible usage. If it exposes a non-Fable model, mark non-success. If it does not expose model usage, do not claim `observed`; leave `modelVerificationStatus: "requested_only"` and rely on startup verification.
+
+Always store both the requested alias and observed/resolved model data when visible:
+
+```json
+{
+  "model_requested": "fable",
+  "model_resolved_from_init": "claude-fable-5",
+  "model_usage_keys": ["claude-fable-5"]
+}
+```
+
+If the result exposes `total_cost_usd`, store it in metadata. A non-zero value is not proof of API-key billing, but it is a useful signal for subscription-credit uncertainty.
 
 This verifier is a required safety boundary. Do not ship `claude-code` mode without it.
 
@@ -1241,7 +1377,12 @@ Suggested adapter metadata:
   "provider_family": "claude",
   "model_requested": "fable",
   "model_observed": null,
+  "model_resolved_from_init": null,
+  "model_usage_keys": [],
   "model_verification_status": "requested_only",
+  "total_cost_usd_observed": null,
+  "subscription_billing_uncertain": true,
+  "credit_billing_warning_emitted": false,
   "command": {
     "executable": "claude",
     "args_redacted": [
@@ -1252,18 +1393,14 @@ Suggested adapter metadata:
       "stream-json",
       "--verbose",
       "--include-partial-messages",
-      "--include-hook-events",
       "--permission-mode",
-      "plan",
-      "--safe-mode",
+      "dontAsk",
       "--disable-slash-commands",
       "--strict-mcp-config",
       "--disallowedTools",
       "mcp__*",
       "--no-chrome",
       "--no-session-persistence",
-      "--max-turns",
-      "2",
       "--tools",
       ""
     ]
@@ -1277,6 +1414,7 @@ Suggested adapter metadata:
   "child_env_scrubbed": true,
   "transcript_fidelity": "visible_cli_stream",
   "hidden_reasoning_captured": false,
+  "visible_thinking_captured": "unknown",
   "started_at": "2026-07-01T00:00:00.000Z",
   "completed_at": "2026-07-01T00:00:30.000Z",
   "exit_code": 0,
@@ -1291,6 +1429,8 @@ Suggested adapter metadata:
   "events_complete": true
 }
 ```
+
+The exact `args_redacted` list must come from the empirical CLI contract. If `--bare`, `--safe-mode`, `--include-hook-events`, or a turn-cap flag is confirmed and selected, include it. If a flag is not confirmed, do not emit it and do not list it here.
 
 Suggested normalized event:
 
@@ -1327,13 +1467,19 @@ claudeCode: {
   providerFamily: "claude";
   modelRequested: string;
   modelObserved: string | null;
+  modelResolvedFromInit: string | null;
+  modelUsageKeys: string[];
   modelVerificationStatus: "requested_only" | "observed" | "fallback_observed" | "unknown";
+  totalCostUsdObserved: number | null;
+  subscriptionBillingUncertain: boolean;
+  creditBillingWarningEmitted: boolean;
   commandVersion?: string;
   localOwnerVerified: true;
   anthropicApiKeyPresent: false;
   readOnly: true;
   transcriptFidelity: "visible_cli_stream";
   hiddenReasoningCaptured: false;
+  visibleThinkingCaptured: true | false | "unknown";
   exitCode: number | null;
   eventsComplete: boolean;
   streamsComplete: boolean;
@@ -1382,6 +1528,14 @@ Recommended default CLI display:
 - JSONL if `--json` or `--claude-code-inline-events jsonl` is set.
 - Plain final answer still available through `--write-output`.
 
+Pretty mode must not dump raw token-level NDJSON by default. It should:
+
+- Assemble visible `text_delta` or equivalent events into readable assistant text.
+- Show compact one-line markers for startup, retries, policy checks, and final status.
+- Treat `system/api_retry` or equivalent retry events as expected non-error events.
+- Print raw `stream-json` frames only under JSONL or verbose modes.
+- Preserve the final result text separately for `--write-output`.
+
 Do not overload browser thinking labels or Pro model wording.
 
 ### Feature 14: Session Metadata
@@ -1401,19 +1555,20 @@ claudeCode?: {
   readOnly: true;
   inlineEvents: true;
   outputFormat: "stream-json";
-  permissionMode: "plan";
+  permissionMode: "dontAsk" | "plan";
   toolMode: "none";
-  safeMode: true;
+  bareMode?: boolean;
+  safeMode?: boolean;
   disableSlashCommands: true;
   strictMcpConfig: true;
   noChrome: true;
   noSessionPersistence: true;
-  maxTurns: number;
+  turnCap?: number;
   maxInlineBytes?: number;
 }
 ```
 
-Extend `SessionArtifact.kind` or add labels.
+Extend `SessionArtifact.kind`.
 
 Current kinds are:
 
@@ -1421,9 +1576,7 @@ Current kinds are:
 "transcript" | "deep-research-report" | "image" | "file"
 ```
 
-Options:
-
-1. Add a new kind:
+Add these new kinds:
 
 ```ts
 "claude-code-stdout-raw"
@@ -1432,21 +1585,7 @@ Options:
 "claude-code-adapter"
 ```
 
-2. Reuse `"file"` with labels.
-
-Recommendation:
-
-Add specific kinds if this is easy, because typed artifact kinds make MCP and session replay clearer.
-
-If adding kinds causes too much churn, use `"file"` with labels for v1:
-
-```json
-{
-  "kind": "file",
-  "label": "Claude Code raw stdout byte stream",
-  "mimeType": "application/octet-stream"
-}
-```
+Do not store raw Claude Code streams as generic `"file"` artifacts in v1. Redacted exports must be able to exclude raw streams by typed kind, not by filename or label.
 
 ### Feature 15: Lifecycle and Detach
 
@@ -1515,11 +1654,13 @@ claude-code:local-subscription
 Behavior:
 
 - Acquire the lock after preflight checks and before spawning `claude`.
-- Record pid, session id, started timestamp, command version, and model requested.
+- Use a real cross-platform lock primitive, such as `proper-lockfile`, rather than only writing a pid file.
+- Record pid, session id, random nonce, pid start-time hint when available, started timestamp, command version, and model requested.
 - Release the lock on success, failure, timeout, and Ctrl-C.
 - If the lock is held by a live Oracle process, refuse by default.
-- If the lock points to a dead pid, mark it stale, replace it, and record that in metadata.
-- Add a future `--wait-for-claude-code-lock` only if there is a real need.
+- Treat a lock as stale only when the lock primitive allows it and pid/start-time/nonce checks do not match a live Oracle run.
+- If the lock is stale, mark it stale, replace it, and record that in metadata.
+- Add `--wait-for-lock <duration>` in v1 for users who explicitly want to wait. Fail-fast remains the default.
 
 Default busy error:
 
@@ -1551,7 +1692,7 @@ Implementation detail:
 
 - Spawn with a process group when possible.
 - On POSIX, use `detached: true` and kill `-pid` carefully, or use a helper that kills child trees.
-- On Windows, use an appropriate tree-kill strategy.
+- V1 supports macOS and Linux. Windows process-tree kill, ACL checks, credential-store behavior, executable trust, and symlink semantics are future work.
 - Tests must not run real Claude. Use fake child processes.
 
 ### Feature 18: Doctor and Preflight
@@ -1574,10 +1715,16 @@ Checks:
 - Is the resolved `claude` executable path safe?
 - Is `claude` on PATH after safe path resolution?
 - What is `claude --version`?
+- Is this macOS or Linux? If not, refuse v1 and point to Windows future work.
 - Does current documentation and the installed binary support the required flags?
+- Has the empirical CLI contract been captured for this machine?
+- Does the captured `system/init` event show the expected subscription auth value?
+- Does the captured `--bare` probe pass or fail subscription auth?
+- Does the captured `--tools ""` probe prove an empty tool list?
+- Does the captured `ANTHROPIC_MODEL` probe prove argv model precedence?
 - Does a harmless no-model-submit command check show expected flag parsing?
 - Does a fake stream fixture validate the parser?
-- Is the current platform supported?
+- Does a real opt-in smoke validate stdin EOF handling?
 
 This doctor command must not send a model prompt.
 
@@ -1607,15 +1754,17 @@ Docs must say:
 - This is not Anthropic API.
 - It refuses if `ANTHROPIC_API_KEY` is present.
 - It is read-only review only in v1.
+- V1 supports macOS and Linux. Windows support needs a separate design for ACLs, credential stores, executable trust, symlink safety, and process-tree termination.
 - It reviews Oracle-supplied context only in v1 and does not let Claude Code read extra files.
 - It captures visible events only.
 - MCP success includes visible stdout and visible stderr inline.
 - Raw event streams are persisted and may contain sensitive data.
 - Raw event streams are owner-local artifacts and are not included in redacted exports by default.
 - Users can delete session artifacts with the normal Oracle session cleanup path, or with a new explicit purge command if the current cleanup path is not enough.
-- Claude Code's own session persistence is disabled in v1 with `--no-session-persistence`.
+- Claude Code's own session persistence is disabled in v1 with a confirmed flag such as `--no-session-persistence`, or the run refuses.
 - Restart, follow-up, background, and resume are refused in v1.
 - Remote service and Oracle Router are not supported.
+- Oracle examples should use `oracle --prompt`, not `oracle -p`, when the same section also mentions internal `claude -p` commands.
 
 ## Proposed File Map
 
@@ -1633,6 +1782,7 @@ src/claude-code/streamParser.ts
 src/claude-code/runner.ts
 src/claude-code/artifacts.ts
 src/claude-code/types.ts
+src/cli/engineFlowPolicy.ts
 tests/claude-code/command.test.ts
 tests/claude-code/envGuard.test.ts
 tests/claude-code/configGuard.test.ts
@@ -1642,6 +1792,7 @@ tests/claude-code/lock.test.ts
 tests/claude-code/startupVerifier.test.ts
 tests/claude-code/streamParser.test.ts
 tests/claude-code/runner.test.ts
+tests/cli/engineFlowPolicy.test.ts
 ```
 
 Existing files to update:
@@ -1666,6 +1817,7 @@ src/mcp/tools/sessionResources.ts
 docs/mcp.md
 docs/anthropic.md
 docs/cli-reference.md
+docs/manual-tests.md
 README.md
 ```
 
@@ -1679,6 +1831,7 @@ tests/mcp/sessions.test.ts
 tests/cli/sessionDisplay.test.ts
 tests/cli/sessionRunner.test.ts
 tests/cli/options.test.ts
+tests/evidence/redacted-export.test.ts
 tests/oracle/v18/provider_boundaries.test.ts
 ```
 
@@ -1689,7 +1842,7 @@ tests/oracle/v18/provider_boundaries.test.ts
 1. User runs:
 
    ```bash
-   oracle --engine claude-code --model fable -p "Review this" --file src/**
+   oracle --engine claude-code --model fable --prompt "Review this" --file src/**
    ```
 
 2. Commander parses `--engine claude-code`.
@@ -1704,21 +1857,23 @@ tests/oracle/v18/provider_boundaries.test.ts
    - API provider routing flags
    - unsafe Claude Code flags if exposed
 
-4. Oracle checks `ANTHROPIC_API_KEY`.
+4. Oracle checks that the empirical CLI contract exists and is current enough for this machine.
 
-5. Oracle checks other API/provider auth sources and fallback settings.
+5. Oracle checks `ANTHROPIC_API_KEY`.
 
-6. Oracle checks local-owner safety.
+6. Oracle checks other API/provider auth sources and fallback settings.
 
-7. Oracle resolves the `claude` executable to a safe absolute realpath.
+7. Oracle checks local-owner safety.
 
-8. Oracle reads attached files using the normal file reader.
+8. Oracle resolves the `claude` executable to a safe absolute realpath.
 
-9. Oracle creates a session with `mode: "claude-code"`.
+9. Oracle reads attached files using the normal file reader.
 
-10. Oracle acquires the single-flight local subscription lock.
+10. Oracle creates a session with `mode: "claude-code"`.
 
-11. Oracle writes initial metadata:
+11. Oracle acquires the single-flight local subscription lock.
+
+12. Oracle writes initial metadata:
 
    - `access_path: "claude_code_subscription_cli"`
    - `provider_family: "claude"`
@@ -1728,9 +1883,9 @@ tests/oracle/v18/provider_boundaries.test.ts
    - `local_owner_verified: true`
    - `anthropic_api_key_present: false`
 
-12. Oracle builds the prompt bundle.
+13. Oracle builds the prompt bundle.
 
-13. Oracle spawns Claude Code:
+14. Oracle spawns Claude Code:
 
     - `shell: false`
     - prompt over stdin
@@ -1738,13 +1893,13 @@ tests/oracle/v18/provider_boundaries.test.ts
     - stream JSON flags
     - scrubbed child environment
 
-14. Oracle writes stdout bytes to raw stdout artifact as they arrive.
+15. Oracle writes stdout bytes to raw stdout artifact as they arrive.
 
-15. Oracle writes stderr bytes to raw stderr artifact as they arrive.
+16. Oracle writes stderr bytes to raw stderr artifact as they arrive.
 
-16. Oracle parses stdout lines and stderr chunks into normalized events.
+17. Oracle parses stdout lines and stderr chunks into normalized events.
 
-17. Oracle verifies the startup event:
+18. Oracle verifies the startup event:
 
     - expected subscription or OAuth auth source
     - no API key source
@@ -1759,17 +1914,17 @@ tests/oracle/v18/provider_boundaries.test.ts
     - no Chrome integration
     - expected permission mode
 
-18. Oracle sends each visible event to:
+19. Oracle sends each visible event to:
 
     - CLI stdout if requested
     - in-memory MCP event list when called from MCP
     - final answer extractor
 
-19. Oracle watches parsed visible events for read-only policy violations.
+20. Oracle watches parsed visible events for read-only policy violations.
 
-20. Oracle reads result events for actual model usage.
+21. Oracle reads result events for actual model usage and `total_cost_usd` if visible.
 
-21. On exit code 0 and verified model/auth/tool shape:
+22. On exit code 0 and verified model/auth/tool shape:
 
     - Mark model run completed.
     - Mark session completed.
@@ -1778,7 +1933,7 @@ tests/oracle/v18/provider_boundaries.test.ts
     - Write progress artifact if useful.
     - Release the single-flight lock.
 
-22. On nonzero exit, startup mismatch, model mismatch, auth mismatch, tool mismatch, or policy violation:
+23. On nonzero exit, startup mismatch, model mismatch, auth mismatch, tool mismatch, or policy violation:
 
     - Mark session error.
     - Preserve raw events.
@@ -1824,7 +1979,7 @@ tests/oracle/v18/provider_boundaries.test.ts
    - `output`: final answer text
    - `claudeCode.events`: all visible events
    - `claudeCode.eventsComplete: true`
-   - `artifacts`: paths to raw persisted streams
+   - `artifacts`: resource URIs for raw persisted streams
 
 If the event list exceeds the max inline size, MCP should return an error with `eventsComplete: false` and explain where the raw artifact lives.
 
@@ -1869,7 +2024,6 @@ Examples:
 
 - `ANTHROPIC_AUTH_TOKEN`
 - `ANTHROPIC_BASE_URL`
-- `ANTHROPIC_MODEL`
 - `ANTHROPIC_DEFAULT_*`
 - `CLAUDE_CODE_USE_BEDROCK`
 - `CLAUDE_CODE_USE_VERTEX`
@@ -1878,6 +2032,8 @@ Examples:
 - API-key helper setting
 - fallback model setting
 - Console/API auth mode
+
+`ANTHROPIC_MODEL` is handled as a model-default control. Refuse if empirical testing has not proved argv model precedence. If precedence is proven, scrub it from the child env instead.
 
 No child process should start when the source can be detected before spawning. If the source is discovered only in the startup event, stop the run immediately and mark it non-success.
 
@@ -1899,7 +2055,7 @@ This process failed the local-owner safety check: <short reason>.
 Examples of short reasons:
 
 - `running_as_root`
-- `sudo_user_present`
+- `sudo_root_context`
 - `oracle_home_world_writable`
 - `session_dir_not_owned_by_current_user`
 - `remote_router_context`
@@ -1946,7 +2102,7 @@ Message:
 ```text
 Claude Code local mode is already running in session <id>.
 Only one local subscription run is allowed at a time.
-Wait for it to finish or inspect it with `oracle session <id> --render`.
+Wait for it to finish, inspect it with `oracle session <id> --render`, or retry with --wait-for-lock <duration>.
 ```
 
 No child process should start.
@@ -2034,6 +2190,25 @@ Raw events were saved in <path>.
 ```
 
 This is the main runtime safety assertion. Event-level read-only violation detection is only a tripwire after startup.
+
+### Max Turn Cap Reached
+
+If the installed CLI supports a turn cap and the run reaches it, do not collapse that into a generic error.
+
+Status:
+
+```text
+max_turns_reached
+```
+
+Actions:
+
+- Preserve raw stdout and stderr.
+- Preserve the partial final answer if one is visible.
+- Set `eventsComplete` based on whether the full visible stream is inline.
+- Explain that the configured review turn cap was reached.
+
+If no turn-cap flag is confirmed by the empirical CLI contract, this terminal state is not used in v1.
 
 ### Invalid JSON Line
 
@@ -2128,7 +2303,6 @@ Hard refuse:
 - `ANTHROPIC_API_KEY`
 - `ANTHROPIC_AUTH_TOKEN`
 - `ANTHROPIC_BASE_URL`
-- `ANTHROPIC_MODEL`
 - `ANTHROPIC_DEFAULT_*`
 - `CLAUDE_CODE_USE_BEDROCK`
 - `CLAUDE_CODE_USE_VERTEX`
@@ -2137,7 +2311,11 @@ Hard refuse:
 - `AWS_*` if Bedrock mode is selected
 - `GOOGLE_APPLICATION_CREDENTIALS` if Vertex mode is selected
 
-Do not over-block ordinary env vars without evidence, but default to refusal for known Claude Code auth, provider, model, and fallback controls in v1.
+Scrub or refuse after empirical testing:
+
+- `ANTHROPIC_MODEL`
+
+Do not over-block ordinary env vars without evidence, but default to refusal for known Claude Code auth, provider, fallback, and unproven model controls in v1.
 
 ## Security Notes
 
@@ -2163,7 +2341,8 @@ Claude Code can load settings, hooks, plugins, skills, MCP servers, commands, cu
 
 For v1:
 
-- Use `--safe-mode`.
+- Prefer `--bare` if empirical testing proves it preserves subscription auth.
+- Use `--safe-mode` if empirical testing confirms it is supported and `--bare` is not used.
 - Use `--disable-slash-commands`.
 - Use `--strict-mcp-config` without loading any MCP config.
 - Use `--disallowedTools mcp__*`.
@@ -2233,7 +2412,7 @@ Do not upload these artifacts, attach them to remote bug reports, or include the
 Provide a clear purge path. If existing Oracle session cleanup is enough, document it. If it is not enough, add a focused command such as:
 
 ```bash
-oracle session <id> --purge-artifacts
+oracle session <id> --purge-claude-code-artifacts
 ```
 
 The purge command must be explicit because raw event streams are useful for audit but can be sensitive.
@@ -2283,15 +2462,15 @@ Test:
 - Includes `--output-format stream-json`.
 - Includes `--verbose`.
 - Includes `--include-partial-messages`.
-- Includes `--include-hook-events`.
-- Includes `--permission-mode plan`.
-- Includes `--safe-mode`.
+- Includes only flags selected by the empirical CLI contract.
+- Includes `--permission-mode dontAsk` when empirically safer, otherwise `--permission-mode plan` with documented reason.
 - Includes `--disable-slash-commands`.
 - Includes `--strict-mcp-config`.
 - Includes `--disallowedTools mcp__*`.
-- Includes `--no-chrome`.
-- Includes `--no-session-persistence`.
-- Includes `--max-turns`.
+- Includes `--no-chrome` only if confirmed by the empirical CLI contract; otherwise startup verification must reject active Chrome integration.
+- Includes `--no-session-persistence` only if confirmed by the empirical CLI contract; otherwise startup verification must reject active session persistence.
+- Includes `--bare` only if the empirical `--bare` probe preserves subscription auth.
+- Includes `--safe-mode`, `--include-hook-events`, and any turn-cap flag only if confirmed.
 - Disables all Claude Code tools.
 - Does not include `Read`, `Grep`, `Glob`, `LS`, `Bash`, `Edit`, `Write`, `Agent`, `Cron*`, `Skill`, `WebFetch`, `WebSearch`, or any `mcp__*` tool.
 - Does not include dangerous flags.
@@ -2310,7 +2489,8 @@ Test:
 - Non-empty `ANTHROPIC_API_KEY` refuses.
 - `ANTHROPIC_AUTH_TOKEN` refuses.
 - `ANTHROPIC_BASE_URL` refuses.
-- `ANTHROPIC_MODEL` refuses.
+- `ANTHROPIC_MODEL` is scrubbed when argv model precedence is proven.
+- `ANTHROPIC_MODEL` refuses when argv model precedence is not proven.
 - `ANTHROPIC_DEFAULT_*` refuses.
 - `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_FOUNDRY`, and `CLAUDE_CODE_USE_ANTHROPIC_AWS` refuse.
 - Env refusal happens before any `claude` subprocess.
@@ -2345,7 +2525,8 @@ Test:
 
 - Normal local user passes.
 - Root is refused unless a future explicit override exists.
-- `SUDO_USER` is refused.
+- `SUDO_USER` with effective uid 0 is refused.
+- `SUDO_USER` with non-root effective uid warns and continues after normal owner/path checks.
 - World-writable Oracle home is refused.
 - Session directory not owned by current uid is refused on POSIX.
 - Unsafe symlinked Oracle home or session path is refused.
@@ -2359,11 +2540,14 @@ Test:
 
 - Acquires lock for first run.
 - Refuses second run while first pid is alive.
+- Uses a real lock primitive, not only a pid file.
+- Stores pid, nonce, and process start-time hint where available.
 - Releases lock on success.
 - Releases lock on error.
 - Releases lock on timeout.
 - Recovers stale lock when pid is dead.
 - Records stale lock recovery in adapter metadata.
+- `--wait-for-lock` waits up to the requested duration and then either runs or fails clearly.
 
 ### Unit Tests: Stream Parser
 
@@ -2397,6 +2581,9 @@ Test:
 - Fallback model active refuses.
 - Model mismatch refuses.
 - Expected Fable model passes.
+- Missing critical startup fields refuse.
+- The accepted subscription auth value comes from the empirical CLI contract.
+- `model_resolved_from_init`, `model_usage_keys`, `total_cost_usd`, and visible thinking status are extracted when present.
 
 ### Unit Tests: Runner
 
@@ -2410,8 +2597,11 @@ Test:
 - Builds final answer from visible events.
 - Marks exit code 0 as completed.
 - Marks nonzero exit as error.
+- Marks turn-cap termination as `max_turns_reached` when the installed CLI exposes such a signal.
 - Kills process on timeout.
 - Handles Ctrl-C or abort.
+- Calls `child.stdin.end()` after writing the prompt.
+- Never passes `--input-format stream-json` in v1.
 - Does not start when env guard fails.
 - Does not start when local-owner guard fails.
 - Does not start when single-flight lock is busy.
@@ -2431,8 +2621,11 @@ Test:
 - `--engine claude-code --remote-host ...` is rejected.
 - `--engine claude-code --browser-model-strategy ...` is rejected.
 - `--engine api --model fable` does not use subscription mode.
+- `ORACLE_ENGINE=claude-code` is refused in v1.
+- Config-file `engine: "claude-code"` is refused in v1.
 - Dry run prints local mode plan and does not spawn.
 - Session metadata contains `mode: "claude-code"`.
+- Pretty CLI mode assembles text deltas instead of dumping raw NDJSON.
 
 ### MCP Tests
 
@@ -2447,6 +2640,7 @@ Test:
 - Overflow keeps `eventsComplete: false` and uses `streamsComplete` only to describe raw artifact completeness.
 - Raw artifact resource URIs are included.
 - `providerFamily`, `accessPath`, `modelRequested`, `modelObserved`, `modelVerificationStatus`, `readOnly`, `localOwnerVerified`, `anthropicApiKeyPresent`, and `exitCode` are included.
+- `modelResolvedFromInit`, `modelUsageKeys`, `totalCostUsdObserved`, `visibleThinkingCaptured`, and `subscriptionBillingUncertain` are included.
 - Remote browser config does not make MCP run Claude Code remotely.
 - Network-bound MCP/server transport cannot use `engine: "claude-code"`.
 
@@ -2457,7 +2651,7 @@ Test:
 - `oracle status` shows mode clearly.
 - `oracle session <id> --render` shows final answer and artifact paths.
 - Session resources can read raw events.
-- Restart either works safely or refuses with a clear v1 message.
+- Restart, follow-up, resume, continue, background, and detached flows refuse through one shared engine-flow policy helper.
 
 ### Provider Boundary Tests
 
@@ -2480,7 +2674,7 @@ Test:
 - Raw artifact files are created owner-only where supported.
 - Raw artifact writes refuse symlink redirection.
 - Claude Code session persistence is disabled or the run refuses.
-- Redacted exports do not include raw Claude Code streams by default.
+- Redacted exports do not include typed Claude Code raw stream artifact kinds by default.
 
 ### Manual Smoke Tests
 
@@ -2492,7 +2686,7 @@ Use a tiny prompt:
 ORACLE_LIVE_CLAUDE_CODE_TEST=1 \
 oracle --engine claude-code --model fable \
   --slug "fable-local-smoke" \
-  -p "Reply with exactly: fable local smoke ok"
+  --prompt "Reply with exactly: fable local smoke ok"
 ```
 
 Before running:
@@ -2501,6 +2695,7 @@ Before running:
 - Ensure other API/provider auth variables are unset.
 - Run `claude --version`.
 - Run a normal `claude` command manually if login is needed.
+- Capture the empirical CLI contract for this machine.
 
 Expected:
 
@@ -2508,9 +2703,17 @@ Expected:
 - Oracle returns visible events inline.
 - Oracle persists raw events.
 - Startup verification shows no tools, no MCP servers, no hooks, no plugins, no skills, no slash commands, and no Chrome integration.
-- Auth source is subscription or OAuth, not API key.
+- Auth source matches the empirically captured subscription value, not API key.
 - Actual observed model is Fable when visible.
+- `total_cost_usd_observed` is stored when visible.
 - Final answer contains the smoke token.
+
+Add an MCP launch-context smoke:
+
+- Launch `oracle-mcp` from a fresh MCP client, not from the user's shell.
+- Invoke `consult` with `engine: "claude-code"`.
+- Confirm subscription auth still works from that launch context.
+- If it does not, document the workaround, such as logging in from `claude` in the same context or limiting the MCP path to supported launch contexts.
 
 ## Rollout Plan
 
@@ -2524,6 +2727,17 @@ Expected:
 - Confirm local-only MCP transport guard.
 - Confirm raw byte persistence semantics.
 - Complete a short compliance check: local owner only, not hosted, not multi-user, not a proxy, not a subscription relay.
+
+### Phase 0.5: Empirical CLI Contract
+
+- Capture `claude --version`, `claude --help`, and `claude -p --help`.
+- Capture one normal subscription-authenticated `system/init` event.
+- Capture one `--bare` subscription-authenticated `system/init` event.
+- Capture one `--tools ""` run and prove startup tools are empty.
+- Capture one `ANTHROPIC_MODEL` override test and prove whether argv model wins.
+- Capture result-event fields for `modelUsage`, `total_cost_usd`, and final text.
+- Update command-builder fixtures from those captures.
+- Do not start code implementation until this phase is complete.
 
 ### Phase 1: Internal Adapter Behind Explicit Engine
 
@@ -2569,7 +2783,7 @@ These are tuning questions. They must not weaken the v1 safety contract above.
 
 2. If inline overflow happens, should Oracle abort immediately or let the run finish and return a typed non-success overflow result?
 
-3. What exact owner-only file mode behavior is portable enough for macOS, Linux, and Windows?
+3. What exact owner-only file mode behavior is portable enough for macOS and Linux?
 
 4. Should the raw event purge command delete only Claude Code artifacts or the whole Oracle session?
 
@@ -2578,6 +2792,10 @@ These are tuning questions. They must not weaken the v1 safety contract above.
 6. Should `fable` be accepted only with `--engine claude-code`, or should `--provider claude-code` also route there?
 
 7. Should single-flight lock contention fail immediately forever, or should a future flag allow waiting?
+
+8. Should future structured review output use Claude Code `--json-schema`, while still preserving the full visible stream?
+
+9. What design is needed for future Windows support: ACL ownership checks, credential stores, executable trust, symlink safety, and process-tree termination?
 
 ## Recommended Decisions
 
@@ -2591,7 +2809,7 @@ These are the current recommended answers.
 
 4. Treat blank, whitespace, and Windows case variants of `ANTHROPIC_API_KEY` as present.
 
-5. Refuse known API/provider auth sources and fallback settings in v1.
+5. Refuse known API/provider auth sources and fallback settings in v1; scrub `ANTHROPIC_MODEL` only if argv precedence is empirically proven.
 
 6. Refuse remote flags and browser flags.
 
@@ -2607,7 +2825,7 @@ These are the current recommended answers.
 
 12. Return all visible stdout and stderr events inline for MCP, with fail-closed overflow.
 
-13. Use no-tool command flags in v1 and test that dangerous flags are absent.
+13. Use empirically confirmed no-tool command flags in v1 and test that dangerous flags are absent.
 
 14. Disable Claude Code session persistence in v1.
 
@@ -2621,15 +2839,17 @@ These are the current recommended answers.
 
 19. Require local-owner and safe executable verification before spawning `claude`.
 
-20. Use a single-flight lock for local subscription runs.
+20. Use a robust single-flight lock for local subscription runs and support explicit `--wait-for-lock`.
 
 21. Build a scrubbed child environment from an allowlist after the API-key refusal check passes.
 
 22. Persist exact raw stdout/stderr bytes plus normalized events.
 
-23. Include `modelRequested`, `modelObserved`, and `modelVerificationStatus` in metadata and MCP output.
+23. Include `modelRequested`, `modelObserved`, `modelResolvedFromInit`, `modelUsageKeys`, `modelVerificationStatus`, `visibleThinkingCaptured`, and cost/credit uncertainty fields in metadata and MCP output.
 
 24. Abort if startup verification or visible event stream checks fail.
+
+25. Support macOS and Linux in v1; leave Windows for a separate design.
 
 ## Acceptance Checklist
 
@@ -2639,10 +2859,13 @@ The feature is ready only when all items below are true.
 - [ ] Provider boundary slot `claude_code_fable_5` exists.
 - [ ] The path refuses when `ANTHROPIC_API_KEY` is present, even blank or whitespace.
 - [ ] Windows case variants of `ANTHROPIC_API_KEY` are refused.
-- [ ] Other known API/provider auth sources are refused or proven safe.
+- [ ] Other known API/provider auth sources are refused.
+- [ ] `ANTHROPIC_MODEL` is scrubbed only after argv model precedence is empirically proven; otherwise it is refused.
 - [ ] Refusal happens before any `claude` subprocess.
+- [ ] The empirical CLI contract has been captured before implementation.
 - [ ] The child environment omits Anthropic API variables.
 - [ ] Local-owner checks run before spawning `claude`.
+- [ ] Effective uid 0 is refused; non-root `SUDO_USER` warns instead of hard-refusing.
 - [ ] The `claude` executable is resolved to a safe absolute realpath.
 - [ ] Repo-local, relative, world-writable, or unsafe-symlink `claude` executables are refused.
 - [ ] Remote, router, serve, bridge, browser, remote Chrome, and network MCP contexts are refused.
@@ -2654,6 +2877,8 @@ The feature is ready only when all items below are true.
 - [ ] The prompt is sent over stdin, not argv.
 - [ ] The path is no-tool by command policy in v1.
 - [ ] The command builder uses `--tools ""` in v1.
+- [ ] `--bare` is used only if the empirical probe proves subscription auth still works.
+- [ ] Unsupported Claude Code flags are not emitted.
 - [ ] Claude Code session persistence is disabled or the run refuses.
 - [ ] Startup verification proves tools, MCP, hooks, plugins, skills, slash commands, Chrome integration, agents, fallback model, and unexpected permission mode are inactive.
 - [ ] Startup verification treats missing critical startup fields as non-success.
@@ -2661,6 +2886,9 @@ The feature is ready only when all items below are true.
 - [ ] Dangerous Claude Code flags are impossible in v1.
 - [ ] Raw Claude Code pass-through args are impossible in v1.
 - [ ] Observed non-Fable model is non-success by default.
+- [ ] Requested alias, resolved init model, and result `modelUsage` keys are all stored when visible.
+- [ ] Visible thinking status is recorded when thinking or thinking-summary events appear.
+- [ ] `total_cost_usd` is stored when visible, and credit/subscription uncertainty is surfaced.
 - [ ] Visible read-only policy violation events stop the run.
 - [ ] Raw stdout visible bytes are persisted exactly or with documented byte-safe encoding.
 - [ ] Raw stderr visible bytes are persisted exactly or with documented byte-safe encoding.
@@ -2672,13 +2900,17 @@ The feature is ready only when all items below are true.
 - [ ] MCP output includes access path, provider family, model requested, model observed, model verification status, read-only state, local-owner state, API-key state, and exit code.
 - [ ] MCP returns resource URIs for raw artifacts and does not expose local absolute paths over network transports.
 - [ ] CLI output is clear and useful.
+- [ ] CLI pretty mode assembles text deltas and does not dump raw NDJSON by default.
 - [ ] Session replay shows artifact paths and final answer.
 - [ ] Restart, follow-up, resume, continue, background, and detached flows are refused in v1.
+- [ ] Lifecycle refusals share one engine-flow policy helper.
+- [ ] `--wait-for-lock` exists for explicit lock waiting.
+- [ ] V1 support is explicitly limited to macOS and Linux.
 - [ ] Provider boundary metadata says `claude_code_subscription_cli`.
 - [ ] API substitution guard rejects Anthropic API for this slot.
 - [ ] Raw event artifacts are owner-only where the platform supports it.
 - [ ] Raw artifact creation refuses symlink redirection.
-- [ ] Raw event artifacts are not included in redacted exports by default.
+- [ ] Typed raw event artifact kinds are not included in redacted exports by default.
 - [ ] There is a documented purge path for raw event artifacts.
 - [ ] Compliance review confirms local-owner-only, not hosted, not multi-user, not a proxy, and not a subscription relay.
 - [ ] Existing API and browser tests pass.
@@ -2686,6 +2918,8 @@ The feature is ready only when all items below are true.
 - [ ] Live smoke is opt-in and documented.
 
 ## References
+
+External Claude Code and Anthropic references:
 
 - Anthropic Claude Code headless mode: https://code.claude.com/docs/en/headless
 - Anthropic Claude Code CLI reference: https://code.claude.com/docs/en/cli-reference
@@ -2696,7 +2930,17 @@ The feature is ready only when all items below are true.
 - Anthropic Claude Code model config: https://code.claude.com/docs/en/model-config
 - Anthropic support note for Pro/Max Claude Code usage and `ANTHROPIC_API_KEY`: https://support.claude.com/en/articles/11145838-use-claude-code-with-your-pro-or-max-plan
 - Anthropic support note on Claude Code API key environment variables: https://support.claude.com/en/articles/12304248-manage-api-key-environment-variables-in-claude-code
-- Current Oracle Claude API docs: `docs/anthropic.md`
-- Current Oracle MCP docs: `docs/mcp.md`
+
+Fork-local `etafund/oracle` references:
+
 - Current Oracle provider boundary: `src/oracle/v18/provider_boundaries.ts`
 - Current Oracle API substitution guard: `src/oracle/api_substitution_guard.ts`
+
+Upstream-visible Oracle references:
+
+- Current Oracle Claude API docs: `docs/anthropic.md`
+- Current Oracle MCP docs: `docs/mcp.md`
+- Current Oracle CLI engine resolver: `src/cli/engine.ts`
+- Current Oracle run options resolver: `src/cli/runOptions.ts`
+- Current Oracle MCP consult tool: `src/mcp/tools/consult.ts`
+- Current Oracle session metadata store: `src/sessionManager.ts`
