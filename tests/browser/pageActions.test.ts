@@ -975,6 +975,56 @@ describe("waitForAssistantResponse", () => {
     }
   });
 
+  test("re-polls a long completion capture until the full answer is stable", async () => {
+    vi.useFakeTimers();
+    try {
+      const partial = {
+        text: "This first paragraph is already long enough to look trustworthy, but it is still only the first partial segment.",
+        messageId: "mid",
+        turnId: "tid",
+      };
+      const complete = {
+        text: "This first paragraph is already long enough to look trustworthy, but it is still only the first partial segment. The final answer adds the missing implementation details after Pro thinking finishes.",
+        messageId: "mid",
+        turnId: "tid",
+      };
+      let snapshotCalls = 0;
+      const evaluate = vi
+        .fn()
+        .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
+          if (params.awaitPromise) {
+            return { result: { type: "object", value: partial } };
+          }
+          const expression = String(params.expression ?? "");
+          if (expression.includes("extractAssistantTurn")) {
+            snapshotCalls += 1;
+            if (snapshotCalls === 1) {
+              await new Promise((resolve) => setTimeout(resolve, 50));
+            }
+            return { result: { value: snapshotCalls <= 5 ? partial : complete } };
+          }
+          if (expression.includes("Find the LAST assistant turn")) {
+            return { result: { value: true } };
+          }
+          return { result: { value: false } };
+        });
+
+      const promise = waitForAssistantResponse(
+        { evaluate } as unknown as ChromeClient["Runtime"],
+        30_000,
+        logger,
+      );
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      await expect(promise).resolves.toMatchObject({ text: complete.text });
+      expect(logger).toHaveBeenCalledWith(
+        "Completion controls surfaced; confirming stable assistant response",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("keeps a legitimate short completion after watchdog confirmation", async () => {
     vi.useFakeTimers();
     try {

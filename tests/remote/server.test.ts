@@ -108,7 +108,9 @@ describe("remote browser service", () => {
               ],
               downloadableFiles: [
                 {
-                  url: "sandbox:/mnt/data/report.csv",
+                  url: "https://chatgpt.com/backend-api/sandbox/download?path=%2Fmnt%2Fdata%2Freport.csv&sig=secret",
+                  downloadUrl:
+                    "https://chatgpt.com/backend-api/sandbox/download?path=%2Fmnt%2Fdata%2Freport.csv&sig=secret",
                   sandboxUrl: "sandbox:/mnt/data/report.csv",
                   filename: "report.csv",
                   label: "report.csv",
@@ -198,6 +200,8 @@ describe("remote browser service", () => {
       ]);
       expect(result.savedFiles).toBeUndefined();
       expect(JSON.stringify(result)).not.toContain("/remote/session/artifacts/report.csv");
+      expect(JSON.stringify(result)).not.toContain("backend-api/sandbox/download");
+      expect(JSON.stringify(result)).not.toContain("sig=secret");
 
       const healthUnauthorized = await httpGetJson({
         hostname: "127.0.0.1",

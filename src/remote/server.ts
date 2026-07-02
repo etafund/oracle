@@ -823,7 +823,7 @@ function sanitizeResult(
     artifacts: undefined,
     generatedImages: result.generatedImages,
     savedImages: undefined,
-    downloadableFiles: result.downloadableFiles,
+    downloadableFiles: sanitizeDownloadableFiles(result.downloadableFiles),
     savedFiles: undefined,
     archive: result.archive,
     tookMs: result.tookMs,
@@ -849,6 +849,47 @@ function sanitizeResult(
     // strategy, status, source, timestamp, and non-sensitive warning text.
     modelSelection: result.modelSelection,
   };
+}
+
+function sanitizeDownloadableFiles(
+  files: BrowserRunResult["downloadableFiles"],
+): BrowserRunResult["downloadableFiles"] {
+  if (!files?.length) {
+    return undefined;
+  }
+  const sanitized = files.flatMap((file) => {
+    const sandboxUrl = safeSandboxUrl(file.sandboxUrl) ?? safeSandboxUrl(file.url);
+    if (!sandboxUrl) {
+      return [];
+    }
+    const filename = safeDisplayString(file.filename);
+    const label = safeDisplayString(file.label);
+    const mimeType = safeDisplayString(file.mimeType);
+    return [
+      {
+        url: sandboxUrl,
+        sandboxUrl,
+        ...(filename ? { filename } : {}),
+        ...(label ? { label } : {}),
+        ...(mimeType ? { mimeType } : {}),
+      },
+    ];
+  });
+  return sanitized.length > 0 ? sanitized : undefined;
+}
+
+function safeSandboxUrl(value: string | undefined): string | undefined {
+  if (typeof value !== "string" || !value.startsWith("sandbox:") || containsLocalPath(value)) {
+    return undefined;
+  }
+  return value;
+}
+
+function safeDisplayString(value: string | undefined): string | undefined {
+  if (typeof value !== "string" || !value || containsLocalPath(value)) {
+    return undefined;
+  }
+  return value;
 }
 
 function sanitizeRemoteWarning(warning: BrowserRunWarning): BrowserRunWarning | null {
@@ -882,7 +923,7 @@ function containsLocalPath(value: string): boolean {
   return (
     /(?:file:\/\/)?\/(?:Users|home|private|tmp)\//i.test(value) ||
     /(?:file:\/\/)?\/mnt\/[a-z]\/Users\//i.test(value) ||
-    /[A-Za-z]:[\\/]/.test(value) ||
+    /(?:^|[\s"'([])[A-Za-z]:[\\/]/.test(value) ||
     value.includes("\\AppData\\")
   );
 }

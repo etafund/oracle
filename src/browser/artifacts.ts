@@ -166,9 +166,79 @@ export function validateZipBuffer(contents: Buffer): ArtifactValidation {
   return { type: "zip", ok: true };
 }
 
+async function readFileWindow(
+  handle: Awaited<ReturnType<typeof fs.open>>,
+  length: number,
+  position: number,
+): Promise<Buffer | null> {
+  const buffer = Buffer.alloc(length);
+  let offset = 0;
+  while (offset < length) {
+    const result = await handle.read(buffer, offset, length - offset, position + offset);
+    if (result.bytesRead === 0) {
+      return null;
+    }
+    offset += result.bytesRead;
+  }
+  return buffer;
+}
+
 export async function validateZipFile(targetPath: string): Promise<ArtifactValidation> {
-  const contents = await fs.readFile(targetPath);
-  return validateZipBuffer(contents);
+  const handle = await fs.open(targetPath, "r");
+  try {
+    const fileStat = await handle.stat();
+    if (fileStat.size < ZIP_EMPTY_ARCHIVE_LENGTH) {
+      return { type: "zip", ok: false, error: "zip-too-small" };
+    }
+
+    const first = await readFileWindow(handle, 4, 0);
+    if (!first) {
+      return { type: "zip", ok: false, error: "zip-too-small" };
+    }
+    const firstSignature = first.readUInt32LE(0);
+    if (
+      firstSignature !== ZIP_LOCAL_FILE_HEADER_SIGNATURE &&
+      firstSignature !== ZIP_EOCD_SIGNATURE
+    ) {
+      return { type: "zip", ok: false, error: "zip-magic-mismatch" };
+    }
+
+    const tailLength = Math.min(
+      fileStat.size,
+      ZIP_EMPTY_ARCHIVE_LENGTH + ZIP_MAX_EOCD_COMMENT_BYTES,
+    );
+    const tailStart = fileStat.size - tailLength;
+    const tail = await readFileWindow(handle, tailLength, tailStart);
+    if (!tail) {
+      return { type: "zip", ok: false, error: "zip-central-directory-missing" };
+    }
+
+    let relativeEocdOffset = -1;
+    for (let offset = tail.length - ZIP_EMPTY_ARCHIVE_LENGTH; offset >= 0; offset -= 1) {
+      if (tail.readUInt32LE(offset) === ZIP_EOCD_SIGNATURE) {
+        relativeEocdOffset = offset;
+        break;
+      }
+    }
+    if (relativeEocdOffset < 0) {
+      return { type: "zip", ok: false, error: "zip-central-directory-missing" };
+    }
+
+    const eocdOffset = tailStart + relativeEocdOffset;
+    const commentLength = tail.readUInt16LE(relativeEocdOffset + 20);
+    if (eocdOffset + ZIP_EMPTY_ARCHIVE_LENGTH + commentLength !== fileStat.size) {
+      return { type: "zip", ok: false, error: "zip-eocd-size-mismatch" };
+    }
+
+    const centralDirectorySize = tail.readUInt32LE(relativeEocdOffset + 12);
+    const centralDirectoryOffset = tail.readUInt32LE(relativeEocdOffset + 16);
+    if (centralDirectoryOffset + centralDirectorySize > eocdOffset) {
+      return { type: "zip", ok: false, error: "zip-central-directory-out-of-range" };
+    }
+    return { type: "zip", ok: true };
+  } finally {
+    await handle.close();
+  }
 }
 
 export function validateArtifactBuffer(params: {
