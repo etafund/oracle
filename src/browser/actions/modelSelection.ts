@@ -8,10 +8,10 @@ import {
 } from "../constants.js";
 import { logDomFailure } from "../domDebug.js";
 import { buildClickDispatcher } from "./domEvents.js";
+import { delay } from "../utils.js";
 
-const LEGACY_PRO_VERSION_WORD_TOKENS = ["5 4", "5 2", "5 1", "5 0", "gpt 5 pro"] as const;
-const LEGACY_PRO_VERSION_COMPACT_TOKENS = ["gpt54", "gpt52", "gpt51", "gpt50"] as const;
-const MODEL_BUTTON_HYDRATION_TIMEOUT_MS = 20_000;
+const LEGACY_PRO_VERSION_WORD_TOKENS = ["5 4", "5 3", "5 2", "5 1", "5 0", "gpt 5 pro"] as const;
+const LEGACY_PRO_VERSION_COMPACT_TOKENS = ["gpt54", "gpt53", "gpt52", "gpt51", "gpt50"] as const;
 
 type ModelSelectionDomResult =
   | { status: "already-selected"; label?: string | null }
@@ -21,29 +21,47 @@ type ModelSelectionDomResult =
       status: "option-not-found";
       hint?: { temporaryChat?: boolean; availableOptions?: string[] };
     }
-  | { status: "button-missing" };
+  | { status: "button-missing" }
+  | undefined;
+
+// The model/effort picker is a composer pill that React mounts a beat after the page
+// becomes interactive (~1-4s on a cold profile, e.g. cookie-sync's throwaway Chrome).
+// Re-evaluate while it is still missing, up to a bounded deadline, so selection does not
+// give up before the pill renders. Only "button-missing" waits; a genuine
+// "option-not-found" surfaces immediately.
+const MODEL_BUTTON_WAIT_MS = 8000;
+const MODEL_BUTTON_POLL_MS = 250;
 
 export async function ensureModelSelection(
   Runtime: ChromeClient["Runtime"],
   desiredModel: string,
   logger: BrowserLogger,
   strategy: BrowserModelStrategy = "select",
+  options: { buttonWaitMs?: number; buttonPollMs?: number } = {},
 ): Promise<BrowserModelSelectionEvidence> {
-  const evaluateSelection = async (): Promise<ModelSelectionDomResult | undefined> => {
+  const buttonWaitMs = options.buttonWaitMs ?? MODEL_BUTTON_WAIT_MS;
+  const buttonPollMs = options.buttonPollMs ?? MODEL_BUTTON_POLL_MS;
+  const deadline = Date.now() + Math.max(0, buttonWaitMs);
+
+  let result: ModelSelectionDomResult;
+  let announcedWait = false;
+  for (;;) {
     const outcome = await Runtime.evaluate({
       expression: buildModelSelectionExpression(desiredModel, strategy),
       awaitPromise: true,
       returnByValue: true,
     });
-    return outcome.result?.value as ModelSelectionDomResult | undefined;
-  };
-
-  let result = await evaluateSelection();
-  if (result?.status === "button-missing") {
-    const hydrated = await waitForModelButtonHydration(Runtime);
-    if (hydrated) {
-      result = await evaluateSelection();
+    result = outcome.result?.value as ModelSelectionDomResult;
+    if (result?.status !== "button-missing" || Date.now() >= deadline) {
+      break;
     }
+    if (!announcedWait) {
+      announcedWait = true;
+      logger(
+        `Model picker button not mounted yet; waiting up to ${Math.round(buttonWaitMs / 1000)}s for the composer pill to render.`,
+      );
+    }
+    await delay(buttonPollMs);
   }
 
   switch (result?.status) {
@@ -84,67 +102,6 @@ export async function ensureModelSelection(
       );
     }
   }
-}
-
-async function waitForModelButtonHydration(
-  Runtime: ChromeClient["Runtime"],
-  timeoutMs = MODEL_BUTTON_HYDRATION_TIMEOUT_MS,
-): Promise<boolean> {
-  const outcome = await Runtime.evaluate({
-    expression: buildModelButtonHydrationExpression(timeoutMs),
-    awaitPromise: true,
-    returnByValue: true,
-  });
-  return outcome.result?.value === true;
-}
-
-function buildModelButtonHydrationExpression(timeoutMs: number): string {
-  const timeoutLiteral = JSON.stringify(Math.max(0, timeoutMs));
-  const selectorLiteral = JSON.stringify(MODEL_BUTTON_SELECTOR);
-  return `(() => new Promise((resolve) => {
-    const MODEL_BUTTON_SELECTOR = ${selectorLiteral};
-    const timeoutMs = ${timeoutLiteral};
-    const deadline = Date.now() + timeoutMs;
-    const normalizeText = (value) => String(value || '')
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, ' ')
-      .replace(/\\s+/g, ' ')
-      .trim();
-    const hasToken = (value, token) => normalizeText(value).split(' ').includes(token);
-    const isVisibleElement = (node) => {
-      if (!(node instanceof HTMLElement)) return false;
-      const rect = node.getBoundingClientRect();
-      const style = window.getComputedStyle(node);
-      return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
-    };
-    const looksLikeModelPill = (node) => {
-      if (!(node instanceof HTMLElement) || !node.matches('button.__composer-pill')) return false;
-      if (!isVisibleElement(node)) return false;
-      const label = normalizeText(
-        (node.textContent ?? '') + ' ' + (node.getAttribute('aria-label') ?? '') + ' ' + (node.getAttribute('title') ?? '')
-      );
-      if (!label || label.includes('click to remove')) return false;
-      const modelTokens = ['chatgpt', 'gpt', 'instant', 'thinking', 'pro', 'extended', 'standard', 'heavy', 'light'];
-      return modelTokens.some((token) => hasToken(label, token));
-    };
-    const hasModelButton = () => {
-      const explicit = document.querySelector(MODEL_BUTTON_SELECTOR);
-      if (explicit && isVisibleElement(explicit)) return true;
-      return Array.from(document.querySelectorAll('button.__composer-pill')).some(looksLikeModelPill);
-    };
-    const check = () => {
-      if (hasModelButton()) {
-        resolve(true);
-        return;
-      }
-      if (Date.now() >= deadline) {
-        resolve(false);
-        return;
-      }
-      setTimeout(check, 200);
-    };
-    check();
-  }))()`;
 }
 
 function assertResolvedModelSelection(desiredModel: string, resolvedLabel: string): void {
@@ -799,10 +756,27 @@ function buildModelSelectionExpression(
         normalizedTestId.includes('pro');
       const candidateHasInstant =
         normalizedText.includes('instant') || normalizedTestId.includes('instant');
+      const candidateSelectsConfiguredVersion =
+        Boolean(getConfigurationDialog()) &&
+        candidateSelectsDesiredVersion &&
+        (node?.getAttribute?.('role') === 'option' ||
+          node?.getAttribute?.('role') === 'menuitemradio');
+      const candidateOpensInstantSubmenu =
+        wantsInstant &&
+        candidateSelectsDesiredVersion &&
+        !candidateHasInstant &&
+        (normalizedTestId.includes('submenu') ||
+          node?.getAttribute?.('aria-haspopup') === 'menu' ||
+          node?.getAttribute?.('data-has-submenu') !== null);
       if (wantsPro && candidateHasThinking) return 0;
       if (wantsPro && candidateHasLegacyProVersion && !candidateSelectsDesiredVersion) return 0;
       if (wantsPro && !candidateHasPro && !candidateSelectsDesiredVersion) return 0;
-      if (wantsInstant && !candidateHasInstant && !candidateSelectsDesiredVersion) return 0;
+      if (
+        wantsInstant &&
+        !candidateHasInstant &&
+        !candidateOpensInstantSubmenu &&
+        !candidateSelectsConfiguredVersion
+      ) return 0;
       if (wantsThinking && candidateHasPro) return 0;
       if (wantsThinking && !candidateHasThinking && !candidateSelectsDesiredVersion) return 0;
       if (desiredVersion === '5-5' && normalizedText && !candidateGpt55VisibleAlias) {
@@ -847,9 +821,13 @@ function buildModelSelectionExpression(
       if (
         desiredVersion &&
         candidateTextVersion === desiredVersion &&
+        !candidateOpensInstantSubmenu &&
         !(wantsThinking && desiredVersion === '5-5' && normalizedText === 'gpt 5 5')
       ) {
         score += 1200;
+      }
+      if (candidateOpensInstantSubmenu) {
+        score += 300;
       }
       if (candidateOpensVersionSubmenu) {
         score += 500;
@@ -957,6 +935,9 @@ function buildModelSelectionExpression(
       const currentButtonLabel = normalizeText(getButtonLabel());
       return !labelHasProWord(currentButtonLabel) && !hasProComposerPill();
     };
+    const openedSubmenuKeys = new Set();
+    const submenuKey = (normalizedText, testid) =>
+      normalizeText(testid ?? '') + '|' + normalizedText;
 
     const findBestOption = () => {
       // Walk through every menu item and keep whichever earns the highest score.
@@ -971,6 +952,10 @@ function buildModelSelectionExpression(
           const text = option.textContent ?? '';
           const normalizedText = normalizeText(text);
           const testid = option.getAttribute('data-testid') ?? '';
+          const optionSubmenuKey = submenuKey(normalizedText, testid);
+          if (isSubmenuOption(option, testid) && openedSubmenuKeys.has(optionSubmenuKey)) {
+            continue;
+          }
           let score = scoreOption(normalizedText, testid, option);
           if (score <= 0) {
             continue;
@@ -980,7 +965,14 @@ function buildModelSelectionExpression(
           }
           const label = getOptionLabel(option);
           if (!bestMatch || score > bestMatch.score) {
-            bestMatch = { node: option, label, score, testid, normalizedText };
+            bestMatch = {
+              node: option,
+              label,
+              score,
+              testid,
+              normalizedText,
+              submenuKey: optionSubmenuKey,
+            };
           }
         }
       }
@@ -1072,6 +1064,13 @@ function buildModelSelectionExpression(
       const openDelay = () => new Promise((r) => setTimeout(r, INITIAL_WAIT_MS));
       let initialized = false;
       const attempt = async () => {
+        if (performance.now() - start > MAX_WAIT_MS) {
+          resolve({
+            status: 'option-not-found',
+            hint: { temporaryChat: detectTemporaryChat(), availableOptions: collectAvailableOptions() },
+          });
+          return;
+        }
         if (!initialized) {
           initialized = true;
           await openDelay();
@@ -1104,6 +1103,7 @@ function buildModelSelectionExpression(
               });
               return;
             }
+            openedSubmenuKeys.add(match.submenuKey);
             openSubmenuOption(match.node);
             setTimeout(attempt, REOPEN_INTERVAL_MS / 2);
             return;

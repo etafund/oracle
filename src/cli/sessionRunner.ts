@@ -175,6 +175,7 @@ export async function performSessionRun({
       const modelConfig = await resolveModelConfig(primaryModel, {
         baseUrl: runOptions.baseUrl,
         openRouterApiKey: process.env.OPENROUTER_API_KEY,
+        modelOverrides: runOptions.modelOverrides,
       });
       const files = await readFiles(runOptions.file ?? [], {
         cwd,
@@ -506,6 +507,7 @@ export async function performSessionRun({
     const cloudflareChallenge =
       userError?.category === "browser-automation" &&
       (userError.details as { stage?: string } | undefined)?.stage === "cloudflare-challenge";
+    const browserCanReattach = !browserConfig?.copyProfileSource;
     let reattachGuidanceLogged = false;
     const logBrowserReattachGuidance = (runtime?: BrowserRuntimeMetadata | null): void => {
       if (reattachGuidanceLogged || mode !== "browser") return;
@@ -519,7 +521,7 @@ export async function performSessionRun({
       reattachGuidanceLogged = true;
       log(formatBrowserReattachGuidance(sessionMeta.id));
     };
-    if (connectionLost && mode === "browser") {
+    if (connectionLost && mode === "browser" && browserCanReattach) {
       const runtime = (userError.details as { runtime?: BrowserRuntimeMetadata } | undefined)
         ?.runtime;
       const recoverableRuntime = runtime ?? sessionMeta.browser?.runtime;
@@ -583,7 +585,7 @@ export async function performSessionRun({
       logBrowserReattachGuidance(runtime ?? sessionMeta.browser?.runtime);
       return;
     }
-    if (assistantTimeout && mode === "browser") {
+    if (assistantTimeout && mode === "browser" && browserCanReattach) {
       const runtime = (userError.details as { runtime?: BrowserRuntimeMetadata } | undefined)
         ?.runtime;
       log(dim("Assistant response timed out; marking capture incomplete for reattach."));
@@ -636,11 +638,15 @@ export async function performSessionRun({
     }
     if (cloudflareChallenge && mode === "browser") {
       const details = userError.details as { reuseProfileHint?: string } | undefined;
-      log(
-        dim("Cloudflare challenge detected; browser left running so you can complete the check."),
-      );
-      if (details?.reuseProfileHint) {
-        log(dim(`Reuse this browser profile with: ${details.reuseProfileHint}`));
+      if (browserCanReattach) {
+        log(
+          dim("Cloudflare challenge detected; browser left running so you can complete the check."),
+        );
+        if (details?.reuseProfileHint) {
+          log(dim(`Reuse this browser profile with: ${details.reuseProfileHint}`));
+        }
+      } else {
+        log(dim("Cloudflare challenge detected; copied profile closed and removed."));
       }
     }
     if (userError) {
@@ -658,10 +664,10 @@ export async function performSessionRun({
       log(dim(`Transport: ${transportLine}`));
     }
     const browserRuntime =
-      mode === "browser"
+      mode === "browser" && browserCanReattach
         ? (userError?.details as { runtime?: BrowserRuntimeMetadata } | undefined)?.runtime
         : undefined;
-    if (!cloudflareChallenge) {
+    if (!cloudflareChallenge && browserCanReattach) {
       logBrowserReattachGuidance(browserRuntime ?? sessionMeta.browser?.runtime);
     }
     await sessionStore.updateSession(sessionMeta.id, {

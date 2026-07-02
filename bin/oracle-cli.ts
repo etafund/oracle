@@ -17,10 +17,11 @@ import chalk from "chalk";
 import type { SessionMetadata, SessionMode, BrowserSessionConfig } from "../src/sessionStore.js";
 import { sessionStore, pruneOldSessions } from "../src/sessionStore.js";
 import { DEFAULT_MODEL, MODEL_CONFIGS } from "../src/oracle/config.js";
-import { isKnownModel } from "../src/oracle/modelResolver.js";
+import { isKnownModel, resolveOverriddenApiModel } from "../src/oracle/modelResolver.js";
 import type {
   ApiProviderMode,
   ModelName,
+  ModelOverridesConfig,
   PreviewMode,
   RunOracleOptions,
 } from "../src/oracle/types.js";
@@ -161,6 +162,7 @@ interface CliOptions extends OptionValues {
   browserModelStrategy?: "select" | "current" | "ignore";
   browserManualLogin?: boolean;
   browserManualLoginProfileDir?: string;
+  copyProfile?: string;
   browserThinkingTime?: "light" | "standard" | "extended" | "heavy";
   browserResearch?: "off" | "deep";
   browserFollowUp?: string[];
@@ -216,6 +218,7 @@ type ResolvedCliOptions = Omit<CliOptions, "model"> & {
   model: ModelName;
   models?: ModelName[];
   effectiveModelId?: string;
+  modelOverrides?: ModelOverridesConfig;
   writeOutputPath?: string;
   previousResponseId?: string;
   followupSessionId?: string;
@@ -842,6 +845,12 @@ program
       "--browser-manual-login-profile-dir <path>",
       "Persistent Chrome profile directory for manual-login browser runs.",
     ).hideHelp(),
+  )
+  .addOption(
+    new Option(
+      "--copy-profile <dir>",
+      'Copy a signed-in Chrome user-data dir to a throwaway profile and run browser mode against it (login-free; auto-cleanup). e.g. "$HOME/Library/Application Support/Google/Chrome".',
+    ),
   )
   .addOption(new Option("--browser-headless", "Launch Chrome in headless mode.").hideHelp())
   .addOption(
@@ -1475,6 +1484,7 @@ function buildRunOptions(
     browserResumeConversationUrl:
       overrides.browserResumeConversationUrl ?? options.browserResumeConversationUrl,
     effectiveModelId: overrides.effectiveModelId ?? options.effectiveModelId ?? options.model,
+    modelOverrides: overrides.modelOverrides ?? options.modelOverrides,
     file: overrides.file ?? options.file ?? [],
     maxFileSizeBytes: overrides.maxFileSizeBytes ?? options.maxFileSizeBytes,
     slug: overrides.slug ?? options.slug,
@@ -1817,6 +1827,7 @@ function buildRunOptionsFromMetadata(metadata: SessionMetadata): RunOracleOption
     previousResponseId: stored.previousResponseId,
     browserResumeConversationUrl: stored.browserResumeConversationUrl,
     effectiveModelId: stored.effectiveModelId ?? stored.model,
+    modelOverrides: stored.modelOverrides,
     file: stored.file ?? [],
     maxFileSizeBytes: stored.maxFileSizeBytes,
     slug: stored.slug,
@@ -2150,11 +2161,17 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   const resolvedModel: ModelName =
     normalizedMultiModels[0] ??
     (isGemini && engine !== "browser" ? resolveApiModel(cliModelArg) : resolvedModelCandidate);
-  const effectiveModelId = resolvedModel.startsWith("gemini")
-    ? resolveGeminiModelId(resolvedModel)
-    : isKnownModel(resolvedModel)
-      ? (MODEL_CONFIGS[resolvedModel].apiModel ?? resolvedModel)
-      : resolvedModel;
+  // A user-config apiModel override (known models only) wins over Gemini alias
+  // remapping and the bundled apiModel, so it becomes the on-wire request id.
+  const apiModelOverrides = engine === "api" ? userConfig.modelOverrides : undefined;
+  const overriddenApiModel = resolveOverriddenApiModel(resolvedModel, apiModelOverrides);
+  const effectiveModelId =
+    overriddenApiModel ??
+    (resolvedModel.startsWith("gemini")
+      ? resolveGeminiModelId(resolvedModel)
+      : isKnownModel(resolvedModel)
+        ? (MODEL_CONFIGS[resolvedModel].apiModel ?? resolvedModel)
+        : resolvedModel);
   const resolvedBaseUrl = normalizeBaseUrl(
     options.baseUrl ?? (isClaude ? process.env.ANTHROPIC_BASE_URL : process.env.OPENAI_BASE_URL),
   );
@@ -2167,6 +2184,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   }
   resolvedOptions.baseUrl = resolvedBaseUrl;
   resolvedOptions.effectiveModelId = effectiveModelId;
+  resolvedOptions.modelOverrides = apiModelOverrides;
   resolvedOptions.provider = providerMode;
   resolvedOptions.writeOutputPath = resolveOutputPath(options.writeOutput, process.cwd());
 
@@ -2304,6 +2322,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
       await import("../src/cli/browserConfig.js");
     const config = await buildBrowserConfig({
       ...options,
+      remoteHost: remoteHost ?? undefined,
       model: activeModel,
       browserModelLabel: resolveBrowserModelLabel(cliModelArg, activeModel),
     });

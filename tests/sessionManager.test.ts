@@ -216,6 +216,9 @@ describe("session lifecycle", () => {
         maxOutput: 456,
         silent: false,
         filesReport: true,
+        modelOverrides: {
+          "gpt-5.2-pro": { apiModel: "gateway-model", reasoning: { effort: "high" } },
+        },
       },
       "/tmp/cwd",
     );
@@ -227,6 +230,9 @@ describe("session lifecycle", () => {
     expect(storedMeta.options.previousResponseId).toBe("resp-parent-123");
     expect(storedMeta.options.followupSessionId).toBe("parent-session");
     expect(storedMeta.options.followupModel).toBe("gpt-5.1");
+    expect(storedMeta.options.modelOverrides).toEqual({
+      "gpt-5.2-pro": { apiModel: "gateway-model", reasoning: { effort: "high" } },
+    });
     expect(storedMeta.options.browserFollowUps).toEqual([
       "challenge the plan",
       "summarize final recommendation",

@@ -76,7 +76,10 @@ describe("ensureModelSelection", () => {
     const runtime = {
       evaluate: vi.fn().mockResolvedValue({ result: { value: { status: "button-missing" } } }),
     } as unknown as ChromeClient["Runtime"];
-    await expect(ensureModelSelection(runtime, "Instant", logger)).rejects.toThrow(
+    // buttonWaitMs: 0 skips the composer-pill wait so this exercises the give-up path directly.
+    await expect(
+      ensureModelSelection(runtime, "Instant", logger, "select", { buttonWaitMs: 0 }),
+    ).rejects.toThrow(
       /Unable to locate the ChatGPT model selector button.*--browser-model-strategy current.*--browser-model-strategy ignore/s,
     );
   });
@@ -86,7 +89,6 @@ describe("ensureModelSelection", () => {
       evaluate: vi
         .fn()
         .mockResolvedValueOnce({ result: { value: { status: "button-missing" } } })
-        .mockResolvedValueOnce({ result: { value: true } })
         .mockResolvedValueOnce({ result: { value: { status: "already-selected", label: "Pro" } } }),
     } as unknown as ChromeClient["Runtime"];
 
@@ -95,7 +97,7 @@ describe("ensureModelSelection", () => {
       resolvedLabel: "Pro",
       status: "already-selected",
     });
-    expect(runtime.evaluate).toHaveBeenCalledTimes(3);
+    expect(runtime.evaluate).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -922,6 +924,85 @@ describe("waitForAssistantResponse", () => {
       const callsAtReturn = evaluate.mock.calls.length;
       await vi.advanceTimersByTimeAsync(5_000);
       expect(evaluate.mock.calls.length).toBe(callsAtReturn);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("re-polls a short completion capture until the full answer is stable", async () => {
+    vi.useFakeTimers();
+    try {
+      const short = { text: "The first line.", messageId: "mid", turnId: "tid" };
+      const complete = {
+        text: "The first line. This is the rest of the answer after the thinking transition finished.",
+        messageId: "mid",
+        turnId: "tid",
+      };
+      let snapshotCalls = 0;
+      const evaluate = vi
+        .fn()
+        .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
+          if (params.awaitPromise) {
+            return { result: { type: "object", value: short } };
+          }
+          const expression = String(params.expression ?? "");
+          if (expression.includes("extractAssistantTurn")) {
+            snapshotCalls += 1;
+            if (snapshotCalls === 1) {
+              await new Promise((resolve) => setTimeout(resolve, 50));
+            }
+            return { result: { value: snapshotCalls <= 5 ? short : complete } };
+          }
+          if (expression.includes("Find the LAST assistant turn")) {
+            return { result: { value: true } };
+          }
+          return { result: { value: false } };
+        });
+
+      const promise = waitForAssistantResponse(
+        { evaluate } as unknown as ChromeClient["Runtime"],
+        30_000,
+        logger,
+      );
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      await expect(promise).resolves.toMatchObject({ text: complete.text });
+      expect(logger).toHaveBeenCalledWith(
+        "Captured suspiciously short answer at completion; re-polling for completion",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("keeps a legitimate short completion after watchdog confirmation", async () => {
+    vi.useFakeTimers();
+    try {
+      const answer = { text: "Yes.", messageId: "mid", turnId: "tid" };
+      const evaluate = vi
+        .fn()
+        .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
+          if (params.awaitPromise) {
+            return { result: { type: "object", value: answer } };
+          }
+          const expression = String(params.expression ?? "");
+          if (expression.includes("extractAssistantTurn")) {
+            return { result: { value: answer } };
+          }
+          if (expression.includes("Find the LAST assistant turn")) {
+            return { result: { value: true } };
+          }
+          return { result: { value: false } };
+        });
+
+      const promise = waitForAssistantResponse(
+        { evaluate } as unknown as ChromeClient["Runtime"],
+        30_000,
+        logger,
+      );
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      await expect(promise).resolves.toMatchObject({ text: "Yes." });
     } finally {
       vi.useRealTimers();
     }

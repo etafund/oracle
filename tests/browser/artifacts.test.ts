@@ -7,6 +7,8 @@ import {
   resolveSessionArtifactsDir,
   saveBrowserTranscriptArtifact,
   saveDeepResearchReportArtifact,
+  isZipArtifact,
+  validateZipBuffer,
   writeBinaryBrowserArtifact,
   __test__,
 } from "../../src/browser/artifacts.js";
@@ -48,6 +50,19 @@ describe("browser session artifacts", () => {
       saveDeepResearchReportArtifact({
         sessionId: "tool-placeholder",
         reportMarkdown: "Called tool",
+      }),
+    ).resolves.toBeNull();
+  });
+
+  test("does not save Deep Research planning panels as reports", async () => {
+    const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-artifacts-"));
+    setOracleHomeDirOverrideForTest(tmpHome);
+
+    await expect(
+      saveDeepResearchReportArtifact({
+        sessionId: "planning-placeholder",
+        reportMarkdown:
+          "project root-cause analysis\nUpdate\nInspect the adapter.\nDetermining steps for creating a report...\nStop research",
       }),
     ).resolves.toBeNull();
   });
@@ -100,7 +115,11 @@ describe("browser session artifacts", () => {
       mimeType: "application/zip",
       sourceUrl: "sandbox:/mnt/data/Build Output.zip",
       sizeBytes: 3,
+      validation: { type: "zip", ok: false, error: "zip-too-small" },
+      transfer: { status: "not-needed" },
+      origin: { mode: "local" },
     });
+    expect(artifact?.sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(artifact?.path).toBe(
       path.join(tmpHome, "sessions", "browser-files", "artifacts", "build-output.zip"),
     );
@@ -132,6 +151,28 @@ describe("browser session artifacts", () => {
     );
     await expect(fs.readFile(first!.path, "utf8")).resolves.toBe("first");
     await expect(fs.readFile(second!.path, "utf8")).resolves.toBe("second");
+  });
+
+  test("validates empty ZIP central directory metadata", () => {
+    const emptyZip = Buffer.from([
+      0x50, 0x4b, 0x05, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ]);
+
+    expect(validateZipBuffer(emptyZip)).toEqual({ type: "zip", ok: true });
+    expect(validateZipBuffer(Buffer.from([1, 2, 3]))).toEqual({
+      type: "zip",
+      ok: false,
+      error: "zip-too-small",
+    });
+  });
+
+  test("does not classify gzip archives as ZIP files", () => {
+    expect(isZipArtifact("source.tar.gz", "application/gzip")).toBe(false);
+    expect(isZipArtifact("source.gz", "application/x-gzip")).toBe(false);
+    expect(isZipArtifact("source.zip", "application/octet-stream")).toBe(true);
+    expect(isZipArtifact("source.bin", "application/zip")).toBe(true);
+    expect(isZipArtifact("source.bin", "application/example+zip")).toBe(true);
   });
 
   test("dedupes artifact lists by kind and path", () => {

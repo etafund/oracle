@@ -1,7 +1,11 @@
 import http from "node:http";
 import net from "node:net";
 import { parseHostPort } from "../bridge/connection.js";
-import type { RemoteActiveRunInfo } from "./types.js";
+import {
+  MAX_REMOTE_ARTIFACT_BYTES,
+  type RemoteActiveRunInfo,
+  type RemoteArtifactCapabilities,
+} from "./types.js";
 
 export interface RemoteHealthResult {
   ok: boolean;
@@ -13,6 +17,7 @@ export interface RemoteHealthResult {
   uptimeSeconds?: number;
   authProfileIdHash?: string;
   providerLocks?: string[];
+  capabilities?: RemoteArtifactCapabilities;
 }
 
 export interface RemoteRunAvailabilityResult {
@@ -92,6 +97,9 @@ export async function checkRemoteHealth({
         .authProfileIdHash;
       const providerLocks = (response.json as { providerLocks?: unknown }).providerLocks;
       const activeRun = parseActiveRun((response.json as { activeRun?: unknown }).activeRun);
+      const capabilities = parseCapabilities(
+        (response.json as { capabilities?: unknown }).capabilities,
+      );
       const healthResult: RemoteHealthResult = {
         ok: ok && !busy,
         statusCode: response.statusCode,
@@ -101,6 +109,7 @@ export async function checkRemoteHealth({
         uptimeSeconds: typeof uptimeSeconds === "number" ? uptimeSeconds : undefined,
         authProfileIdHash: typeof authProfileIdHash === "string" ? authProfileIdHash : undefined,
         providerLocks: Array.isArray(providerLocks) ? providerLocks : undefined,
+        capabilities,
       };
 
       if (busy) {
@@ -141,6 +150,9 @@ export async function checkRemoteHealth({
       return healthResult;
     }
     if (response.statusCode === 409 && typeof response.json === "object" && response.json) {
+      const capabilities = parseCapabilities(
+        (response.json as { capabilities?: unknown }).capabilities,
+      );
       return {
         ok: false,
         statusCode: response.statusCode,
@@ -157,6 +169,7 @@ export async function checkRemoteHealth({
         error:
           extractErrorMessage(response.json, response.bodyText) ??
           "remote host is busy; /health reports an active run",
+        capabilities,
       };
     }
     if (response.statusCode === 404) {
@@ -275,6 +288,37 @@ function parseActiveRun(value: unknown): RemoteActiveRunInfo | undefined {
     promptChars: record.promptChars,
     ...(typeof record.sessionId === "string" ? { sessionId: record.sessionId } : {}),
     ...(typeof record.desiredModel === "string" ? { desiredModel: record.desiredModel } : {}),
+  };
+}
+
+function parseCapabilities(value: unknown): RemoteArtifactCapabilities | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const raw = value as {
+    artifactTransfer?: unknown;
+    artifactProtocolVersion?: unknown;
+    maxArtifactBytes?: unknown;
+  };
+  if (raw.artifactTransfer !== true) {
+    return undefined;
+  }
+  const artifactProtocolVersion = raw.artifactProtocolVersion;
+  const maxArtifactBytes = raw.maxArtifactBytes;
+  if (
+    typeof artifactProtocolVersion !== "number" ||
+    !Number.isSafeInteger(artifactProtocolVersion) ||
+    artifactProtocolVersion <= 0 ||
+    typeof maxArtifactBytes !== "number" ||
+    !Number.isSafeInteger(maxArtifactBytes) ||
+    maxArtifactBytes <= 0
+  ) {
+    return undefined;
+  }
+  return {
+    artifactTransfer: true,
+    artifactProtocolVersion,
+    maxArtifactBytes: Math.min(maxArtifactBytes, MAX_REMOTE_ARTIFACT_BYTES),
   };
 }
 

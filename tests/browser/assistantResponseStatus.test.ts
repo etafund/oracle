@@ -35,8 +35,8 @@ describe("assistant thinking-status capture", () => {
     expect(evaluatePredicate(label, true)).toBe(true);
   });
 
-  test.each(statusLabels)("preserves completed exact answer %j", (label) => {
-    expect(evaluatePredicate(label, false)).toBe(false);
+  test.each(statusLabels)("suppresses pure status label without a stop button %j", (label) => {
+    expect(evaluatePredicate(label, false)).toBe(true);
   });
 
   test("does not suppress normal text while generation is active", () => {
@@ -46,7 +46,7 @@ describe("assistant thinking-status capture", () => {
   test("uses the active-status predicate in snapshot capture", () => {
     const expression = buildAssistantSnapshotExpressionForTest();
     expect(expression).toContain("isActiveThinkingStatus");
-    expect(expression).toContain('data-testid=\\"stop-button\\"');
+    expect(expression).toContain("Pure thinking/status labels are placeholders");
     expect(expression).toContain("const fallback = extractFallback();");
   });
 

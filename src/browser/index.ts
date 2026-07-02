@@ -3,6 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import net from "node:net";
 import { resolveBrowserConfig } from "./config.js";
+import { copyChromeProfile } from "./profileCopy.js";
 import type {
   BrowserRunOptions,
   BrowserRunResult,
@@ -155,6 +156,15 @@ function classifyPreservedBrowserError(
 
 function shouldPreserveBrowserOnError(error: unknown, headless: boolean): boolean {
   return classifyPreservedBrowserError(error, headless) !== null;
+}
+
+function shouldKeepLocalBrowserOpen(options: {
+  effectiveKeepBrowser: boolean;
+  preserveBrowserOnError: boolean;
+  usingCopiedProfile: boolean;
+}): boolean {
+  if (options.usingCopiedProfile) return false;
+  return options.effectiveKeepBrowser || options.preserveBrowserOnError;
 }
 
 export function shouldPreserveBrowserOnErrorForTest(error: unknown, headless: boolean): boolean {
@@ -681,7 +691,22 @@ type BrowserSubmissionResult = {
   baselineTurns: number | null;
   baselineAssistantText: string | null;
   deepResearchTargetKeys?: string[];
+  deepResearchTargetBaselineCaptured?: boolean;
 };
+
+async function captureDeepResearchTargetBaseline(
+  client: ChromeClient,
+  logger: BrowserLogger,
+): Promise<{ targetKeys: string[]; captured: boolean }> {
+  try {
+    return { targetKeys: await captureDeepResearchTargetKeys(client), captured: true };
+  } catch {
+    logger(
+      "[browser] Deep Research target baseline unavailable; retaining conversation-turn owner scoping.",
+    );
+    return { targetKeys: [], captured: false };
+  }
+}
 
 type BrowserSubmissionFallback = {
   prompt: string;
@@ -890,6 +915,13 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
   const fallbackSubmission = options.fallbackSubmission;
 
   let config = resolveBrowserConfig(options.config);
+  const usingCopiedProfile = Boolean(config.copyProfileSource);
+  if (usingCopiedProfile && (config.attachRunning || config.remoteChrome)) {
+    throw new BrowserAutomationError(
+      "--copy-profile requires a locally launched Chrome instance and cannot be combined with attach-running or remote Chrome.",
+      { stage: "profile-config" },
+    );
+  }
   const isResumingConversation = Boolean(config.resumeConversationUrl);
   const followUpPrompts = normalizeBrowserFollowUpPrompts(options.followUpPrompts);
   if (config.researchMode === "deep" && followUpPrompts.length > 0) {
@@ -994,6 +1026,15 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
   }
 
   const manualLogin = Boolean(config.manualLogin);
+  if (manualLogin && usingCopiedProfile) {
+    throw new BrowserAutomationError(
+      "--copy-profile cannot be combined with --browser-manual-login: choose either a throwaway copied profile or the persistent manual-login profile.",
+      { stage: "profile-config" },
+    );
+  }
+  // Manual-login and copy-profile both start from an already-signed-in profile,
+  // so neither clears nor syncs cookies.
+  const profileIsPreSigned = manualLogin || usingCopiedProfile;
   const manualProfileDir = config.manualLoginProfileDir
     ? path.resolve(config.manualLoginProfileDir)
     : defaultManualLoginProfileDir();
@@ -1009,6 +1050,16 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       userDataDir,
       keepBrowser: effectiveKeepBrowser,
     });
+  } else if (config.copyProfileSource) {
+    const copiedProfileDirectory = await copyChromeProfile(
+      config.copyProfileSource,
+      userDataDir,
+      config.chromeProfile,
+    );
+    config = { ...config, chromeProfile: copiedProfileDirectory };
+    logger(
+      `Seeded temporary Chrome profile ${copiedProfileDirectory} from ${config.copyProfileSource} (copy-profile mode; signed-in session reused without manual login)`,
+    );
   } else {
     logger(`Created temporary Chrome profile at ${userDataDir}`);
   }
@@ -1043,6 +1094,9 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       tabLease = null;
       await handle.release().catch(() => undefined);
     }
+    if (usingCopiedProfile) {
+      await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
+    }
     throw error;
   }
   const { chrome, reusedChrome } = acquiredChrome;
@@ -1064,6 +1118,8 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         isInFlight: () => runStatus !== "complete",
         emitRuntimeHint,
         preserveUserDataDir: manualLogin,
+        // copy-profile is a throwaway copy of a signed-in profile; never leave it on disk.
+        forceProfileCleanup: usingCopiedProfile,
       },
     );
   } catch {
@@ -1152,12 +1208,12 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     }
     await Promise.all(domainEnablers);
     removeDialogHandler = installJavaScriptDialogAutoDismissal(Page, logger);
-    if (!manualLogin) {
+    if (!profileIsPreSigned) {
       await Network.clearBrowserCookies();
     }
 
     const manualLoginCookieSync = manualLogin && Boolean(config.manualLoginCookieSync);
-    const cookieSyncEnabled = config.cookieSync && (!manualLogin || manualLoginCookieSync);
+    const cookieSyncEnabled = config.cookieSync && (!profileIsPreSigned || manualLoginCookieSync);
     if (cookieSyncEnabled) {
       if (manualLoginCookieSync) {
         logger(
@@ -1423,25 +1479,6 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         }),
       );
     }
-    if (deepResearch) {
-      await raceWithDisconnect(
-        withRetries(() => activateDeepResearch(Runtime, Input, logger), {
-          retries: 2,
-          delayMs: 500,
-          onRetry: (attempt, error) => {
-            if (options.verbose) {
-              logger(
-                `[retry] Deep Research activation attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
-              );
-            }
-          },
-        }),
-      );
-      await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
-      logger(
-        `Prompt textarea ready (after Deep Research activation, ${promptText.length.toLocaleString()} chars queued)`,
-      );
-    }
     const profileLockTimeoutMs = manualLogin ? (config.profileLockTimeoutMs ?? 0) : 0;
     let profileLock: ProfileRunLock | null = null;
     const acquireProfileLockIfNeeded = async () => {
@@ -1501,6 +1538,25 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         await waitForAttachmentCompletion(Runtime, attachmentWaitBudget, attachmentNames, logger);
         logger("All attachments uploaded");
       }
+      if (deepResearch) {
+        await raceWithDisconnect(
+          withRetries(() => activateDeepResearch(Runtime, Input, logger), {
+            retries: 2,
+            delayMs: 500,
+            onRetry: (attempt, error) => {
+              if (options.verbose) {
+                logger(
+                  `[retry] Deep Research activation attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
+                );
+              }
+            },
+          }),
+        );
+        await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+        logger(
+          `Prompt textarea ready (after Deep Research activation, ${prompt.length.toLocaleString()} chars queued)`,
+        );
+      }
       let baselineTurns = await readConversationTurnCount(Runtime, logger);
       // Learned: return baselineTurns so assistant polling can ignore earlier content.
       const providerState: Record<string, unknown> = {
@@ -1517,9 +1573,9 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           enabled: isDesiredChatGptProModel(config.desiredModel),
         },
       };
-      const deepResearchTargetKeys =
+      const deepResearchTargetBaseline =
         deepResearch && client
-          ? await captureDeepResearchTargetKeys(client).catch(() => [])
+          ? await captureDeepResearchTargetBaseline(client, logger)
           : undefined;
       await runProviderSubmissionFlow(chatgptDomProvider, {
         prompt,
@@ -1561,7 +1617,12 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       }
       // Reattach needs a /c/ URL; ChatGPT can update it late, so poll in the background.
       scheduleConversationHint("post-submit", config.timeoutMs ?? 120_000);
-      return { baselineTurns, baselineAssistantText, deepResearchTargetKeys };
+      return {
+        baselineTurns,
+        baselineAssistantText,
+        deepResearchTargetKeys: deepResearchTargetBaseline?.targetKeys,
+        deepResearchTargetBaselineCaptured: deepResearchTargetBaseline?.captured,
+      };
     };
     const reloadPromptComposer = async () => {
       logger("[browser] Composer became unresponsive; reloading page and retrying once.");
@@ -1572,6 +1633,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     let baselineTurns: number | null = null;
     let baselineAssistantText: string | null = null;
     let deepResearchTargetKeys: string[] = [];
+    let deepResearchTargetBaselineCaptured = false;
     await acquireProfileLockIfNeeded();
     try {
       const submission = await runSubmissionWithRecovery({
@@ -1590,6 +1652,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       baselineTurns = submission.baselineTurns;
       baselineAssistantText = submission.baselineAssistantText;
       deepResearchTargetKeys = submission.deepResearchTargetKeys ?? [];
+      deepResearchTargetBaselineCaptured = submission.deepResearchTargetBaselineCaptured ?? false;
     } finally {
       await releaseProfileLockIfHeld();
     }
@@ -1604,7 +1667,10 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           baselineTurns,
           Page,
           client,
-          { ignoredTargetKeys: deepResearchTargetKeys },
+          {
+            ignoredTargetKeys: deepResearchTargetKeys,
+            targetBaselineCaptured: deepResearchTargetBaselineCaptured,
+          },
         ),
       );
       await updateConversationHint("post-deep-research", 15_000).catch(() => false);
@@ -2191,6 +2257,16 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     connectionClosedUnexpectedly = connectionClosedUnexpectedly || socketClosed;
     const preservedErrorKind = classifyPreservedBrowserError(normalizedError, config.headless);
     if (preservedErrorKind === "cloudflare-challenge") {
+      if (usingCopiedProfile) {
+        logger(
+          "Cloudflare challenge detected; closing Chrome and removing the copied profile because copy-profile runs cannot be retained.",
+        );
+        throw new BrowserAutomationError(
+          "Cloudflare challenge detected. Copy-profile runs cannot be retained; complete the check in the source Chrome profile, then rerun.",
+          { stage: "cloudflare-challenge", reattachable: false },
+          normalizedError,
+        );
+      }
       preserveBrowserOnError = true;
       const runtime = {
         chromePid: chrome.pid,
@@ -2219,6 +2295,16 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       );
     }
     if (preservedErrorKind === "reattachable-capture") {
+      if (usingCopiedProfile) {
+        logger(
+          "Assistant capture incomplete; closing Chrome and removing the copied profile because copy-profile runs cannot be reattached.",
+        );
+        const details =
+          normalizedError instanceof BrowserAutomationError
+            ? { ...normalizedError.details, runtime: undefined, reattachable: false }
+            : { stage: "assistant-recheck", reattachable: false };
+        throw new BrowserAutomationError(normalizedError.message, details, normalizedError);
+      }
       preserveBrowserOnError = true;
       await emitRuntimeHint();
       logger("Assistant capture incomplete; leaving browser open for reattach.");
@@ -2275,7 +2361,11 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     ) {
       await closeTab(chrome.port, isolatedTargetId, logger, chromeHost).catch(() => undefined);
     }
-    let keepBrowserOpen = effectiveKeepBrowser || preserveBrowserOnError;
+    let keepBrowserOpen = shouldKeepLocalBrowserOpen({
+      effectiveKeepBrowser,
+      preserveBrowserOnError,
+      usingCopiedProfile,
+    });
     let cleanupProfileLock: ProfileRunLock | null = null;
     let terminatedRecordedChrome = false;
     let otherActiveBrowserTabLeases: boolean | null = null;
@@ -2905,24 +2995,6 @@ async function runRemoteBrowserMode(
         },
       );
     }
-    if (deepResearch) {
-      await withRetries(() => activateDeepResearch(Runtime, Input, logger), {
-        retries: 2,
-        delayMs: 500,
-        onRetry: (attempt, error) => {
-          if (options.verbose) {
-            logger(
-              `[retry] Deep Research activation attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
-            );
-          }
-        },
-      });
-      await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
-      logger(
-        `Prompt textarea ready (after Deep Research activation, ${promptText.length.toLocaleString()} chars queued)`,
-      );
-    }
-
     const submitOnce = async (prompt: string, submissionAttachments: BrowserAttachment[]) => {
       const baselineSnapshot = await readAssistantSnapshot(Runtime).catch(() => null);
       const baselineAssistantText =
@@ -2954,6 +3026,23 @@ async function runRemoteBrowserMode(
         await waitForAttachmentCompletion(Runtime, attachmentWaitBudget, attachmentNames, logger);
         logger("All attachments uploaded");
       }
+      if (deepResearch) {
+        await withRetries(() => activateDeepResearch(Runtime, Input, logger), {
+          retries: 2,
+          delayMs: 500,
+          onRetry: (attempt, error) => {
+            if (options.verbose) {
+              logger(
+                `[retry] Deep Research activation attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
+              );
+            }
+          },
+        });
+        await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
+        logger(
+          `Prompt textarea ready (after Deep Research activation, ${prompt.length.toLocaleString()} chars queued)`,
+        );
+      }
       let baselineTurns = await readConversationTurnCount(Runtime, logger);
       const providerState: Record<string, unknown> = {
         runtime: Runtime,
@@ -2969,9 +3058,9 @@ async function runRemoteBrowserMode(
           enabled: isDesiredChatGptProModel(config.desiredModel),
         },
       };
-      const deepResearchTargetKeys =
+      const deepResearchTargetBaseline =
         deepResearch && client
-          ? await captureDeepResearchTargetKeys(client).catch(() => [])
+          ? await captureDeepResearchTargetBaseline(client, logger)
           : undefined;
       await runProviderSubmissionFlow(chatgptDomProvider, {
         prompt,
@@ -2985,7 +3074,12 @@ async function runRemoteBrowserMode(
       if (typeof providerBaselineTurns === "number" && Number.isFinite(providerBaselineTurns)) {
         baselineTurns = providerBaselineTurns;
       }
-      return { baselineTurns, baselineAssistantText, deepResearchTargetKeys };
+      return {
+        baselineTurns,
+        baselineAssistantText,
+        deepResearchTargetKeys: deepResearchTargetBaseline?.targetKeys,
+        deepResearchTargetBaselineCaptured: deepResearchTargetBaseline?.captured,
+      };
     };
     const reloadPromptComposer = async () => {
       logger("[browser] Composer became unresponsive; reloading page and retrying once.");
@@ -2996,6 +3090,7 @@ async function runRemoteBrowserMode(
     let baselineTurns: number | null = null;
     let baselineAssistantText: string | null = null;
     let deepResearchTargetKeys: string[] = [];
+    let deepResearchTargetBaselineCaptured = false;
     const submission = await runSubmissionWithRecovery({
       prompt: promptText,
       attachments,
@@ -3011,6 +3106,7 @@ async function runRemoteBrowserMode(
     baselineTurns = submission.baselineTurns;
     baselineAssistantText = submission.baselineAssistantText;
     deepResearchTargetKeys = submission.deepResearchTargetKeys ?? [];
+    deepResearchTargetBaselineCaptured = submission.deepResearchTargetBaselineCaptured ?? false;
     const imageArtifactMinTurnIndex = baselineTurns;
     if (deepResearch) {
       await waitForResearchPlanAutoConfirm(Runtime, logger);
@@ -3021,7 +3117,10 @@ async function runRemoteBrowserMode(
         baselineTurns,
         Page,
         client,
-        { ignoredTargetKeys: deepResearchTargetKeys },
+        {
+          ignoredTargetKeys: deepResearchTargetKeys,
+          targetBaselineCaptured: deepResearchTargetBaselineCaptured,
+        },
       );
       await emitRuntimeHint();
       const durationMs = Date.now() - startedAt;
@@ -3641,6 +3740,7 @@ export const __test__ = {
   listIgnoredRemoteChromeFlags,
   resolveManualLoginWaitMs,
   shouldCloseOwnedRunTargetAfterRun,
+  shouldKeepLocalBrowserOpen,
 };
 export { syncCookies } from "./cookies.js";
 export {

@@ -17,6 +17,7 @@ import type {
   AzureOptions,
   BrowserBundleFormat,
   ModelName,
+  ModelOverridesConfig,
   PartialMode,
   ThinkingTimeLevel,
 } from "./oracle.js";
@@ -81,6 +82,8 @@ export interface BrowserSessionConfig {
   manualLogin?: boolean;
   manualLoginProfileDir?: string | null;
   manualLoginCookieSync?: boolean;
+  /** Copy this signed-in Chrome user-data dir to a throwaway profile and run against it (login-free). */
+  copyProfileSource?: string | null;
   /** Thinking time intensity: 'light', 'standard', 'extended', 'heavy' */
   thinkingTime?: ThinkingTimeLevel;
   /** Browser-only research mode. "deep" activates ChatGPT Deep Research. */
@@ -157,6 +160,32 @@ export interface BrowserMetadata {
   warnings?: BrowserRunWarning[];
 }
 
+export type SessionArtifactValidationType = "generic" | "zip";
+export type SessionArtifactTransferStatus =
+  | "not-needed"
+  | "ready"
+  | "streaming"
+  | "completed"
+  | "failed"
+  | "skipped";
+
+export interface SessionArtifactValidation {
+  type: SessionArtifactValidationType;
+  ok: boolean;
+  error?: string;
+}
+
+export interface SessionArtifactTransfer {
+  status: SessionArtifactTransferStatus;
+  bytes?: number;
+  error?: string;
+}
+
+export interface SessionArtifactOrigin {
+  mode: "local" | "bridge";
+  host?: string;
+}
+
 export interface SessionArtifact {
   kind: "transcript" | "deep-research-report" | "image" | "file";
   path: string;
@@ -164,6 +193,10 @@ export interface SessionArtifact {
   mimeType?: string;
   sizeBytes?: number;
   sourceUrl?: string;
+  sha256?: string;
+  validation?: SessionArtifactValidation;
+  transfer?: SessionArtifactTransfer;
+  origin?: SessionArtifactOrigin;
 }
 
 export interface SessionResponseMetadata {
@@ -231,6 +264,7 @@ export interface StoredRunOptions {
   baseUrl?: string;
   azure?: AzureOptions;
   effectiveModelId?: string;
+  modelOverrides?: ModelOverridesConfig;
   renderPlain?: boolean;
   writeOutputPath?: string;
   partialMode?: PartialMode;
@@ -617,6 +651,7 @@ export async function initializeSession(
       parentSessionId: options.parentSessionId,
       followUpOfSessionId: options.followUpOfSessionId,
       effectiveModelId: options.effectiveModelId,
+      modelOverrides: options.modelOverrides,
       maxInput: options.maxInput,
       system: options.system,
       maxOutput: options.maxOutput,

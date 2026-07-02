@@ -1,6 +1,36 @@
 # Changelog
 
-## 0.14.2 — Unreleased
+## 0.15.1 — Unreleased
+
+### Added
+
+- Bridge/Browser: transfer ChatGPT-generated files from the browser host back to the client over a token-protected artifact endpoint, with capability discovery, safe filenames, byte counts, SHA-256 metadata, ZIP validation, and manual fallback guidance for mixed-version bridge deployments. Thanks @DK625!
+- API: add user-only `modelOverrides` for remapping known models and their metadata on custom OpenAI-compatible gateways. Fixes #273. Thanks @wangwllu!
+
+### Fixed
+
+- Browser/Bridge: improve ChatGPT ZIP artifact capture before bridge transfer by broadening sandbox/file-card/download-control discovery, adding sanitized direct-download diagnostics, and falling back to scoped browser downloads when sandbox fetches fail. Thanks @DK625!
+- API: forward configured reasoning effort through custom OpenAI-compatible chat-completions gateways.
+- Browser: accept a stable, exact file-input name match when ChatGPT marks the composer ready but exposes no attachment chip or count, while still waiting through active uploads and rejecting missing or extra files. Fixes #275. Thanks @wangwllu!
+- Browser: avoid returning truncated Pro answers when completion controls appear during the thinking-to-answer transition. Thanks @xuan-wei!
+- Browser: wait up to eight seconds for the ChatGPT model/effort composer pill to mount before failing explicit selection, while leaving `option-not-found` failures immediate. Thanks @gustavosmendes!
+- Browser: activate ChatGPT Deep Research after the final composer reset, select the current tools-menu row shape, and use trusted mouse clicks for Deep Research and send actions so the request reaches the real research-plan flow instead of being submitted as an ordinary Pro prompt.
+
+## 0.15.0 — 2026-06-19
+
+### Added
+
+- Browser: `--copy-profile <dir>` copies the active signed-in Chrome profile (or an explicit `--browser-chrome-profile`) to a throwaway profile and runs browser mode against it, reusing the live ChatGPT session with no manual sign-in. Skips keychain-mocking flags so encrypted cookies decrypt via the real Chrome "Safe Storage" key (macOS/Linux; requires `rsync`). The throwaway copy is always cleaned up, rejects incompatible persistent/existing/remote browser modes, and fails fast if the required `Local State` cannot be copied. Thanks @edwarddgao!
+
+### Changed
+
+- Dependencies: update Vitest, coverage tooling, Vite, Hono, and protobufjs to remove vulnerable transitive releases.
+
+### Fixed
+
+- Browser: wait for the current ChatGPT Intelligence pill before falling back to the default thinking level, and make `--browser-model-strategy select` prefer concrete requested variants over version-only submenu wrappers with bounded retries. This lets current-model runs select and verify Extra High before submitting and prevents explicit Instant selection from hanging (thanks @alex-on-java and @servrox).
+- Browser: save ChatGPT generated-file button downloads sequentially, preserve browser-provided filenames for generic endpoints, and stop after a timed-out download so late completions cannot be attributed to the next file. Thanks @orbitingflea!
+- Browser: reject Deep Research planning/status captures and fail clearly when ChatGPT silently returns a normal response without observable research activity, instead of saving either as the final report. Fixes #261. Thanks @aaronflorey!
 
 ### Fixed
 

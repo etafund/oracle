@@ -5,6 +5,7 @@ import {
   CONVERSATION_TURN_SELECTOR,
   COPY_BUTTON_SELECTOR,
   FINISHED_ACTIONS_SELECTOR,
+  MIN_TRUSTWORTHY_ANSWER_CHARS,
   STOP_BUTTON_SELECTOR,
 } from "../constants.js";
 import { delay } from "../utils.js";
@@ -59,7 +60,6 @@ function isAnswerNowPlaceholderText(normalized: string): boolean {
 
 function buildActiveThinkingStatusPredicateJs(fnName: string): string {
   const labelsLiteral = JSON.stringify(THINKING_STATUS_LABELS);
-  const stopSelectorLiteral = JSON.stringify(STOP_BUTTON_SELECTOR);
   return `const ${fnName} = (snapshot) => {
     const normalized = String(snapshot?.text ?? '').toLowerCase().replace(/\\s+/g, ' ').trim();
     if (!normalized) return false;
@@ -68,7 +68,9 @@ function buildActiveThinkingStatusPredicateJs(fnName: string): string {
       labels.includes(normalized) ||
       (normalized.startsWith('thought for ') && normalized.length <= 40) ||
       (normalized.startsWith('pro thinking') && normalized.length <= 40);
-    return matches && Boolean(document.querySelector(${stopSelectorLiteral}));
+    // Pure thinking/status labels are placeholders even if ChatGPT has hidden the
+    // stop button during a Pro thinking transition.
+    return matches;
   };`;
 }
 
@@ -78,6 +80,10 @@ export function matchesThinkingStatusLabelForTest(text: string): boolean {
 
 export function buildActiveThinkingStatusPredicateJsForTest(fnName: string): string {
   return buildActiveThinkingStatusPredicateJs(fnName);
+}
+
+function isPureThinkingStatusText(text: string): boolean {
+  return matchesThinkingStatusLabel(text.toLowerCase().replace(/\s+/g, " ").trim());
 }
 
 type AssistantCompletionState = {
@@ -316,19 +322,28 @@ export async function waitForAssistantResponse(
       isStopButtonVisible(Runtime),
       isCompletionVisible(Runtime),
     ]);
-    if (stopVisible) {
-      logger("Assistant still generating; waiting for completion");
+    // Completion controls can appear briefly while Pro is still replacing its thinking UI.
+    // Confirm short captures with the stability-based watchdog before trusting them.
+    const candidateText = String(candidate?.text ?? "").trim();
+    const suspiciousRace = completionVisible && candidateText.length < MIN_TRUSTWORTHY_ANSWER_CHARS;
+    if (stopVisible || suspiciousRace) {
+      logger(
+        stopVisible
+          ? "Assistant still generating; waiting for completion"
+          : "Captured suspiciously short answer at completion; re-polling for completion",
+      );
       const completed = await pollAssistantCompletion(
         Runtime,
         remainingMs,
         minTurnIndex,
         expectedConversationId,
       );
-      if (completed) {
+      if (completed && String(completed.text ?? "").trim().length >= candidateText.length) {
         return completed;
       }
     } else if (completionVisible) {
-      // No-op: completion UI surfaced and stop button is gone.
+      // No-op: completion UI surfaced, stop button is gone, and the captured answer is
+      // long enough to trust.
     }
   }
 
@@ -471,7 +486,7 @@ async function parseAssistantEvaluationResult(
         : undefined;
     const text = cleanAssistantText(String((result.value as { text: unknown }).text ?? ""));
     const normalized = text.toLowerCase();
-    if (isAnswerNowPlaceholderText(normalized)) {
+    if (isAnswerNowPlaceholderText(normalized) || isPureThinkingStatusText(text)) {
       return null;
     }
     return { text, html, meta: { turnId, messageId } };
@@ -481,7 +496,10 @@ async function parseAssistantEvaluationResult(
   if (!fallbackText) {
     return null;
   }
-  if (isAnswerNowPlaceholderText(fallbackText.toLowerCase())) {
+  if (
+    isAnswerNowPlaceholderText(fallbackText.toLowerCase()) ||
+    isPureThinkingStatusText(fallbackText)
+  ) {
     return null;
   }
   return { text: fallbackText, html: undefined, meta: {} };
@@ -776,7 +794,7 @@ function normalizeAssistantSnapshot(snapshot: AssistantSnapshot | null): {
   const normalized = text.toLowerCase();
   // "Pro thinking" often renders a placeholder turn containing an "Answer now" gate.
   // Treat it as incomplete so browser mode keeps waiting for the real assistant text.
-  if (isAnswerNowPlaceholderText(normalized)) {
+  if (isAnswerNowPlaceholderText(normalized) || isPureThinkingStatusText(text)) {
     return null;
   }
   // Ignore user echo turns that can show up in project view fallbacks.
@@ -1102,26 +1120,28 @@ function buildResponseObserverExpression(
       // Learned: short answers can be 1-2 tokens; enforce longer settle windows to avoid truncation.
       // Learned: long streaming responses (esp. thinking models) can pause mid-stream;
       // use progressively longer windows to avoid truncation (#71).
-      const initialLength = snapshot?.text?.length ?? 0;
-      const shortAnswer = initialLength > 0 && initialLength < 16;
-      const mediumAnswer = initialLength >= 16 && initialLength < 40;
-      const longAnswer = initialLength >= 40 && initialLength < 500;
-      const compactAnswer = shortAnswer || mediumAnswer;
+      const classifyLength = (length) => ({
+        shortAnswer: length > 0 && length < 16,
+        mediumAnswer: length >= 16 && length < 40,
+        longAnswer: length >= 40 && length < 500,
+      });
+      const settleWindowForLength = (length) => {
+        const size = classifyLength(length);
+        return size.shortAnswer ? 12_000 : size.mediumAnswer ? 5_000 : size.longAnswer ? 24_000 : 30_000;
+      };
       // Substantial answers get a longer settle window: bare stop-button absence
       // is unreliable for them (the Pro thinking gate hides it mid-turn), so we
       // wait for the finished-action controls or a long idle period before
       // trusting the snapshot. Compact answers keep their original windows.
-      const settleWindowMs = shortAnswer ? 12_000 : mediumAnswer ? 5_000 : longAnswer ? 24_000 : 30_000;
       // For substantial answers, require this much idle time before accepting on
       // stop-button absence when the finished-action controls never appear.
       const idleNoCompletionMs = 20_000;
       const settleIntervalMs = 400;
-      const deadline = Date.now() + settleWindowMs;
       let latest = snapshot;
       let lastLength = snapshot?.text?.length ?? 0;
       let stableCycles = 0;
       let lastChangeAt = Date.now();
-      const stableTarget = shortAnswer ? 6 : mediumAnswer ? 3 : longAnswer ? 5 : 6;
+      let deadline = Date.now() + settleWindowForLength(lastLength);
       while (Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, settleIntervalMs));
         const refreshedRaw = extractFromTurns();
@@ -1150,9 +1170,13 @@ function buildResponseObserverExpression(
           lastLength = nextLength;
           stableCycles = 0;
           lastChangeAt = Date.now();
+          deadline = Math.max(deadline, Date.now() + settleWindowForLength(lastLength));
         } else {
           stableCycles += 1;
         }
+        const size = classifyLength(lastLength);
+        const compactAnswer = size.shortAnswer || size.mediumAnswer;
+        const stableTarget = size.shortAnswer ? 6 : size.mediumAnswer ? 3 : size.longAnswer ? 5 : 6;
         const stopVisible = Boolean(document.querySelector(STOP_SELECTOR));
         const finishedVisible = isLastAssistantTurnFinished();
         const thinkingActive = isThinkingIndicatorActive();
