@@ -29,6 +29,7 @@
 - CLI/Docs: add `oracle doctor lanes --json`, refresh capabilities/robot docs around the reviewed ChatGPT Pro Extended Reasoning, Fable xHigh, and Gemini 3.1 Deep Think lanes, and remove dead-end recovery hints such as `oracle browser doctor --json` and `browser leases list --json`.
 - CLI/Remote: ignore passive remote-browser env/config when an explicit API-provider route or local Fable lane is selected, so router defaults no longer block custom-base-url follow-ups or local subscription reviews.
 - Browser/Bridge: improve ChatGPT ZIP artifact capture before bridge transfer by broadening sandbox/file-card/download-control discovery, adding sanitized direct-download diagnostics, and falling back to scoped browser downloads when sandbox fetches fail. Thanks @DK625!
+- Browser: retain runtime, model-selection, and redacted prompt-commit diagnostics in failed session metadata when ChatGPT submission verification times out. Fixes #286. Thanks @LeoLin990405!
 - API: forward configured reasoning effort through custom OpenAI-compatible chat-completions gateways.
 - Browser: accept a stable, exact file-input name match when ChatGPT marks the composer ready but exposes no attachment chip or count, while still waiting through active uploads and rejecting missing or extra files. Fixes #275. Thanks @wangwllu!
 - Browser: avoid returning truncated Pro answers when completion controls appear during the thinking-to-answer transition. Thanks @xuan-wei!

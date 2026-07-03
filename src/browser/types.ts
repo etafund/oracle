@@ -151,8 +151,11 @@ export interface BrowserRunOptions {
   outputPath?: string;
   /** Additional prompts to submit in the same browser conversation after the initial answer. */
   followUpPrompts?: string[];
-  /** Optional hook to persist runtime info (port/url/target) as soon as Chrome is ready. */
-  runtimeHintCb?: (hint: BrowserRuntimeMetadata) => void | Promise<void>;
+  /** Optional hook to persist runtime info and current model evidence as soon as Chrome is ready. */
+  runtimeHintCb?: (
+    hint: BrowserRuntimeMetadata,
+    modelSelection?: BrowserModelSelectionEvidence,
+  ) => void | Promise<void>;
   /**
    * Caller-gone abort. When the signal fires, the run stops waiting at the
    * next raced wait point and unwinds through the normal cleanup path
