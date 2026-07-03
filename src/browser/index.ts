@@ -7,6 +7,7 @@ import { copyChromeProfile } from "./profileCopy.js";
 import type {
   BrowserRunOptions,
   BrowserRunResult,
+  BrowserCloseOwnedRunTargetPolicy,
   BrowserLogger,
   ChromeClient,
   BrowserAttachment,
@@ -827,8 +828,95 @@ function shouldCloseOwnedRunTargetAfterRun(options: {
   runStatus: "attempted" | "complete";
   ownsTarget: boolean;
   keepBrowser: boolean;
+  policy?: BrowserCloseOwnedRunTargetPolicy;
 }): boolean {
-  return options.runStatus === "complete" && options.ownsTarget && !options.keepBrowser;
+  if (!options.ownsTarget) {
+    // Borrowed (attached) tab: never close a target this run did not create.
+    return false;
+  }
+  if ((options.policy ?? "auto") === "always") {
+    // serve/manual-login policy: the shared browser stays alive, but THIS
+    // run's owned target closes on success AND failure so per-run tabs cannot
+    // structurally accumulate. preserveBrowserOnError (e.g. a Cloudflare
+    // challenge) keeps Chrome running, NOT the tab.
+    return true;
+  }
+  return options.runStatus === "complete" && !options.keepBrowser;
+}
+
+function resolveCloseOwnedRunTargetPolicy(config: {
+  closeOwnedRunTargetAfterRun?: BrowserCloseOwnedRunTargetPolicy | null;
+  manualLogin?: boolean;
+  keepBrowser?: boolean;
+}): BrowserCloseOwnedRunTargetPolicy {
+  if (
+    config.closeOwnedRunTargetAfterRun === "always" ||
+    config.closeOwnedRunTargetAfterRun === "auto"
+  ) {
+    return config.closeOwnedRunTargetAfterRun;
+  }
+  // Derived default: serve forces manual-login + keepBrowser on this topology,
+  // which used to leave every run's tab open in the shared Chrome (structural
+  // leak). Keep the BROWSER, close the TAB.
+  return config.manualLogin && config.keepBrowser ? "always" : "auto";
+}
+
+/**
+ * Bounded owned-target close (§14.2.0): a wedged close must not pin the
+ * single-flight serve worker busy forever. On timeout the close keeps running
+ * detached, we log loudly, and a cleanup-failure flag is latched for /ready to
+ * surface as cleanup-taint. Full account-scoped taint per §14.13 is a
+ * follow-up handoff concern.
+ */
+const OWNED_TARGET_CLOSE_TIMEOUT_MS = 10_000;
+
+export interface BrowserCleanupTaint {
+  at: string;
+  reason: string;
+}
+
+let lastBrowserCleanupTaint: BrowserCleanupTaint | null = null;
+
+/** Latched cleanup-failure flag; consumed by /ready as cleanup-taint (§14.13). */
+export function getBrowserCleanupTaint(): BrowserCleanupTaint | null {
+  return lastBrowserCleanupTaint;
+}
+
+export function clearBrowserCleanupTaint(): void {
+  lastBrowserCleanupTaint = null;
+}
+
+async function closeOwnedTargetWithDeadline(
+  closePromise: Promise<void>,
+  logger: BrowserLogger,
+  context: { targetId: string | null; timeoutMs?: number },
+): Promise<boolean> {
+  const timeoutMs = Math.max(1, context.timeoutMs ?? OWNED_TARGET_CLOSE_TIMEOUT_MS);
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timedOut = await Promise.race([
+    closePromise.then(
+      () => false,
+      () => false,
+    ),
+    new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(true), timeoutMs);
+      timer.unref?.();
+    }),
+  ]);
+  if (timer) {
+    clearTimeout(timer);
+  }
+  if (timedOut) {
+    const reason = `owned-target close timed out after ${timeoutMs}ms (target=${context.targetId ?? "unknown"})`;
+    lastBrowserCleanupTaint = { at: new Date().toISOString(), reason };
+    logger(
+      `[browser] CLEANUP-TAINT: ${reason}; continuing cleanup so the worker is not pinned busy (§14.13 account-scoped taint is a handoff concern).`,
+    );
+    // Let the wedged close settle in the background without surfacing an
+    // unhandled rejection.
+    closePromise.catch(() => undefined);
+  }
+  return !timedOut;
 }
 
 function buildSkippedModelSelectionEvidence(
@@ -2348,18 +2436,26 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       // ignore
     }
     // Close the isolated tab once the response has been fully captured to prevent
-    // tab accumulation across repeated runs. Keep the tab open on incomplete runs
-    // so reattach can recover the response.
+    // tab accumulation across repeated runs. Under the default policy, keep the
+    // tab open on incomplete runs so reattach can recover the response; under
+    // "always" (serve/manual-login) the owned tab closes on failure too.
     if (
       shouldCloseOwnedRunTargetAfterRun({
         runStatus,
         ownsTarget,
         keepBrowser: effectiveKeepBrowser,
+        policy: resolveCloseOwnedRunTargetPolicy(config),
       }) &&
       isolatedTargetId &&
-      chrome?.port
+      chrome?.port &&
+      !connectionClosedUnexpectedly
     ) {
-      await closeTab(chrome.port, isolatedTargetId, logger, chromeHost).catch(() => undefined);
+      const closeOwnedRunTab = async (isolatedTargetId: string): Promise<void> => {
+        await closeTab(chrome.port, isolatedTargetId, logger, chromeHost).catch(() => undefined);
+      };
+      await closeOwnedTargetWithDeadline(closeOwnedRunTab(isolatedTargetId), logger, {
+        targetId: isolatedTargetId,
+      });
     }
     let keepBrowserOpen = shouldKeepLocalBrowserOpen({
       effectiveKeepBrowser,
@@ -3740,19 +3836,32 @@ async function runRemoteBrowserMode(
       // ignore
     }
     removeDialogHandler?.();
-    if (tabLease) {
-      const handle = tabLease;
-      tabLease = null;
-      await handle.release().catch(() => undefined);
-    }
+    // Ordering (load-bearing): close the owned target BEFORE releasing the tab
+    // lease. The lease advertises "this run still owns a tab in the shared
+    // Chrome"; releasing first opens a window in which a zero-lease reaper or
+    // a peer's termination gate can kill the shared Chrome mid-close, and
+    // concurrent runs can count a free slot that is still physically occupied.
     if (
       shouldCloseOwnedRunTargetAfterRun({
         runStatus,
         ownsTarget,
         keepBrowser: Boolean(config.keepBrowser),
-      })
+        policy: resolveCloseOwnedRunTargetPolicy(config),
+      }) &&
+      remoteTargetId &&
+      !connectionClosedUnexpectedly
     ) {
-      await closeRemoteChromeTarget(host, port, remoteTargetId ?? undefined, logger);
+      const closeOwnedRunTarget = async (): Promise<void> => {
+        await closeRemoteChromeTarget(host, port, remoteTargetId ?? undefined, logger);
+      };
+      await closeOwnedTargetWithDeadline(closeOwnedRunTarget(), logger, {
+        targetId: remoteTargetId,
+      });
+    }
+    if (tabLease) {
+      const handle = tabLease;
+      tabLease = null;
+      await handle.release().catch(() => undefined);
     }
     // Don't kill remote Chrome - it's not ours to manage
     const totalSeconds = (Date.now() - startedAt) / 1000;
@@ -3777,6 +3886,8 @@ export const __test__ = {
   isImageOnlyUiChromeText,
   listIgnoredRemoteChromeFlags,
   resolveManualLoginWaitMs,
+  closeOwnedTargetWithDeadline,
+  resolveCloseOwnedRunTargetPolicy,
   shouldCloseOwnedRunTargetAfterRun,
   shouldKeepLocalBrowserOpen,
 };

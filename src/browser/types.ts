@@ -12,6 +12,8 @@ export type ChromeClient = Awaited<ReturnType<typeof CDP>>;
 export type CookieParam = Protocol.Network.CookieParam;
 export type BrowserModelStrategy = "select" | "current" | "ignore";
 export type BrowserResearchMode = "off" | "deep";
+/** Policy for closing the run's owned target (tab) during cleanup. */
+export type BrowserCloseOwnedRunTargetPolicy = "auto" | "always";
 export type BrowserArchiveMode = "auto" | "always" | "never";
 
 export type BrowserLogger = ((message: string) => void) & {
@@ -108,6 +110,15 @@ export interface BrowserAutomationConfig {
   manualLogin?: boolean;
   manualLoginProfileDir?: string | null;
   manualLoginCookieSync?: boolean;
+  /**
+   * Policy for closing the run's OWNED target (tab) during cleanup.
+   * - "auto" (default): close only after complete runs when keepBrowser is off.
+   * - "always": keep the browser alive but close this run's owned target on
+   *   success AND failure (serve/manual-login topology, where keepBrowser is
+   *   forced on and leaked per-run tabs accumulate in the shared Chrome).
+   * When unset, manual-login runs with keepBrowser enabled derive "always".
+   */
+  closeOwnedRunTargetAfterRun?: BrowserCloseOwnedRunTargetPolicy | null;
   /** Copy this signed-in Chrome user-data dir to a throwaway profile and run against it (login-free). */
   copyProfileSource?: string | null;
   /** Thinking time intensity level for Thinking/Pro models: light, standard, extended, heavy */
@@ -197,6 +208,7 @@ export type ResolvedBrowserConfig = Required<
     | "maxConcurrentTabs"
     | "researchMode"
     | "copyProfileSource"
+    | "closeOwnedRunTargetAfterRun"
   >
 > & {
   chromeProfile?: string | null;
@@ -215,6 +227,7 @@ export type ResolvedBrowserConfig = Required<
   manualLogin?: boolean;
   manualLoginProfileDir?: string | null;
   manualLoginCookieSync?: boolean;
+  closeOwnedRunTargetAfterRun?: BrowserCloseOwnedRunTargetPolicy | null;
   copyProfileSource?: string | null;
   maxConcurrentTabs: number;
   researchMode: BrowserResearchMode;

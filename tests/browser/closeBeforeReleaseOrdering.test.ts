@@ -1,6 +1,7 @@
 /**
- * RED-TEST HARNESS (expected-failure): owned-target CLOSE must happen BEFORE
- * tab-lease RELEASE in every run-cleanup sequence.
+ * Owned-target CLOSE must happen BEFORE tab-lease RELEASE in every
+ * run-cleanup sequence (REQUIRED; flipped from the Wave-0 red harness after
+ * the remote-path ordering fix landed).
  *
  * Property (correctness / fault isolation): a tab lease advertises "this run
  * still owns a tab in the shared Chrome". Releasing the lease while the owned
@@ -18,9 +19,8 @@
  * Each check first proves its anchors still exist (green guard) so a refactor
  * cannot silently turn the red case into a vacuous pass.
  *
- * Expected-failure mechanics: identical to tabLeaseRegistryFailClosed.test.ts
- * (`test.fails` by default; ORACLE_RED_ASSERT=1 enforces the red assertions).
- * The remote-path fix must flip the red case to a required `test`.
+ * The remote-path fix landed and the red case below is now a required `test`;
+ * its `[red]` prefix is kept so it stays traceable to the recorded red run.
  *
  * Red run recorded 2026-07-03 against HEAD 3e38abb7
  * (`ORACLE_RED_ASSERT=1 pnpm vitest run tests/browser/closeBeforeReleaseOrdering.test.ts`):
@@ -35,17 +35,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFile } from "node:fs/promises";
 
-const RED_MODE = process.env.ORACLE_RED_ASSERT === "1";
-/** Expected-failure gate: red assertions stay out of the default CI signal. */
-const redTest = RED_MODE ? test : test.fails;
-
 const SRC_ROOT = fileURLToPath(new URL("../../src", import.meta.url));
 
 // Anchors are compared on whitespace-normalized source so formatting-only
 // changes cannot skew the ordering measurement.
 const RELEASE_ANCHOR = "tabLease=null;awaithandle.release().catch(()=>undefined);";
-const REMOTE_CLOSE_ANCHOR = "awaitcloseRemoteChromeTarget(host,port,remoteTargetId??undefined,logger);";
-const LOCAL_CLOSE_ANCHOR = "awaitcloseTab(chrome.port,isolatedTargetId,logger,chromeHost).catch(()=>undefined);";
+const REMOTE_CLOSE_ANCHOR =
+  "awaitcloseRemoteChromeTarget(host,port,remoteTargetId??undefined,logger);";
+const LOCAL_CLOSE_ANCHOR =
+  "awaitcloseTab(chrome.port,isolatedTargetId,logger,chromeHost).catch(()=>undefined);";
 
 async function readSource(relative: string): Promise<string> {
   return readFile(path.join(SRC_ROOT, relative), "utf8");
@@ -73,7 +71,11 @@ async function remoteCleanupSlice(): Promise<string> {
 async function localCleanupSlice(): Promise<string> {
   const source = await readSource("browser/index.ts");
   return normalize(
-    sliceBetween(source, "export async function runBrowserMode", "async function pickAvailableDebugPort"),
+    sliceBetween(
+      source,
+      "export async function runBrowserMode",
+      "async function pickAvailableDebugPort",
+    ),
   );
 }
 
@@ -98,19 +100,16 @@ describe("close-before-release ordering (red harness)", () => {
   // launch-FAILURE error path (no owned target exists yet, so no ordering
   // constraint applies there). The run-cleanup release is the LAST release in
   // each sequence, which is the one the close-before-release property governs.
-  redTest(
-    "[red] remote cleanup must close the owned target BEFORE releasing the tab lease",
-    async () => {
-      const remote = await remoteCleanupSlice();
-      const closeIndex = remote.indexOf(REMOTE_CLOSE_ANCHOR);
-      const releaseIndex = remote.lastIndexOf(RELEASE_ANCHOR);
-      expect(closeIndex).toBeGreaterThanOrEqual(0);
-      expect(releaseIndex).toBeGreaterThanOrEqual(0);
-      // Property: close-before-release. Today runRemoteBrowserMode() releases
-      // the lease first, opening the race described in the header.
-      expect(closeIndex).toBeLessThan(releaseIndex);
-    },
-  );
+  test("[red] remote cleanup must close the owned target BEFORE releasing the tab lease", async () => {
+    const remote = await remoteCleanupSlice();
+    const closeIndex = remote.indexOf(REMOTE_CLOSE_ANCHOR);
+    const releaseIndex = remote.lastIndexOf(RELEASE_ANCHOR);
+    expect(closeIndex).toBeGreaterThanOrEqual(0);
+    expect(releaseIndex).toBeGreaterThanOrEqual(0);
+    // Property: close-before-release. Pre-fix, runRemoteBrowserMode()
+    // released the lease first, opening the race described in the header.
+    expect(closeIndex).toBeLessThan(releaseIndex);
+  });
 
   test("guard: local cleanup already closes the owned target before releasing", async () => {
     const local = await localCleanupSlice();

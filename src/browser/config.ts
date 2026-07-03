@@ -65,6 +65,9 @@ export const DEFAULT_BROWSER_CONFIG: ResolvedBrowserConfig = {
   manualLogin: false,
   manualLoginProfileDir: null,
   manualLoginCookieSync: false,
+  // null = derive at the cleanup site: manual-login runs that keep the shared
+  // browser alive close their own run target ("always"); everything else "auto".
+  closeOwnedRunTargetAfterRun: null,
   researchMode: "off",
   archiveConversations: "auto",
 };
@@ -156,7 +159,14 @@ export function resolveBrowserConfig(
     manualLoginProfileDir: manualLogin ? resolvedProfileDir : null,
     manualLoginCookieSync:
       config?.manualLoginCookieSync ?? DEFAULT_BROWSER_CONFIG.manualLoginCookieSync,
+    closeOwnedRunTargetAfterRun: normalizeCloseOwnedRunTargetPolicy(
+      config?.closeOwnedRunTargetAfterRun,
+    ),
   };
+}
+
+function normalizeCloseOwnedRunTargetPolicy(value: unknown): "auto" | "always" | null {
+  return value === "auto" || value === "always" ? value : null;
 }
 
 function normalizeResearchMode(value: unknown): "off" | "deep" {
