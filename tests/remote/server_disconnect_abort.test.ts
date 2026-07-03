@@ -230,7 +230,7 @@ describe("client-disconnect abort", () => {
         { host: "127.0.0.1", port: 0, token: "secret", logger: () => {}, attachOnly: false },
         {
           runBrowser: abortAwareRunStub({
-            onStart: (options: { signal?: AbortSignal }) => {
+            onStart: (options: { signal?: AbortSignal; log?: (message: string) => void }) => {
               runStarted = true;
               signalAbortedAtStart = options.signal?.aborted ?? null;
             },
