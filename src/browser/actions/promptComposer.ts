@@ -231,7 +231,13 @@ export async function submitPrompt(
     });
     logger("Submitted prompt via Enter key");
   } else {
-    logger("Clicked send button");
+    // SUBMIT BOUNDARY: from this moment the prompt may have reached the
+    // account. This line is the explicit send-confirmation marker consumed by
+    // the remote server (submittedAt stamp -> after-submit classification,
+    // never retried); it must be emitted at click time on the primary path,
+    // exactly like the Enter fallback above, and aligned with the
+    // onPromptSubmitted flag below.
+    logger("Submitted prompt via send button click");
   }
   await deps.onPromptSubmitted?.();
 

@@ -252,7 +252,80 @@ describe("remote server admission limits", () => {
       }
     },
   );
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "a throwing read-path handler never resets another run's single-flight state",
+    async () => {
+      let runs = 0;
+      let releaseRun!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        releaseRun = resolve;
+      });
+      // Injected fault: the /status handler logs before answering; a logger
+      // that throws exactly once makes that read-path request hit the
+      // outermost failure handler while an unrelated run holds `busy`.
+      let throwOnce = false;
+      const server = await createRemoteServer(
+        {
+          host: "127.0.0.1",
+          port: 0,
+          token: "secret",
+          logger: (message: string) => {
+            if (throwOnce && message.includes("Health check /status")) {
+              throwOnce = false;
+              throw new Error("injected read-path fault");
+            }
+          },
+        },
+        {
+          runBrowser: async () => {
+            runs += 1;
+            await gate;
+            return MINIMAL_RESULT;
+          },
+        },
+      );
+
+      try {
+        const active = sendRun(server.port, "secret", validPayload());
+        void active.catch(() => undefined);
+        await waitUntil(() => Promise.resolve(runs === 1));
+
+        throwOnce = true;
+        const status = await getJson(server.port, "/status", "secret");
+        expect(status.statusCode).toBe(500);
+        expect(status.json?.error).toBe("internal_error");
+
+        // The failing read-path request does not own the single-flight slot:
+        // busy/activeRun must be untouched and the next run still refused.
+        const refused = await sendRun(server.port, "secret", validPayload());
+        expect(refused.statusCode).toBe(409);
+        expect((JSON.parse(refused.body) as Record<string, unknown>).error).toBe("busy");
+        const health = await getJson(server.port, "/health", "secret");
+        expect(health.statusCode).toBe(409);
+        expect(health.json?.busy).toBe(true);
+        expect(health.json?.activeRun).toBeTruthy();
+
+        releaseRun();
+        const done = await active;
+        expect(done.statusCode).toBe(200);
+        expect(runs).toBe(1);
+      } finally {
+        await server.close();
+      }
+    },
+  );
 });
+
+async function waitUntil(read: () => Promise<boolean>, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    if (await read()) {
+      return;
+    }
+    await delay(25);
+  }
+  throw new Error("condition not reached in time");
+}
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

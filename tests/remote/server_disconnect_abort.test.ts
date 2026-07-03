@@ -170,6 +170,141 @@ describe("client-disconnect abort", () => {
     },
   );
 
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "primary click-path submit ('Clicked send button') crosses the submit boundary: after-submit class, submitted_at stamped",
+    async () => {
+      const sinkDir = await isolatedSinkDir();
+      const server = await createRemoteServer(
+        { host: "127.0.0.1", port: 0, token: "secret", logger: () => {}, attachOnly: false },
+        {
+          runBrowser: abortAwareRunStub({
+            onStart: async (options) => {
+              // The PRIMARY submission path clicks the send button; its log
+              // line must stamp the submit boundary just like the Enter
+              // fallback does, BEFORE commit-verify ever runs. A failure in
+              // the click-to-commit-verify window must never be classified as
+              // a retryable before-submit interruption (that classification
+              // triggers an automatic resubmission of a prompt that may
+              // already be generating in the account).
+              options.log?.("Clicked send button");
+              await new Promise((resolve) => setTimeout(resolve, 30));
+            },
+          }),
+        },
+      );
+
+      const run = startAbortableRun(server.port, "secret");
+      void run.finished.catch(() => undefined);
+      try {
+        await waitUntil(async () => {
+          const ready = await getReady(server.port, "secret");
+          return ready.statusCode === 409;
+        });
+        // Give the submit marker time to be recorded, then inject the
+        // failure (caller drop) before any commit-verify confirmation.
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        run.abort();
+
+        await waitUntil(async () => {
+          const ready = await getReady(server.port, "secret");
+          return ready.statusCode === 200;
+        }, 3_000);
+
+        const line = await readSingleSinkLine(sinkDir);
+        expect(line.done_ok).toBe(false);
+        expect(line.error_class).toBe("transport_interrupted_after_submit");
+        expect(typeof line.submitted_at).toBe("string");
+      } finally {
+        await server.close();
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "a caller already gone before the disconnect listener registers still aborts the run",
+    async () => {
+      const sinkDir = await isolatedSinkDir();
+      let runStarted = false;
+      let signalAbortedAtStart: boolean | null = null;
+      const server = await createRemoteServer(
+        { host: "127.0.0.1", port: 0, token: "secret", logger: () => {}, attachOnly: false },
+        {
+          runBrowser: abortAwareRunStub({
+            onStart: (options: { signal?: AbortSignal }) => {
+              runStarted = true;
+              signalAbortedAtStart = options.signal?.aborted ?? null;
+            },
+          }),
+        },
+      );
+
+      // A sizeable attachment widens the admission staging window
+      // (mkdtemp + decode + writeFile) between the body read and the
+      // disconnect-listener registration. The client flushes the whole
+      // request and immediately destroys its socket, so the server-side
+      // "close" fires during staging — before the listener exists. The run
+      // must still be aborted (via the post-registration socket-state probe),
+      // not executed to completion against a dead caller.
+      const attachmentBytes = Buffer.alloc(4 * 1024 * 1024, 7);
+      const body = JSON.stringify({
+        prompt: "pre-staging disconnect",
+        attachments: [
+          {
+            fileName: "big.bin",
+            contentBase64: attachmentBytes.toString("base64"),
+            sizeBytes: attachmentBytes.length,
+          },
+        ],
+        browserConfig: {},
+        options: {},
+      });
+      await new Promise<void>((resolve, reject) => {
+        const req = http.request(
+          {
+            hostname: "127.0.0.1",
+            port: server.port,
+            path: "/runs",
+            method: "POST",
+            headers: {
+              authorization: "Bearer secret",
+              "content-type": "application/json",
+              "content-length": Buffer.byteLength(body),
+            },
+          },
+          (res) => res.resume(),
+        );
+        req.on("error", () => resolve());
+        req.on("close", () => resolve());
+        req.on("finish", () => {
+          // Whole body handed to the OS; drop the connection right away.
+          setImmediate(() => req.destroy());
+        });
+        req.write(body, (error) => (error ? reject(error) : undefined));
+        req.end();
+      });
+
+      try {
+        // Bounded recovery: the lane must free itself; an unnoticed
+        // disconnect would pin it for the full run timeout.
+        await waitUntil(async () => {
+          const ready = await getReady(server.port, "secret");
+          return ready.statusCode === 200;
+        }, 5_000);
+        // The run either never started or saw an already-aborted signal — it
+        // must not have executed to completion.
+        if (runStarted) {
+          expect(signalAbortedAtStart).toBe(true);
+        }
+        const line = await readSingleSinkLine(sinkDir);
+        expect(line.done_ok).toBe(false);
+        expect(line.error_class).toBe("transport_interrupted_before_submit");
+        expect(line.submitted_at).toBeNull();
+      } finally {
+        await server.close();
+      }
+    },
+  );
+
   test("runBrowserMode fails fast (typed, retryable) when the caller is already gone", async () => {
     const controller = new AbortController();
     controller.abort();

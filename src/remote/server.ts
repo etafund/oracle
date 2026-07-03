@@ -537,6 +537,11 @@ export async function createRemoteServer(
     // Populated as soon as a /runs request mints its identity so even the
     // outermost failure handler can attribute the wreckage to a run id.
     let requestRunId: string | null = null;
+    // Single-flight ownership: only the /runs request that actually flipped
+    // `admitting`/`busy` may reset them from the outermost failure handler.
+    // A throwing read-path handler (/status, /health, /ready, artifacts) must
+    // never reopen the gate while another run holds the slot.
+    let ownsSingleFlight = false;
     void (async () => {
       if (req.method === "GET" && req.url === "/status") {
         logger("[serve] Health check /status");
@@ -689,6 +694,7 @@ export async function createRemoteServer(
       }
 
       admitting = true;
+      ownsSingleFlight = true;
       let payload: RemoteRunPayload | null = null;
       let runDir: string | null = null;
       let attachProbeForRun: AttachTargetProbe | null = null;
@@ -848,7 +854,7 @@ export async function createRemoteServer(
       // the typed transport class (before/after submit) lands in the run's
       // sink line. Post-submit aborts never attempt ChatGPT-side cancels.
       const runAbort = new AbortController();
-      res.once("close", () => {
+      const onClientGone = () => {
         if (!responseCompleted && activeRun?.id === runId) {
           activeRun.clientConnected = false;
           logger(
@@ -856,7 +862,18 @@ export async function createRemoteServer(
           );
           runAbort.abort();
         }
-      });
+      };
+      res.once("close", onClientGone);
+      // The caller may have vanished during attachment staging (after the
+      // body read but before this listener existed). "close" has then already
+      // fired with no listener and will never fire again, so probe the socket
+      // state directly and take the same abort path instead of executing the
+      // full run against a dead caller.
+      // (`req.destroyed` is NOT probed: a fully-consumed request body marks
+      // the IncomingMessage destroyed even on a healthy connection.)
+      if (res.destroyed || (res.socket?.destroyed ?? true)) {
+        onClientGone();
+      }
       logger(
         `[serve] Accepted run ${runId} from ${formatSocket(req)} (prompt ${payload?.prompt?.length ?? 0} chars)`,
       );
@@ -889,7 +906,14 @@ export async function createRemoteServer(
           if (typeof message === "string") {
             // Send-confirmation marker: the account-safety boundary for run
             // accounting is the ChatGPT submit moment, not /runs acceptance.
-            if (submittedAt === null && /submitted prompt|prompt submitted/i.test(message)) {
+            // Both submission paths (send-button click and Enter fallback)
+            // emit a "Submitted prompt via ..." line at dispatch time;
+            // "clicked send button" is kept as a defensive alias for older
+            // browser layers so a click is never misread as before-submit.
+            if (
+              submittedAt === null &&
+              /submitted prompt|prompt submitted|clicked send button/i.test(message)
+            ) {
               submittedAt = new Date().toISOString();
               void countActiveBrowserTabLeases(attachProfileDir)
                 .then((census) => {
@@ -1118,9 +1142,16 @@ export async function createRemoteServer(
         });
       }
       res.end(JSON.stringify({ error: "internal_error", ...(requestRunId ? { runId: requestRunId } : {}) }));
-      admitting = false;
-      busy = false;
-      activeRun = null;
+      // Own-run-only reset: releasing the single-flight slot on behalf of a
+      // request that never acquired it would admit a second run into the
+      // single Chrome while another run is still active.
+      if (ownsSingleFlight) {
+        admitting = false;
+        busy = false;
+        if (!requestRunId || activeRun?.id === requestRunId) {
+          activeRun = null;
+        }
+      }
     });
   });
 
