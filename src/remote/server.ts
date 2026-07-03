@@ -359,7 +359,8 @@ export async function createRemoteServer(
    * Layered, fail-closed readiness for supervision probes (probed DIRECTLY,
    * never through a load balancer that would mask per-worker truth):
    * - 503 substrate-broken: attach target missing/stale/foreign-owned,
-   *   cleanup taint latched, lease registry unverifiable, or any probe error;
+   *   cleanup taint latched, account quarantine latched (human-clear only),
+   *   lease registry unverifiable, or any probe error;
    * - 503 wedged-no-progress: an active run with no events for wedgeAfterMs;
    * - 409 active-run-client-connected / active-run-client-disconnected:
    *   busy but healthy;
@@ -393,8 +394,6 @@ export async function createRemoteServer(
           ? Math.max(0, Math.round((Date.now() - lastRunProgressAtMs) / 1000))
           : null,
       effectiveConfig: effectiveRunConfig,
-      // Integration point: challenge/login quarantine latch (separate change)
-      // surfaces here; null means "latch subsystem not present", never "clean".
       quarantine: null,
       manifest: null,
     };
@@ -415,6 +414,25 @@ export async function createRemoteServer(
       base.cleanupTaint = taint;
       if (taint) {
         base.reason = `cleanup-tainted: ${taint.reason}`;
+        return { statusCode: 503, body: base };
+      }
+
+      // ACCOUNT-SAFETY HARD HALT: a quarantined account makes this worker
+      // unready regardless of everything else, and stays unready until a
+      // human clears the latch. Fail closed: an unreadable latch file counts
+      // as quarantined. /runs applies the same check at admission so the
+      // refusal holds even when probes race a router drain.
+      const quarantine = await getQuarantineLatchState({ accountId });
+      base.quarantine = {
+        quarantined: quarantine.quarantined,
+        record: quarantine.record,
+        readError: quarantine.readError,
+        // Worker-local path for the human operator who must clear it;
+        // /ready is a bearer-authenticated ops surface.
+        latchPath: quarantine.latchPath,
+      };
+      if (quarantine.quarantined) {
+        base.reason = `account_quarantined: ${quarantine.record?.reason ?? quarantine.readError ?? "latch present"}`;
         return { statusCode: 503, body: base };
       }
 
@@ -689,6 +707,24 @@ export async function createRemoteServer(
         | undefined;
       let uploadIntegrity: RemoteUploadIntegrity | null = null;
       try {
+        // ACCOUNT-SAFETY HARD HALT: while the quarantine latch exists this
+        // worker refuses every run, independent of any router-side drain (a
+        // drain can race a caller retry; the worker-side refusal is the hard
+        // stop). The latch is cleared only manually by a human. This is
+        // defensive fault isolation — no automation may retry into, restart
+        // into, or work around a challenged account. Fail closed: a latch
+        // file that exists but cannot be read counts as quarantined.
+        const quarantine = await getQuarantineLatchState({ accountId });
+        if (quarantine.quarantined) {
+          refuseRun(503, "account_quarantined", {
+            errorClass: "account_quarantine",
+            retryable: false,
+            reason:
+              quarantine.record?.reason ?? quarantine.readError ?? "quarantine latch present",
+          });
+          return;
+        }
+
         if (attachOnly) {
           // Fail-closed admission: no attachable, owned browser means the
           // run is refused with a typed error. The worker NEVER launches a
