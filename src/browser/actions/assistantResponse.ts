@@ -17,6 +17,8 @@ import {
 import { buildClickDispatcher } from "./domEvents.js";
 
 const ASSISTANT_POLL_TIMEOUT_ERROR = "assistant-response-watchdog-timeout";
+const PREAMBLE_SIZED_ANSWER_CHARS = 500;
+const PREAMBLE_COMPLETION_STABLE_MS = 60_000;
 const THINKING_STATUS_LABELS = [
   "thinking",
   "pro thinking",
@@ -123,6 +125,7 @@ function shouldAcceptStableAssistantSnapshot({
   const shortAnswer = currentLength > 0 && currentLength < 16;
   const mediumAnswer = currentLength >= 16 && currentLength < 40;
   const compactAnswer = shortAnswer || mediumAnswer;
+  const preambleSizedAnswer = currentLength >= 40 && currentLength < PREAMBLE_SIZED_ANSWER_CHARS;
   const stableEnough = stableCycles >= requiredStableCycles && stableMs >= minStableMs;
   const completionEnough =
     completionVisible && stableCycles >= completionStableTarget && stableMs >= minStableMs;
@@ -133,33 +136,37 @@ function shouldAcceptStableAssistantSnapshot({
     return false;
   }
 
-  // The finished-action controls (copy / thumbs / share) only render once the
-  // turn is fully complete. They are the single reliable completion signal, so
-  // honour them whether or not a stale stop button lingers.
-  if (completionEnough) {
-    return true;
-  }
-
-  if (!stopVisible) {
-    // No stop button and no finished-action controls. For compact answers this
-    // is the normal fast path. For substantial answers, bare stop-button
-    // absence is unreliable (the Pro thinking gate hides it mid-turn), so never
-    // treat it as final without finished-action controls.
-    if (compactAnswer) {
-      return stableEnough;
-    }
-    return false;
-  }
-
   // ChatGPT can leave a live stop-button node after a short answer is already
   // rendered. Keep the normal anti-truncation guard, then accept only compact
   // stable answers so long Pro/thinking pauses still wait for real completion.
-  const staleStopStableMs = 12_000;
-  return (
-    compactAnswer &&
-    stableCycles >= requiredStableCycles &&
-    stableMs >= Math.max(minStableMs, staleStopStableMs)
-  );
+  if (stopVisible) {
+    const staleStopStableMs = 12_000;
+    return (
+      compactAnswer &&
+      stableCycles >= requiredStableCycles &&
+      stableMs >= Math.max(minStableMs, staleStopStableMs)
+    );
+  }
+
+  // Finished-action controls can appear on Pro thinking preambles before the
+  // final answer expands. Trust them only after the text has stayed stable long
+  // enough for preamble-sized captures; otherwise a one-sentence plan/review
+  // preamble can be archived as a completed answer.
+  if (completionEnough) {
+    if (preambleSizedAnswer && stableMs < PREAMBLE_COMPLETION_STABLE_MS) {
+      return false;
+    }
+    return true;
+  }
+
+  // No stop button and no finished-action controls. For compact answers this is
+  // the normal fast path. For substantial answers, bare stop-button absence is
+  // unreliable (the Pro thinking gate hides it mid-turn), so never treat it as
+  // final without finished-action controls.
+  if (compactAnswer) {
+    return stableEnough;
+  }
+  return false;
 }
 
 export function shouldAcceptStableAssistantSnapshotForTest(
@@ -341,6 +348,8 @@ export async function waitForAssistantResponse(
       if (completed && String(completed.text ?? "").trim().length >= candidateText.length) {
         return completed;
       }
+      await logDomFailure(Runtime, logger, "assistant-response-unconfirmed-completion");
+      throw new Error("Assistant response did not reach stable completion");
     }
   }
 
@@ -653,7 +662,7 @@ async function isStopButtonVisible(Runtime: ChromeClient["Runtime"]): Promise<bo
       expression: `Boolean(document.querySelector('${STOP_BUTTON_SELECTOR}'))`,
       returnByValue: true,
     });
-    return Boolean(result?.value);
+    return result?.value === true;
   } catch {
     return false;
   }
@@ -726,7 +735,7 @@ async function isThinkingActive(Runtime: ChromeClient["Runtime"]): Promise<boole
       })()`,
       returnByValue: true,
     });
-    return Boolean(result?.value);
+    return result?.value === true;
   } catch {
     return false;
   }
@@ -771,7 +780,7 @@ async function isCompletionVisible(Runtime: ChromeClient["Runtime"]): Promise<bo
       })()`,
       returnByValue: true,
     });
-    return Boolean(result?.value);
+    return result?.value === true;
   } catch {
     return false;
   }
@@ -883,6 +892,8 @@ function buildResponseObserverExpression(
     const SELECTORS = ${selectorsLiteral};
     const STOP_SELECTOR = '${STOP_BUTTON_SELECTOR}';
     const FINISHED_SELECTOR = '${FINISHED_ACTIONS_SELECTOR}';
+    const PREAMBLE_SIZED_ANSWER_CHARS = ${PREAMBLE_SIZED_ANSWER_CHARS};
+    const PREAMBLE_COMPLETION_STABLE_MS = ${PREAMBLE_COMPLETION_STABLE_MS};
     const CONVERSATION_SELECTOR = ${conversationLiteral};
     const ASSISTANT_SELECTOR = ${assistantLiteral};
     const EXPECTED_CONVERSATION_ID = ${expectedConversationLiteral};
@@ -1123,6 +1134,7 @@ function buildResponseObserverExpression(
       let lastChangeAt = Date.now();
       const overallDeadline = Date.now() + ${timeoutMs};
       let deadline = Math.min(overallDeadline, Date.now() + settleWindowForLength(lastLength));
+      let completionAccepted = false;
       while (Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, settleIntervalMs));
         const refreshedRaw = extractFromTurns();
@@ -1160,19 +1172,31 @@ function buildResponseObserverExpression(
         }
         const size = classifyLength(lastLength);
         const compactAnswer = size.shortAnswer || size.mediumAnswer;
+        const preambleSizedAnswer =
+          lastLength >= 40 && lastLength < PREAMBLE_SIZED_ANSWER_CHARS;
         const stableTarget = size.shortAnswer ? 6 : size.mediumAnswer ? 3 : size.longAnswer ? 5 : 6;
         const stopVisible = Boolean(document.querySelector(STOP_SELECTOR));
         const finishedVisible = isLastAssistantTurnFinished();
         const thinkingActive = isThinkingIndicatorActive();
         const idleMs = Date.now() - lastChangeAt;
 
-        // The finished-action controls are the single reliable completion
-        // signal; honour them immediately.
-        if (finishedVisible) {
-          break;
-        }
         // Never accept while a Pro thinking / reasoning indicator is active.
         if (thinkingActive) {
+          continue;
+        }
+        // Finished-action controls can appear on Pro preambles before the final
+        // answer expands. Compact exact answers keep their fast path; preamble-
+        // sized answers need a long idle window before controls are trusted.
+        if (finishedVisible) {
+          if (compactAnswer) {
+            completionAccepted = true;
+            break;
+          }
+          if (!stopVisible && (!preambleSizedAnswer || idleMs >= PREAMBLE_COMPLETION_STABLE_MS)) {
+            completionAccepted = true;
+            break;
+          }
+          deadline = Math.max(deadline, Math.min(overallDeadline, Date.now() + settleIntervalMs));
           continue;
         }
         if (!stopVisible && stableCycles >= stableTarget) {
@@ -1191,7 +1215,7 @@ function buildResponseObserverExpression(
       if (finalCompact) {
         return latest ?? snapshot;
       }
-      if (isLastAssistantTurnFinished()) {
+      if (completionAccepted && isLastAssistantTurnFinished()) {
         return latest ?? snapshot;
       }
       return null;

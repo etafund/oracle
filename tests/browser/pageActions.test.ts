@@ -961,12 +961,12 @@ describe("waitForAssistantResponse", () => {
 
       const promise = waitForAssistantResponse(
         { evaluate } as unknown as ChromeClient["Runtime"],
-        30_000,
+        90_000,
         logger,
       );
-      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(65_000);
 
-      await expect(promise).resolves.toMatchObject({ text: complete.text });
+      await expect(promise).resolves.toMatchObject({ text: complete.text.trim() });
       expect(logger).toHaveBeenCalledWith(
         "Captured suspiciously short answer at completion; re-polling for completion",
       );
@@ -984,7 +984,7 @@ describe("waitForAssistantResponse", () => {
         turnId: "tid",
       };
       const complete = {
-        text: "This first paragraph is already long enough to look trustworthy, but it is still only the first partial segment. The final answer adds the missing implementation details after Pro thinking finishes.",
+        text: `This first paragraph is already long enough to look trustworthy, but it is still only the first partial segment. The final answer adds the missing implementation details after Pro thinking finishes. ${"Additional implementation evidence confirms the assistant continued beyond the opening preamble and produced a full review section with operational detail. ".repeat(5)}`,
         messageId: "mid",
         turnId: "tid",
       };
@@ -1016,7 +1016,7 @@ describe("waitForAssistantResponse", () => {
       );
       await vi.advanceTimersByTimeAsync(10_000);
 
-      await expect(promise).resolves.toMatchObject({ text: complete.text });
+      await expect(promise).resolves.toMatchObject({ text: complete.text.trim() });
       expect(logger).toHaveBeenCalledWith(
         "Completion controls surfaced; confirming stable assistant response",
       );
@@ -1082,33 +1082,40 @@ describe("waitForAssistantResponse", () => {
   });
 
   test("falls back to snapshot when observer fails", async () => {
-    const evaluate = vi
-      .fn()
-      .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
-        if (params?.awaitPromise) {
-          throw new Error("observer failed");
-        }
-        if (
-          typeof params?.expression === "string" &&
-          params.expression.includes("extractAssistantTurn")
-        ) {
-          return {
-            result: {
-              value: {
-                text: "Recovered",
-                html: "<p>Recovered</p>",
-                messageId: "mid",
-                turnId: "tid",
+    vi.useFakeTimers();
+    try {
+      const evaluate = vi
+        .fn()
+        .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
+          if (params?.awaitPromise) {
+            throw new Error("observer failed");
+          }
+          if (
+            typeof params?.expression === "string" &&
+            params.expression.includes("extractAssistantTurn")
+          ) {
+            return {
+              result: {
+                value: {
+                  text: "Recovered",
+                  html: "<p>Recovered</p>",
+                  messageId: "mid",
+                  turnId: "tid",
+                },
               },
-            },
-          };
-        }
-        return { result: { value: null } };
-      });
-    const runtime = { evaluate } as unknown as ChromeClient["Runtime"];
-    const result = await waitForAssistantResponse(runtime, 200, logger);
-    expect(result.text).toBe("Recovered");
-    expect(evaluate).toHaveBeenCalled();
+            };
+          }
+          return { result: { value: null } };
+        });
+      const runtime = { evaluate } as unknown as ChromeClient["Runtime"];
+      const promise = waitForAssistantResponse(runtime, 12_000, logger);
+      await vi.advanceTimersByTimeAsync(10_000);
+      const result = await promise;
+      expect(result.text).toBe("Recovered");
+      expect(evaluate).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

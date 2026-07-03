@@ -90,20 +90,36 @@ describe("assistant thinking-status capture", () => {
     ).toBe(false);
   });
 
-  test("accepts finished action controls even if the stop button lingers", () => {
+  test("accepts compact finished answers even if the stop button lingers", () => {
+    expect(
+      shouldAcceptStableAssistantSnapshotForTest({
+        stopVisible: true,
+        completionVisible: true,
+        thinkingActive: false,
+        currentLength: 30,
+        stableCycles: 10,
+        requiredStableCycles: 10,
+        completionStableTarget: 8,
+        stableMs: 12_500,
+        minStableMs: 1200,
+      }),
+    ).toBe(true);
+  });
+
+  test("does not accept substantial answers while the stop button remains visible", () => {
     expect(
       shouldAcceptStableAssistantSnapshotForTest({
         stopVisible: true,
         completionVisible: true,
         thinkingActive: false,
         currentLength: 600,
-        stableCycles: 8,
+        stableCycles: 30,
         requiredStableCycles: 10,
         completionStableTarget: 8,
-        stableMs: 3000,
+        stableMs: 60_000,
         minStableMs: 3000,
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   test("never accepts a snapshot while a Pro thinking indicator is active", () => {
@@ -158,6 +174,21 @@ describe("assistant thinking-status capture", () => {
         minStableMs: 2000,
       }),
     ).toBe(true);
+  });
+
+  test("does not trust preamble-sized finished controls until they stay idle longer", () => {
+    const state = {
+      stopVisible: false,
+      completionVisible: true,
+      thinkingActive: false,
+      currentLength: 180,
+      stableCycles: 30,
+      requiredStableCycles: 8,
+      completionStableTarget: 6,
+      minStableMs: 2000,
+    };
+    expect(shouldAcceptStableAssistantSnapshotForTest({ ...state, stableMs: 30_000 })).toBe(false);
+    expect(shouldAcceptStableAssistantSnapshotForTest({ ...state, stableMs: 60_000 })).toBe(true);
   });
 
   test("does not accept substantial idle output without finished controls", () => {
