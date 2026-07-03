@@ -2404,7 +2404,10 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           sessionId: options.sessionId,
         }).catch(() => null);
       }
-      keepBrowserOpen = await hasOtherActiveLeases().catch(() => false);
+      // Fail CLOSED at the Chrome-termination gate: a registry fault must read
+      // as "other leases may be active" so a shared Chrome is never killed on
+      // unverifiable evidence (matches the blank-tab gate above).
+      keepBrowserOpen = await hasOtherActiveLeases().catch(() => true);
       if (keepBrowserOpen) {
         logger("[browser] Other ChatGPT tab leases still active; leaving shared Chrome running.");
       } else if (reusedChrome && !connectionClosedUnexpectedly) {
