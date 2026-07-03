@@ -229,6 +229,44 @@ export async function releaseBrowserTabLease(
   logger?.(`[browser] Released ChatGPT browser slot ${leaseId.slice(0, 8)}.`);
 }
 
+/**
+ * Read-only census of active tab leases for observability surfaces (/ready).
+ * Lock-free by design: a torn concurrent write parses as corrupt and reports
+ * `readable: false` (ASSUME-ACTIVE, count unknown) rather than blocking or
+ * contending with writers; the next probe sees the settled state. Fail-closed
+ * consumers must treat `activeLeaseCount: null` as "cannot prove idle".
+ */
+export interface TabLeaseCensus {
+  readable: boolean;
+  activeLeaseCount: number | null;
+  reason?: string;
+}
+
+export async function countActiveBrowserTabLeases(
+  profileDir: string,
+  options: {
+    staleMs?: number;
+    now?: () => number;
+    isProcessAlive?: (pid: number) => boolean;
+    logger?: BrowserLogger;
+  } = {},
+): Promise<TabLeaseCensus> {
+  const now = options.now ?? Date.now;
+  const staleMs = Math.max(60_000, options.staleMs ?? DEFAULT_STALE_MS);
+  const outcome = await readRegistryOutcome(profileDir, options.logger);
+  if (!outcome.readable) {
+    return { readable: false, activeLeaseCount: null, reason: outcome.reason };
+  }
+  const pruneOptions = {
+    nowMs: now(),
+    staleMs,
+    isProcessAlive: options.isProcessAlive ?? isProcessAlive,
+  };
+  const activeValid = pruneStaleLeases(outcome.valid, pruneOptions);
+  const activeOpaque = pruneOpaqueRecords(outcome.opaque, pruneOptions);
+  return { readable: true, activeLeaseCount: activeValid.length + activeOpaque.length };
+}
+
 export async function hasOtherActiveBrowserTabLeases(
   profileDir: string,
   leaseId: string,

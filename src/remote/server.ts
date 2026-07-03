@@ -33,6 +33,8 @@ import {
 } from "../browser/profileState.js";
 import { normalizeChatgptUrl } from "../browser/utils.js";
 import { resolveBrowserConfig } from "../browser/config.js";
+import { getBrowserCleanupTaint, type BrowserCleanupTaint } from "../browser/index.js";
+import { countActiveBrowserTabLeases } from "../browser/tabLeaseRegistry.js";
 import { sanitizeRemoteRunPayloadForHost } from "./payload_sanitize.js";
 import {
   computeFileSha256,
@@ -91,10 +93,22 @@ export interface RemoteServerOptions {
    */
   maxRunRequestBodyBytes?: number;
   runBodyReadDeadlineMs?: number;
+  /**
+   * Wedge detection for readiness probes: an active run that has produced no
+   * events for this long is reported as wedged-no-progress (503) so
+   * supervision can intervene. Also via ORACLE_SERVE_WEDGE_AFTER_MS.
+   */
+  wedgeAfterMs?: number;
 }
 
 interface RemoteServerDeps {
   runBrowser?: typeof runBrowserMode;
+  /**
+   * Cleanup-taint provider for readiness probes (defaults to the browser
+   * layer's latched cleanup-failure flag). Injectable so fault-isolation
+   * tests can exercise the tainted path without breaking a real browser.
+   */
+  cleanupTaint?: () => BrowserCleanupTaint | null;
 }
 
 interface RemoteServerInstance {
@@ -320,6 +334,122 @@ export async function createRemoteServer(
     return lastAttachProbe;
   };
 
+  // Readiness inputs beyond the attach probe: latched cleanup taint from the
+  // browser layer, run-progress tracking for wedge detection, and the bound
+  // port for worker identity.
+  const cleanupTaintProvider = deps.cleanupTaint ?? getBrowserCleanupTaint;
+  const wedgeAfterMs =
+    options.wedgeAfterMs ??
+    parsePositiveIntEnv(process.env.ORACLE_SERVE_WEDGE_AFTER_MS) ??
+    15 * 60 * 1000;
+  let lastRunProgressAtMs: number | null = null;
+  let boundPort: number | null = null;
+
+  /**
+   * Layered, fail-closed readiness for supervision probes (probed DIRECTLY,
+   * never through a load balancer that would mask per-worker truth):
+   * - 503 substrate-broken: attach target missing/stale/foreign-owned,
+   *   cleanup taint latched, lease registry unverifiable, or any probe error;
+   * - 503 wedged-no-progress: an active run with no events for wedgeAfterMs;
+   * - 409 active-run-client-connected / active-run-client-disconnected:
+   *   busy but healthy;
+   * - 200 idle-ready.
+   * Unknown values are emitted as null, never omitted.
+   */
+  const buildReadiness = async (): Promise<{
+    statusCode: number;
+    body: Record<string, unknown>;
+  }> => {
+    const identity = {
+      accountId,
+      laneId,
+      port: boundPort,
+    };
+    const base: Record<string, unknown> = {
+      ok: false,
+      state: "substrate-broken",
+      reason: null,
+      busy,
+      attachOnly,
+      chromeReachable: null,
+      chromeOwnerOk: null,
+      cleanupTaint: null,
+      identity,
+      activeRun: activeRun ? serializeActiveRun(activeRun) : null,
+      activeLeaseCount: null,
+      leaseRegistryReadable: null,
+      lastProgressAgeSeconds:
+        busy && lastRunProgressAtMs !== null
+          ? Math.max(0, Math.round((Date.now() - lastRunProgressAtMs) / 1000))
+          : null,
+      effectiveConfig: effectiveRunConfig,
+      // Integration point: challenge/login quarantine latch (separate change)
+      // surfaces here; null means "latch subsystem not present", never "clean".
+      quarantine: null,
+      manifest: null,
+    };
+    try {
+      if (attachOnly) {
+        const probe = await probeAttachTargetCached();
+        // Owner mismatch means the endpoint answered but belongs to a Chrome
+        // this worker must not touch: reachable yes, usable no.
+        base.chromeReachable = probe.ok || probe.reason === "attach-target-owner-mismatch";
+        base.chromeOwnerOk = probe.ownerOk;
+        if (!probe.ok) {
+          base.reason = probe.reason;
+          return { statusCode: 503, body: base };
+        }
+      }
+
+      const taint = cleanupTaintProvider();
+      base.cleanupTaint = taint;
+      if (taint) {
+        base.reason = `cleanup-tainted: ${taint.reason}`;
+        return { statusCode: 503, body: base };
+      }
+
+      const census = await countActiveBrowserTabLeases(attachProfileDir);
+      base.leaseRegistryReadable = census.readable;
+      base.activeLeaseCount = census.activeLeaseCount;
+      if (!census.readable) {
+        base.reason = `lease-registry-unreadable: ${census.reason ?? "unknown"}`;
+        return { statusCode: 503, body: base };
+      }
+
+      base.manifest = await readFleetManifestStatus({
+        accountId,
+        port: boundPort,
+        devtoolsPort: attachDevtoolsPort ?? null,
+        effectiveConfig: effectiveRunConfig,
+      });
+
+      if (busy) {
+        const progressAge =
+          lastRunProgressAtMs === null ? null : Date.now() - lastRunProgressAtMs;
+        if (progressAge !== null && progressAge > wedgeAfterMs) {
+          base.state = "wedged-no-progress";
+          base.reason = `no-progress-for-ms: ${progressAge}`;
+          return { statusCode: 503, body: base };
+        }
+        base.state = activeRun?.clientConnected
+          ? "active-run-client-connected"
+          : "active-run-client-disconnected";
+        base.reason = "busy";
+        return { statusCode: 409, body: base };
+      }
+
+      base.ok = true;
+      base.state = "idle-ready";
+      return { statusCode: 200, body: base };
+    } catch (error) {
+      // FAIL CLOSED: a readiness probe that cannot complete reports broken.
+      base.ok = false;
+      base.state = "substrate-broken";
+      base.reason = `probe-error: ${error instanceof Error ? error.message : String(error)}`;
+      return { statusCode: 503, body: base };
+    }
+  };
+
   const server = http.createServer();
   // Socket-layer bounds to complement the app-level admission limits: slow
   // header/body transmission must not hold sockets open indefinitely. The
@@ -420,6 +550,23 @@ export async function createRemoteServer(
         });
         res.writeHead(busy ? 409 : 200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(health));
+        return;
+      }
+
+      if (req.method === "GET" && req.url === "/ready") {
+        if (!isAuthorizedBearer(req.headers.authorization, authToken)) {
+          if (verbose) {
+            logger(
+              `[serve] Unauthorized /ready attempt from ${formatSocket(req)} (missing/invalid token)`,
+            );
+          }
+          res.writeHead(401, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "unauthorized" }));
+          return;
+        }
+        const readiness = await buildReadiness();
+        res.writeHead(readiness.statusCode, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(readiness.body));
         return;
       }
 
@@ -596,6 +743,7 @@ export async function createRemoteServer(
         // Admission checks passed: hand the single-flight slot to the browser
         // stage before releasing the admitting stage (no gap in coverage).
         busy = true;
+        lastRunProgressAtMs = Date.now();
       } finally {
         admitting = false;
       }
@@ -630,6 +778,9 @@ export async function createRemoteServer(
       );
 
       const sendEvent = (event: RemoteRunEvent) => {
+        // Every emitted event counts as run progress for wedge detection,
+        // whether or not the client is still connected to receive it.
+        lastRunProgressAtMs = Date.now();
         if (res.destroyed || res.writableEnded) {
           return;
         }
@@ -720,6 +871,7 @@ export async function createRemoteServer(
         logger(`[serve] Run ${runId} failed after ${Date.now() - runStartedAt}ms: ${message}`);
       } finally {
         busy = false;
+        lastRunProgressAtMs = null;
         if (activeRun?.id === runId) {
           activeRun = null;
         }
@@ -761,6 +913,7 @@ export async function createRemoteServer(
   if (!address || typeof address === "string") {
     throw new Error("Unable to determine server address.");
   }
+  boundPort = address.port;
   if (!explicitLaneId) {
     // Default lane id contract: <account_id>-<port>. The port is only known
     // once the listener is bound, and no request can arrive before that.
@@ -1282,6 +1435,86 @@ async function readRequestBody(
 }
 
 const DEFAULT_ACCOUNT_ID = "acct1";
+
+export interface FleetManifestStatus {
+  present: boolean;
+  /** null when absent/unparseable-key-free; false on any mismatch. */
+  match: boolean | null;
+  mismatches: string[];
+}
+
+/**
+ * Reads the per-box fleet manifest (if present) and reports whether this
+ * worker's live identity/config matches it. EXPOSURE ONLY: readiness surfaces
+ * the verdict for supervision; refusing /runs on mismatch is a separate
+ * enforcement step. Keys absent from the manifest are not checked.
+ */
+async function readFleetManifestStatus(worker: {
+  accountId: string;
+  port: number | null;
+  devtoolsPort: number | null;
+  effectiveConfig: {
+    timeoutMs: number | null | undefined;
+    profileLockTimeoutMs: number | null | undefined;
+    maxConcurrentTabs: number | null | undefined;
+  };
+}): Promise<FleetManifestStatus> {
+  const manifestPath =
+    process.env.ORACLE_FLEET_MANIFEST ??
+    path.join(os.homedir(), ".config", "oracle-fleet", "manifest.json");
+  let raw: string;
+  try {
+    raw = await readFile(manifestPath, "utf8");
+  } catch {
+    return { present: false, match: null, mismatches: [] };
+  }
+  let manifest: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") {
+      return { present: true, match: false, mismatches: ["manifest-not-an-object"] };
+    }
+    manifest = parsed as Record<string, unknown>;
+  } catch {
+    return { present: true, match: false, mismatches: ["manifest-unparseable"] };
+  }
+  const mismatches: string[] = [];
+  if (typeof manifest.account_id === "string" && manifest.account_id !== worker.accountId) {
+    mismatches.push("account_id");
+  }
+  if (Array.isArray(manifest.ports) && worker.port !== null) {
+    const ports = manifest.ports.filter((entry): entry is number => typeof entry === "number");
+    if (!ports.includes(worker.port)) {
+      mismatches.push("ports");
+    }
+  }
+  if (
+    typeof manifest.devtools_port === "number" &&
+    worker.devtoolsPort !== null &&
+    manifest.devtools_port !== worker.devtoolsPort
+  ) {
+    mismatches.push("devtools_port");
+  }
+  if (
+    typeof manifest.maxConcurrentTabs === "number" &&
+    manifest.maxConcurrentTabs !== worker.effectiveConfig.maxConcurrentTabs
+  ) {
+    mismatches.push("maxConcurrentTabs");
+  }
+  if (
+    typeof manifest.profileLockTimeoutMs === "number" &&
+    manifest.profileLockTimeoutMs !== worker.effectiveConfig.profileLockTimeoutMs
+  ) {
+    mismatches.push("profileLockTimeoutMs");
+  }
+  if (
+    typeof manifest.timeoutMs === "number" &&
+    manifest.timeoutMs !== worker.effectiveConfig.timeoutMs
+  ) {
+    mismatches.push("timeoutMs");
+  }
+  return { present: true, match: mismatches.length === 0, mismatches };
+}
 
 function parsePositiveIntEnv(value: string | undefined): number | undefined {
   const parsed = Number.parseInt(value ?? "", 10);
