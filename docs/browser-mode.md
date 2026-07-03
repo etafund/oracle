@@ -6,7 +6,7 @@ Oracle’s `--engine browser` supports three different execution paths:
 - **ChatGPT attach-running mode** (GPT-\* models): Oracle attaches to your already-running local Chrome session through Chrome’s local remote-debugging toggle, opens a dedicated tab, and leaves the browser process/profile alone.
 - **Gemini web mode** (Gemini models): talks directly to `gemini.google.com` using your signed-in Chrome cookies (no ChatGPT automation).
 
-The reviewed browser route forms are ChatGPT Pro Extended Reasoning (`--engine browser --model gpt-5.5-pro --browser-thinking-time extended`) and Gemini 3.1 Deep Think (`--engine browser --provider gemini --gemini-deep-think`). `oracle doctor lanes --json` reports the stricter explicit lane-template readiness for the current checkout. Remote browser hosts and `oracle-router` are transport for those browser routes. Fable xHigh is a separate local `--lane fable-local` Claude Code path and is not a browser/router mode.
+The reviewed browser route forms are ChatGPT Pro Extended Reasoning (`--engine browser --model gpt-5.5-pro --browser-thinking-time extended`) and Gemini 3.1 Deep Think (`--engine browser --provider gemini --gemini-deep-think`). `oracle doctor lanes --json` reports the stricter explicit lane-template readiness for the current checkout. Remote browser hosts and the companion router (`<router-repo>`) are transport for those browser routes. Fable xHigh is a separate local `--lane fable-local` Claude Code path and is not a browser/router mode.
 
 If you’re running Gemini, also see `docs/gemini.md`.
 

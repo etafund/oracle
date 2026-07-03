@@ -1,4 +1,4 @@
-// Worker-local account quarantine latch (oracle-router-challenge-login-gates-cs1).
+// Worker-local account quarantine latch.
 //
 // ACCOUNT-SAFETY HARD-HALT DOCTRINE: when a verification interstitial or an
 // account security block is detected, the two worst outcomes are (a) the

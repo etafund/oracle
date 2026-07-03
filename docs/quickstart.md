@@ -55,7 +55,7 @@ oracle --lane fable-local \
   --file docs/plan.md
 ```
 
-Fable is local-only. It does not use `oracle-router`, `oracle serve`, browser flags, API keys, or multi-model fan-out.
+Fable is local-only. It does not use the companion router (`<router-repo>`), `oracle serve`, browser flags, API keys, or multi-model fan-out.
 
 ### Gemini 3.1 Deep Think
 

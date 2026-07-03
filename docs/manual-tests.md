@@ -66,14 +66,14 @@ Prereqs:
    `pnpm vitest run tests/live/chatgpt-smoke-live.test.ts tests/live/gemini-smoke-live.test.ts`
    - Both suites should report skipped tests with no Chrome launch.
 
-### Remote router / oracle-browser smoke
+### Remote router / browser-box smoke
 
-Run this whenever you touch remote browser routing, `oracle remote ...`, `oracle serve`, or `/data/projects/oracle-router`.
+Run this whenever you touch remote browser routing, `oracle remote ...`, `oracle serve`, or `<router-repo>`.
 
 Prereqs:
 
-- `/data/projects/oracle-router` nginx config is deployed and reloaded.
-- `oracle-browser.incus:9473` and `oracle-browser-arthur.incus:9473` both answer `/status`.
+- `<router-repo>` nginx config is deployed and reloaded.
+- `box1.example:9473` and `box2.example:9473` both answer `/status`.
 - `~/.oracle/config.json` points `browser.remoteHost` at the local router, normally `127.0.0.1:9470`.
 
 Checks:
@@ -86,8 +86,8 @@ Checks:
    - `remote doctor` should report `status:"healthy"` before live browser smokes.
 2. Router and upstream health:
    `curl -fsS http://127.0.0.1:9470/status`
-   `curl -fsS http://oracle-browser.incus:9473/status`
-   `curl -fsS http://oracle-browser-arthur.incus:9473/status`
+   `curl -fsS http://box1.example:9473/status`
+   `curl -fsS http://box2.example:9473/status`
    - All three should return `{"ok":true}`.
 3. Load-balanced attachment smoke:
    - Start two ChatGPT Pro Extended Reasoning browser runs through the router with distinct slugs and small file attachments.
@@ -346,7 +346,7 @@ Use this when you need to inspect the live ChatGPT composer (DOM state, markdown
 1. **Launch within tmux**
 
    ```bash
-   tmux new -d -s oracle-browser \\
+   tmux new -d -s oracle-debug \\
      "pnpm run oracle -- --engine browser --browser-keep-browser \\
       --model 'GPT-5.5 Pro' --prompt 'Debug via DevTools.'"
    ```
@@ -354,7 +354,7 @@ Use this when you need to inspect the live ChatGPT composer (DOM state, markdown
    Keeping the run in tmux prevents your shell from blocking and ensures Chrome stays open afterward.
 
 2. **Grab the DevTools port**
-   - `tmux capture-pane -pt oracle-browser` to read the logs (`Launched Chrome … on port 56663`).
+   - `tmux capture-pane -pt oracle-debug` to read the logs (`Launched Chrome … on port 56663`).
    - Verify the endpoint:
      ```bash
      curl http://127.0.0.1:<PORT>/json/version
@@ -380,8 +380,8 @@ Use this when you need to inspect the live ChatGPT composer (DOM state, markdown
    - Record any manual actions you take (e.g., “fired evaluate_js to dump #prompt-textarea.innerText”).
 
 5. **Cleanup**
-   - `tmux kill-session -t oracle-browser`
-   - `pkill -f oracle-browser-<slug>` if Chrome is still running.
+   - `tmux kill-session -t oracle-debug`
+   - `pkill -f oracle-debug-<slug>` if Chrome is still running.
 
 > **Tip:** Running `npx chrome-devtools-mcp@latest --help` lists additional switches (custom Chrome binary, headless, viewport, etc.).
 

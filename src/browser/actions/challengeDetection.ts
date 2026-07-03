@@ -1,4 +1,4 @@
-// Challenge / login access-state detection (oracle-router-challenge-login-gates-cs1).
+// Challenge / login access-state detection.
 //
 // Distinguishes, with READ-ONLY structural DOM probes:
 //   (a) login / forced-reauth walls            -> "login_required"

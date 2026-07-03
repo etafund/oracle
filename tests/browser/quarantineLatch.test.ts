@@ -1,4 +1,4 @@
-// Worker-local account quarantine latch (oracle-router-challenge-login-gates-cs1):
+// Worker-local account quarantine latch:
 // atomic trip, fail-closed reads, persistence across restarts, manual-only clear.
 
 import { describe, expect, test } from "vitest";

@@ -1,5 +1,4 @@
-// Challenge/login access-state detection and gates
-// (oracle-router-challenge-login-gates-cs1, browser-side half).
+// Challenge/login access-state detection and gates (browser-side half).
 //
 // Fixtures cover the state taxonomy (login wall, verification interstitial,
 // account security block, rate limit, healthy, indeterminate), the pre-run

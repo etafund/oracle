@@ -2,7 +2,7 @@
 
 `oracle-mcp` is a minimal MCP stdio server that mirrors the Oracle CLI. It shares session storage with the CLI (`~/.oracle/sessions` or `ORACLE_HOME_DIR`) so you can mix and match: run with the CLI, inspect or re-run via MCP, or vice versa.
 
-Current agent-facing lanes are ChatGPT Pro Extended Reasoning, Fable xHigh, and Gemini 3.1 Deep Think. Remote browser hosts and `oracle-router` are transport for ChatGPT/Gemini browser lanes only; Fable xHigh is local CLI-only and must not be routed through bridge, serve, remote browser, or MCP network transports.
+Current agent-facing lanes are ChatGPT Pro Extended Reasoning, Fable xHigh, and Gemini 3.1 Deep Think. Remote browser hosts and the companion router (`<router-repo>`) are transport for ChatGPT/Gemini browser lanes only; Fable xHigh is local CLI-only and must not be routed through bridge, serve, remote browser, or MCP network transports.
 
 ## Let Them Fight
 

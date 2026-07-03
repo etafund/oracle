@@ -3,7 +3,7 @@
 Status: issue-style diagnostic report for the Oracle coding swarm.
 
 Source: moved and expanded from
-`/data/projects/fetaos/scratch/260618E-throughput-rulings/ORACLE-DIAGNOSTICS.md`.
+`/data/projects/<org>/scratch/260618E-throughput-rulings/ORACLE-DIAGNOSTICS.md`.
 
 Captured: 2026-06-19 during the `FETAOS-THROUGHPUT-OPTIMIZATION.md` ruling
 session.
@@ -60,7 +60,7 @@ explain repeated browser-mode fragility.
 
 ### 1. `throughput-decision-queue`
 
-- CWD: `/data/projects/fetaos`
+- CWD: `/data/projects/<org>`
 - Model: `gpt-5.5-pro`
 - Mode: `browser`
 - Created: `2026-06-18T23:45:35.246Z`
@@ -81,7 +81,7 @@ model: gpt-5.5-pro
 slug: throughput-decision-queue
 browserBundleFiles: false
 browserInlineFiles: false
-writeOutputPath: /data/projects/fetaos/scratch/260618E-throughput-rulings/ORACLE-RESULT.md
+writeOutputPath: /data/projects/<org>/scratch/260618E-throughput-rulings/ORACLE-RESULT.md
 files:
   AGENTS.md
   /data/projects/AGENTS.md
@@ -108,7 +108,7 @@ User error (browser-automation): Attachments did not finish uploading before tim
 
 ### 2. `throughput-decision-queue-2`
 
-- CWD: `/data/projects/fetaos`
+- CWD: `/data/projects/<org>`
 - Model: `gpt-5.5-pro`
 - Mode: `browser`
 - Created: `2026-06-18T23:48:43.461Z`
@@ -131,7 +131,7 @@ slug: throughput-decision-queue-2
 browserBundleFiles: true
 browserBundleFormat: text
 browserInlineFiles: false
-writeOutputPath: /data/projects/fetaos/scratch/260618E-throughput-rulings/ORACLE-RESULT.md
+writeOutputPath: /data/projects/<org>/scratch/260618E-throughput-rulings/ORACLE-RESULT.md
 files:
   AGENTS.md
   FETAOS-THROUGHPUT-OPTIMIZATION.md
@@ -332,7 +332,7 @@ browser run.
 Use a scratch slug and output path. Do not reuse the production slugs above.
 
 ```bash
-cd /data/projects/fetaos
+cd /data/projects/<org>
 oracle --engine browser \
   --model gpt-5.5-pro \
   --slug repro-upload-timeout-$(date +%Y%m%d%H%M%S) \
@@ -358,7 +358,7 @@ Observed in original run: top-level `error`, but per-model `running`.
 Use a scratch slug and output path. Do not reuse the production slugs above.
 
 ```bash
-cd /data/projects/fetaos
+cd /data/projects/<org>
 oracle --engine browser \
   --model gpt-5.5-pro \
   --slug repro-bundled-response-stall-$(date +%Y%m%d%H%M%S) \

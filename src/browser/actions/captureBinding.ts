@@ -1,4 +1,4 @@
-// Structural capture binding (oracle-router-structural-message-binding-wrl).
+// Structural capture binding.
 //
 // Cross-talk / stale-tab capture is the sharpest wrong-answer class when
 // several runs share a browser profile: a capture that merely grabs "the

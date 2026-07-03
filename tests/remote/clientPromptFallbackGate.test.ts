@@ -1,5 +1,4 @@
-// NO SILENT PROMPT FALLBACK on fleet lanes
-// (oracle-router-structural-message-binding-wrl): the remote payload must not
+// NO SILENT PROMPT FALLBACK on fleet lanes: the remote payload must not
 // carry a prompt-altering fallback submission unless the caller explicitly
 // opts in via ORACLE_ALLOW_PROMPT_FALLBACK. Opting in logs both prompt hashes
 // so the run's event trail can prove which question was actually submitted.

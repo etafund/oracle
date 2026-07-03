@@ -1,4 +1,4 @@
-// Regression test for oracle-router-j0d (fix d6c615bf): the Pro-probe
+// Regression test (fix d6c615bf): the Pro-probe
 // model_picker_button fallback selector must keep its
 // `:not([aria-label*="conversation" i])` exclusion.
 //

@@ -1,4 +1,4 @@
-// Structural capture binding (oracle-router-structural-message-binding-wrl):
+// Structural capture binding:
 // the captured assistant message must be provably bound to THIS run's own
 // submitted user message, in the same conversation from submit to capture.
 // These tests drive the post-capture validation layer with mocked CDP

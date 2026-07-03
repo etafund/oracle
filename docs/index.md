@@ -34,7 +34,7 @@ oracle --followup <id> -p "Re-evaluate with this new context" --file "src/**/*.t
 ## What Oracle does
 
 - **Three reviewed route families.** ChatGPT Pro Extended Reasoning and Gemini 3.1 Deep Think run through browser automation; Fable xHigh runs through the local Claude Code subscription CLI. `doctor lanes --json` is the source of truth for which explicit lane templates are enabled in the current checkout.
-- **Transport rules are explicit.** Remote browser hosts and `oracle-router` are for browser lanes. Fable is local-only and refuses API, browser, router, and multi-model fan-out.
+- **Transport rules are explicit.** Remote browser hosts and the companion router (`<router-repo>`) are for browser lanes. Fable is local-only and refuses API, browser, router, and multi-model fan-out.
 - **Compatibility paths remain.** API and older provider/model flags still exist for legacy workflows, but they are not the primary agent-facing lane surface.
 - **Recoverable checks.** `doctor lanes --json`, `doctor chatgpt --pro --extended-reasoning --json`, `doctor gemini --deep-think --json`, and `remote doctor --json` make readiness and routing failures machine-readable.
 - **Followups + lineage.** Continue from any stored session id or `resp_…` response id; `oracle status` shows parent/child trees.

@@ -1,4 +1,4 @@
-// Start-of-run blank-state assertion (oracle-router-structural-message-binding-wrl):
+// Start-of-run blank-state assertion:
 // a run that requested a fresh target must not land inside an existing
 // conversation (/c/<id>) and must not see pre-existing assistant messages in
 // capture scope. Explicit follow-ups request a /c/ URL and are exempt.

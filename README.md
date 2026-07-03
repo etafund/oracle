@@ -135,7 +135,7 @@ For reviewed browser lanes, prefer explicit `--engine browser` or the protected 
 
 - Reviewed lanes:
   - ChatGPT Pro Extended Reasoning: `--engine browser --model gpt-5.5-pro --browser-thinking-time extended`.
-  - Fable xHigh: `--lane fable-local` on the local machine only; it does not use `oracle-router` or remote browser hosts.
+  - Fable xHigh: `--lane fable-local` on the local machine only; it does not use the companion router (`<router-repo>`) or remote browser hosts.
   - Gemini 3.1 Deep Think: `--engine browser --provider gemini --gemini-deep-think`.
 - Compatibility API mode still accepts API keys in your environment, but the old provider/model matrix is not the preferred agent-facing lane surface.
 - Gemini browser compatibility mode uses Chrome cookies instead of an API key—just be logged into `gemini.google.com` in Chrome (no Python/venv required).
@@ -194,7 +194,7 @@ npx -y @steipete/oracle oracle-mcp
 ## Highlights
 
 - Bundle once, send through the reviewed ChatGPT Pro Extended Reasoning, Fable xHigh, or Gemini 3.1 Deep Think lane.
-- ChatGPT/Gemini browser lanes can run locally or through `oracle serve` / `oracle-router`; Fable xHigh stays local-only through `--lane fable-local`.
+- ChatGPT/Gemini browser lanes can run locally or through `oracle serve` / the companion router (`<router-repo>`); Fable xHigh stays local-only through `--lane fable-local`.
 - Claude Code / MCP browser consults can use the `chatgpt-pro-heavy` preset for a compact ChatGPT Pro second-opinion workflow.
 - Render/copy bundles for manual paste into ChatGPT, Claude, or Gemini when automation is blocked.
 - Long browser runs can be reattached via `oracle session <id>` / `oracle status` instead of restarted.
@@ -518,7 +518,7 @@ oracle --engine browser --remote-host 192.168.1.10:9473 \
 oracle --engine browser --browser-inline-cookies-file ~/.oracle/cookies.json -p "Run the UI smoke" --file "src/**/*.ts"
 ```
 
-Remote browser hosts and `oracle-router` are transport for ChatGPT Pro Extended Reasoning and Gemini 3.1 Deep Think browser lanes. Fable xHigh stays local-only through `--lane fable-local`.
+Remote browser hosts and the companion router (`<router-repo>`) are transport for ChatGPT Pro Extended Reasoning and Gemini 3.1 Deep Think browser lanes. Fable xHigh stays local-only through `--lane fable-local`.
 
 Session management
 
