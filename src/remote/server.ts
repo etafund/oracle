@@ -4,7 +4,7 @@ import { pipeline } from "node:stream/promises";
 import os from "node:os";
 import path from "node:path";
 import net from "node:net";
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdtemp, rm, mkdir, writeFile, stat, realpath } from "node:fs/promises";
 import chalk from "chalk";
@@ -15,8 +15,11 @@ import type {
   RemoteActiveRunInfo,
   RemoteArtifactCapabilities,
   RemoteArtifactDescriptor,
+  RemoteAttachmentIntegrityEntry,
+  RemoteAttachmentPayload,
   RemoteRunPayload,
   RemoteRunEvent,
+  RemoteUploadIntegrity,
 } from "./types.js";
 import { MAX_REMOTE_ARTIFACT_BYTES } from "./types.js";
 import { getCookies, type Cookie } from "@steipete/sweet-cookie";
@@ -298,6 +301,15 @@ export async function createRemoteServer(
 
       admitting = true;
       let payload: RemoteRunPayload | null = null;
+      let runDir: string | null = null;
+      let attachments: BrowserAttachment[] = [];
+      let fallbackSubmission:
+        | {
+            prompt: string;
+            attachments: BrowserAttachment[];
+          }
+        | undefined;
+      let uploadIntegrity: RemoteUploadIntegrity | null = null;
       try {
         try {
           const body = await readRequestBody(req, bodyLimits);
@@ -322,6 +334,52 @@ export async function createRemoteServer(
           }
           return;
         }
+
+        // Stage attachments during admission (before `busy` flips) so a
+        // truncated/corrupted upload is refused with a typed error instead of
+        // consuming a browser slot. Stored names are collision-proof and the
+        // integrity manifest is emitted with the run's events below.
+        try {
+          runDir = await mkdtemp(path.join(os.tmpdir(), `oracle-serve-${runId}-`));
+          const attachmentDir = path.join(runDir, "attachments");
+          await mkdir(attachmentDir, { recursive: true });
+          const staged = await stageAttachmentsWithIntegrity({
+            payloadAttachments: payload.attachments,
+            dir: attachmentDir,
+            fallbackLabel: "attachment",
+          });
+          attachments = staged.attachments;
+          uploadIntegrity = {
+            attachments: staged.manifest,
+            preSendDomCheck: "composer-chips-by-stored-name",
+          };
+
+          if (payload.fallbackSubmission) {
+            const fallbackAttachmentDir = path.join(runDir, "fallback-attachments");
+            await mkdir(fallbackAttachmentDir, { recursive: true });
+            const stagedFallback = await stageAttachmentsWithIntegrity({
+              payloadAttachments: payload.fallbackSubmission.attachments,
+              dir: fallbackAttachmentDir,
+              fallbackLabel: "fallback-attachment",
+            });
+            fallbackSubmission = {
+              prompt: payload.fallbackSubmission.prompt,
+              attachments: stagedFallback.attachments,
+            };
+            uploadIntegrity.fallbackAttachments = stagedFallback.manifest;
+          }
+        } catch (error) {
+          if (runDir) {
+            await rm(runDir, { recursive: true, force: true }).catch(() => undefined);
+          }
+          if (error instanceof AttachmentIntegrityError) {
+            refuseRun(400, "attachment_size_mismatch", { detail: error.message });
+          } else {
+            refuseRun(400, "invalid_request");
+          }
+          return;
+        }
+
         // Admission checks passed: hand the single-flight slot to the browser
         // stage before releasing the admitting stage (no gap in coverage).
         busy = true;
@@ -357,9 +415,6 @@ export async function createRemoteServer(
       logger(
         `[serve] Accepted run ${runId} from ${formatSocket(req)} (prompt ${payload?.prompt?.length ?? 0} chars)`,
       );
-      const runDir = await mkdtemp(path.join(os.tmpdir(), `oracle-serve-${runId}-`));
-      const attachmentDir = path.join(runDir, "attachments");
-      await mkdir(attachmentDir, { recursive: true });
 
       const sendEvent = (event: RemoteRunEvent) => {
         if (res.destroyed || res.writableEnded) {
@@ -370,49 +425,11 @@ export async function createRemoteServer(
         res.write(`${JSON.stringify({ runId, ...event })}\n`);
       };
 
-      const attachments: BrowserAttachment[] = [];
-      let fallbackSubmission:
-        | {
-            prompt: string;
-            attachments: BrowserAttachment[];
-          }
-        | undefined;
       try {
-        const attachmentsPayload = Array.isArray(payload.attachments) ? payload.attachments : [];
-        for (const [index, attachment] of attachmentsPayload.entries()) {
-          const safeName = sanitizeName(attachment.fileName ?? `attachment-${index + 1}`);
-          const filePath = path.join(attachmentDir, safeName);
-          await writeFile(filePath, Buffer.from(attachment.contentBase64, "base64"));
-          attachments.push({
-            path: filePath,
-            displayPath: attachment.displayPath,
-            sizeBytes: attachment.sizeBytes,
-          });
-        }
-
-        if (payload.fallbackSubmission) {
-          const fallbackAttachmentDir = path.join(runDir, "fallback-attachments");
-          await mkdir(fallbackAttachmentDir, { recursive: true });
-          const fallbackAttachments: BrowserAttachment[] = [];
-          const fallbackPayload = Array.isArray(payload.fallbackSubmission.attachments)
-            ? payload.fallbackSubmission.attachments
-            : [];
-          for (const [index, attachment] of fallbackPayload.entries()) {
-            const safeName = sanitizeName(
-              attachment.fileName ?? `fallback-attachment-${index + 1}`,
-            );
-            const filePath = path.join(fallbackAttachmentDir, safeName);
-            await writeFile(filePath, Buffer.from(attachment.contentBase64, "base64"));
-            fallbackAttachments.push({
-              path: filePath,
-              displayPath: attachment.displayPath,
-              sizeBytes: attachment.sizeBytes,
-            });
-          }
-          fallbackSubmission = {
-            prompt: payload.fallbackSubmission.prompt,
-            attachments: fallbackAttachments,
-          };
+        if (uploadIntegrity && uploadIntegrity.attachments.length + (uploadIntegrity.fallbackAttachments?.length ?? 0) > 0) {
+          // Emit the staging proof before the browser stage starts so the
+          // manifest survives even if the run later fails.
+          sendEvent({ type: "attachment-manifest", uploadIntegrity });
         }
 
         const automationLogger: BrowserLogger = ((message?: string) => {
@@ -473,6 +490,9 @@ export async function createRemoteServer(
         sendEvent({
           type: "result",
           result: sanitizeResult(result, artifactRegistration.warnings),
+          // Repeat the staging proof on the terminal event so consumers that
+          // only persist the result still get the upload-plumbing evidence.
+          ...(uploadIntegrity ? { uploadIntegrity } : {}),
         });
         logger(
           `[serve] Run ${runId} completed in ${Date.now() - runStartedAt}ms${
@@ -494,10 +514,12 @@ export async function createRemoteServer(
         if (!res.destroyed && !res.writableEnded) {
           res.end();
         }
-        try {
-          await rm(runDir, { recursive: true, force: true });
-        } catch {
-          // ignore cleanup errors
+        if (runDir) {
+          try {
+            await rm(runDir, { recursive: true, force: true });
+          } catch {
+            // ignore cleanup errors
+          }
         }
       }
     })().catch((error) => {
@@ -1012,6 +1034,73 @@ function isAuthorizedBearer(authHeader: string | undefined, authToken: string): 
 
 function sanitizeName(raw: string): string {
   return raw.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+class AttachmentIntegrityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AttachmentIntegrityError";
+  }
+}
+
+/**
+ * Collision-proof stored name: NNN-<sha256:12>-<sanitized original name>.
+ * Sanitizing alone maps distinct inputs (e.g. "a/b.txt" and "a_b.txt") to the
+ * same file name, silently overwriting one attachment with another — the
+ * model then answers about the wrong file. The zero-padded index alone makes
+ * collisions impossible; the content-hash fragment keeps the name joinable
+ * to the integrity manifest.
+ */
+function buildStoredAttachmentName(index: number, sha256: string, originalName: string): string {
+  const safeName = sanitizeName(originalName).slice(0, 120) || "attachment";
+  return `${String(index).padStart(3, "0")}-${sha256.slice(0, 12)}-${safeName}`;
+}
+
+async function stageAttachmentsWithIntegrity(params: {
+  payloadAttachments: unknown;
+  dir: string;
+  fallbackLabel: string;
+}): Promise<{
+  attachments: BrowserAttachment[];
+  manifest: RemoteAttachmentIntegrityEntry[];
+}> {
+  const entries = Array.isArray(params.payloadAttachments)
+    ? (params.payloadAttachments as RemoteAttachmentPayload[])
+    : [];
+  const attachments: BrowserAttachment[] = [];
+  const manifest: RemoteAttachmentIntegrityEntry[] = [];
+  for (const [index, attachment] of entries.entries()) {
+    const originalName = attachment.fileName ?? `${params.fallbackLabel}-${index + 1}`;
+    const content = Buffer.from(
+      typeof attachment.contentBase64 === "string" ? attachment.contentBase64 : "",
+      "base64",
+    );
+    if (typeof attachment.sizeBytes === "number" && attachment.sizeBytes !== content.length) {
+      // Fail loud: a declared-size mismatch means the upload was truncated or
+      // corrupted in transit; silently staging it would hand the model wrong
+      // bytes.
+      throw new AttachmentIntegrityError(
+        `attachment ${index} (${sanitizeName(originalName)}) declared ${attachment.sizeBytes} bytes but decoded to ${content.length}`,
+      );
+    }
+    const sha256 = createHash("sha256").update(content).digest("hex");
+    const storedName = buildStoredAttachmentName(index, sha256, originalName);
+    const filePath = path.join(params.dir, storedName);
+    await writeFile(filePath, content);
+    attachments.push({
+      path: filePath,
+      displayPath: attachment.displayPath,
+      sizeBytes: content.length,
+    });
+    manifest.push({
+      index,
+      originalName,
+      storedName,
+      bytes: content.length,
+      sha256,
+    });
+  }
+  return { attachments, manifest };
 }
 
 function sanitizeResult(

@@ -48,6 +48,28 @@ export interface RemoteArtifactDescriptor {
   transferStatus: "ready" | "streaming" | "completed" | "failed" | "skipped";
 }
 
+export interface RemoteAttachmentIntegrityEntry {
+  index: number;
+  originalName: string;
+  storedName: string;
+  bytes: number;
+  sha256: string;
+}
+
+/**
+ * Upload-plumbing proof for a run's attachments: the exact bytes staged on
+ * the host, under collision-proof stored names, with their hashes. The
+ * browser-side pre-Send composer check consumes the same stored names, so
+ * chip presence is joinable to these entries. This proves PLUMBING (the
+ * right bytes were staged and offered to the composer) — it does NOT prove
+ * the model read the files.
+ */
+export interface RemoteUploadIntegrity {
+  attachments: RemoteAttachmentIntegrityEntry[];
+  fallbackAttachments?: RemoteAttachmentIntegrityEntry[];
+  preSendDomCheck: "composer-chips-by-stored-name";
+}
+
 export type RemoteRunEvent =
   // `runId` is stamped onto every event by the server so each NDJSON line of a
   // run is joinable end-to-end (client logs, server logs, forensics) even when
@@ -63,7 +85,8 @@ export type RemoteRunEvent =
       phase: "download" | "transfer" | "validate";
       runId?: string;
     }
-  | { type: "result"; result: BrowserRunResult; runId?: string }
+  | { type: "attachment-manifest"; uploadIntegrity: RemoteUploadIntegrity; runId?: string }
+  | { type: "result"; result: BrowserRunResult; uploadIntegrity?: RemoteUploadIntegrity; runId?: string }
   | { type: "error"; message: string; runId?: string };
 
 export interface RemoteActiveRunInfo {
