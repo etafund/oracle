@@ -558,7 +558,26 @@ export async function createRemoteServer(
   const extras = reachable.slice(1);
   const also = extras.length ? `, also [${extras.join(", ")}]` : "";
   logger(color(chalk.cyanBright.bold, `Listening at ${primary}${also}`));
-  logger(color(chalk.yellowBright, `Access token: ${authToken}`));
+  // Never echo a supplied token: startup logs land in service journals, and a
+  // shared bearer secret copied into every journal defeats file permissions
+  // and token rotation alike. Log a short token id (sha256 prefix) instead so
+  // operators can still tell WHICH token generation a worker is running.
+  const tokenWasSupplied = typeof options.token === "string" && options.token.length > 0;
+  const printTokenOptIn =
+    process.env.ORACLE_SERVE_PRINT_TOKEN === "1" || Boolean(process.stdout.isTTY);
+  if (!tokenWasSupplied && printTokenOptIn) {
+    // Freshly generated token for an interactive first run: printing it once
+    // is the only way the operator can hand it to clients.
+    logger(color(chalk.yellowBright, `Access token: ${authToken}`));
+  } else {
+    logger(color(chalk.yellowBright, `Access token: <redacted> (token id ${tokenIdForLog(authToken)})`));
+    if (!tokenWasSupplied) {
+      logger(
+        "Token was generated randomly but not printed (non-interactive session). " +
+          "Set ORACLE_SERVE_PRINT_TOKEN=1 to print it once, or supply a token explicitly.",
+      );
+    }
+  }
   logger("Leave this terminal running; press Ctrl+C to stop oracle serve.");
 
   return {
@@ -1009,6 +1028,15 @@ async function readRequestBody(
 }
 
 const DEFAULT_ACCOUNT_ID = "acct1";
+
+/**
+ * Short non-reversible identifier for a token generation. Safe to log: eight
+ * hex chars of the SHA-256 digest identify which rotation a worker holds
+ * without exposing usable secret material.
+ */
+export function tokenIdForLog(token: string): string {
+  return createHash("sha256").update(token, "utf8").digest("hex").slice(0, 8);
+}
 
 /**
  * Identity labels are echoed in response headers and log lines, so they must
