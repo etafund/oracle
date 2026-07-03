@@ -10,6 +10,7 @@
 - API: add user-only `modelOverrides` for remapping known models and their metadata on custom OpenAI-compatible gateways. Fixes #273. Thanks @wangwllu!
 - Browser: structurally bind every ChatGPT capture to the run's own submitted user message (conversation pinned from submit to capture, document-order proof against the exact submitted turn, start-of-run blank-target assertion), failing loudly instead of returning cross-run or stale-tab answers; the submitted prompt's SHA-256 is logged for provenance.
 - Remote: refuse the prompt-altering fallback submission on remote runs unless `ORACLE_ALLOW_PROMPT_FALLBACK` is set; opting in logs primary and fallback prompt SHA-256 hashes so the run trail proves which question was actually submitted.
+- Browser: read-only access-state gates for login walls, verification interstitials, account security blocks, and rate limits — a pre-run gate refuses before any prompt is composed and a pre-result gate ensures an access-wall page is never emitted as an answer; challenge-class detections atomically trip a worker-local account quarantine latch (cleared only manually by a human) so a challenged account is never retried into or worked around.
 
 ### Changed
 

@@ -29,15 +29,19 @@ export {
 import type { BrowserLogger, ChromeClient } from "./types.js";
 import { waitForAssistantResponse as waitForAssistantResponseUnvalidated } from "./actions/assistantResponse.js";
 import { assertCapturedAssistantResponseBound } from "./actions/captureBinding.js";
+import { assertCapturedAnswerNotAccessArtifact } from "./actions/challengeDetection.js";
 
 /**
- * Capture facade: waits for the assistant response, then structurally
- * validates that the captured message is bound to THIS run's own submitted
- * user message (same conversation from submit to capture, message follows the
- * run's own user turn). Validation is a no-op when no submission binding was
- * registered for this runtime (non-ChatGPT providers, reattach inspection,
- * unit tests); when a binding exists, violations fail loudly instead of
- * returning a response that may belong to another run.
+ * Capture facade: waits for the assistant response, then
+ * 1. structurally validates that the captured message is bound to THIS run's
+ *    own submitted user message (same conversation from submit to capture,
+ *    message follows the run's own user turn) — no-op when no submission
+ *    binding was registered for this runtime (non-ChatGPT providers,
+ *    reattach inspection, unit tests); and
+ * 2. runs the PRE-RESULT access gate: a captured login wall or verification
+ *    interstitial is never emitted as an answer, and challenge-class
+ *    findings trip the worker-local quarantine latch before the typed error
+ *    surfaces.
  */
 export async function waitForAssistantResponse(
   Runtime: ChromeClient["Runtime"],
@@ -58,5 +62,10 @@ export async function waitForAssistantResponse(
     expectedConversationId,
   );
   await assertCapturedAssistantResponseBound(Runtime, captured.meta ?? {}, logger);
+  await assertCapturedAnswerNotAccessArtifact(
+    Runtime,
+    { text: captured.text, html: captured.html },
+    logger,
+  );
   return captured;
 }

@@ -1,6 +1,7 @@
 import type { BrowserLogger, ChromeClient } from "../types.js";
 import type { ProviderDomAdapter, ProviderDomFlowContext } from "../providerDomFlow.js";
 import { ensurePromptReady } from "../actions/navigation.js";
+import { assertPreRunAccessState } from "../actions/challengeDetection.js";
 import { submitPrompt, type AttachmentReadyExpectation } from "../actions/promptComposer.js";
 // Capture must flow through the pageActions facade so the structural
 // run-binding validation (captureBinding.ts) covers this provider path too.
@@ -98,6 +99,12 @@ function requireState(ctx: ProviderDomFlowContext): ChatgptDomProviderState {
 
 async function waitForUi(ctx: ProviderDomFlowContext): Promise<void> {
   const state = requireState(ctx);
+  // PRE-RUN access gate (challenge/login fault isolation): refuse before any
+  // composer interaction when the worker is quarantined or the page shows a
+  // login wall / verification interstitial / security block / rate limit.
+  // Runs BEFORE ensurePromptReady so an access wall refuses in milliseconds
+  // instead of burning the composer-wait timeout.
+  await assertPreRunAccessState(state.runtime, state.logger);
   await ensurePromptReady(state.runtime, state.inputTimeoutMs ?? 30_000, state.logger);
 }
 
