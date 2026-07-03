@@ -163,6 +163,10 @@ function sanitizeRunOptions(value: RemoteRunPayload["options"]): RemoteRunPayloa
     ...(typeof value.verbose === "boolean" ? { verbose: value.verbose } : {}),
     ...(typeof value.sessionId === "string" ? { sessionId: value.sessionId } : {}),
     ...(typeof value.jobId === "string" ? { jobId: value.jobId } : {}),
+    ...(typeof value.scheduledConcurrency === "number" &&
+    Number.isFinite(value.scheduledConcurrency)
+      ? { scheduledConcurrency: value.scheduledConcurrency }
+      : {}),
     ...(Array.isArray(value.followUpPrompts)
       ? {
           followUpPrompts: value.followUpPrompts.filter(

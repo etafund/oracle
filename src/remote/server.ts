@@ -678,6 +678,7 @@ export async function createRemoteServer(
       // run, emitted from the finally below on success, failure, and abort).
       let acceptedAt: string | null = null;
       let submittedAt: string | null = null;
+      let firstTokenAt: string | null = null;
       let activeTabLeasesAtSubmit: number | null = null;
       let attachments: BrowserAttachment[] = [];
       let fallbackSubmission:
@@ -852,6 +853,13 @@ export async function createRemoteServer(
                 })
                 .catch(() => undefined);
             }
+            // First answer output observed: the browser heartbeat reports
+            // status=response streaming only while generation is actively
+            // producing output (stop control visible). This marks TIMING for
+            // the metric-validity gate — it is never completion proof.
+            if (firstTokenAt === null && /status=response streaming/i.test(message)) {
+              firstTokenAt = new Date().toISOString();
+            }
             // Structural capture-binding markers feed the provenance summary
             // of the terminal done event.
             if (/capture binding verified/i.test(message)) {
@@ -1001,9 +1009,12 @@ export async function createRemoteServer(
               port: boundPort,
               accepted_at: acceptedAt,
               submitted_at: submittedAt,
-              first_token_at: null,
+              first_token_at: firstTokenAt,
               completed_at: new Date().toISOString(),
-              scheduled_concurrency: null,
+              scheduled_concurrency:
+                typeof payload.options?.scheduledConcurrency === "number"
+                  ? payload.options.scheduledConcurrency
+                  : null,
               active_tab_leases: activeTabLeasesAtSubmit,
               busy_workers: null,
               error_class: runErrorClass,

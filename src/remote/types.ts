@@ -32,6 +32,12 @@ export interface RemoteRunPayload {
      * runs to jobs; never interpreted by the worker.
      */
     jobId?: string;
+    /**
+     * Concurrency bucket the scheduler placed this run into (c=1/2/3),
+     * recorded verbatim as scheduled_concurrency in the oracle.run.v1 sink
+     * line for overlap-metric joins; never interpreted by the worker.
+     */
+    scheduledConcurrency?: number;
   };
 }
 

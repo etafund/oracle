@@ -213,7 +213,12 @@ describe("serve emits one sink line per accepted run", () => {
             }
             // Send-confirmation marker feeds submitted_at + census-at-submit.
             options.log?.("Submitted prompt via Enter key");
-            await new Promise((resolve) => setTimeout(resolve, 75));
+            await new Promise((resolve) => setTimeout(resolve, 40));
+            // Streaming heartbeat marks first answer output (first_token_at).
+            options.log?.(
+              "[browser] ChatGPT thinking - 12s elapsed; status=response streaming; source=inline",
+            );
+            await new Promise((resolve) => setTimeout(resolve, 35));
             const result: BrowserRunResult = {
               answerText: "ok",
               answerMarkdown: "ok",
@@ -237,7 +242,11 @@ describe("serve emits one sink line per accepted run", () => {
       );
 
       try {
-        const okRun = await postRun(server.port, token, validPayload({ jobId: "canary-007" }));
+        const okRun = await postRun(
+          server.port,
+          token,
+          validPayload({ jobId: "canary-007", scheduledConcurrency: 2 }),
+        );
         expect(okRun.statusCode).toBe(200);
         const failedRun = await postRun(server.port, token, validPayload({}));
         expect(failedRun.statusCode).toBe(200); // failure arrives as an error event
@@ -282,12 +291,17 @@ describe("serve emits one sink line per accepted run", () => {
           model_resolved: "Extended Pro",
           model_verified: true,
         });
-        // Timestamp ordering invariants: accepted <= submitted <= completed.
+        // Timestamp ordering invariants:
+        // accepted <= submitted <= first_token <= completed.
         expect(typeof okLine.accepted_at).toBe("string");
         expect(typeof okLine.submitted_at).toBe("string");
+        expect(typeof okLine.first_token_at).toBe("string");
         expect(typeof okLine.completed_at).toBe("string");
         expect(String(okLine.accepted_at) <= String(okLine.submitted_at)).toBe(true);
-        expect(String(okLine.submitted_at) <= String(okLine.completed_at)).toBe(true);
+        expect(String(okLine.submitted_at) <= String(okLine.first_token_at)).toBe(true);
+        expect(String(okLine.first_token_at) <= String(okLine.completed_at)).toBe(true);
+        // Scheduler-supplied concurrency bucket round-trips verbatim.
+        expect(okLine.scheduled_concurrency).toBe(2);
         expect([0, null]).toContain(okLine.active_tab_leases);
 
         const failLine = lines[1]!;
@@ -295,6 +309,9 @@ describe("serve emits one sink line per accepted run", () => {
         expect(failLine.done_ok).toBe(false);
         expect(failLine.error_class).toBe("transport_interrupted_before_submit");
         expect(failLine.submitted_at).toBeNull();
+        // No streamed output and no scheduler bucket => nulls preserved.
+        expect(failLine.first_token_at).toBeNull();
+        expect(failLine.scheduled_concurrency).toBeNull();
         expect(failLine.prev_hash).toBe(okLine.entry_hash);
       } finally {
         await server.close();
