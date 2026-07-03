@@ -3433,6 +3433,8 @@ async function runRemoteBrowserMode(
           allowMarkdownUpdate: !copiedMarkdown,
         }));
 
+      const promptEchoMatcher = buildPromptEchoMatcher(turnPrompt);
+
       // Final sanity check: ensure we didn't accidentally capture the user prompt instead of the assistant turn.
       const finalSnapshot = await readAssistantSnapshot(
         Runtime,
@@ -3440,19 +3442,23 @@ async function runRemoteBrowserMode(
         expectedConversationId(),
       ).catch(() => null);
       const finalText = typeof finalSnapshot?.text === "string" ? finalSnapshot.text.trim() : "";
-      if (
-        finalText &&
-        finalText !== turnAnswerMarkdown.trim() &&
-        finalText !== turnPrompt.trim() &&
-        finalText.length >= turnAnswerMarkdown.trim().length
-      ) {
-        logger("Refreshed assistant response via final DOM snapshot");
-        turnAnswerText = finalText;
-        turnAnswerMarkdown = finalText;
+      if (finalText && finalText !== turnPrompt.trim()) {
+        const trimmedMarkdown = turnAnswerMarkdown.trim();
+        const finalIsEcho = promptEchoMatcher ? promptEchoMatcher.isEcho(finalText) : false;
+        const lengthDelta = finalText.length - trimmedMarkdown.length;
+        const missingCopy = !copiedMarkdown && lengthDelta >= 0;
+        const likelyTruncatedCopy =
+          copiedMarkdown &&
+          trimmedMarkdown.length > 0 &&
+          lengthDelta >= Math.max(12, Math.floor(trimmedMarkdown.length * 0.75));
+        if ((missingCopy || likelyTruncatedCopy) && !finalIsEcho && finalText !== trimmedMarkdown) {
+          logger("Refreshed assistant response via final DOM snapshot");
+          turnAnswerText = finalText;
+          turnAnswerMarkdown = finalText;
+        }
       }
 
       // Detect prompt echo using normalized comparison (whitespace-insensitive).
-      const promptEchoMatcher = buildPromptEchoMatcher(turnPrompt);
       const alignedEcho = alignPromptEchoPair(
         turnAnswerText,
         turnAnswerMarkdown,
@@ -3494,6 +3500,35 @@ async function runRemoteBrowserMode(
         }
         if (bestText) {
           logger("Recovered assistant response after detecting prompt echo");
+          turnAnswerText = bestText;
+          turnAnswerMarkdown = bestText;
+        }
+      }
+      const minAnswerChars = 16;
+      if (turnAnswerText.trim().length > 0 && turnAnswerText.trim().length < minAnswerChars) {
+        const deadline = Date.now() + 12_000;
+        let bestText = turnAnswerText.trim();
+        let stableCycles = 0;
+        while (Date.now() < deadline) {
+          const snapshot = await readAssistantSnapshot(
+            Runtime,
+            baselineTurns ?? undefined,
+            expectedConversationId(),
+          ).catch(() => null);
+          const text = typeof snapshot?.text === "string" ? snapshot.text.trim() : "";
+          if (text && text.length > bestText.length) {
+            bestText = text;
+            stableCycles = 0;
+          } else {
+            stableCycles += 1;
+          }
+          if (stableCycles >= 3 && bestText.length >= minAnswerChars) {
+            break;
+          }
+          await delay(400);
+        }
+        if (bestText.length > turnAnswerText.trim().length) {
+          logger("Refreshed short assistant response from latest DOM snapshot");
           turnAnswerText = bestText;
           turnAnswerMarkdown = bestText;
         }

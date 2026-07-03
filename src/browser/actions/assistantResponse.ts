@@ -47,6 +47,7 @@ function isAnswerNowPlaceholderText(normalized: string): boolean {
   // Learned: "Pro thinking" shows a placeholder turn that contains "Answer now".
   // That is not the final answer and must be ignored in browser automation.
   if (text === "chatgpt said:" || text === "chatgpt said") return true;
+  if (text === "answer now" || text === "answer now edit") return true;
   if (
     text.includes("file upload request") &&
     (text.includes("pro thinking") || text.includes("chatgpt said"))
@@ -78,6 +79,10 @@ export function matchesThinkingStatusLabelForTest(text: string): boolean {
   return matchesThinkingStatusLabel(text.toLowerCase().replace(/\s+/g, " ").trim());
 }
 
+export function isAnswerNowPlaceholderTextForTest(text: string): boolean {
+  return isAnswerNowPlaceholderText(text.toLowerCase().replace(/\s+/g, " ").trim());
+}
+
 export function buildActiveThinkingStatusPredicateJsForTest(fnName: string): string {
   return buildActiveThinkingStatusPredicateJs(fnName);
 }
@@ -103,13 +108,6 @@ type AssistantCompletionState = {
   stableMs: number;
   minStableMs: number;
 };
-
-// When generation looks idle (no stop button, no finished-action controls) but
-// the answer is substantial, ChatGPT Pro may simply be between a streamed
-// preamble and the real answer ("Pro thinking"). Require a much longer
-// stability window before trusting bare stop-button absence for such answers so
-// we never accept a mid-stream fragment as the final response.
-const PRO_IDLE_NO_COMPLETION_STABLE_MS = 20_000;
 
 function shouldAcceptStableAssistantSnapshot({
   stopVisible,
@@ -145,12 +143,12 @@ function shouldAcceptStableAssistantSnapshot({
   if (!stopVisible) {
     // No stop button and no finished-action controls. For compact answers this
     // is the normal fast path. For substantial answers, bare stop-button
-    // absence is unreliable (the Pro thinking gate hides it mid-turn), so demand
-    // a much longer stable window before trusting it.
+    // absence is unreliable (the Pro thinking gate hides it mid-turn), so never
+    // treat it as final without finished-action controls.
     if (compactAnswer) {
       return stableEnough;
     }
-    return stableEnough && stableMs >= PRO_IDLE_NO_COMPLETION_STABLE_MS;
+    return false;
   }
 
   // ChatGPT can leave a live stop-button node after a short answer is already
@@ -439,13 +437,11 @@ async function recoverAssistantResponse(
   if (recoveryTimeoutMs === 0) {
     return null;
   }
-  const recovered = await waitForCondition(
-    async () => {
-      const snapshot = await readAssistantSnapshot(Runtime, minTurnIndex, expectedConversationId);
-      return normalizeAssistantSnapshot(snapshot);
-    },
+  const recovered = await pollAssistantCompletion(
+    Runtime,
     recoveryTimeoutMs,
-    400,
+    minTurnIndex,
+    expectedConversationId,
   );
   if (recovered) {
     logger("Recovered assistant response via polling fallback");
@@ -811,22 +807,6 @@ function isGeneratedImageAssistantAnswer(answer: { html?: string } | null): bool
   return Boolean(answer?.html?.includes("/backend-api/estuary/content?id=file_"));
 }
 
-async function waitForCondition<T>(
-  getter: () => Promise<T | null>,
-  timeoutMs: number,
-  pollIntervalMs = 400,
-): Promise<T | null> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const value = await getter();
-    if (value) {
-      return value;
-    }
-    await delay(pollIntervalMs);
-  }
-  return null;
-}
-
 function buildAssistantSnapshotExpression(
   minTurnIndex?: number,
   expectedConversationId?: string,
@@ -857,6 +837,7 @@ function buildAssistantSnapshotExpression(
     const isPlaceholder = (snapshot) => {
       const normalized = String(snapshot?.text ?? '').toLowerCase().trim();
       if (normalized === 'chatgpt said:' || normalized === 'chatgpt said') return true;
+      if (normalized === 'answer now' || normalized === 'answer now edit') return true;
       if (normalized.includes('file upload request') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'))) {
         return true;
       }
@@ -919,6 +900,7 @@ function buildResponseObserverExpression(
     const isAnswerNowPlaceholder = (snapshot) => {
       const normalized = String(snapshot?.text ?? '').toLowerCase().trim();
       if (normalized === 'chatgpt said:' || normalized === 'chatgpt said') return true;
+      if (normalized === 'answer now' || normalized === 'answer now edit') return true;
       if (normalized.includes('file upload request') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'))) {
         return true;
       }
@@ -1130,17 +1112,17 @@ function buildResponseObserverExpression(
       };
       // Substantial answers get a longer settle window: bare stop-button absence
       // is unreliable for them (the Pro thinking gate hides it mid-turn), so we
-      // wait for the finished-action controls or a long idle period before
-      // trusting the snapshot. Compact answers keep their original windows.
-      // For substantial answers, require this much idle time before accepting on
-      // stop-button absence when the finished-action controls never appear.
-      const idleNoCompletionMs = 20_000;
+      // wait for the finished-action controls. Compact answers keep their
+      // original windows because exact one-line replies may finish before copy
+      // controls mount. For substantial answers, timing out/rechecking is safer
+      // than returning a Pro preamble as the final answer.
       const settleIntervalMs = 400;
       let latest = snapshot;
       let lastLength = snapshot?.text?.length ?? 0;
       let stableCycles = 0;
       let lastChangeAt = Date.now();
-      let deadline = Date.now() + settleWindowForLength(lastLength);
+      const overallDeadline = Date.now() + ${timeoutMs};
+      let deadline = Math.min(overallDeadline, Date.now() + settleWindowForLength(lastLength));
       while (Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, settleIntervalMs));
         const refreshedRaw = extractFromTurns();
@@ -1169,7 +1151,10 @@ function buildResponseObserverExpression(
           lastLength = nextLength;
           stableCycles = 0;
           lastChangeAt = Date.now();
-          deadline = Math.max(deadline, Date.now() + settleWindowForLength(lastLength));
+          deadline = Math.min(
+            overallDeadline,
+            Math.max(deadline, Date.now() + settleWindowForLength(lastLength)),
+          );
         } else {
           stableCycles += 1;
         }
@@ -1193,13 +1178,23 @@ function buildResponseObserverExpression(
         if (!stopVisible && stableCycles >= stableTarget) {
           // Compact answers may never render a copy button promptly; accept them
           // on stop-button absence + stability. Substantial answers must instead
-          // wait out a long idle period to avoid capturing a mid-stream preamble.
-          if (compactAnswer || idleMs >= idleNoCompletionMs) {
+          // wait for finished controls to avoid capturing a mid-stream preamble.
+          if (compactAnswer) {
             break;
           }
+          deadline = Math.max(deadline, Math.min(overallDeadline, Date.now() + settleIntervalMs));
         }
       }
-      return latest ?? snapshot;
+      const finalLength = latest?.text?.length ?? snapshot?.text?.length ?? 0;
+      const finalSize = classifyLength(finalLength);
+      const finalCompact = finalSize.shortAnswer || finalSize.mediumAnswer;
+      if (finalCompact) {
+        return latest ?? snapshot;
+      }
+      if (isLastAssistantTurnFinished()) {
+        return latest ?? snapshot;
+      }
+      return null;
     };
 
     const extractedRaw = extractFromTurns();

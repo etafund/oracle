@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import {
   buildActiveThinkingStatusPredicateJsForTest,
   buildAssistantSnapshotExpressionForTest,
+  isAnswerNowPlaceholderTextForTest,
   matchesThinkingStatusLabelForTest,
   shouldAcceptStableAssistantSnapshotForTest,
 } from "../../src/browser/actions/assistantResponse.js";
@@ -43,9 +44,16 @@ describe("assistant thinking-status capture", () => {
     expect(evaluatePredicate("Thinking about the design, use Postgres.", true)).toBe(false);
   });
 
+  test("rejects bare Answer now placeholder captures", () => {
+    expect(isAnswerNowPlaceholderTextForTest("Answer now")).toBe(true);
+    expect(isAnswerNowPlaceholderTextForTest("Answer now Edit")).toBe(true);
+    expect(isAnswerNowPlaceholderTextForTest("Do not click Answer now; wait.")).toBe(false);
+  });
+
   test("uses the active-status predicate in snapshot capture", () => {
     const expression = buildAssistantSnapshotExpressionForTest();
     expect(expression).toContain("isActiveThinkingStatus");
+    expect(expression).toContain("normalized === 'answer now'");
     expect(expression).toContain("Pure thinking/status labels are placeholders");
     expect(expression).toContain("const fallback = extractFallback();");
   });
@@ -152,9 +160,9 @@ describe("assistant thinking-status capture", () => {
     ).toBe(true);
   });
 
-  test("accepts a substantial idle answer after a long stable window", () => {
-    // Fallback when ChatGPT never renders a copy button: trust stop-button
-    // absence only after a much longer idle period.
+  test("does not accept substantial idle output without finished controls", () => {
+    // Regression for Pro review preambles: even a long stable idle window is
+    // not proof of finality when ChatGPT hides the stop button mid-turn.
     expect(
       shouldAcceptStableAssistantSnapshotForTest({
         stopVisible: false,
@@ -167,7 +175,7 @@ describe("assistant thinking-status capture", () => {
         stableMs: 22_000,
         minStableMs: 3000,
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   test("still accepts compact answers on bare stop-button absence", () => {

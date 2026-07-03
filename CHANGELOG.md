@@ -23,6 +23,7 @@
 - API: forward configured reasoning effort through custom OpenAI-compatible chat-completions gateways.
 - Browser: accept a stable, exact file-input name match when ChatGPT marks the composer ready but exposes no attachment chip or count, while still waiting through active uploads and rejecting missing or extra files. Fixes #275. Thanks @wangwllu!
 - Browser: avoid returning truncated Pro answers when completion controls appear during the thinking-to-answer transition. Thanks @xuan-wei!
+- Browser: keep waiting on ChatGPT Pro review preambles when the stop button disappears without finished-turn controls, reject bare `Answer now` placeholders, and align remote-browser post-capture recovery with the local browser path.
 - Browser: wait up to eight seconds for the ChatGPT model/effort composer pill to mount before failing explicit selection, while leaving `option-not-found` failures immediate. Thanks @gustavosmendes!
 - Browser: activate ChatGPT Deep Research after the final composer reset, select the current tools-menu row shape, and use trusted mouse clicks for Deep Research and send actions so the request reaches the real research-plan flow instead of being submitted as an ordinary Pro prompt.
 
