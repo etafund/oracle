@@ -16,6 +16,63 @@ describe("bin/oracle-cli preview and visibility routing", () => {
     expect(output).toContain("visibility-status");
   });
 
+  test("oracle --help shows one examples section with lane aliases", async () => {
+    const { stdout, stderr } = await runOracle(["--help"]);
+    const output = `${stdout}\n${stderr}`;
+    const exampleSections = output.match(/^Examples:?\n/gm);
+
+    expect(exampleSections).toHaveLength(1);
+    expect(output).toContain(
+      `oracle --lane chatgpt-pro --prompt "Review this migration plan" --file docs/plan.md`,
+    );
+    expect(output).toContain(
+      `oracle --lane fable-local --prompt "Review this migration plan" --file docs/plan.md`,
+    );
+    expect(output).toContain(
+      `oracle --lane gemini-deep-think --prompt "Review this migration plan" --file docs/plan.md`,
+    );
+  });
+
+  test("--lane chatgpt-pro maps to browser compatibility syntax in preview", async () => {
+    const { stdout } = await runOracle([
+      "--lane",
+      "chatgpt-pro",
+      "--prompt",
+      "Review this migration plan",
+      "--file",
+      "AGENTS.md",
+      "--dry-run",
+      "json",
+      "--json",
+    ]);
+    const preview = parseLastJson(stdout);
+
+    expect(preview).toMatchObject({
+      engine: "browser",
+      model: "gpt-5.5-pro",
+    });
+  });
+
+  test("--lane gemini-deep-think maps to browser compatibility syntax in preview", async () => {
+    const { stdout } = await runOracle([
+      "--lane",
+      "gemini-deep-think",
+      "--prompt",
+      "Review this migration plan",
+      "--file",
+      "AGENTS.md",
+      "--dry-run",
+      "json",
+      "--json",
+    ]);
+    const preview = parseLastJson(stdout);
+
+    expect(preview).toMatchObject({
+      engine: "browser",
+      model: "gemini-3-pro-deep-think",
+    });
+  });
+
   test.each([
     ["preview", ["preview", "--help"]],
     ["status", ["status", "--help"]],
@@ -64,6 +121,13 @@ function parseJsonEnvelope(stdout: string): Record<string, unknown> {
   const start = stdout.indexOf("{");
   expect(start).toBeGreaterThanOrEqual(0);
   return JSON.parse(stdout.slice(start)) as Record<string, unknown>;
+}
+
+function parseLastJson(stdout: string): Record<string, unknown> {
+  const marker = stdout.lastIndexOf("Preview JSON\n");
+  const start = marker >= 0 ? marker + "Preview JSON\n".length : -1;
+  expect(start).toBeGreaterThanOrEqual(0);
+  return JSON.parse(stdout.slice(start).trim()) as Record<string, unknown>;
 }
 
 async function runOracle(args: string[]): Promise<{ stdout: string; stderr: string }> {

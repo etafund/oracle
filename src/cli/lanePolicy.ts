@@ -1,4 +1,5 @@
 import type { EngineMode } from "./engine.js";
+import { isChatGptProModelAlias, isGeminiDeepThinkModelAlias } from "./options.js";
 import {
   AGENT_LANE_POLICY_VERSION,
   LANE_TEMPLATES,
@@ -97,6 +98,14 @@ export function resolveLanePolicy(request: LanePolicyRequest): LanePolicyDecisio
         resolvedLane: resolvedFromTemplate(template, "lane", normalized),
       };
     }
+    const conflict = browserLaneConflictReason(template.lane, normalized);
+    if (conflict) {
+      return routeBlock(normalized, conflict);
+    }
+    return {
+      ok: true,
+      resolvedLane: resolvedFromTemplate(template, "lane", normalized),
+    };
   }
 
   if (normalized.engine === "claude-code") {
@@ -215,6 +224,32 @@ function fableConflictReason(
     return "fable_local_conflicts_with_api_provider";
   }
   return null;
+}
+
+function browserLaneConflictReason(
+  lane: OracleLane,
+  request: NormalizedLaneRequest,
+): string | null {
+  if (request.engine && request.engine !== "browser") {
+    return `${laneReasonPrefix(lane)}_conflicts_with_engine`;
+  }
+  if (request.models.length > 0) {
+    return "multi_model_fanout_blocked";
+  }
+  if (!request.model) {
+    return null;
+  }
+  if (lane === "chatgpt-pro" && !isChatGptProModelAlias(request.model)) {
+    return "chatgpt_pro_conflicts_with_model";
+  }
+  if (lane === "gemini-deep-think" && !isGeminiDeepThinkModelAlias(request.model)) {
+    return "gemini_deep_think_conflicts_with_model";
+  }
+  return null;
+}
+
+function laneReasonPrefix(lane: OracleLane): string {
+  return lane.replace(/-/gu, "_");
 }
 
 function reviewedLegacyBlockReason(request: NormalizedLaneRequest): string | null {

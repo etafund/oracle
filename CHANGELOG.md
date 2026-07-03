@@ -4,6 +4,7 @@
 
 ### Added
 
+- CLI: enable reviewed `--lane chatgpt-pro` and `--lane gemini-deep-think` aliases for the existing browser-backed Pro and Gemini Deep Think routes, preserving legacy engine/model commands while making `oracle --help` show one parallel lane example set.
 - CLI: add the hidden-alpha `--lane fable-local` path for read-only local Claude Code Fable reviews, with central lane route-blocking, Anthropic API env refusal, guarded `claude -p` command construction, raw visible-stream artifacts, session metadata, dry-run output, and MCP schema discovery that still blocks MCP execution until that lane is proven separately.
 - Bridge/Browser: transfer ChatGPT-generated files from the browser host back to the client over a token-protected artifact endpoint, with capability discovery, safe filenames, byte counts, SHA-256 metadata, ZIP validation, and manual fallback guidance for mixed-version bridge deployments. Thanks @DK625!
 - API: add user-only `modelOverrides` for remapping known models and their metadata on custom OpenAI-compatible gateways. Fixes #273. Thanks @wangwllu!

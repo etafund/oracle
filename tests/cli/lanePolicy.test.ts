@@ -28,6 +28,77 @@ describe("lane policy", () => {
     });
   });
 
+  it("resolves --lane chatgpt-pro as an enabled browser review lane", () => {
+    const decision = resolveLanePolicy({
+      lane: "chatgpt-pro",
+      prompt: "Review this plan",
+      files: ["src/index.ts"],
+    });
+    expect(decision.ok).toBe(true);
+    expect(decision.ok && decision.resolvedLane).toMatchObject({
+      lane: "chatgpt-pro",
+      canonicalId: "chatgpt_pro_browser",
+      engine: "browser",
+      accessPath: "chatgpt_pro_browser_automation",
+      inferredFrom: "lane",
+      readiness: "enabled",
+      normalizedEngineOptions: {
+        engine: "browser",
+        model: "gpt-5.5-pro",
+        browserThinkingTime: "extended",
+        browserModelStrategy: "select",
+        browserArchive: "auto",
+        browserAttachments: "auto",
+      },
+    });
+  });
+
+  it("resolves --lane gemini-deep-think as an enabled browser review lane", () => {
+    const decision = resolveLanePolicy({
+      lane: "gemini-deep-think",
+      prompt: "Review this plan",
+      files: ["src/main.ts"],
+    });
+    expect(decision.ok).toBe(true);
+    expect(decision.ok && decision.resolvedLane).toMatchObject({
+      lane: "gemini-deep-think",
+      canonicalId: "gemini_pro_deep_think_browser",
+      engine: "browser",
+      accessPath: "gemini_pro_deep_think_browser_automation",
+      inferredFrom: "lane",
+      readiness: "enabled",
+      normalizedEngineOptions: {
+        engine: "browser",
+        model: "gemini-3.1-pro-deep-think",
+        geminiDeepThink: true,
+        geminiDeepThinkFallback: "fail",
+        browserModelStrategy: "select",
+        browserArchive: "auto",
+        browserAttachments: "auto",
+      },
+    });
+  });
+
+  it("blocks contradictory lane alias engine/model options before backend startup", () => {
+    const wrongEngine = resolveLanePolicy({
+      lane: "chatgpt-pro",
+      engine: "api",
+      prompt: "Review this plan",
+    });
+    const wrongModel = resolveLanePolicy({
+      lane: "gemini-deep-think",
+      model: "gpt-5.5-pro",
+      prompt: "Review this plan",
+    });
+
+    expect(wrongEngine.ok).toBe(false);
+    expect(!wrongEngine.ok && wrongEngine.blockedReason).toBe("chatgpt_pro_conflicts_with_engine");
+    expect(wrongModel.ok).toBe(false);
+    expect(!wrongModel.ok && wrongModel.blockedReason).toBe(
+      "gemini_deep_think_conflicts_with_model",
+    );
+  });
+
   it("resolves exact expert engine/model compatibility form", () => {
     const decision = resolveLanePolicy({
       engine: "claude-code",
@@ -37,18 +108,6 @@ describe("lane policy", () => {
     expect(decision.ok).toBe(true);
     expect(decision.ok && decision.resolvedLane?.lane).toBe("fable-local");
     expect(decision.ok && decision.resolvedLane?.inferredFrom).toBe("legacy-engine-model");
-  });
-
-  it("blocks deferred browser lane templates in hidden alpha", () => {
-    const decision = resolveLanePolicy({ lane: "chatgpt-pro", prompt: "Review this plan" });
-    expect(decision.ok).toBe(false);
-    expect(!decision.ok && decision.blockedReason).toBe("selector_state_unknown");
-    expect(!decision.ok && decision.deferredLanes).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ lane: "chatgpt-pro", status: "not-ready" }),
-        expect.objectContaining({ lane: "gemini-deep-think", status: "deferred" }),
-      ]),
-    );
   });
 
   it("blocks API fable instead of allowing API/OpenRouter/browser reinterpretation", () => {
@@ -64,7 +123,7 @@ describe("lane policy", () => {
     expect(!decision.ok && decision.blockedReason).toBe("missing_reviewed_lane");
   });
 
-  it("blocks exact ChatGPT Pro legacy routes while the browser lane is not ready", () => {
+  it("keeps strict lane policy for legacy routes unless callers explicitly request pass-through", () => {
     const modelOnly = resolveLanePolicy({ model: "gpt-5.5-pro" });
     const browserExact = resolveLanePolicy({
       engine: "browser",
@@ -75,6 +134,23 @@ describe("lane policy", () => {
     expect(!modelOnly.ok && modelOnly.blockedReason).toBe("selector_state_unknown");
     expect(browserExact.ok).toBe(false);
     expect(!browserExact.ok && browserExact.blockedReason).toBe("selector_state_unknown");
+  });
+
+  it("keeps legacy --engine/--model routes available when callers explicitly request pass-through", () => {
+    const chatgptLegacy = resolveLanePolicy({
+      model: "gpt-5.5-pro",
+      engine: "browser",
+      browserFlags: ["browserThinkingTime"],
+      allowLegacyRoutes: true,
+    });
+    const geminiLegacy = resolveLanePolicy({
+      model: "gemini-3.1-pro-deep-think",
+      engine: "browser",
+      browserFlags: ["browserModelStrategy"],
+      allowLegacyRoutes: true,
+    });
+    expect(chatgptLegacy).toEqual({ ok: true, resolvedLane: null });
+    expect(geminiLegacy).toEqual({ ok: true, resolvedLane: null });
   });
 
   it("blocks unsupported API/browser/model routes", () => {

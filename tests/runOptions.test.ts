@@ -81,6 +81,34 @@ describe("resolveRunOptionsFromConfig", () => {
     });
   });
 
+  it("normalizes --lane chatgpt-pro to the browser engine with lane metadata", () => {
+    const { runOptions, resolvedEngine, resolvedLane } = resolveRunOptionsFromConfig({
+      prompt: basePrompt,
+      lane: "chatgpt-pro",
+      env: {},
+    });
+    expect(resolvedEngine).toBe("browser");
+    expect(resolvedLane).toBe("chatgpt-pro");
+    expect(runOptions.lane).toBe("chatgpt-pro");
+    expect(runOptions.model).toBe("gpt-5.5-pro");
+    expect(runOptions.effectiveModelId).toBe("gpt-5.5-pro");
+    expect(runOptions.browserAttachments).toBe("auto");
+  });
+
+  it("normalizes --lane gemini-deep-think to the browser Deep Think target", () => {
+    const { runOptions, resolvedEngine, resolvedLane } = resolveRunOptionsFromConfig({
+      prompt: basePrompt,
+      lane: "gemini-deep-think",
+      env: {},
+    });
+    expect(resolvedEngine).toBe("browser");
+    expect(resolvedLane).toBe("gemini-deep-think");
+    expect(runOptions.lane).toBe("gemini-deep-think");
+    expect(runOptions.model).toBe("gemini-3-pro-deep-think");
+    expect(runOptions.effectiveModelId).toBe("gemini-3-pro-deep-think");
+    expect(runOptions.browserAttachments).toBe("auto");
+  });
+
   it("normalizes expert --engine claude-code --model fable to fable-local", () => {
     const { runOptions, resolvedEngine, resolvedLane } = resolveRunOptionsFromConfig({
       prompt: basePrompt,

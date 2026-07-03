@@ -111,6 +111,37 @@ export function resolveRunOptionsFromConfig({
       resolvedLane: laneDecision.resolvedLane.lane,
     };
   }
+  if (laneDecision.resolvedLane?.engine === "browser") {
+    const promptWithSuffix =
+      userConfig?.promptSuffix && userConfig.promptSuffix.trim().length > 0
+        ? `${prompt.trim()}\n${userConfig.promptSuffix}`
+        : prompt;
+    const search = userConfig?.search !== "off";
+    const heartbeatIntervalMs =
+      userConfig?.heartbeatSeconds !== undefined ? userConfig.heartbeatSeconds * 1000 : 30_000;
+    const maxFileSizeBytes = resolveConfiguredMaxFileSizeBytes(userConfig, env);
+    const laneOptions = laneDecision.resolvedLane.normalizedEngineOptions;
+    const laneModelValue = laneStringOption(laneOptions, "model") ?? DEFAULT_MODEL;
+    const laneModel = normalizeChatGptModelForBrowser(inferModelFromLabel(laneModelValue));
+
+    return {
+      runOptions: {
+        prompt: promptWithSuffix,
+        model: laneModel,
+        file: files ?? [],
+        lane: laneDecision.resolvedLane.lane,
+        maxFileSizeBytes,
+        search,
+        heartbeatIntervalMs,
+        filesReport: userConfig?.filesReport,
+        background: userConfig?.background,
+        effectiveModelId: laneModel,
+        browserAttachments: laneBrowserAttachments(laneOptions) ?? "auto",
+      },
+      resolvedEngine: laneDecision.resolvedLane.engine,
+      resolvedLane: laneDecision.resolvedLane.lane,
+    };
+  }
   const envEnginePreference = (env.ORACLE_ENGINE ?? "").trim().toLowerCase();
   const browserRequested = engine === "browser";
   const explicitApiEngineRequested = engine === "api" || (!engine && envEnginePreference === "api");
@@ -224,6 +255,21 @@ function resolveAzureOptions(
     deployment: env.AZURE_OPENAI_DEPLOYMENT ?? userConfig?.azure?.deployment,
     apiVersion: env.AZURE_OPENAI_API_VERSION ?? userConfig?.azure?.apiVersion,
   };
+}
+
+function laneStringOption(options: Record<string, unknown>, name: string): string | undefined {
+  const value = options[name];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function laneBrowserAttachments(
+  options: Record<string, unknown>,
+): RunOracleOptions["browserAttachments"] | undefined {
+  const value = laneStringOption(options, "browserAttachments");
+  if (value === "auto" || value === "never" || value === "always") {
+    return value;
+  }
+  return undefined;
 }
 
 function resolveEffectiveModelId(model: ModelName, modelOverrides?: ModelOverridesConfig): string {

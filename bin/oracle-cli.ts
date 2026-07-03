@@ -168,6 +168,7 @@ interface CliOptions extends OptionValues {
   browserManualLoginProfileDir?: string;
   copyProfile?: string;
   browserThinkingTime?: "light" | "standard" | "extended" | "heavy";
+  browserArchive?: "auto" | "always" | "never";
   browserResearch?: "off" | "deep";
   browserFollowUp?: string[];
   browserAllowCookieErrors?: boolean;
@@ -418,6 +419,7 @@ program.configureOutput({
     }
   },
 });
+
 program.exitOverride();
 program.hook("preAction", (_thisCommand, actionCommand) => {
   perfTrace.mark("pre-action", { command: actionCommand.name() || "root" });
@@ -529,12 +531,12 @@ program
   .addOption(
     new Option(
       "--lane <lane>",
-      "Reviewed lane template (fable-local enabled locally; chatgpt-pro and gemini-deep-think report readiness via doctor lanes).",
+      "Reviewed lane alias (fable-local, chatgpt-pro, gemini-deep-think).",
     ),
   )
   .option(
     "-m, --model <model>",
-    "Model to target. Core lanes use gpt-5.5-pro (ChatGPT Pro Extended Reasoning), fable (via --lane fable-local), or Gemini Deep Think via --provider gemini --gemini-deep-think; older API/browser aliases remain compatibility-only.",
+    "Model to target. Prefer --lane for reviewed routes; legacy API/browser model aliases remain available.",
     normalizeModelOption,
   )
   .addOption(
@@ -1039,29 +1041,6 @@ program
   .addOption(new Option("--wait").default(undefined))
   .addOption(new Option("--no-wait").default(undefined).hideHelp())
   .showHelpAfterError("(use --help for usage)");
-
-program.addHelpText(
-  "after",
-  `
-Examples:
-  # ChatGPT Pro Extended Reasoning browser run with source context
-  oracle --engine browser --model gpt-5.5-pro --browser-thinking-time extended \\
-    --prompt "Summarize the risk register" --file docs/risk-register.md docs/risk-matrix.md
-
-  # Fable xHigh local subscription-CLI review
-  oracle --lane fable-local --prompt "Review this migration plan" --file docs/plan.md
-
-  # Gemini 3.1 Deep Think browser run
-  oracle --engine browser --provider gemini --gemini-deep-think --prompt "Review the TS data layer" \\
-    --file "src/**/*.ts" --file "!src/**/*.test.ts"
-
-  # Check the remote router / browser boxes before a live browser run
-  oracle remote doctor --json
-
-  # Build, print, and copy a markdown bundle (semi-manual)
-  oracle --render --copy -p "Review the TS data layer" --file "src/**/*.ts" --file "!src/**/*.test.ts"
-`,
-);
 
 program
   .command("serve")
@@ -1662,6 +1641,49 @@ function collectLaneBrowserConflictFlags(
   });
 }
 
+function applyResolvedLaneCliOptions(
+  options: CliOptions,
+  resolvedLane: ResolvedOracleLane,
+  optionUsesDefault: (name: string) => boolean,
+): void {
+  options.lane = resolvedLane.lane;
+  const laneOptions = resolvedLane.normalizedEngineOptions;
+  const engine = laneStringOption(laneOptions, "engine");
+  if (engine) {
+    options.engine = engine as EngineMode;
+  }
+  const model = laneStringOption(laneOptions, "model");
+  if (model) {
+    options.model = model;
+  }
+  applyStringLaneDefault(options, laneOptions, "browserThinkingTime", optionUsesDefault);
+  applyStringLaneDefault(options, laneOptions, "browserModelStrategy", optionUsesDefault);
+  applyStringLaneDefault(options, laneOptions, "browserArchive", optionUsesDefault);
+  applyStringLaneDefault(options, laneOptions, "browserAttachments", optionUsesDefault);
+  applyStringLaneDefault(options, laneOptions, "geminiDeepThinkFallback", optionUsesDefault);
+  const geminiDeepThink = laneOptions.geminiDeepThink;
+  if (typeof geminiDeepThink === "boolean" && optionUsesDefault("geminiDeepThink")) {
+    options.geminiDeepThink = geminiDeepThink;
+  }
+}
+
+function applyStringLaneDefault(
+  options: CliOptions,
+  laneOptions: Record<string, unknown>,
+  name: keyof CliOptions,
+  optionUsesDefault: (name: string) => boolean,
+): void {
+  const value = laneStringOption(laneOptions, String(name));
+  if (value && (optionUsesDefault(String(name)) || options[name] === undefined)) {
+    (options as Record<string, unknown>)[name] = value;
+  }
+}
+
+function laneStringOption(options: Record<string, unknown>, name: string): string | undefined {
+  const value = options[name];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
 function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
   return values.find((value) => value?.trim());
 }
@@ -2172,18 +2194,13 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   if (remoteHost && resolvedLane?.transportEligibility !== "local-only") {
     console.log(chalk.dim(`Remote browser host detected: ${remoteHost}`));
   }
-  if (resolvedLane?.engine === "claude-code") {
-    options.lane = resolvedLane.lane;
-    options.engine = "claude-code";
-    options.model =
-      typeof resolvedLane.normalizedEngineOptions.model === "string"
-        ? resolvedLane.normalizedEngineOptions.model
-        : "fable";
+  if (resolvedLane) {
     if (options.route || options.preflight) {
       throw new Error(
-        "--route/--preflight are API-provider diagnostics and cannot inspect the fable-local Claude Code lane yet.",
+        "--route/--preflight are API-provider diagnostics and cannot inspect reviewed lanes. Use `oracle doctor lanes --json` or a lane dry-run instead.",
       );
     }
+    applyResolvedLaneCliOptions(options, resolvedLane, optionUsesDefault);
   }
   // applyGeminiDeepThinkRootDefaults already coerces engine to "browser" when a
   // deep-think alias is requested, so by the time we reach this resolveApiModel

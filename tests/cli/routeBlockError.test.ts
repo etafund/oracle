@@ -25,15 +25,18 @@ describe("LaneRouteBlockError", () => {
     });
     expect(error.details?.enabledLanes).toEqual([
       {
+        lane: "chatgpt-pro",
+        command: 'oracle --lane chatgpt-pro --prompt "..." --file path',
+      },
+      {
+        lane: "gemini-deep-think",
+        command: 'oracle --lane gemini-deep-think --prompt "..." --file path',
+      },
+      {
         lane: "fable-local",
         command: 'oracle --lane fable-local --prompt "..." --file path',
       },
     ]);
-    expect(error.details?.deferredLanes).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ lane: "chatgpt-pro", status: "not-ready" }),
-        expect.objectContaining({ lane: "gemini-deep-think", status: "deferred" }),
-      ]),
-    );
+    expect(error.details?.deferredLanes).toEqual([]);
   });
 });
