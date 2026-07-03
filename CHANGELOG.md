@@ -26,6 +26,7 @@
 - Browser: keep waiting on ChatGPT Pro review preambles when the stop button disappears without finished-turn controls, reject bare `Answer now` placeholders, and align remote-browser post-capture recovery with the local browser path.
 - Browser: wait up to eight seconds for the ChatGPT model/effort composer pill to mount before failing explicit selection, while leaving `option-not-found` failures immediate. Thanks @gustavosmendes!
 - Browser: activate ChatGPT Deep Research after the final composer reset, select the current tools-menu row shape, and use trusted mouse clicks for Deep Research and send actions so the request reaches the real research-plan flow instead of being submitted as an ordinary Pro prompt.
+- Browser: report `response streaming` from the thinking-status heartbeat when a visible stop control is the only remaining liveness signal, so ChatGPT selector drift no longer logs an active generation as `no thinking status detected yet`. Fixes #284.
 
 ## 0.15.0 — 2026-06-19
 
