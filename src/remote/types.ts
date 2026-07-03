@@ -49,7 +49,11 @@ export interface RemoteArtifactDescriptor {
 }
 
 export type RemoteRunEvent =
-  | { type: "log"; message: string }
+  // `runId` is stamped onto every event by the server so each NDJSON line of a
+  // run is joinable end-to-end (client logs, server logs, forensics) even when
+  // a run fails early. Optional in the type so hand-built client fixtures stay
+  // valid; the server always emits it.
+  | { type: "log"; message: string; runId?: string }
   | { type: "artifact-ready"; runId: string; artifact: RemoteArtifactDescriptor }
   | {
       type: "artifact-progress";
@@ -57,9 +61,10 @@ export type RemoteRunEvent =
       receivedBytes?: number;
       totalBytes?: number;
       phase: "download" | "transfer" | "validate";
+      runId?: string;
     }
-  | { type: "result"; result: BrowserRunResult }
-  | { type: "error"; message: string };
+  | { type: "result"; result: BrowserRunResult; runId?: string }
+  | { type: "error"; message: string; runId?: string };
 
 export interface RemoteActiveRunInfo {
   id: string;

@@ -47,6 +47,14 @@ export interface RemoteServerOptions {
   logger?: (message: string) => void;
   manualLoginDefault?: boolean;
   manualLoginProfileDir?: string;
+  /**
+   * Neutral worker-identity labels used for run correlation across a fleet.
+   * Sourced from config/env (ORACLE_LANE_ID / ORACLE_ACCOUNT_ID); must be
+   * neutral identifiers (e.g. "acct1"), never emails or hostnames, because
+   * they are echoed to callers in response headers.
+   */
+  laneId?: string;
+  accountId?: string;
 }
 
 interface RemoteServerDeps {
@@ -117,6 +125,20 @@ export async function createRemoteServer(
   let activeRun: ActiveRunState | null = null;
   const artifactRegistry = new Map<string, RegisteredRemoteArtifact>();
 
+  // Worker identity for run correlation. Account id must stay a neutral label
+  // (never an email/hostname); the default lane id incorporates the bound port
+  // once the listener is up so co-hosted workers stay distinguishable.
+  const accountId =
+    sanitizeIdentityLabel(options.accountId ?? process.env.ORACLE_ACCOUNT_ID) ??
+    DEFAULT_ACCOUNT_ID;
+  const explicitLaneId = sanitizeIdentityLabel(options.laneId ?? process.env.ORACLE_LANE_ID);
+  let laneId = explicitLaneId ?? accountId;
+  const identityHeaders = (runId: string): Record<string, string> => ({
+    "X-Oracle-Run-Id": runId,
+    "X-Oracle-Lane-Id": laneId,
+    "X-Oracle-Account-Id": accountId,
+  });
+
   if (!process.listenerCount("unhandledRejection")) {
     process.on("unhandledRejection", (reason) => {
       logger(
@@ -126,6 +148,9 @@ export async function createRemoteServer(
   }
 
   server.on("request", (req, res) => {
+    // Populated as soon as a /runs request mints its identity so even the
+    // outermost failure handler can attribute the wreckage to a run id.
+    let requestRunId: string | null = null;
     void (async () => {
       if (req.method === "GET" && req.url === "/status") {
         logger("[serve] Health check /status");
@@ -175,34 +200,42 @@ export async function createRemoteServer(
         return;
       }
 
+      // Mint the run identity at request arrival, BEFORE any side effect
+      // (auth verdict, body read, temp-dir creation, single-flight flips,
+      // response head). Every log line, NDJSON event, and refusal for this
+      // request carries the same id so early failures stay attributable.
+      const runId = randomUUID();
+      requestRunId = runId;
+      const runStartedAt = Date.now();
+
       if (!isAuthorizedBearer(req.headers.authorization, authToken)) {
         if (verbose) {
           logger(
-            `[serve] Unauthorized /runs attempt from ${formatSocket(req)} (missing/invalid token)`,
+            `[serve] Unauthorized /runs attempt for run ${runId} from ${formatSocket(req)} (missing/invalid token)`,
           );
         }
-        res.writeHead(401, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "unauthorized" }));
+        res.writeHead(401, { "Content-Type": "application/json", ...identityHeaders(runId) });
+        res.end(JSON.stringify({ error: "unauthorized", runId }));
         return;
       }
       if (busy) {
         if (verbose) {
           logger(
-            `[serve] Busy: rejecting new run from ${formatSocket(req)} while another run is active`,
+            `[serve] Busy: rejecting run ${runId} from ${formatSocket(req)} while another run is active`,
           );
         }
-        res.writeHead(409, { "Content-Type": "application/json" });
+        res.writeHead(409, { "Content-Type": "application/json", ...identityHeaders(runId) });
         res.end(
           JSON.stringify({
             error: "busy",
             busy: true,
+            runId,
             ...(activeRun ? { activeRun: serializeActiveRun(activeRun) } : {}),
           }),
         );
         return;
       }
       busy = true;
-      const runStartedAt = Date.now();
 
       let payload: RemoteRunPayload | null = null;
       try {
@@ -213,14 +246,17 @@ export async function createRemoteServer(
         }
       } catch {
         busy = false;
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "invalid_request" }));
+        logger(`[serve] Run ${runId} refused: invalid request body`);
+        res.writeHead(400, { "Content-Type": "application/json", ...identityHeaders(runId) });
+        res.end(JSON.stringify({ error: "invalid_request", runId }));
         return;
       }
 
-      res.writeHead(200, { "Content-Type": "application/x-ndjson" });
+      res.writeHead(200, { "Content-Type": "application/x-ndjson", ...identityHeaders(runId) });
+      // Flush immediately: callers correlate on X-Oracle-Run-Id before the
+      // first NDJSON event arrives (long runs may stay quiet for a while).
+      res.flushHeaders();
 
-      const runId = randomUUID();
       activeRun = {
         id: runId,
         startedAtMs: runStartedAt,
@@ -252,7 +288,9 @@ export async function createRemoteServer(
         if (res.destroyed || res.writableEnded) {
           return;
         }
-        res.write(`${JSON.stringify(event)}\n`);
+        // Stamp the run id onto every NDJSON line so each event of a run is
+        // joinable without relying on stream framing alone.
+        res.write(`${JSON.stringify({ runId, ...event })}\n`);
       };
 
       const attachments: BrowserAttachment[] = [];
@@ -387,11 +425,16 @@ export async function createRemoteServer(
       }
     })().catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
-      logger(`[serve] Unhandled request failure from ${formatSocket(req)}: ${message}`);
+      logger(
+        `[serve] Unhandled request failure${requestRunId ? ` for run ${requestRunId}` : ""} from ${formatSocket(req)}: ${message}`,
+      );
       if (!res.headersSent) {
-        res.writeHead(500, { "Content-Type": "application/json" });
+        res.writeHead(500, {
+          "Content-Type": "application/json",
+          ...(requestRunId ? identityHeaders(requestRunId) : {}),
+        });
       }
-      res.end(JSON.stringify({ error: "internal_error" }));
+      res.end(JSON.stringify({ error: "internal_error", ...(requestRunId ? { runId: requestRunId } : {}) }));
       busy = false;
       activeRun = null;
     });
@@ -404,6 +447,11 @@ export async function createRemoteServer(
   const address = server.address();
   if (!address || typeof address === "string") {
     throw new Error("Unable to determine server address.");
+  }
+  if (!explicitLaneId) {
+    // Default lane id contract: <account_id>-<port>. The port is only known
+    // once the listener is bound, and no request can arrive before that.
+    laneId = `${accountId}-${address.port}`;
   }
   const reachable = formatReachableAddresses(address.address, address.port);
   const primary = reachable[0] ?? `${address.address}:${address.port}`;
@@ -791,6 +839,22 @@ async function readRequestBody(req: http.IncomingMessage): Promise<string> {
     chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
   }
   return Buffer.concat(chunks).toString("utf8");
+}
+
+const DEFAULT_ACCOUNT_ID = "acct1";
+
+/**
+ * Identity labels are echoed in response headers and log lines, so they must
+ * stay short, neutral tokens. Anything else (whitespace, separators that could
+ * smuggle header/log content, overlong values) is rejected and replaced with
+ * the built-in default rather than propagated.
+ */
+function sanitizeIdentityLabel(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed || !/^[A-Za-z0-9._-]{1,64}$/.test(trimmed)) {
+    return undefined;
+  }
+  return trimmed;
 }
 
 function isAuthorizedBearer(authHeader: string | undefined, authToken: string): boolean {

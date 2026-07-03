@@ -767,6 +767,12 @@ function postRunStream(
         res.on("end", () => {
           resolve({ statusCode: res.statusCode ?? 0, body: responseBody });
         });
+        // The server flushes response headers as soon as a run is admitted, so
+        // aborting the request after that point tears the socket down without
+        // an `error`/`end` event; settle on `close` so callers never hang.
+        res.on("close", () => {
+          resolve({ statusCode: res.statusCode ?? 0, body: responseBody });
+        });
       },
     );
     req.on("error", reject);
