@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import http from "node:http";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -27,9 +27,17 @@ const CAN_LISTEN_LOCALHOST =
   ).status === 0;
 
 describe("remote browser service", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
     "streams logs and returns results via client executor",
     async () => {
+      // The prompt-altering fallback submission is stripped from remote
+      // payloads unless the caller explicitly opts in; this test exercises
+      // the opted-in pass-through end to end.
+      vi.stubEnv("ORACLE_ALLOW_PROMPT_FALLBACK", "1");
       const tmpDir = await mkdtemp(path.join(os.tmpdir(), "oracle-remote-test-"));
       const attachmentPath = path.join(tmpDir, "note.txt");
       const fallbackAttachmentPath = path.join(tmpDir, "fallback.txt");

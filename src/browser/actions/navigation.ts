@@ -7,6 +7,7 @@ import {
 } from "../constants.js";
 import { delay } from "../utils.js";
 import { logDomFailure } from "../domDebug.js";
+import { assertFreshCaptureTarget } from "./captureBinding.js";
 import { BrowserAutomationError } from "../../oracle/errors.js";
 
 export function installJavaScriptDialogAutoDismissal(
@@ -60,6 +61,11 @@ export async function navigateToChatGPT(
   logger(`Navigating to ${url}`);
   await Page.navigate({ url });
   await waitForDocumentReady(Runtime, 45_000);
+  // Blank-state assertion: a run that requested a fresh (non-/c/) target must
+  // not land inside an existing conversation or see pre-existing assistant
+  // messages — that is the stale-tab / cross-run capture hazard. Explicit
+  // follow-ups navigate to a /c/ URL and are exempt inside the assertion.
+  await assertFreshCaptureTarget(Runtime, url, logger);
 }
 
 export interface PromptReadyNavigationOptions {

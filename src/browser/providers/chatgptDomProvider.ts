@@ -2,7 +2,9 @@ import type { BrowserLogger, ChromeClient } from "../types.js";
 import type { ProviderDomAdapter, ProviderDomFlowContext } from "../providerDomFlow.js";
 import { ensurePromptReady } from "../actions/navigation.js";
 import { submitPrompt, type AttachmentReadyExpectation } from "../actions/promptComposer.js";
-import { waitForAssistantResponse } from "../actions/assistantResponse.js";
+// Capture must flow through the pageActions facade so the structural
+// run-binding validation (captureBinding.ts) covers this provider path too.
+import { waitForAssistantResponse } from "../pageActions.js";
 import { sha256OfBytes } from "../../oracle/v18/evidence.js";
 import { chatgptSelectorList } from "../selectors/chatgpt/index.js";
 import {

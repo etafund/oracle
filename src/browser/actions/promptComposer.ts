@@ -11,6 +11,7 @@ import {
 import { delay } from "../utils.js";
 import { logDomFailure } from "../domDebug.js";
 import { buildClickDispatcher } from "./domEvents.js";
+import { registerSubmittedUserMessage } from "./captureBinding.js";
 import { BrowserAutomationError } from "../../oracle/errors.js";
 
 const ENTER_KEY_EVENT = {
@@ -236,13 +237,18 @@ export async function submitPrompt(
 
   const commitTimeoutMs = Math.max(60_000, deps.inputTimeoutMs ?? 0);
   // Learned: the send button can succeed but the turn doesn't appear immediately; verify commit via turns/stop button.
-  return await verifyPromptCommitted(
+  const committedTurns = await verifyPromptCommitted(
     runtime,
     prompt,
     commitTimeoutMs,
     logger,
     deps.baselineTurns ?? undefined,
   );
+  // Bind this run's capture to the user message that was just committed, so
+  // the eventual assistant capture can be structurally proven to answer THIS
+  // submission (not a stale turn or another run's cross-talk). Never throws.
+  await registerSubmittedUserMessage(runtime, prompt, logger);
+  return committedTurns;
 }
 
 export async function clearPromptComposer(Runtime: ChromeClient["Runtime"], logger: BrowserLogger) {

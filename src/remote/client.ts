@@ -24,6 +24,7 @@ import {
   type RemoteAttachmentPayload,
 } from "./types.js";
 import { parseHostPort } from "../bridge/connection.js";
+import { computePromptSha256 } from "../browser/actions/captureBinding.js";
 import { serializeRemoteRunPayloadForWire } from "./payload_sanitize.js";
 
 interface RemoteExecutorOptions {
@@ -40,6 +41,19 @@ interface RemoteExecutorOptions {
   requestFn?: typeof http.request;
 }
 
+/**
+ * Whether the caller has explicitly opted in to the prompt-altering fallback
+ * submission on remote (fleet) lanes. Default OFF: the fallback replaces the
+ * submitted question with a re-packed variant (inline text moved to file
+ * uploads), so a silent switch breaks answer provenance. Opting in accepts
+ * degraded provenance; the run log records both prompt hashes so the JSONL
+ * event stream can prove which prompt was actually submitted.
+ */
+export function isPromptFallbackOptInEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = (env.ORACLE_ALLOW_PROMPT_FALLBACK ?? "").trim().toLowerCase();
+  return raw === "1" || raw === "true";
+}
+
 export function createRemoteBrowserExecutor({
   host,
   token,
@@ -49,13 +63,30 @@ export function createRemoteBrowserExecutor({
   return async function remoteBrowserExecutor(
     options: BrowserRunOptions,
   ): Promise<BrowserRunResult> {
+    const log = options.log ?? (() => {});
+    let fallbackSubmission = options.fallbackSubmission;
+    if (fallbackSubmission && !isPromptFallbackOptInEnabled()) {
+      // NO SILENT PROMPT FALLBACK on fleet lanes: an oversized inline prompt
+      // must fail loudly instead of being silently re-packed into a different
+      // submission. Callers that accept degraded provenance opt in explicitly.
+      log(
+        "[remote] Prompt-altering fallback submission is disabled on remote runs; submitting the primary prompt only. " +
+          "Set ORACLE_ALLOW_PROMPT_FALLBACK=1 to opt in (provenance is marked degraded if the fallback is used).",
+      );
+      fallbackSubmission = undefined;
+    } else if (fallbackSubmission) {
+      log(
+        `[remote] Prompt fallback opt-in active (ORACLE_ALLOW_PROMPT_FALLBACK); provenance degraded if the fallback is used. ` +
+          `primary prompt sha256 ${computePromptSha256(options.prompt)}; fallback prompt sha256 ${computePromptSha256(fallbackSubmission.prompt)}`,
+      );
+    }
     const payload: RemoteRunPayload = {
       prompt: options.prompt,
       attachments: await serializeAttachments(options.attachments ?? []),
-      fallbackSubmission: options.fallbackSubmission
+      fallbackSubmission: fallbackSubmission
         ? {
-            prompt: options.fallbackSubmission.prompt,
-            attachments: await serializeAttachments(options.fallbackSubmission.attachments ?? []),
+            prompt: fallbackSubmission.prompt,
+            attachments: await serializeAttachments(fallbackSubmission.attachments ?? []),
           }
         : undefined,
       browserConfig: options.config ?? {},

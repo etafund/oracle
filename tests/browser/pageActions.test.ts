@@ -109,7 +109,11 @@ describe("navigateToChatGPT", () => {
       evaluate: vi
         .fn()
         .mockResolvedValueOnce({ result: { value: "loading" } })
-        .mockResolvedValueOnce({ result: { value: "complete" } }),
+        .mockResolvedValueOnce({ result: { value: "complete" } })
+        // Fresh-target blank-state probe (captureBinding.ts) runs after load.
+        .mockResolvedValueOnce({
+          result: { value: { conversationId: null, assistantTurnCount: 0 } },
+        }),
     } as unknown as ChromeClient["Runtime"];
     await navigateToChatGPT(
       { navigate } as unknown as ChromeClient["Page"],
@@ -118,7 +122,7 @@ describe("navigateToChatGPT", () => {
       logger,
     );
     expect(navigate).toHaveBeenCalledWith({ url: "https://chat.openai.com" });
-    expect(runtime.evaluate).toHaveBeenCalledTimes(2);
+    expect(runtime.evaluate).toHaveBeenCalledTimes(3);
   });
 });
 
