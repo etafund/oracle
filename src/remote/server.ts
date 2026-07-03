@@ -3,7 +3,6 @@ import { createReadStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import os from "node:os";
 import path from "node:path";
-import net from "node:net";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdtemp, rm, mkdir, readFile, writeFile, stat, realpath } from "node:fs/promises";
@@ -27,11 +26,10 @@ import { CHATGPT_URL } from "../browser/constants.js";
 import { getCliVersion } from "../version.js";
 import { getOracleHomeDir } from "../oracleHome.js";
 import {
-  cleanupStaleProfileState,
+  isProcessAlive,
+  readChromePid,
   readDevToolsPort,
   verifyDevToolsReachable,
-  writeChromePid,
-  writeDevToolsActivePort,
 } from "../browser/profileState.js";
 import { normalizeChatgptUrl } from "../browser/utils.js";
 import { resolveBrowserConfig } from "../browser/config.js";
@@ -67,6 +65,23 @@ export interface RemoteServerOptions {
    */
   laneId?: string;
   accountId?: string;
+  /**
+   * Attach-only / fail-closed mode (also via ORACLE_SERVE_ATTACH_ONLY=1):
+   * the worker only ever ATTACHES to a pre-launched, operator-owned Chrome.
+   * When no attachable DevTools endpoint exists the worker reports itself
+   * unready and refuses runs with a typed error — it never launches a
+   * browser itself (a worker-side launch races sibling workers sharing one
+   * profile: singleton-lock collisions and profile split-brain). Manual-login
+   * serve is attach-only by construction; this flag makes the intent
+   * explicit and forces the attach flow on any platform.
+   */
+  attachOnly?: boolean;
+  /**
+   * Fixed loopback DevTools port to probe for the attach target (also via
+   * ORACLE_SERVE_DEVTOOLS_PORT). When unset, the profile directory's
+   * recorded DevToolsActivePort is used.
+   */
+  devtoolsPort?: number;
   /**
    * Admission limits for /runs request bodies. The default cap matches the
    * router tier's client_max_body_size (100 MiB) with a 60s read deadline;
@@ -133,20 +148,122 @@ const ARTIFACT_CAPABILITIES: RemoteArtifactCapabilities = {
   maxArtifactBytes: MAX_REMOTE_ARTIFACT_BYTES,
 };
 
-async function findAvailablePort(): Promise<number> {
-  return await new Promise<number>((resolve, reject) => {
-    const srv = net.createServer();
-    srv.on("error", (err) => reject(err));
-    srv.listen(0, () => {
-      const address = srv.address();
-      if (typeof address === "object" && address?.port) {
-        const port = address.port;
-        srv.close(() => resolve(port));
-      } else {
-        srv.close(() => reject(new Error("Unable to allocate port")));
+export interface AttachTargetProbe {
+  /** True when a recorded/configured DevTools endpoint answered the probe. */
+  ok: boolean;
+  /** Machine-readable refusal reason when not ok. */
+  reason: string | null;
+  /** The probed DevTools port, when one was recorded/configured. */
+  port: number | null;
+  /** Where the port came from: fixed worker config or the profile's file. */
+  portSource: "fixed" | "profile" | null;
+  /**
+   * Best-effort owner check (the chromeOwnerOk hook for readiness probes):
+   * true = the endpoint is owned by the Chrome this profile recorded;
+   * false = definitive mismatch (split-brain / rogue listener);
+   * null = ownership could not be established on this platform.
+   */
+  ownerOk: boolean | null;
+  probedAt: string;
+}
+
+/**
+ * Probes the attach target for an attach-only worker: is there a live,
+ * operator-owned Chrome DevTools endpoint this worker may attach to?
+ * Never launches anything; observing only.
+ */
+export async function probeAttachTarget(params: {
+  profileDir?: string;
+  fixedPort?: number;
+  probe?: typeof verifyDevToolsReachable;
+}): Promise<AttachTargetProbe> {
+  const probedAt = new Date().toISOString();
+  const probe = params.probe ?? verifyDevToolsReachable;
+  let port: number | null = null;
+  let portSource: AttachTargetProbe["portSource"] = null;
+  if (typeof params.fixedPort === "number" && params.fixedPort > 0) {
+    port = params.fixedPort;
+    portSource = "fixed";
+  } else if (params.profileDir) {
+    port = await readDevToolsPort(params.profileDir).catch(() => null);
+    portSource = port === null ? null : "profile";
+  }
+  if (port === null) {
+    return {
+      ok: false,
+      reason: "no-attach-target-recorded",
+      port: null,
+      portSource: null,
+      ownerOk: null,
+      probedAt,
+    };
+  }
+  const reachable = await probe({ port, attempts: 1, timeoutMs: 1_500 });
+  if (!reachable.ok) {
+    return {
+      ok: false,
+      reason: `cdp-unreachable: ${reachable.error}`,
+      port,
+      portSource,
+      ownerOk: null,
+      probedAt,
+    };
+  }
+  const ownerOk = await checkAttachTargetOwner(params.profileDir, port);
+  if (ownerOk === false) {
+    return {
+      ok: false,
+      reason: "attach-target-owner-mismatch",
+      port,
+      portSource,
+      ownerOk,
+      probedAt,
+    };
+  }
+  return { ok: true, reason: null, port, portSource, ownerOk, probedAt };
+}
+
+/**
+ * Best-effort verification that the DevTools endpoint belongs to the Chrome
+ * recorded for this profile (split-brain / rogue-listener defense):
+ * - the profile's recorded DevToolsActivePort must agree with the probed
+ *   port when both exist;
+ * - the recorded owner pid must still be alive, and (on Linux) its command
+ *   line must reference this profile directory.
+ * Returns null when ownership cannot be established (no recorded state, or
+ * platform without readable process info) — callers decide policy; a
+ * definitive false always means "do not attach".
+ */
+async function checkAttachTargetOwner(
+  profileDir: string | undefined,
+  port: number,
+): Promise<boolean | null> {
+  if (!profileDir) {
+    return null;
+  }
+  try {
+    const recordedPort = await readDevToolsPort(profileDir).catch(() => null);
+    if (recordedPort !== null && recordedPort !== port) {
+      return false;
+    }
+    const pid = await readChromePid(profileDir).catch(() => null);
+    if (pid === null) {
+      return null;
+    }
+    if (!isProcessAlive(pid)) {
+      return false;
+    }
+    if (process.platform === "linux") {
+      const cmdline = await readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => null);
+      if (cmdline === null) {
+        return null;
       }
-    });
-  });
+      return cmdline.includes(profileDir);
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 export async function createRemoteServer(
@@ -176,6 +293,33 @@ export async function createRemoteServer(
     maxConcurrentTabs: baselineBrowserConfig.maxConcurrentTabs,
   };
   assertFleetSafeServeBrowserConfig(effectiveRunConfig);
+
+  // Attach-only / fail-closed substrate probing. Manual-login serve shares
+  // one operator-owned Chrome between workers, so it is attach-only by
+  // construction; the explicit flag/env extends the same contract to any
+  // deployment shape. Probes are cached briefly so /status and admission
+  // checks cannot hammer the DevTools endpoint.
+  const attachOnly =
+    options.attachOnly ??
+    (process.env.ORACLE_SERVE_ATTACH_ONLY === "1" || Boolean(options.manualLoginDefault));
+  const attachProfileDir =
+    options.manualLoginProfileDir ?? path.join(os.homedir(), ".oracle", "browser-profile");
+  const attachDevtoolsPort =
+    options.devtoolsPort ?? parsePositiveIntEnv(process.env.ORACLE_SERVE_DEVTOOLS_PORT);
+  let lastAttachProbe: AttachTargetProbe | null = null;
+  let lastAttachProbeAtMs = 0;
+  const probeAttachTargetCached = async (): Promise<AttachTargetProbe> => {
+    if (lastAttachProbe && Date.now() - lastAttachProbeAtMs < 2_000) {
+      return lastAttachProbe;
+    }
+    lastAttachProbe = await probeAttachTarget({
+      profileDir: attachProfileDir,
+      fixedPort: attachDevtoolsPort,
+    });
+    lastAttachProbeAtMs = Date.now();
+    return lastAttachProbe;
+  };
+
   const server = http.createServer();
   // Socket-layer bounds to complement the app-level admission limits: slow
   // header/body transmission must not hold sockets open indefinitely. The
@@ -238,6 +382,21 @@ export async function createRemoteServer(
     void (async () => {
       if (req.method === "GET" && req.url === "/status") {
         logger("[serve] Health check /status");
+        if (attachOnly) {
+          // Fail-closed liveness: an attach-only worker without an
+          // attachable, owned Chrome must not advertise itself as ready.
+          const probe = await probeAttachTargetCached();
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              ok: probe.ok,
+              attachOnly: true,
+              chromeReachable: probe.ok,
+              ...(probe.reason ? { reason: probe.reason } : {}),
+            }),
+          );
+          return;
+        }
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: true }));
         return;
@@ -342,6 +501,7 @@ export async function createRemoteServer(
       admitting = true;
       let payload: RemoteRunPayload | null = null;
       let runDir: string | null = null;
+      let attachProbeForRun: AttachTargetProbe | null = null;
       let attachments: BrowserAttachment[] = [];
       let fallbackSubmission:
         | {
@@ -351,6 +511,19 @@ export async function createRemoteServer(
         | undefined;
       let uploadIntegrity: RemoteUploadIntegrity | null = null;
       try {
+        if (attachOnly) {
+          // Fail-closed admission: no attachable, owned browser means the
+          // run is refused with a typed error. The worker NEVER launches a
+          // browser to satisfy a run — that converts "operator has not
+          // prepared a browser" into a profile race between sibling workers.
+          attachProbeForRun = await probeAttachTargetCached();
+          if (!attachProbeForRun.ok) {
+            refuseRun(503, "browser_unavailable", {
+              reason: attachProbeForRun.reason,
+            });
+            return;
+          }
+        }
         try {
           const body = await readRequestBody(req, bodyLimits);
           payload = sanitizeRemoteRunPayloadForHost(JSON.parse(body) as RemoteRunPayload);
@@ -705,7 +878,13 @@ export async function serveRemote(options: RemoteServerOptions = {}): Promise<vo
   await resolveServeAuthToken({ tokenFile: options.tokenFile, token: options.token });
   const manualProfileDir =
     options.manualLoginProfileDir ?? path.join(os.homedir(), ".oracle", "browser-profile");
-  const preferManualLogin = options.manualLoginDefault || process.platform === "win32" || isWsl();
+  const attachOnlyRequested =
+    options.attachOnly ?? process.env.ORACLE_SERVE_ATTACH_ONLY === "1";
+  const preferManualLogin =
+    options.manualLoginDefault ||
+    attachOnlyRequested ||
+    process.platform === "win32" ||
+    isWsl();
   let cookies: CookieParam[] | null = null;
   let opened = false;
 
@@ -732,28 +911,32 @@ export async function serveRemote(options: RemoteServerOptions = {}): Promise<vo
   if (!cookies || cookies.length === 0) {
     console.log("No ChatGPT cookies detected on this host.");
     if (preferManualLogin) {
+      // Attach-only / fail-closed: serve never launches Chrome. Several
+      // workers may share this profile, and a worker-side launch (the old
+      // fire-and-forget fallback) races their startups against each other on
+      // one --user-data-dir: singleton-lock collisions, profile split-brain,
+      // and a browser nobody owns. The worker attaches to the operator's
+      // pre-launched Chrome or stays unready until one appears.
       await mkdir(manualProfileDir, { recursive: true });
       console.log(
-        `Cookie extraction is unavailable on this platform. Using manual-login Chrome profile at ${manualProfileDir}. Remote runs will reuse this profile; sign in once when the browser opens.`,
+        `Using manual-login Chrome profile at ${manualProfileDir} (attach-only; serve does not launch browsers).`,
       );
-      const existingPort = await readDevToolsPort(manualProfileDir);
-      if (existingPort) {
-        const reachable = await verifyDevToolsReachable({ port: existingPort });
-        if (reachable.ok) {
-          console.log(
-            "Detected an existing automation Chrome session; will reuse it for manual login.",
-          );
-        } else {
-          console.log(
-            `Found stale DevToolsActivePort (port ${existingPort}, ${reachable.error}); launching a fresh manual-login Chrome.`,
-          );
-          await cleanupStaleProfileState(manualProfileDir, console.log, {
-            lockRemovalMode: "never",
-          });
-          void launchManualLoginChrome(manualProfileDir, CHATGPT_URL, console.log);
-        }
+      const probe = await probeAttachTarget({
+        profileDir: manualProfileDir,
+        fixedPort:
+          options.devtoolsPort ?? parsePositiveIntEnv(process.env.ORACLE_SERVE_DEVTOOLS_PORT),
+      });
+      if (probe.ok) {
+        console.log(
+          `Attach target ready: DevTools port ${probe.port} (${probe.portSource}); runs will attach to this Chrome.`,
+        );
       } else {
-        void launchManualLoginChrome(manualProfileDir, CHATGPT_URL, console.log);
+        console.log(
+          `No attachable Chrome (${probe.reason}). Serve starts UNREADY and will refuse runs until the browser service is up.`,
+        );
+        console.log(
+          `Start the dedicated Chrome with --user-data-dir=${manualProfileDir} and remote debugging enabled, then this worker will attach automatically.`,
+        );
       }
     } else if (opened) {
       console.log(
@@ -1628,68 +1811,8 @@ function canSpawn(cmd: string): boolean {
   }
 }
 
-async function launchManualLoginChrome(
-  profileDir: string,
-  url: string,
-  logger: (msg: string) => void,
-): Promise<void> {
-  const timeoutMs = 7000;
-  let finished = false;
-  const timeout = setTimeout(() => {
-    if (!finished) {
-      logger(
-        `Timed out launching Chrome for manual login. Launch Chrome manually with --user-data-dir=${profileDir} and log in to ${url}.`,
-      );
-    }
-  }, timeoutMs);
-
-  try {
-    const chromeLauncher = await import("chrome-launcher");
-    const { launch } = chromeLauncher;
-    const debugPort = await findAvailablePort();
-    logger(`Planned manual-login Chrome DevTools port: ${debugPort}`);
-    const chrome = await launch({
-      // Expose DevTools so later runs can attach instead of spawning a second Chrome.
-      // Use a per-serve free port so the login window stays stable for all runs.
-      port: debugPort,
-      userDataDir: profileDir,
-      startingUrl: url,
-      chromeFlags: [
-        "--no-first-run",
-        "--no-default-browser-check",
-        `--user-data-dir=${profileDir}`,
-        "--remote-allow-origins=*",
-        `--remote-debugging-port=${debugPort}`, // ensure DevToolsActivePort is written even on Windows
-      ],
-    });
-
-    const chosenPort = chrome?.port ?? debugPort ?? null;
-    if (chosenPort) {
-      // Persist DevToolsActivePort eagerly so future runs can attach/reuse this Chrome.
-      await writeDevToolsActivePort(profileDir, chosenPort);
-      if (chrome?.pid) {
-        await writeChromePid(profileDir, chrome.pid);
-      }
-      logger(`Manual-login Chrome DevTools port: ${chosenPort}`);
-      logger(`If needed, DevTools JSON at http://127.0.0.1:${chosenPort}/json/version`);
-    } else {
-      logger(
-        "Warning: unable to determine manual-login Chrome DevTools port. Remote runs may fail to attach.",
-      );
-    }
-
-    finished = true;
-    clearTimeout(timeout);
-    const portInfo = chosenPort ? ` (DevTools port ${chosenPort})` : "";
-    logger(
-      `Opened Chrome with manual-login profile at ${profileDir}${portInfo}. Complete login, then rerun remote sessions.`,
-    );
-  } catch (error) {
-    finished = true;
-    clearTimeout(timeout);
-    const message = error instanceof Error ? error.message : String(error);
-    logger(
-      `Unable to open Chrome for manual login (${message}). Launch Chrome manually with --user-data-dir=${profileDir} and log in to ${url}.`,
-    );
-  }
-}
+// NOTE: serve is attach-only by design. The former launchManualLoginChrome
+// fallback was removed: a worker-side Chrome launch races sibling workers
+// sharing one profile (singleton-lock collisions, profile split-brain) and
+// silently converts "no operator-prepared browser" into "spawn a new one".
+// The launch path is intentionally absent so it cannot be reached.

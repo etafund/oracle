@@ -1,47 +1,36 @@
 /**
- * RED-TEST HARNESS (expected-failure): `oracle serve` in manual-login mode
- * must be ATTACH-ONLY / fail-closed when no attachable Chrome exists.
+ * Attach-only / fail-closed serve contract (formerly the Wave-0 red-test
+ * harness; flipped to required tests by the attach-only serve change).
  *
- * Property (correctness / fault isolation): when serveRemote() starts with a
- * manual-login profile whose DevTools endpoint is ABSENT or STALE, it cannot
- * prove there is a browser it owns. Launching a fresh Chrome at that point is
- * fail-open behavior: it races any concurrently starting serve/run against
- * the same profile (launch is fire-and-forget `void launchManualLoginChrome`
- * with a freshly picked port and NO lock), and it silently converts "operator
- * has not prepared a browser" into "spawn a new one". The fail-closed
- * contract: refuse to launch and surface an unready state until an attachable
- * DevTools endpoint appears.
+ * Property (correctness / fault isolation): `oracle serve` in manual-login /
+ * attach-only mode only ever ATTACHES to a pre-launched, operator-owned
+ * Chrome. When the profile's DevTools endpoint is ABSENT or STALE the worker
+ * cannot prove there is a browser it owns, so it must:
+ *   - never launch a Chrome of its own (the old fire-and-forget fallback
+ *     raced concurrently starting workers against one --user-data-dir:
+ *     singleton-lock collisions and profile split-brain);
+ *   - report itself unready (/status ok:false, fail-closed);
+ *   - refuse /runs with a typed error (browser_unavailable) instead of
+ *     converting "operator has not prepared a browser" into "spawn one".
  *
- * The harness mocks the `chrome-launcher` module (dynamically imported by
- * src/remote/server.ts), so no real browser is ever spawned; the red
- * assertions check that the launch entry point is never invoked and that the
- * server does not report itself ready.
+ * The harness mocks the `chrome-launcher` module so that if any launch path
+ * were ever reintroduced it would be caught here without spawning a real
+ * browser. (The launch entry point was removed from src/remote/server.ts
+ * outright; the mock plus assertions keep it removed.)
  *
- * Expected-failure mechanics: identical to tabLeaseRegistryFailClosed.test.ts
- * (`test.fails` by default keeps these out of the default CI signal;
- * ORACLE_RED_ASSERT=1 enforces the assertions). The attach-only serve change
- * must flip these to required `test`s.
- *
- * Red run recorded 2026-07-03 against HEAD 3e38abb7
- * (`ORACLE_RED_ASSERT=1 pnpm vitest run tests/remote/attachOnlyServe.test.ts`):
- *   - "[red] absent DevTools port: serve must refuse to launch Chrome"
- *     FAILED: chrome-launcher launch() was invoked once (fallback launch).
- *   - "[red] stale DevTools port: serve must refuse to launch Chrome"
- *     FAILED: launch() invoked after the stale-endpoint probe failed.
- *   - "[red] serve must not report ready while no attachable Chrome exists"
- *     FAILED: GET /status returned { ok: true }.
+ * Provenance: the original red run (2026-07-03, HEAD 3e38abb7, red harness
+ * commit c64a100c) failed all three [red] cases: launch() was invoked on
+ * absent and stale DevTools ports, and /status reported ok:true with no
+ * attachable Chrome.
  */
 import { afterEach, describe, expect, test, vi } from "vitest";
+import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { serveRemote } from "../../src/remote/server.js";
-
-const RED_MODE = process.env.ORACLE_RED_ASSERT === "1";
-/** Expected-failure gate: red assertions stay out of the default CI signal. */
-const redTest = RED_MODE ? test : test.fails;
 
 const { launchMock } = vi.hoisted(() => ({
   launchMock: vi.fn(async (options?: { port?: number }) => ({
@@ -52,8 +41,9 @@ const { launchMock } = vi.hoisted(() => ({
   })),
 }));
 
-// src/remote/server.ts loads chrome-launcher via dynamic import inside
-// launchManualLoginChrome(); this intercepts it so no browser can spawn.
+// Guard: if a chrome-launcher import were ever reintroduced anywhere in the
+// serve path, this intercepts it so no browser can spawn and the assertions
+// below fail loudly.
 vi.mock("chrome-launcher", () => ({ launch: launchMock, default: { launch: launchMock } }));
 
 const CAN_LISTEN_LOCALHOST =
@@ -71,7 +61,7 @@ const CAN_LISTEN_LOCALHOST =
     { stdio: "ignore" },
   ).status === 0;
 
-const maybeRedTest = CAN_LISTEN_LOCALHOST ? redTest : test.skip;
+const maybeTest = CAN_LISTEN_LOCALHOST ? test : test.skip;
 
 interface ServeHandle {
   logs: string[];
@@ -137,6 +127,22 @@ async function startServe(profileDir: string): Promise<ServeHandle> {
   return handle;
 }
 
+/** Waits for the serve listener and returns its bound port. */
+async function waitForListenPort(handle: ServeHandle): Promise<number> {
+  let listeningLine = "";
+  await vi.waitFor(
+    () => {
+      const line = handle.logs.find((entry) => entry.includes("Listening at"));
+      if (!line) throw new Error("server not listening yet");
+      listeningLine = line;
+    },
+    { timeout: 10_000 },
+  );
+  const match = /Listening at (\d+\.\d+\.\d+\.\d+):(\d+)/u.exec(listeningLine);
+  if (!match) throw new Error(`could not parse listen address from: ${listeningLine}`);
+  return Number.parseInt(match[2] ?? "", 10);
+}
+
 /** Allocates a port with nothing listening on it (bind, record, close). */
 async function deadPort(): Promise<number> {
   return new Promise<number>((resolve, reject) => {
@@ -154,6 +160,34 @@ async function deadPort(): Promise<number> {
   });
 }
 
+/** A fake operator-owned CDP endpoint answering GET /json/version. */
+async function startFakeCdp(): Promise<{ port: number; close: () => Promise<void> }> {
+  const server = http.createServer((req, res) => {
+    if (req.method === "GET" && req.url === "/json/version") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ Browser: "FakeChrome/1.0" }));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("fake CDP endpoint did not bind");
+  }
+  return {
+    port: address.port,
+    close: async () =>
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      }),
+  };
+}
+
 afterEach(async () => {
   while (activeHandles.length > 0) {
     await activeHandles.pop()?.stop();
@@ -161,17 +195,19 @@ afterEach(async () => {
   launchMock.mockClear();
 });
 
-describe("attach-only serve: fail-closed startup (red harness)", () => {
-  maybeRedTest(
-    "[red] absent DevTools port: serve must refuse to launch Chrome",
+describe("attach-only serve: fail-closed startup", () => {
+  maybeTest(
+    "absent DevTools port: serve refuses to launch Chrome",
     async () => {
       const profileDir = await mkdtemp(path.join(os.tmpdir(), "oracle-attach-only-"));
       try {
-        await startServe(profileDir);
-        // Today: no DevToolsActivePort -> fire-and-forget launch fallback.
-        // Surface it deterministically, then assert the fail-closed contract.
-        await vi.waitFor(() => expect(launchMock).toHaveBeenCalled(), { timeout: 5000 });
+        const handle = await startServe(profileDir);
+        await waitForListenPort(handle);
+        // Grace period: the old fallback launched fire-and-forget shortly
+        // after startup; give any such path time to trip the mock.
+        await new Promise((resolve) => setTimeout(resolve, 750));
         expect(launchMock).not.toHaveBeenCalled();
+        expect(handle.logs.some((line) => line.includes("UNREADY"))).toBe(true);
       } finally {
         await rm(profileDir, { recursive: true, force: true });
       }
@@ -179,8 +215,8 @@ describe("attach-only serve: fail-closed startup (red harness)", () => {
     20_000,
   );
 
-  maybeRedTest(
-    "[red] stale DevTools port: serve must refuse to launch Chrome",
+  maybeTest(
+    "stale DevTools port: serve refuses to launch Chrome and reports unready",
     async () => {
       const profileDir = await mkdtemp(path.join(os.tmpdir(), "oracle-attach-only-"));
       try {
@@ -194,10 +230,65 @@ describe("attach-only serve: fail-closed startup (red harness)", () => {
           "utf8",
         );
         const handle = await startServe(profileDir);
-        await vi.waitFor(() => expect(launchMock).toHaveBeenCalled(), { timeout: 15_000 });
-        expect(
-          handle.logs.filter((line) => line.includes("stale DevToolsActivePort")).length,
-        ).toBeGreaterThanOrEqual(0); // context for the red-run log, never fails
+        const port = await waitForListenPort(handle);
+        await new Promise((resolve) => setTimeout(resolve, 750));
+        expect(launchMock).not.toHaveBeenCalled();
+
+        const response = await fetch(`http://127.0.0.1:${port}/status`);
+        const body = (await response.json()) as { ok?: boolean; reason?: string };
+        expect(body.ok).toBe(false);
+        expect(String(body.reason)).toContain("cdp-unreachable");
+      } finally {
+        await rm(profileDir, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
+
+  maybeTest(
+    "serve does not report ready while no attachable Chrome exists",
+    async () => {
+      const profileDir = await mkdtemp(path.join(os.tmpdir(), "oracle-attach-only-"));
+      try {
+        const handle = await startServe(profileDir);
+        const port = await waitForListenPort(handle);
+
+        const response = await fetch(`http://127.0.0.1:${port}/status`);
+        const body = (await response.json()) as { ok?: boolean; reason?: string };
+        // Fail-closed readiness: with neither a live DevTools endpoint nor an
+        // owned browser, the service must not advertise itself as ready.
+        expect(body.ok).toBe(false);
+        expect(body.reason).toBe("no-attach-target-recorded");
+      } finally {
+        await rm(profileDir, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
+});
+
+describe("attach-only serve: fail-closed admission", () => {
+  maybeTest(
+    "unreachable CDP: /runs is refused with a typed error and no launch",
+    async () => {
+      const profileDir = await mkdtemp(path.join(os.tmpdir(), "oracle-attach-only-"));
+      try {
+        const handle = await startServe(profileDir);
+        const port = await waitForListenPort(handle);
+
+        const response = await fetch(`http://127.0.0.1:${port}/runs`, {
+          method: "POST",
+          headers: {
+            authorization: "Bearer secret",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ prompt: "x", attachments: [], browserConfig: {}, options: {} }),
+        });
+        expect(response.status).toBe(503);
+        expect(response.headers.get("x-oracle-run-id")).toBeTruthy();
+        const body = (await response.json()) as { error?: string; reason?: string };
+        expect(body.error).toBe("browser_unavailable");
+        expect(body.reason).toBe("no-attach-target-recorded");
         expect(launchMock).not.toHaveBeenCalled();
       } finally {
         await rm(profileDir, { recursive: true, force: true });
@@ -206,32 +297,27 @@ describe("attach-only serve: fail-closed startup (red harness)", () => {
     30_000,
   );
 
-  maybeRedTest(
-    "[red] serve must not report ready while no attachable Chrome exists",
+  maybeTest(
+    "an attachable operator-owned Chrome flips the worker to ready without any launch",
     async () => {
       const profileDir = await mkdtemp(path.join(os.tmpdir(), "oracle-attach-only-"));
+      const fakeCdp = await startFakeCdp();
       try {
-        const handle = await startServe(profileDir);
-        let listeningLine = "";
-        await vi.waitFor(
-          () => {
-            const line = handle.logs.find((entry) => entry.includes("Listening at"));
-            if (!line) throw new Error("server not listening yet");
-            listeningLine = line;
-          },
-          { timeout: 10_000 },
+        await writeFile(
+          path.join(profileDir, "DevToolsActivePort"),
+          `${fakeCdp.port}\n/devtools/browser/00000000-0000-0000-0000-000000000000\n`,
+          "utf8",
         );
-        const match = /Listening at (\d+\.\d+\.\d+\.\d+):(\d+)/u.exec(listeningLine);
-        if (!match) throw new Error(`could not parse listen address from: ${listeningLine}`);
-        const port = Number.parseInt(match[2] ?? "", 10);
+        const handle = await startServe(profileDir);
+        const port = await waitForListenPort(handle);
 
         const response = await fetch(`http://127.0.0.1:${port}/status`);
-        const body = (await response.json()) as { ok?: boolean };
-        // Fail-closed readiness: with neither a live DevTools endpoint nor an
-        // owned browser, the service must not advertise itself as ready to
-        // accept runs. Today /status unconditionally reports ok: true.
-        expect(body.ok).toBe(false);
+        const body = (await response.json()) as { ok?: boolean; chromeReachable?: boolean };
+        expect(body.ok).toBe(true);
+        expect(body.chromeReachable).toBe(true);
+        expect(launchMock).not.toHaveBeenCalled();
       } finally {
+        await fakeCdp.close();
         await rm(profileDir, { recursive: true, force: true });
       }
     },

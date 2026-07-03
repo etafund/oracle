@@ -80,6 +80,10 @@ describe("remote payload sanitization", () => {
           logger: () => {},
           manualLoginDefault: true,
           manualLoginProfileDir: "/server-owned/manual-profile",
+          // This test exercises payload sanitization with a stubbed
+          // runBrowser; disable the attach-only substrate gate so admission
+          // does not require a live DevTools endpoint.
+          attachOnly: false,
         },
         {
           runBrowser: async (options) => {

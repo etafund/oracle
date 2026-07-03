@@ -1067,6 +1067,17 @@ program
     "--manual-login-profile-dir <path>",
     "Chrome profile directory for manual login (default ~/.oracle/browser-profile).",
   )
+  .option(
+    "--attach-only",
+    "Fail-closed worker mode (or ORACLE_SERVE_ATTACH_ONLY=1): only attach to a pre-launched Chrome; " +
+      "refuse runs and report unready when no attachable DevTools endpoint exists. Serve never launches browsers.",
+  )
+  .option(
+    "--devtools-port <number>",
+    "Fixed loopback DevTools port of the operator-owned Chrome to attach to (or ORACLE_SERVE_DEVTOOLS_PORT). " +
+      "Default: the profile directory's recorded DevToolsActivePort.",
+    parseIntOption,
+  )
   .action(async function (this: Command) {
     const commandOptions = this.optsWithGlobals();
     const { serveRemote } = await import("../src/remote/server.js");
@@ -1077,6 +1088,8 @@ program
       tokenFile: commandOptions.tokenFile,
       manualLoginDefault: commandOptions.manualLogin,
       manualLoginProfileDir: commandOptions.manualLoginProfileDir,
+      attachOnly: commandOptions.attachOnly,
+      devtoolsPort: commandOptions.devtoolsPort,
     });
   });
 
