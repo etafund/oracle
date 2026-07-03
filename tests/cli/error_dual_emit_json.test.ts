@@ -9,8 +9,8 @@ import { describe, expect, test } from "vitest";
 const execFileAsync = promisify(execFile);
 const CLI_ENTRY = path.join(process.cwd(), "bin", "oracle-cli.ts");
 
-describe("top-level --json errors dual-emit", () => {
-  test("Codex Max rejection keeps human stderr and emits json_envelope stdout", async () => {
+describe("top-level --json errors", () => {
+  test("Codex Max rejection emits json_envelope stdout only, no duplicate human stderr", async () => {
     const oracleHome = await mkdtemp(path.join(os.tmpdir(), "oracle-error-dual-"));
     try {
       const { code, stdout, stderr } = await runOracleFailure(
@@ -20,7 +20,11 @@ describe("top-level --json errors dual-emit", () => {
       const envelope = parseJsonEnvelope(stdout);
 
       expect(code).toBe(1);
-      expect(stderr).toMatch(/codex-max is not available yet/i);
+      // v0.15.0 contract: --json mode suppresses commander's human-readable stderr
+      // entirely; the Codex Max rejection surfaces only via the json_envelope on
+      // stdout (see tests/bin/error_envelope_json.test.ts for the same contract on
+      // the unknown-command path).
+      expect(stderr).toBe("");
       expect(envelope).toMatchObject({
         schema_version: "json_envelope.v1",
         ok: false,

@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { loadUserConfig } from "../src/config.js";
+import { DEFAULT_USER_CONFIG, loadUserConfig } from "../src/config.js";
 import { setOracleHomeDirOverrideForTest } from "../src/oracleHome.js";
 
 describe("loadUserConfig parse error warning", () => {
@@ -26,7 +26,10 @@ describe("loadUserConfig parse error warning", () => {
     const result = await loadUserConfig({ env: {} as NodeJS.ProcessEnv });
 
     expect(result.loaded).toBe(false);
-    expect(result.config).toEqual({});
+    // v0.15.0 contract: loadUserConfig always merges onto DEFAULT_USER_CONFIG (browser
+    // engine, gpt-5.5-pro, extended thinking), so a parse failure falls back to those
+    // defaults rather than an empty object.
+    expect(result.config).toEqual(DEFAULT_USER_CONFIG);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith(
       expect.stringMatching(
