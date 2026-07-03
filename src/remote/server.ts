@@ -34,6 +34,7 @@ import {
   writeDevToolsActivePort,
 } from "../browser/profileState.js";
 import { normalizeChatgptUrl } from "../browser/utils.js";
+import { resolveBrowserConfig } from "../browser/config.js";
 import { sanitizeRemoteRunPayloadForHost } from "./payload_sanitize.js";
 import {
   computeFileSha256,
@@ -153,6 +154,24 @@ export async function createRemoteServer(
     tokenFile: options.tokenFile,
     token: options.token,
   });
+  // Resolve the baseline browser config this worker will enforce on every
+  // run (payloads are sanitized and cannot reintroduce these keys) and
+  // refuse to start if any fleet-safety invariant would be violated.
+  const baselineBrowserConfig = resolveBrowserConfig(
+    options.manualLoginDefault
+      ? {
+          manualLogin: true,
+          manualLoginProfileDir: options.manualLoginProfileDir,
+          keepBrowser: true,
+        }
+      : undefined,
+  );
+  const effectiveRunConfig = {
+    timeoutMs: baselineBrowserConfig.timeoutMs,
+    profileLockTimeoutMs: baselineBrowserConfig.profileLockTimeoutMs,
+    maxConcurrentTabs: baselineBrowserConfig.maxConcurrentTabs,
+  };
+  assertFleetSafeServeBrowserConfig(effectiveRunConfig);
   const server = http.createServer();
   // Socket-layer bounds to complement the app-level admission limits: slow
   // header/body transmission must not hold sockets open indefinitely. The
@@ -230,6 +249,7 @@ export async function createRemoteServer(
           startedAt,
           busy,
           activeRun,
+          effectiveConfig: effectiveRunConfig,
         });
         res.writeHead(busy ? 409 : 200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(health));
@@ -570,6 +590,11 @@ export async function createRemoteServer(
   const extras = reachable.slice(1);
   const also = extras.length ? `, also [${extras.join(", ")}]` : "";
   logger(color(chalk.cyanBright.bold, `Listening at ${primary}${also}`));
+  // Effective values are non-secret; surfacing them at startup lets fleet
+  // tooling confirm every worker runs with safe run-isolation settings.
+  logger(
+    `[serve] Effective run config: timeoutMs=${effectiveRunConfig.timeoutMs} profileLockTimeoutMs=${effectiveRunConfig.profileLockTimeoutMs} maxConcurrentTabs=${effectiveRunConfig.maxConcurrentTabs}`,
+  );
   // Never echo a supplied token: startup logs land in service journals, and a
   // shared bearer secret copied into every journal defeats file permissions
   // and token rotation alike. Log a short token id (sha256 prefix) instead so
@@ -612,10 +637,16 @@ function buildHealthResponse({
   startedAt,
   busy,
   activeRun,
+  effectiveConfig,
 }: {
   startedAt: number;
   busy: boolean;
   activeRun: ActiveRunState | null;
+  effectiveConfig: {
+    timeoutMs: number | null | undefined;
+    profileLockTimeoutMs: number | null | undefined;
+    maxConcurrentTabs: number | null | undefined;
+  };
 }): {
   ok: boolean;
   version: string;
@@ -623,6 +654,11 @@ function buildHealthResponse({
   busy: boolean;
   activeRun?: RemoteActiveRunInfo;
   capabilities: RemoteArtifactCapabilities;
+  effectiveConfig: {
+    timeoutMs: number | null | undefined;
+    profileLockTimeoutMs: number | null | undefined;
+    maxConcurrentTabs: number | null | undefined;
+  };
   error?: string;
 } {
   return {
@@ -631,6 +667,10 @@ function buildHealthResponse({
     uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
     busy,
     capabilities: ARTIFACT_CAPABILITIES,
+    // Integration point for the dedicated /ready endpoint: it should surface
+    // these exact field names (timeoutMs, profileLockTimeoutMs,
+    // maxConcurrentTabs) so fleet tooling reads one shape everywhere.
+    effectiveConfig,
     ...(activeRun ? { activeRun: serializeActiveRun(activeRun) } : {}),
     ...(busy ? { error: "busy" } : {}),
   };
@@ -1059,6 +1099,51 @@ const DEFAULT_ACCOUNT_ID = "acct1";
  */
 export function tokenIdForLog(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex").slice(0, 8);
+}
+
+export interface FleetSafeServeConfigInput {
+  profileLockTimeoutMs?: number | null;
+  timeoutMs?: number | null;
+  maxConcurrentTabs?: number | null;
+}
+
+/**
+ * Startup guard for serve/fleet workers. `<= 0` is a documented DISABLE
+ * sentinel for these keys in local single-user runs, but on a shared worker:
+ * - profileLockTimeoutMs <= 0 silently disables the serialized-submit
+ *   profile lock, allowing composer cross-talk between concurrent runs
+ *   (prompts landing in the wrong conversation — the worst wrong-answer
+ *   class);
+ * - timeoutMs <= 0 means an unbounded tab-lease wait and a permanently
+ *   wedged worker;
+ * - maxConcurrentTabs outside 1..3 either starves the lane or exceeds the
+ *   validated per-account tab budget.
+ * A worker with any of these misconfigured must refuse to start rather than
+ * degrade silently.
+ */
+export function assertFleetSafeServeBrowserConfig(effective: FleetSafeServeConfigInput): void {
+  const problems: string[] = [];
+  const lock = effective.profileLockTimeoutMs;
+  if (typeof lock !== "number" || !Number.isFinite(lock) || lock <= 0) {
+    problems.push(
+      `profileLockTimeoutMs=${String(lock)} (must be > 0; a non-positive value disables the serialized-submit profile lock)`,
+    );
+  }
+  const timeout = effective.timeoutMs;
+  if (typeof timeout !== "number" || !Number.isFinite(timeout) || timeout <= 0) {
+    problems.push(
+      `timeoutMs=${String(timeout)} (must be > 0; a non-positive value permits an unbounded tab-lease wait)`,
+    );
+  }
+  const tabs = effective.maxConcurrentTabs;
+  if (typeof tabs !== "number" || !Number.isInteger(tabs) || tabs < 1 || tabs > 3) {
+    problems.push(`maxConcurrentTabs=${String(tabs)} (must be an integer between 1 and 3)`);
+  }
+  if (problems.length > 0) {
+    throw new Error(
+      `Refusing to start remote serve with unsafe effective browser config: ${problems.join("; ")}`,
+    );
+  }
 }
 
 export type ServeTokenSource = "token-file" | "env-token-file" | "env" | "flag" | "generated";
