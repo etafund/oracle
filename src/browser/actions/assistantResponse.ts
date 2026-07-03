@@ -771,12 +771,15 @@ async function isCompletionVisible(Runtime: ChromeClient["Runtime"]): Promise<bo
         if (!lastAssistantTurn) {
           return false;
         }
+        const turnScope =
+          lastAssistantTurn.closest('article[data-testid^="conversation-turn"], section[data-testid^="conversation-turn"], div[data-testid^="conversation-turn"]') ||
+          lastAssistantTurn;
         // Check if the last assistant turn has finished action buttons (copy, thumbs up/down, share)
-        if (lastAssistantTurn.querySelector('${FINISHED_ACTIONS_SELECTOR}')) {
+        if (turnScope.querySelector('${FINISHED_ACTIONS_SELECTOR}')) {
           return true;
         }
         // Also check for "Done" text in the last assistant turn's markdown
-        const markdowns = lastAssistantTurn.querySelectorAll('.markdown');
+        const markdowns = turnScope.querySelectorAll('.markdown');
         return Array.from(markdowns).some((n) => (n.textContent || '').trim() === 'Done');
       })()`,
       returnByValue: true,
@@ -1048,10 +1051,13 @@ function buildResponseObserverExpression(
         }
       }
       if (!lastAssistantTurn) return false;
+      const turnScope =
+        lastAssistantTurn.closest('article[data-testid^="conversation-turn"], section[data-testid^="conversation-turn"], div[data-testid^="conversation-turn"]') ||
+        lastAssistantTurn;
       // Check for action buttons in this specific turn
-      if (lastAssistantTurn.querySelector(FINISHED_SELECTOR)) return true;
+      if (turnScope.querySelector(FINISHED_SELECTOR)) return true;
       // Check for "Done" text in this turn's markdown
-      const markdowns = lastAssistantTurn.querySelectorAll('.markdown');
+      const markdowns = turnScope.querySelectorAll('.markdown');
       return Array.from(markdowns).some((n) => (n.textContent || '').trim() === 'Done');
     };
 

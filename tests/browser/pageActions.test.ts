@@ -1030,6 +1030,7 @@ describe("waitForAssistantResponse", () => {
     vi.useFakeTimers();
     try {
       const answer = { text: "Yes.", messageId: "mid", turnId: "tid" };
+      let completionExpression = "";
       const evaluate = vi
         .fn()
         .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
@@ -1041,6 +1042,7 @@ describe("waitForAssistantResponse", () => {
             return { result: { value: answer } };
           }
           if (expression.includes("Find the LAST assistant turn")) {
+            completionExpression = expression;
             return { result: { value: true } };
           }
           return { result: { value: false } };
@@ -1054,6 +1056,8 @@ describe("waitForAssistantResponse", () => {
       await vi.advanceTimersByTimeAsync(15_000);
 
       await expect(promise).resolves.toMatchObject({ text: "Yes." });
+      expect(completionExpression).toContain("const turnScope");
+      expect(completionExpression).toContain("turnScope.querySelector");
     } finally {
       vi.useRealTimers();
     }
@@ -1074,9 +1078,10 @@ describe("waitForAssistantResponse", () => {
     expect(capturedExpression).toContain("characterData: true");
     expect(capturedExpression).toContain("copy-turn-action-button");
     expect(capturedExpression).toContain("isLastAssistantTurnFinished");
-    expect(capturedExpression).toContain("lastAssistantTurn.querySelector(FINISHED_SELECTOR)");
+    expect(capturedExpression).toContain("const turnScope");
+    expect(capturedExpression).toContain("turnScope.querySelector(FINISHED_SELECTOR)");
     expect(capturedExpression).not.toContain("document.querySelector(FINISHED_SELECTOR)");
-    expect(capturedExpression).toContain("lastAssistantTurn.querySelectorAll('.markdown')");
+    expect(capturedExpression).toContain("turnScope.querySelectorAll('.markdown')");
     expect(capturedExpression).not.toContain("document.querySelectorAll('.markdown')");
     expect(capturedExpression).toContain("data-message-author-role");
     expect(capturedExpression).toContain("role === 'assistant'");
