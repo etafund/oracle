@@ -17,6 +17,8 @@ const CLI_ENTRY = path.join(process.cwd(), "bin", "oracle-cli.ts");
 const TSX_LOADER = pathToFileURL(
   path.join(process.cwd(), "node_modules", "tsx", "dist", "loader.mjs"),
 ).href;
+// v0.15.0 contract: the default engine is "browser" (DEFAULT_USER_CONFIG), so API-path
+// runs (including every --followup invocation) must opt in explicitly with --engine api.
 const CLIENT_FACTORY = path.join(process.cwd(), "tests", "fixtures", "mockClientFactory.cjs");
 const INTEGRATION_TIMEOUT = 60000;
 const AZURE_ENV_KEYS = [
@@ -279,6 +281,8 @@ module.exports = () => ({
           "--import",
           "tsx",
           CLI_ENTRY,
+          "--engine",
+          "api",
           "--prompt",
           "Integration check",
           "--model",
@@ -380,6 +384,8 @@ module.exports = () => ({
           "--import",
           "tsx",
           CLI_ENTRY,
+          "--engine",
+          "api",
           "--prompt",
           "Timeout plan check",
           "--model",
@@ -724,6 +730,8 @@ module.exports = () => ({
             "--import",
             "tsx",
             CLI_ENTRY,
+            "--engine",
+            "api",
             "--prompt",
             "Detached Azure provider route check",
             "--model",
@@ -942,7 +950,17 @@ module.exports = () => ({
 
       await execFileAsync(
         process.execPath,
-        ["--import", "tsx", CLI_ENTRY, "--prompt", "Parent run", "--model", "gpt-5.1"],
+        [
+          "--import",
+          "tsx",
+          CLI_ENTRY,
+          "--engine",
+          "api",
+          "--prompt",
+          "Parent run",
+          "--model",
+          "gpt-5.1",
+        ],
         { env },
       );
 
@@ -961,6 +979,8 @@ module.exports = () => ({
           "--import",
           "tsx",
           CLI_ENTRY,
+          "--engine",
+          "api",
           "--prompt",
           "Child run",
           "--model",
@@ -1026,7 +1046,17 @@ module.exports = () => ({
 
       await execFileAsync(
         process.execPath,
-        ["--import", "tsx", CLI_ENTRY, "--prompt", "Persist model override", "--model", "gpt-5.5"],
+        [
+          "--import",
+          "tsx",
+          CLI_ENTRY,
+          "--engine",
+          "api",
+          "--prompt",
+          "Persist model override",
+          "--model",
+          "gpt-5.5",
+        ],
         { env },
       );
 
@@ -1089,6 +1119,8 @@ module.exports = () => ({
           "--import",
           "tsx",
           CLI_ENTRY,
+          "--engine",
+          "api",
           "--prompt",
           "Child from direct response id",
           "--model",
@@ -1137,6 +1169,8 @@ module.exports = () => ({
             "--import",
             "tsx",
             CLI_ENTRY,
+            "--engine",
+            "api",
             "--prompt",
             "Gemini followup",
             "--model",
@@ -1184,6 +1218,8 @@ module.exports = () => ({
             "--import",
             "tsx",
             CLI_ENTRY,
+            "--engine",
+            "api",
             "--prompt",
             "Claude followup",
             "--model",
@@ -1287,6 +1323,8 @@ module.exports = () => ({
           "--import",
           "tsx",
           CLI_ENTRY,
+          "--engine",
+          "api",
           "--prompt",
           "Parent run for followup suggestions",
           "--model",
@@ -1304,6 +1342,8 @@ module.exports = () => ({
             "--import",
             "tsx",
             CLI_ENTRY,
+            "--engine",
+            "api",
             "--prompt",
             "Child with typo followup id",
             "--model",
@@ -1372,6 +1412,8 @@ module.exports = () => ({
             "--import",
             "tsx",
             CLI_ENTRY,
+            "--engine",
+            "api",
             "--prompt",
             "Child missing followup model",
             "--model",
@@ -1450,6 +1492,8 @@ module.exports = () => ({
           "--import",
           "tsx",
           CLI_ENTRY,
+          "--engine",
+          "api",
           "--prompt",
           "Child with followup model select",
           "--model",
@@ -1632,6 +1676,8 @@ module.exports = () => ({
           "--import",
           "tsx",
           CLI_ENTRY,
+          "--engine",
+          "api",
           "--prompt",
           "Multi run test prompt long enough",
           "--models",
@@ -1780,6 +1826,8 @@ module.exports = () => ({
           "--import",
           "tsx",
           CLI_ENTRY,
+          "--engine",
+          "api",
           "--prompt",
           "Shorthand multi-model normalization prompt that is safely over twenty characters.",
           "--models",
