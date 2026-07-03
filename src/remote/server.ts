@@ -6,7 +6,7 @@ import path from "node:path";
 import net from "node:net";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtemp, rm, mkdir, writeFile, stat, realpath } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, readFile, writeFile, stat, realpath } from "node:fs/promises";
 import chalk from "chalk";
 import type { BrowserAttachment, BrowserLogger, CookieParam } from "../browser/types.js";
 import { runBrowserMode } from "../browserMode.js";
@@ -47,6 +47,14 @@ export interface RemoteServerOptions {
   host?: string;
   port?: number;
   token?: string;
+  /**
+   * Path to a file containing the access token (trailing whitespace
+   * trimmed). Keeps the secret out of argv, where it would be visible in
+   * /proc/<pid>/cmdline, ps output, and crash reports. Composes with
+   * systemd LoadCredential. Resolution precedence:
+   * --token-file > ORACLE_REMOTE_TOKEN_FILE > ORACLE_REMOTE_TOKEN > --token.
+   */
+  tokenFile?: string;
   logger?: (message: string) => void;
   manualLoginDefault?: boolean;
   manualLoginProfileDir?: string;
@@ -141,6 +149,10 @@ export async function createRemoteServer(
   deps: RemoteServerDeps = {},
 ): Promise<RemoteServerInstance> {
   const runBrowser = deps.runBrowser ?? runBrowserMode;
+  const resolvedToken = await resolveServeAuthToken({
+    tokenFile: options.tokenFile,
+    token: options.token,
+  });
   const server = http.createServer();
   // Socket-layer bounds to complement the app-level admission limits: slow
   // header/body transmission must not hold sockets open indefinitely. The
@@ -149,7 +161,7 @@ export async function createRemoteServer(
   server.headersTimeout = 30_000;
   server.requestTimeout = 120_000;
   const logger = options.logger ?? console.log;
-  const authToken = options.token ?? randomBytes(16).toString("hex");
+  const authToken = resolvedToken.token;
   const startedAt = Date.now();
   const verbose = process.argv.includes("--verbose") || process.env.ORACLE_SERVE_VERBOSE === "1";
   const color = process.stdout.isTTY
@@ -562,7 +574,7 @@ export async function createRemoteServer(
   // shared bearer secret copied into every journal defeats file permissions
   // and token rotation alike. Log a short token id (sha256 prefix) instead so
   // operators can still tell WHICH token generation a worker is running.
-  const tokenWasSupplied = typeof options.token === "string" && options.token.length > 0;
+  const tokenWasSupplied = resolvedToken.source !== "generated";
   const printTokenOptIn =
     process.env.ORACLE_SERVE_PRINT_TOKEN === "1" || Boolean(process.stdout.isTTY);
   if (!tokenWasSupplied && printTokenOptIn) {
@@ -570,7 +582,12 @@ export async function createRemoteServer(
     // is the only way the operator can hand it to clients.
     logger(color(chalk.yellowBright, `Access token: ${authToken}`));
   } else {
-    logger(color(chalk.yellowBright, `Access token: <redacted> (token id ${tokenIdForLog(authToken)})`));
+    logger(
+      color(
+        chalk.yellowBright,
+        `Access token: <redacted> (token id ${tokenIdForLog(authToken)}, source ${resolvedToken.source})`,
+      ),
+    );
     if (!tokenWasSupplied) {
       logger(
         "Token was generated randomly but not printed (non-interactive session). " +
@@ -632,6 +649,12 @@ function serializeActiveRun(run: ActiveRunState): RemoteActiveRunInfo {
 }
 
 export async function serveRemote(options: RemoteServerOptions = {}): Promise<void> {
+  // Resolve the access token before any interactive warm-up (cookie probing,
+  // login prompts): a worker with a misconfigured credential path must refuse
+  // to start immediately, not after minutes of browser setup. The resolved
+  // value is re-read inside createRemoteServer; this early pass is the
+  // fail-loud gate.
+  await resolveServeAuthToken({ tokenFile: options.tokenFile, token: options.token });
   const manualProfileDir =
     options.manualLoginProfileDir ?? path.join(os.homedir(), ".oracle", "browser-profile");
   const preferManualLogin = options.manualLoginDefault || process.platform === "win32" || isWsl();
@@ -1036,6 +1059,64 @@ const DEFAULT_ACCOUNT_ID = "acct1";
  */
 export function tokenIdForLog(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex").slice(0, 8);
+}
+
+export type ServeTokenSource = "token-file" | "env-token-file" | "env" | "flag" | "generated";
+
+/**
+ * Resolve the serve access token without ever requiring the secret in argv
+ * (argv is world-visible via /proc/<pid>/cmdline, ps, and crash reports).
+ *
+ * Precedence: --token-file > ORACLE_REMOTE_TOKEN_FILE > ORACLE_REMOTE_TOKEN
+ * > --token > freshly generated. File modes fail loud (missing/empty/
+ * world-readable) so a misconfigured worker refuses to start instead of
+ * silently serving with a token nobody expects.
+ */
+export async function resolveServeAuthToken(options: {
+  tokenFile?: string;
+  token?: string;
+}): Promise<{ token: string; source: ServeTokenSource }> {
+  const flagTokenFile = options.tokenFile?.trim();
+  if (flagTokenFile) {
+    return { token: await readTokenFile(flagTokenFile), source: "token-file" };
+  }
+  const envTokenFile = process.env.ORACLE_REMOTE_TOKEN_FILE?.trim();
+  if (envTokenFile) {
+    return { token: await readTokenFile(envTokenFile), source: "env-token-file" };
+  }
+  const envToken = process.env.ORACLE_REMOTE_TOKEN?.trim();
+  if (envToken) {
+    return { token: envToken, source: "env" };
+  }
+  const flagToken = options.token?.trim();
+  if (flagToken) {
+    return { token: flagToken, source: "flag" };
+  }
+  return { token: randomBytes(16).toString("hex"), source: "generated" };
+}
+
+async function readTokenFile(filePath: string): Promise<string> {
+  let contents: string;
+  try {
+    contents = await readFile(filePath, "utf8");
+  } catch (error) {
+    throw new Error(
+      `Unable to read token file ${filePath}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (process.platform !== "win32") {
+    const fileStat = await stat(filePath).catch(() => null);
+    if (fileStat && (fileStat.mode & 0o004) !== 0) {
+      throw new Error(
+        `Refusing world-readable token file ${filePath} (mode ${(fileStat.mode & 0o777).toString(8)}); chmod 600 it.`,
+      );
+    }
+  }
+  const token = contents.trim();
+  if (!token) {
+    throw new Error(`Token file ${filePath} is empty.`);
+  }
+  return token;
 }
 
 /**

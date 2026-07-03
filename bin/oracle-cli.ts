@@ -1047,7 +1047,17 @@ program
   .description("Run Oracle browser automation as a remote service for other machines.")
   .option("--host <address>", "Interface to bind (default 0.0.0.0).")
   .option("--port <number>", "Port to listen on (default random).", parseIntOption)
-  .option("--token <value>", "Access token clients must provide (random if omitted).")
+  .option(
+    "--token <value>",
+    "Access token clients must provide. Prefer --token-file or ORACLE_REMOTE_TOKEN so the secret stays out of argv. " +
+      "Precedence: --token-file > ORACLE_REMOTE_TOKEN_FILE > ORACLE_REMOTE_TOKEN > --token (random if none). " +
+      "Rotation: replace the credential and restart serve.",
+  )
+  .option(
+    "--token-file <path>",
+    "Read the access token from this file (trailing newline trimmed; refuses missing/empty/world-readable files). " +
+      "Keeps the secret out of /proc/<pid>/cmdline and composes with systemd LoadCredential.",
+  )
   .option(
     "--manual-login",
     "Use a dedicated Chrome profile for manual login (recommended when cookie sync is unavailable).",
@@ -1064,6 +1074,7 @@ program
       host: commandOptions.host,
       port: commandOptions.port,
       token: commandOptions.token,
+      tokenFile: commandOptions.tokenFile,
       manualLoginDefault: commandOptions.manualLogin,
       manualLoginProfileDir: commandOptions.manualLoginProfileDir,
     });
