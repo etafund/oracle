@@ -55,6 +55,13 @@ export interface RemoteServerOptions {
    */
   laneId?: string;
   accountId?: string;
+  /**
+   * Admission limits for /runs request bodies. Defaults match the
+   * reverse-proxy tier (10 MiB cap, 60s read deadline); overridable so
+   * fault-isolation tests can exercise the refusal paths quickly.
+   */
+  maxRunRequestBodyBytes?: number;
+  runBodyReadDeadlineMs?: number;
 }
 
 interface RemoteServerDeps {
@@ -85,6 +92,25 @@ interface RegisteredRemoteArtifact {
 const ARTIFACT_PROTOCOL_VERSION = 1;
 const REMOTE_ARTIFACT_TTL_MS = 30 * 60 * 1000;
 
+// App-level request admission limits. The reverse-proxy tier caps bodies at
+// 10 MiB; the worker must enforce the same bound itself so a request that
+// reaches the backend port directly cannot balloon memory or pin the lane
+// with an unbounded/slow upload.
+export const MAX_RUN_REQUEST_BODY_BYTES = 10 * 1024 * 1024;
+export const RUN_BODY_READ_DEADLINE_MS = 60_000;
+
+type RequestBodyErrorKind = "too_large" | "timed_out" | "aborted";
+
+class RequestBodyError extends Error {
+  readonly kind: RequestBodyErrorKind;
+
+  constructor(kind: RequestBodyErrorKind, message: string) {
+    super(message);
+    this.name = "RequestBodyError";
+    this.kind = kind;
+  }
+}
+
 const ARTIFACT_CAPABILITIES: RemoteArtifactCapabilities = {
   artifactTransfer: true,
   artifactProtocolVersion: ARTIFACT_PROTOCOL_VERSION,
@@ -113,6 +139,12 @@ export async function createRemoteServer(
 ): Promise<RemoteServerInstance> {
   const runBrowser = deps.runBrowser ?? runBrowserMode;
   const server = http.createServer();
+  // Socket-layer bounds to complement the app-level admission limits: slow
+  // header/body transmission must not hold sockets open indefinitely. The
+  // request timeout only covers receiving the request, not the (long-lived)
+  // streamed NDJSON response.
+  server.headersTimeout = 30_000;
+  server.requestTimeout = 120_000;
   const logger = options.logger ?? console.log;
   const authToken = options.token ?? randomBytes(16).toString("hex");
   const startedAt = Date.now();
@@ -120,9 +152,19 @@ export async function createRemoteServer(
   const color = process.stdout.isTTY
     ? (formatter: (msg: string) => string, msg: string) => formatter(msg)
     : (_formatter: (msg: string) => string, msg: string) => msg;
-  // Single-flight guard: remote Chrome can only host one run at a time, so we serialize requests.
+  // Two-stage single-flight guard: remote Chrome can only host one run at a
+  // time. `admitting` is held while a request body is read and validated;
+  // `busy` is only flipped once a validated run is handed to the browser.
+  // A second request during either stage is refused with 409, and a request
+  // that fails admission (oversize, slow body, invalid payload, disconnect)
+  // releases the slot without ever flipping `busy`.
+  let admitting = false;
   let busy = false;
   let activeRun: ActiveRunState | null = null;
+  const bodyLimits = {
+    maxBytes: options.maxRunRequestBodyBytes ?? MAX_RUN_REQUEST_BODY_BYTES,
+    deadlineMs: options.runBodyReadDeadlineMs ?? RUN_BODY_READ_DEADLINE_MS,
+  };
   const artifactRegistry = new Map<string, RegisteredRemoteArtifact>();
 
   // Worker identity for run correlation. Account id must stay a neutral label
@@ -208,48 +250,83 @@ export async function createRemoteServer(
       requestRunId = runId;
       const runStartedAt = Date.now();
 
+      const logRefusal = (reason: string, status: number) => {
+        // One structured line per refusal so refusals are as greppable and
+        // joinable as accepted runs.
+        logger(
+          `[serve] ${JSON.stringify({ event: "run.refused", runId, laneId, accountId, reason, status })}`,
+        );
+      };
+      const refuseRun = (status: number, code: string, extra: Record<string, unknown> = {}) => {
+        logRefusal(code, status);
+        if (res.destroyed || res.writableEnded) {
+          return;
+        }
+        if (!res.headersSent) {
+          // `Connection: close` so a peer mid-upload does not keep streaming
+          // into a connection whose request we already refused.
+          res.writeHead(status, {
+            "Content-Type": "application/json",
+            Connection: "close",
+            ...identityHeaders(runId),
+          });
+        }
+        res.end(JSON.stringify({ error: code, runId, ...extra }));
+      };
+
       if (!isAuthorizedBearer(req.headers.authorization, authToken)) {
         if (verbose) {
           logger(
             `[serve] Unauthorized /runs attempt for run ${runId} from ${formatSocket(req)} (missing/invalid token)`,
           );
         }
-        res.writeHead(401, { "Content-Type": "application/json", ...identityHeaders(runId) });
-        res.end(JSON.stringify({ error: "unauthorized", runId }));
+        refuseRun(401, "unauthorized");
         return;
       }
-      if (busy) {
+      if (admitting || busy) {
         if (verbose) {
           logger(
             `[serve] Busy: rejecting run ${runId} from ${formatSocket(req)} while another run is active`,
           );
         }
-        res.writeHead(409, { "Content-Type": "application/json", ...identityHeaders(runId) });
-        res.end(
-          JSON.stringify({
-            error: "busy",
-            busy: true,
-            runId,
-            ...(activeRun ? { activeRun: serializeActiveRun(activeRun) } : {}),
-          }),
-        );
+        refuseRun(409, "busy", {
+          busy: true,
+          ...(activeRun ? { activeRun: serializeActiveRun(activeRun) } : {}),
+        });
         return;
       }
-      busy = true;
 
+      admitting = true;
       let payload: RemoteRunPayload | null = null;
       try {
-        const body = await readRequestBody(req);
-        payload = sanitizeRemoteRunPayloadForHost(JSON.parse(body) as RemoteRunPayload);
-        if (payload?.browserConfig) {
-          payload.browserConfig.url = normalizeChatgptUrl(payload.browserConfig.url, CHATGPT_URL);
+        try {
+          const body = await readRequestBody(req, bodyLimits);
+          payload = sanitizeRemoteRunPayloadForHost(JSON.parse(body) as RemoteRunPayload);
+          if (payload?.browserConfig) {
+            payload.browserConfig.url = normalizeChatgptUrl(
+              payload.browserConfig.url,
+              CHATGPT_URL,
+            );
+          }
+        } catch (error) {
+          if (error instanceof RequestBodyError && error.kind === "too_large") {
+            refuseRun(413, "payload_too_large");
+          } else if (error instanceof RequestBodyError && error.kind === "timed_out") {
+            refuseRun(408, "request_timeout");
+          } else if (error instanceof RequestBodyError && error.kind === "aborted") {
+            // Peer is gone; nothing to answer, but the refusal is still logged
+            // and the admission slot is released by the finally below.
+            logRefusal("client_disconnected", 0);
+          } else {
+            refuseRun(400, "invalid_request");
+          }
+          return;
         }
-      } catch {
-        busy = false;
-        logger(`[serve] Run ${runId} refused: invalid request body`);
-        res.writeHead(400, { "Content-Type": "application/json", ...identityHeaders(runId) });
-        res.end(JSON.stringify({ error: "invalid_request", runId }));
-        return;
+        // Admission checks passed: hand the single-flight slot to the browser
+        // stage before releasing the admitting stage (no gap in coverage).
+        busy = true;
+      } finally {
+        admitting = false;
       }
 
       res.writeHead(200, { "Content-Type": "application/x-ndjson", ...identityHeaders(runId) });
@@ -435,6 +512,7 @@ export async function createRemoteServer(
         });
       }
       res.end(JSON.stringify({ error: "internal_error", ...(requestRunId ? { runId: requestRunId } : {}) }));
+      admitting = false;
       busy = false;
       activeRun = null;
     });
@@ -833,12 +911,79 @@ function classifySourceUrlKind(sourceUrl?: string): RemoteArtifactDescriptor["so
   return "chatgpt-file-endpoint";
 }
 
-async function readRequestBody(req: http.IncomingMessage): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
-  }
-  return Buffer.concat(chunks).toString("utf8");
+async function readRequestBody(
+  req: http.IncomingMessage,
+  limits: { maxBytes: number; deadlineMs: number } = {
+    maxBytes: MAX_RUN_REQUEST_BODY_BYTES,
+    deadlineMs: RUN_BODY_READ_DEADLINE_MS,
+  },
+): Promise<string> {
+  return await new Promise<string>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    let settled = false;
+
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      req.off("data", onData);
+      req.off("end", onEnd);
+      req.off("error", onError);
+      req.off("aborted", onAborted);
+      req.off("close", onAborted);
+      fn();
+    };
+
+    // A peer that trickles the body forever must not hold the admission slot
+    // indefinitely: bound the whole body read with one deadline.
+    const deadline = setTimeout(() => {
+      settle(() =>
+        reject(
+          new RequestBodyError(
+            "timed_out",
+            `request body not received within ${limits.deadlineMs}ms`,
+          ),
+        ),
+      );
+    }, limits.deadlineMs);
+    deadline.unref?.();
+
+    const onData = (chunk: Buffer | string) => {
+      const buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+      totalBytes += buffer.length;
+      if (totalBytes > limits.maxBytes) {
+        settle(() =>
+          reject(
+            new RequestBodyError(
+              "too_large",
+              `request body exceeds ${limits.maxBytes} byte limit`,
+            ),
+          ),
+        );
+        return;
+      }
+      chunks.push(buffer);
+    };
+    const onEnd = () => {
+      settle(() => resolve(Buffer.concat(chunks).toString("utf8")));
+    };
+    const onError = (error: Error) => {
+      settle(() => reject(new RequestBodyError("aborted", error.message)));
+    };
+    const onAborted = () => {
+      settle(() => reject(new RequestBodyError("aborted", "request aborted by peer")));
+    };
+
+    req.on("data", onData);
+    req.on("end", onEnd);
+    req.on("error", onError);
+    req.on("aborted", onAborted);
+    // Some teardown paths close the socket without an error/aborted event;
+    // `end` wins the settle race on a normal completion, so this only fires
+    // for a genuinely torn-down request.
+    req.on("close", onAborted);
+  });
 }
 
 const DEFAULT_ACCOUNT_ID = "acct1";
