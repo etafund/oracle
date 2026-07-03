@@ -35,6 +35,11 @@ import { normalizeChatgptUrl } from "../browser/utils.js";
 import { resolveBrowserConfig } from "../browser/config.js";
 import { getBrowserCleanupTaint, type BrowserCleanupTaint } from "../browser/index.js";
 import { countActiveBrowserTabLeases } from "../browser/tabLeaseRegistry.js";
+import {
+  appendOracleRunEvent,
+  classifyRunErrorClass,
+  type RunAttachmentDigest,
+} from "./run_event_sink.js";
 import { sanitizeRemoteRunPayloadForHost } from "./payload_sanitize.js";
 import {
   computeFileSha256,
@@ -649,6 +654,11 @@ export async function createRemoteServer(
       let payload: RemoteRunPayload | null = null;
       let runDir: string | null = null;
       let attachProbeForRun: AttachTargetProbe | null = null;
+      // oracle.run.v1 accounting for this run (one sink line per ACCEPTED
+      // run, emitted from the finally below on success, failure, and abort).
+      let acceptedAt: string | null = null;
+      let submittedAt: string | null = null;
+      let activeTabLeasesAtSubmit: number | null = null;
       let attachments: BrowserAttachment[] = [];
       let fallbackSubmission:
         | {
@@ -744,6 +754,7 @@ export async function createRemoteServer(
         // stage before releasing the admitting stage (no gap in coverage).
         busy = true;
         lastRunProgressAtMs = Date.now();
+        acceptedAt = new Date().toISOString();
       } finally {
         admitting = false;
       }
@@ -789,6 +800,8 @@ export async function createRemoteServer(
         res.write(`${JSON.stringify({ runId, ...event })}\n`);
       };
 
+      let runResult: BrowserRunResult | null = null;
+      let runErrorMessage: string | null = null;
       try {
         if (uploadIntegrity && uploadIntegrity.attachments.length + (uploadIntegrity.fallbackAttachments?.length ?? 0) > 0) {
           // Emit the staging proof before the browser stage starts so the
@@ -798,6 +811,16 @@ export async function createRemoteServer(
 
         const automationLogger: BrowserLogger = ((message?: string) => {
           if (typeof message === "string") {
+            // Send-confirmation marker: the account-safety boundary for run
+            // accounting is the ChatGPT submit moment, not /runs acceptance.
+            if (submittedAt === null && /submitted prompt|prompt submitted/i.test(message)) {
+              submittedAt = new Date().toISOString();
+              void countActiveBrowserTabLeases(attachProfileDir)
+                .then((census) => {
+                  activeTabLeasesAtSubmit = census.activeLeaseCount;
+                })
+                .catch(() => undefined);
+            }
             sendEvent({ type: "log", message });
           }
         }) as BrowserLogger;
@@ -833,6 +856,7 @@ export async function createRemoteServer(
           sessionId: payload.options.sessionId,
           followUpPrompts: payload.options.followUpPrompts,
         });
+        runResult = result;
         const artifactRegistration = await registerRemoteArtifacts({
           runId,
           result,
@@ -867,6 +891,7 @@ export async function createRemoteServer(
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        runErrorMessage = message;
         sendEvent({ type: "error", message });
         logger(`[serve] Run ${runId} failed after ${Date.now() - runStartedAt}ms: ${message}`);
       } finally {
@@ -876,6 +901,69 @@ export async function createRemoteServer(
           activeRun = null;
         }
         responseCompleted = true;
+        // Exactly one oracle.run.v1 line per accepted run — success, failure,
+        // and client-abort all land here. Sink failures are logged, never
+        // allowed to disturb the response path.
+        try {
+          const attachmentDigests: RunAttachmentDigest[] | null = uploadIntegrity
+            ? [
+                ...uploadIntegrity.attachments,
+                ...(uploadIntegrity.fallbackAttachments ?? []),
+              ].map((entry) => ({
+                index: entry.index,
+                bytes: entry.bytes,
+                sha256: entry.sha256,
+              }))
+            : null;
+          const challengeMatched = runErrorMessage
+            ? /challenge|captcha|interstitial/i.test(runErrorMessage)
+            : null;
+          await appendOracleRunEvent(
+            {
+              run_id: runId,
+              job_id: typeof payload.options?.jobId === "string" ? payload.options.jobId : null,
+              account_id: accountId,
+              lane_id: laneId,
+              port: boundPort,
+              accepted_at: acceptedAt,
+              submitted_at: submittedAt,
+              first_token_at: null,
+              completed_at: new Date().toISOString(),
+              scheduled_concurrency: null,
+              active_tab_leases: activeTabLeasesAtSubmit,
+              busy_workers: null,
+              error_class: classifyRunErrorClass(runErrorMessage, submittedAt !== null),
+              done_ok: runErrorMessage === null,
+              challenge_detected: challengeMatched,
+              model_verified: runResult?.modelSelection?.verified ?? null,
+              max_active_before_first_token: null,
+              mean_active_during_ttft: null,
+              max_active_during_generation: null,
+              overlap_ms_at_c1: null,
+              overlap_ms_at_c2: null,
+              overlap_ms_at_c3: null,
+              observed_egress_ip: null,
+              attachments: attachmentDigests,
+              conversation_id_hash: runResult?.conversationId
+                ? sha256Hex(runResult.conversationId)
+                : null,
+              provenance: runResult?.modelSelection
+                ? {
+                    model_requested: runResult.modelSelection.requestedModel ?? null,
+                    model_resolved: runResult.modelSelection.resolvedLabel ?? null,
+                    model_verified: runResult.modelSelection.verified ?? null,
+                  }
+                : null,
+            },
+            { assertAbsent: [authToken] },
+          );
+        } catch (sinkError) {
+          logger(
+            `[serve] run-event sink append failed for run ${runId}: ${
+              sinkError instanceof Error ? sinkError.message : String(sinkError)
+            }`,
+          );
+        }
         if (!res.destroyed && !res.writableEnded) {
           res.end();
         }
@@ -1514,6 +1602,11 @@ async function readFleetManifestStatus(worker: {
     mismatches.push("timeoutMs");
   }
   return { present: true, match: mismatches.length === 0, mismatches };
+}
+
+/** Plain hex sha256 for hashed identifiers (e.g. conversation ids). */
+function sha256Hex(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
 function parsePositiveIntEnv(value: string | undefined): number | undefined {

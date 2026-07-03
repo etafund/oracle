@@ -25,6 +25,12 @@ export interface RemoteRunPayload {
     verbose?: boolean;
     sessionId?: string;
     followUpPrompts?: string[];
+    /**
+     * Caller-supplied idempotency/dedup key, recorded verbatim as job_id in
+     * the worker's oracle.run.v1 sink line so scheduling tooling can join
+     * runs to jobs; never interpreted by the worker.
+     */
+    jobId?: string;
   };
 }
 
