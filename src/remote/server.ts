@@ -805,12 +805,20 @@ export async function createRemoteServer(
             : undefined,
       };
       let responseCompleted = false;
+      // Caller-gone abort: a dropped caller must not pin this lane for the
+      // remainder of the run (up to the full run timeout). On disconnect the
+      // browser layer stops at its next raced wait point and unwinds through
+      // its normal cleanup path (close owned target before lease release);
+      // the typed transport class (before/after submit) lands in the run's
+      // sink line. Post-submit aborts never attempt ChatGPT-side cancels.
+      const runAbort = new AbortController();
       res.once("close", () => {
         if (!responseCompleted && activeRun?.id === runId) {
           activeRun.clientConnected = false;
-          if (verbose) {
-            logger(`[serve] Client disconnected while run ${runId} is still active`);
-          }
+          logger(
+            `[serve] Client disconnected while run ${runId} is still active; aborting to free the lane`,
+          );
+          runAbort.abort();
         }
       });
       logger(
@@ -901,6 +909,7 @@ export async function createRemoteServer(
           verbose: payload.options.verbose,
           sessionId: payload.options.sessionId,
           followUpPrompts: payload.options.followUpPrompts,
+          signal: runAbort.signal,
         });
         runResult = result;
         const artifactRegistration = await registerRemoteArtifacts({

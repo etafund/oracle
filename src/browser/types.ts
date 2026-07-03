@@ -153,6 +153,14 @@ export interface BrowserRunOptions {
   followUpPrompts?: string[];
   /** Optional hook to persist runtime info (port/url/target) as soon as Chrome is ready. */
   runtimeHintCb?: (hint: BrowserRuntimeMetadata) => void | Promise<void>;
+  /**
+   * Caller-gone abort. When the signal fires, the run stops waiting at the
+   * next raced wait point and unwinds through the normal cleanup path
+   * (close owned target before lease release). Post-submit aborts never
+   * attempt any ChatGPT-side cancellation — the run is simply abandoned and
+   * reported with a typed post-submit transport class.
+   */
+  signal?: AbortSignal;
 }
 
 export interface BrowserArchiveResult {

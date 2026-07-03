@@ -145,6 +145,28 @@ function isReattachableCaptureError(error: unknown): error is BrowserAutomationE
 
 type PreservedBrowserErrorKind = "cloudflare-challenge" | "reattachable-capture";
 
+/**
+ * Typed error for a caller-gone abort. Pre-submit aborts are retryable
+ * transport interruptions; once the prompt has been submitted the run is
+ * NOT auto-retryable (the prompt may already be generating against the
+ * account) and no ChatGPT-side cancellation is attempted — the run is
+ * abandoned and the tab cleaned up by the normal cleanup path.
+ */
+function buildClientAbortError(promptSubmitted: boolean): BrowserAutomationError {
+  return new BrowserAutomationError(
+    promptSubmitted
+      ? "Caller disconnected after submit; abandoning the run without ChatGPT-side cancellation."
+      : "Caller disconnected before submit; aborting the run.",
+    {
+      stage: "client-abort",
+      oracleErrorClass: promptSubmitted
+        ? "transport_interrupted_after_submit"
+        : "transport_interrupted_before_submit",
+      retryable: !promptSubmitted,
+    },
+  );
+}
+
 function classifyPreservedBrowserError(
   error: unknown,
   headless: boolean,
@@ -998,6 +1020,10 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
   if (!promptText) {
     throw new Error("Prompt text is required when using browser mode.");
   }
+  if (options.signal?.aborted) {
+    // Fail fast before any Chrome work: the caller is already gone.
+    throw buildClientAbortError(false);
+  }
 
   const attachments: BrowserAttachment[] = options.attachments ?? [];
   const fallbackSubmission = options.fallbackSubmission;
@@ -1033,6 +1059,9 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
   let lastUrl: string | undefined;
   let promptSubmitted = false;
   let tabLease: BrowserTabLease | null = null;
+  // Initialized to a no-op so control-flow analysis keeps the callable type;
+  // the abort-race wiring below replaces it with the real disposer.
+  let removeAbortListener: (() => void) | null = () => {};
   const emitRuntimeHint = async (): Promise<void> => {
     if (!chrome?.port) {
       return;
@@ -1282,8 +1311,28 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         );
       });
     });
+    const abortPromise = new Promise<never>((_, reject) => {
+      const signal = options.signal;
+      if (!signal) {
+        return;
+      }
+      const rejectAborted = () => {
+        logger("Caller disconnected; aborting run at the next wait point.");
+        // promptSubmitted is read at abort time so the typed class reflects
+        // whether the Send boundary was crossed.
+        reject(buildClientAbortError(promptSubmitted));
+      };
+      if (signal.aborted) {
+        rejectAborted();
+        return;
+      }
+      signal.addEventListener("abort", rejectAborted, { once: true });
+      removeAbortListener = () => signal.removeEventListener("abort", rejectAborted);
+    });
+    // Keep the rejection handled even if no wait is currently racing it.
+    void abortPromise.catch(() => undefined);
     const raceWithDisconnect = <T>(promise: Promise<T>): Promise<T> =>
-      Promise.race([promise, disconnectPromise]);
+      Promise.race([promise, disconnectPromise, abortPromise]);
     const { Network, Page, Runtime, Input, DOM } = client;
 
     if (!config.headless && config.hideWindow) {
@@ -2520,6 +2569,8 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     }
     removeDialogHandler?.();
     removeTerminationHooks?.();
+    removeAbortListener?.();
+    removeAbortListener = null;
     if (!keepBrowserOpen) {
       if (!connectionClosedUnexpectedly) {
         try {
