@@ -370,10 +370,11 @@ export async function readAssistantSnapshot(
     const snapshot = value as AssistantSnapshot;
     if (typeof minTurnIndex === "number" && Number.isFinite(minTurnIndex)) {
       const turnIndex = typeof snapshot.turnIndex === "number" ? snapshot.turnIndex : null;
+      const afterLatestUser = snapshot.afterLatestUser === true;
       if (turnIndex === null) {
         return snapshot;
       }
-      if (turnIndex < minTurnIndex) {
+      if (turnIndex < minTurnIndex && !afterLatestUser) {
         return null;
       }
     }
@@ -940,8 +941,9 @@ function buildResponseObserverExpression(
       if (!snapshot) return null;
       if (!matchesExpectedConversation()) return null;
       const index = typeof snapshot.turnIndex === 'number' ? snapshot.turnIndex : -1;
+      const afterLatestUser = snapshot.afterLatestUser === true;
       if (MIN_TURN_INDEX >= 0) {
-        if (index < 0 || index < MIN_TURN_INDEX) {
+        if ((index < 0 || index < MIN_TURN_INDEX) && !afterLatestUser) {
           return null;
         }
       }
@@ -1269,6 +1271,18 @@ function buildAssistantExtractor(functionName: string): string {
       }
       return Boolean(node.querySelector(ASSISTANT_SELECTOR) || node.querySelector('[data-testid*="assistant"]'));
     };
+    const isUserTurn = (node) => {
+      if (!(node instanceof HTMLElement)) return false;
+      const turnAttr = (node.getAttribute('data-turn') || node.dataset?.turn || '').toLowerCase();
+      if (turnAttr === 'user') {
+        return true;
+      }
+      const role = (node.getAttribute('data-message-author-role') || node.dataset?.messageAuthorRole || '').toLowerCase();
+      if (role === 'user') {
+        return true;
+      }
+      return Boolean(node.querySelector('[data-message-author-role="user"], [data-turn="user"]'));
+    };
 
     const expandCollapsibles = (root) => {
       const buttons = Array.from(root.querySelectorAll('button'));
@@ -1288,11 +1302,26 @@ function buildAssistantExtractor(functionName: string): string {
     };
 
     const turns = Array.from(document.querySelectorAll(CONVERSATION_SELECTOR));
+    let latestUserTurn = null;
+    for (let index = turns.length - 1; index >= 0; index -= 1) {
+      if (isUserTurn(turns[index])) {
+        latestUserTurn = turns[index];
+        break;
+      }
+    }
+    const followsLatestUser = (node) => {
+      if (!latestUserTurn || !node || typeof latestUserTurn.compareDocumentPosition !== 'function') {
+        return false;
+      }
+      const position = latestUserTurn.compareDocumentPosition(node);
+      return Boolean(position & Node.DOCUMENT_POSITION_FOLLOWING);
+    };
     for (let index = turns.length - 1; index >= 0; index -= 1) {
       const turn = turns[index];
       if (!isAssistantTurn(turn)) {
         continue;
       }
+      const afterLatestUser = followsLatestUser(turn);
       const messageRoot = turn.querySelector(ASSISTANT_SELECTOR) ?? turn;
       expandCollapsibles(messageRoot);
       const preferred =
@@ -1325,10 +1354,10 @@ function buildAssistantExtractor(functionName: string): string {
         /^thought for \\d+(?:\\.\\d+)?\\s*(?:s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)\\s+edit$/.test(normalizedText);
       if (generatedImages.length > 0 && imageOnlyChrome) {
         const label = generatedImages.length === 1 ? 'Generated image.' : \`Generated \${generatedImages.length} images.\`;
-        return { text: label, html: messageRoot?.innerHTML ?? html, messageId, turnId, turnIndex: index };
+        return { text: label, html: messageRoot?.innerHTML ?? html, messageId, turnId, turnIndex: index, afterLatestUser };
       }
       if (text.trim()) {
-        return { text, html, messageId, turnId, turnIndex: index };
+        return { text, html, messageId, turnId, turnIndex: index, afterLatestUser };
       }
     }
     return null;
@@ -1375,17 +1404,38 @@ function buildMarkdownFallbackExtractor(minTurnLiteral?: string): string {
     const CONVERSATION_SELECTOR = '${CONVERSATION_TURN_SELECTOR}';
     const turnNodes = Array.from(document.querySelectorAll(CONVERSATION_SELECTOR));
     const hasTurns = turnNodes.length > 0;
+    const isUserTurn = (node) => {
+      if (!(node instanceof HTMLElement)) return false;
+      const role = (node.getAttribute('data-message-author-role') || node.getAttribute('data-turn') || '').toLowerCase();
+      if (role === 'user') return true;
+      return Boolean(node.querySelector('[data-message-author-role="user"], [data-turn="user"]'));
+    };
+    let latestUserTurn = null;
+    for (let i = turnNodes.length - 1; i >= 0; i -= 1) {
+      if (isUserTurn(turnNodes[i])) {
+        latestUserTurn = turnNodes[i];
+        break;
+      }
+    }
     const resolveTurnIndex = (node) => {
       const turn = node?.closest?.(CONVERSATION_SELECTOR);
       if (!turn) return null;
       const idx = turnNodes.indexOf(turn);
       return idx >= 0 ? idx : null;
     };
+    const isAfterLatestUserTurn = (node) => {
+      if (!latestUserTurn || !node || typeof latestUserTurn.compareDocumentPosition !== 'function') {
+        return false;
+      }
+      const turn = node?.closest?.(CONVERSATION_SELECTOR) ?? node;
+      const position = latestUserTurn.compareDocumentPosition(turn);
+      return Boolean(position & Node.DOCUMENT_POSITION_FOLLOWING);
+    };
     const isAfterMinTurn = (node) => {
       if (__minTurn === null) return true;
       if (!hasTurns) return true;
       const idx = resolveTurnIndex(node);
-      return idx !== null && idx >= __minTurn;
+      return (idx !== null && idx >= __minTurn) || isAfterLatestUserTurn(node);
     };
     const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
     const collectUserText = (scope) => {
@@ -1465,7 +1515,8 @@ function buildMarkdownFallbackExtractor(minTurnLiteral?: string): string {
       if (isUserEcho(text)) continue;
       const html = node.innerHTML ?? '';
       const turnIndex = resolveTurnIndex(node);
-      return { text, html, messageId: null, turnId: null, turnIndex };
+      const afterLatestUser = isAfterLatestUserTurn(node);
+      return { text, html, messageId: null, turnId: null, turnIndex, afterLatestUser };
     }
     return null;
   })`;
@@ -1651,6 +1702,7 @@ interface AssistantSnapshot {
   messageId?: string | null;
   turnId?: string | null;
   turnIndex?: number | null;
+  afterLatestUser?: boolean;
 }
 
 const LANGUAGE_TAGS = new Set(

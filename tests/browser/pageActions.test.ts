@@ -10,6 +10,7 @@ import {
   waitForResumedConversationHydration,
   ensureNotBlocked,
   ensureLoggedIn,
+  readAssistantSnapshot,
 } from "../../src/browser/pageActions.js";
 import {
   buildLoginProbeExpressionForTest,
@@ -1079,6 +1080,31 @@ describe("waitForAssistantResponse", () => {
     expect(capturedExpression).not.toContain("document.querySelectorAll('.markdown')");
     expect(capturedExpression).toContain("data-message-author-role");
     expect(capturedExpression).toContain("role === 'assistant'");
+    expect(capturedExpression).toContain("snapshot.afterLatestUser === true");
+  });
+
+  test("accepts after-latest-user snapshots below the numeric turn baseline", async () => {
+    const snapshot = {
+      text: "Full answer",
+      html: "<p>Full answer</p>",
+      turnIndex: 2,
+      afterLatestUser: true,
+    };
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({ result: { value: snapshot } }),
+    } as unknown as ChromeClient["Runtime"];
+
+    await expect(readAssistantSnapshot(runtime, 5)).resolves.toEqual(snapshot);
+  });
+
+  test("rejects old assistant snapshots below the numeric turn baseline", async () => {
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: { value: { text: "Old answer", turnIndex: 2, afterLatestUser: false } },
+      }),
+    } as unknown as ChromeClient["Runtime"];
+
+    await expect(readAssistantSnapshot(runtime, 5)).resolves.toBeNull();
   });
 
   test("falls back to snapshot when observer fails", async () => {

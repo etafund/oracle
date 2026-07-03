@@ -17,6 +17,8 @@ describe("browser automation expressions", () => {
     const expression = buildAssistantExtractorForTest("capture");
     expect(expression).toContain(JSON.stringify(CONVERSATION_TURN_SELECTOR));
     expect(expression).toContain(JSON.stringify(ASSISTANT_ROLE_SELECTOR));
+    expect(expression).toContain("afterLatestUser");
+    expect(expression).toContain("compareDocumentPosition");
   });
 
   test("assistant extractor treats image-only ChatGPT turns as responses", () => {
@@ -46,6 +48,8 @@ describe("browser automation expressions", () => {
     expect(expression).toContain("role !== 'user'");
     expect(expression).toContain("copy-turn-action-button");
     expect(expression).toContain(CONVERSATION_TURN_SELECTOR);
+    expect(expression).toContain("afterLatestUser");
+    expect(expression).toContain("isAfterLatestUserTurn");
   });
 
   test("markdown fallback does not self-reference MIN_TURN_INDEX literal", () => {

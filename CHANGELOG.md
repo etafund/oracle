@@ -28,6 +28,7 @@
 - Browser: activate ChatGPT Deep Research after the final composer reset, select the current tools-menu row shape, and use trusted mouse clicks for Deep Research and send actions so the request reaches the real research-plan flow instead of being submitted as an ordinary Pro prompt.
 - Browser: report `response streaming` from the thinking-status heartbeat when a visible stop control is the only remaining liveness signal, so ChatGPT selector drift no longer logs an active generation as `no thinking status detected yet`. Fixes #284.
 - Browser: avoid archiving short ChatGPT Pro thinking preambles as completed answers when finished-turn controls appear before the final response has expanded.
+- Browser: accept completed ChatGPT answers that follow the latest user prompt even when nested turn wrappers make their numeric turn index look older than the submitted baseline.
 
 ## 0.15.0 — 2026-06-19
 
