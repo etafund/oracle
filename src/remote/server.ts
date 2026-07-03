@@ -68,9 +68,11 @@ export interface RemoteServerOptions {
   laneId?: string;
   accountId?: string;
   /**
-   * Admission limits for /runs request bodies. Defaults match the
-   * reverse-proxy tier (10 MiB cap, 60s read deadline); overridable so
-   * fault-isolation tests can exercise the refusal paths quickly.
+   * Admission limits for /runs request bodies. The default cap matches the
+   * router tier's client_max_body_size (100 MiB) with a 60s read deadline;
+   * overridable here (or via ORACLE_SERVE_MAX_BODY_BYTES for the cap) so
+   * deployments can tighten it and fault-isolation tests can exercise the
+   * refusal paths quickly.
    */
   maxRunRequestBodyBytes?: number;
   runBodyReadDeadlineMs?: number;
@@ -104,11 +106,13 @@ interface RegisteredRemoteArtifact {
 const ARTIFACT_PROTOCOL_VERSION = 1;
 const REMOTE_ARTIFACT_TTL_MS = 30 * 60 * 1000;
 
-// App-level request admission limits. The reverse-proxy tier caps bodies at
-// 10 MiB; the worker must enforce the same bound itself so a request that
-// reaches the backend port directly cannot balloon memory or pin the lane
-// with an unbounded/slow upload.
-export const MAX_RUN_REQUEST_BODY_BYTES = 10 * 1024 * 1024;
+// App-level request admission limits. The default cap is aligned with the
+// router tier's client_max_body_size (100m, raised deliberately to support
+// attachment/artifact-heavy runs); the worker must enforce a bound itself so
+// a request that reaches the backend port directly cannot balloon memory or
+// pin the lane with an unbounded/slow upload. Configurable per worker via
+// RemoteServerOptions.maxRunRequestBodyBytes or ORACLE_SERVE_MAX_BODY_BYTES.
+export const MAX_RUN_REQUEST_BODY_BYTES = 100 * 1024 * 1024;
 export const RUN_BODY_READ_DEADLINE_MS = 60_000;
 
 type RequestBodyErrorKind = "too_large" | "timed_out" | "aborted";
@@ -196,7 +200,11 @@ export async function createRemoteServer(
   let busy = false;
   let activeRun: ActiveRunState | null = null;
   const bodyLimits = {
-    maxBytes: options.maxRunRequestBodyBytes ?? MAX_RUN_REQUEST_BODY_BYTES,
+    // Precedence: explicit option > env override > router-aligned default.
+    maxBytes:
+      options.maxRunRequestBodyBytes ??
+      parsePositiveIntEnv(process.env.ORACLE_SERVE_MAX_BODY_BYTES) ??
+      MAX_RUN_REQUEST_BODY_BYTES,
     deadlineMs: options.runBodyReadDeadlineMs ?? RUN_BODY_READ_DEADLINE_MS,
   };
   const artifactRegistry = new Map<string, RegisteredRemoteArtifact>();
@@ -1091,6 +1099,11 @@ async function readRequestBody(
 }
 
 const DEFAULT_ACCOUNT_ID = "acct1";
+
+function parsePositiveIntEnv(value: string | undefined): number | undefined {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
 
 /**
  * Short non-reversible identifier for a token generation. Safe to log: eight

@@ -1,7 +1,7 @@
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import http from "node:http";
 import { spawnSync } from "node:child_process";
-import { createRemoteServer } from "../../src/remote/server.js";
+import { createRemoteServer, MAX_RUN_REQUEST_BODY_BYTES } from "../../src/remote/server.js";
 import type { BrowserRunResult } from "../../src/browserMode.js";
 
 // Admission-control contract for the remote serve endpoint (fault isolation
@@ -46,7 +46,51 @@ function validPayload(): string {
   });
 }
 
+const savedMaxBodyEnv = process.env.ORACLE_SERVE_MAX_BODY_BYTES;
+
+afterEach(() => {
+  if (savedMaxBodyEnv === undefined) {
+    delete process.env.ORACLE_SERVE_MAX_BODY_BYTES;
+  } else {
+    process.env.ORACLE_SERVE_MAX_BODY_BYTES = savedMaxBodyEnv;
+  }
+});
+
 describe("remote server admission limits", () => {
+  test("the default body cap is aligned with the router tier (100 MiB)", () => {
+    expect(MAX_RUN_REQUEST_BODY_BYTES).toBe(100 * 1024 * 1024);
+  });
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "ORACLE_SERVE_MAX_BODY_BYTES overrides the default body cap per worker",
+    async () => {
+      process.env.ORACLE_SERVE_MAX_BODY_BYTES = "2048";
+      let runs = 0;
+      const server = await createRemoteServer(
+        { host: "127.0.0.1", port: 0, token: "secret", logger: () => {} },
+        {
+          runBrowser: async () => {
+            runs += 1;
+            return MINIMAL_RESULT;
+          },
+        },
+      );
+
+      try {
+        const oversize = `{"prompt":"${"y".repeat(8192)}"}`;
+        const refused = await sendRun(server.port, "secret", oversize);
+        expect(refused.statusCode).toBe(413);
+        expect(runs).toBe(0);
+
+        const accepted = await sendRun(server.port, "secret", validPayload());
+        expect(accepted.statusCode).toBe(200);
+        expect(runs).toBe(1);
+      } finally {
+        await server.close();
+      }
+    },
+  );
+
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
     "oversize request bodies are refused with 413 and busy is never flipped",
     async () => {
