@@ -53,7 +53,7 @@ describe("ChatGPT provider doctor", () => {
       extendedReasoning: true,
       sessionStore: store("chatgpt"),
       cookieSyncProbe: passProbe("cookie_sync_ok"),
-      keytarProbe: passProbe("keytar_ok"),
+      cookieBackendProbe: passProbe("cookie_backend_ok"),
       uiProbe: async () => ({ status: "login_required" }),
     });
 
@@ -68,7 +68,7 @@ describe("ChatGPT provider doctor", () => {
     const result = await runChatGptDoctor({
       sessionStore: store("chatgpt"),
       cookieSyncProbe: passProbe("cookie_sync_ok"),
-      keytarProbe: passProbe("keytar_ok"),
+      cookieBackendProbe: passProbe("cookie_backend_ok"),
       uiProbe: async () => ({
         status: "ui_drift_suspected",
         selectorManifestVersion: "chatgpt-pro-v1",
@@ -85,7 +85,7 @@ describe("ChatGPT provider doctor", () => {
       remoteBrowser: "required",
       sessionStore: store("chatgpt"),
       cookieSyncProbe: passProbe("cookie_sync_ok"),
-      keytarProbe: passProbe("keytar_ok"),
+      cookieBackendProbe: passProbe("cookie_backend_ok"),
       uiProbe: async () => ({ status: "remote_browser_unavailable" }),
     });
 
@@ -103,7 +103,7 @@ describe("ChatGPT provider doctor", () => {
         extendedReasoning: true,
         sessionStore: store("chatgpt"),
         cookieSyncProbe: passProbe("cookie_sync_ok"),
-        keytarProbe: passProbe("keytar_ok"),
+        cookieBackendProbe: passProbe("cookie_backend_ok"),
         uiProbe: async () => ({
           status: "verified",
           observedModeLabel: "Pro",
@@ -119,11 +119,33 @@ describe("ChatGPT provider doctor", () => {
     expect(JSON.parse(output[0])).toMatchObject({ ok: true, provider: "chatgpt" });
   });
 
+  test("default cookie backend probe checks the installed runtime dependency", async () => {
+    const result = await runChatGptDoctor({
+      sessionStore: store("chatgpt"),
+      cookieSyncProbe: passProbe("cookie_sync_ok"),
+      uiProbe: async () => ({
+        status: "verified",
+        observedModeLabel: "Pro",
+        observedEffortLabel: "Heavy",
+        effortRank: "highest_visible",
+      }),
+    });
+
+    expect(result.checks).toContainEqual(
+      expect.objectContaining({
+        name: "browser_cookie_backend",
+        status: "pass",
+        code: "browser_cookie_backend_available",
+      }),
+    );
+    expect(result.checks.map((check) => check.code)).not.toContain("keytar_unavailable");
+  });
+
   test("blocks when the highest effort control is missing", async () => {
     const result = await runChatGptDoctor({
       sessionStore: store("chatgpt"),
       cookieSyncProbe: passProbe("cookie_sync_ok"),
-      keytarProbe: passProbe("keytar_ok"),
+      cookieBackendProbe: passProbe("cookie_backend_ok"),
       uiProbe: async () => ({ status: "missing_effort_control" }),
     });
 

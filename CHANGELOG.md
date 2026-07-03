@@ -15,6 +15,7 @@
 ### Fixed
 
 - CLI/Remote: pass Commander options correctly for zero-positional subcommands so `oracle remote doctor --json`, `oracle remote status --json`, `oracle remote attach --host ... --json`, bridge diagnostics, capabilities, robot-docs, protected-run planning, and browser lease commands emit clean machine-readable output instead of human text or stale defaults.
+- CLI/Doctor: stop reporting a stale `keytar_unavailable` warning for ChatGPT readiness when the installed no-native-addon cookie backend is importable.
 - CLI/Docs: add `oracle doctor lanes --json`, refresh capabilities/robot docs around the reviewed ChatGPT Pro Extended Reasoning, Fable xHigh, and Gemini 3.1 Deep Think lanes, and remove dead-end recovery hints such as `oracle browser doctor --json` and `browser leases list --json`.
 - CLI/Remote: ignore passive remote-browser env/config when an explicit API-provider route or local Fable lane is selected, so router defaults no longer block custom-base-url follow-ups or local subscription reviews.
 - Browser/Bridge: improve ChatGPT ZIP artifact capture before bridge transfer by broadening sandbox/file-card/download-control discovery, adding sanitized direct-download diagnostics, and falling back to scoped browser downloads when sandbox fetches fail. Thanks @DK625!

@@ -8,6 +8,9 @@ import { describe, expect, test } from "vitest";
 
 import { runBrowserMode } from "../../src/browser/index.js";
 import type { BrowserAutomationConfig, BrowserRunResult } from "../../src/browser/types.js";
+import { loadUserConfig } from "../../src/config.js";
+import { createRemoteBrowserExecutor } from "../../src/remote/client.js";
+import { resolveRemoteServiceConfig } from "../../src/remote/remoteServiceConfig.js";
 import {
   assertStructuredTestLogRecords,
   createStructuredTestLog,
@@ -20,6 +23,7 @@ const LIVE_BROWSER =
 const CHECK_TOKEN = "CHECK_CHATGPT_PRO_OK";
 const PROVIDER_SLOT = "chatgpt_pro_first_plan";
 const LOCK_LABEL = "chatgpt-browser";
+type BrowserExecutor = typeof runBrowserMode;
 
 (LIVE_BROWSER ? describe : describe.skip)("ChatGPT Pro live browser smoke", () => {
   test(
@@ -31,13 +35,21 @@ const LOCK_LABEL = "chatgpt-browser";
         evidencePointer: `oracle session ${sessionId} --render`,
       });
       const remoteChrome = parseRemoteChrome();
+      const remoteService = await resolveRemoteServiceForLive();
+      if (remoteChrome && remoteService.host) {
+        throw new Error(
+          "Set either ORACLE_LIVE_REMOTE_CHROME or ORACLE_REMOTE_HOST/browser.remoteHost, not both.",
+        );
+      }
       const logs: string[] = [];
       const artifactPath = liveSmokeArtifactPath("chatgpt", `${sessionId}.jsonl`);
 
       log.record("preflight", {
         provider_slot: PROVIDER_SLOT,
         session_id: sessionId,
-        remote_browser: remoteChrome ? "required" : "preferred",
+        remote_browser: remoteChrome ? "remote-chrome" : remoteService.host ? "service" : "local",
+        remote_service_mode: remoteService.mode,
+        remote_service_host_hash: remoteService.hostHash ?? null,
         vitest_command:
           "ORACLE_LIVE_TEST=1 ORACLE_LIVE_BROWSER=1 pnpm vitest run tests/live/chatgpt-smoke-live.test.ts",
         run_command:
@@ -48,7 +60,19 @@ const LOCK_LABEL = "chatgpt-browser";
         evidence_verify_command: `oracle evidence verify ${sessionId} --json`,
       });
 
-      if (!remoteChrome && !(await hasChatGptSession())) {
+      if (remoteService.host && !remoteService.token) {
+        log.record("blocked", {
+          blocker: "remote_browser_token_missing",
+          fix_command: "export ORACLE_REMOTE_TOKEN=<token>",
+          next_command: "oracle remote doctor --json",
+        });
+        await log.writeJsonl(artifactPath);
+        assertStructuredTestLogRecords(log.records());
+        console.warn(`Skipping ChatGPT Pro live smoke; structured log: ${artifactPath}`);
+        return;
+      }
+
+      if (!remoteChrome && !remoteService.host && !(await hasChatGptSession())) {
         log.record("blocked", {
           blocker: "provider_login_required",
           fix_command: "Open Chrome, sign in to chatgpt.com with Pro access, then rerun.",
@@ -66,8 +90,14 @@ const LOCK_LABEL = "chatgpt-browser";
       });
 
       try {
+        const executeBrowser: BrowserExecutor = remoteService.host
+          ? createRemoteBrowserExecutor({
+              host: remoteService.host,
+              token: remoteService.token,
+            })
+          : runBrowserMode;
         const startedAt = Date.now();
-        const result = await runBrowserMode({
+        const result = await executeBrowser({
           sessionId,
           prompt: `Reply with exactly ${CHECK_TOKEN} and no other words.`,
           heartbeatIntervalMs: 30_000,
@@ -139,6 +169,17 @@ const LOCK_LABEL = "chatgpt-browser";
     12 * 60 * 1000,
   );
 });
+
+async function resolveRemoteServiceForLive(): Promise<
+  ReturnType<typeof resolveRemoteServiceConfig>
+> {
+  const { config } = await loadUserConfig();
+  return resolveRemoteServiceConfig({
+    userConfig: config,
+    env: process.env,
+    allowMissingToken: true,
+  });
+}
 
 async function hasChatGptSession(): Promise<boolean> {
   try {

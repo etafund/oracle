@@ -47,7 +47,7 @@ describe("provider doctor json_envelope.v1 output", () => {
         extendedReasoning: true,
         sessionStore: store("chatgpt"),
         cookieSyncProbe: passProbe("cookie_sync_ok"),
-        keytarProbe: passProbe("keytar_ok"),
+        cookieBackendProbe: passProbe("cookie_backend_ok"),
         uiProbe: async () => ({
           status: "verified",
           observedModeLabel: "Pro",
@@ -91,7 +91,7 @@ describe("provider doctor json_envelope.v1 output", () => {
         json: true,
         sessionStore: store("chatgpt"),
         cookieSyncProbe: passProbe("cookie_sync_ok"),
-        keytarProbe: passProbe("keytar_ok"),
+        cookieBackendProbe: passProbe("cookie_backend_ok"),
         uiProbe: async () => ({ status: "missing_effort_control" }),
       },
       { stdout: (text) => output.push(text) },

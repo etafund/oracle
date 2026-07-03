@@ -1,5 +1,4 @@
 import { Command } from "commander";
-import { createRequire } from "node:module";
 import { sessionStore, type SessionMetadata, type SessionStore } from "../../../sessionStore.js";
 import {
   createEnvelope,
@@ -69,6 +68,7 @@ export interface ChatGptDoctorOptions {
   env?: NodeJS.ProcessEnv;
   sessionStore?: Pick<SessionStore, "listSessions">;
   cookieSyncProbe?: () => Promise<ProviderProbeResult>;
+  cookieBackendProbe?: () => Promise<ProviderProbeResult>;
   keytarProbe?: () => Promise<ProviderProbeResult>;
   uiProbe?: () => Promise<ProviderUiProbeResult>;
 }
@@ -112,7 +112,10 @@ export async function runChatGptDoctor(
       "cookie_sync",
       options.cookieSyncProbe ?? (() => defaultChatGptCookieSyncProbe(options)),
     ),
-    await toCheck("browser_cookie_keytar", options.keytarProbe ?? defaultKeytarProbe),
+    await toCheck(
+      "browser_cookie_backend",
+      options.cookieBackendProbe ?? options.keytarProbe ?? defaultCookieBackendProbe,
+    ),
     recentSessionCheck("chatgpt", await loadSessions(options.sessionStore)),
     uiProbeToCheck("chatgpt", remoteBrowser, await runUiProbe(options.uiProbe)),
   ];
@@ -388,20 +391,25 @@ async function defaultChatGptCookieSyncProbe(
   };
 }
 
-async function defaultKeytarProbe(): Promise<ProviderProbeResult> {
+async function defaultCookieBackendProbe(): Promise<ProviderProbeResult> {
   try {
-    createRequire(import.meta.url).resolve("keytar");
+    const cookieBackend = await import("@steipete/sweet-cookie");
+    if (typeof cookieBackend.getCookies !== "function") {
+      throw new Error("@steipete/sweet-cookie did not export getCookies");
+    }
     return {
       status: "pass",
-      code: "keytar_available",
-      message: "browser-cookie keytar dependency is importable.",
+      code: "browser_cookie_backend_available",
+      message: "browser-cookie backend is importable.",
     };
   } catch (error) {
     return {
       status: "warn",
-      code: "keytar_unavailable",
-      message: `browser-cookie keytar dependency is not importable: ${(error as Error).message}`,
-      fix_command: "Rebuild keytar in the pnpm cache if browser cookie sync fails.",
+      code: "browser_cookie_backend_unavailable",
+      message: `browser-cookie backend is not importable: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      fix_command: "Run pnpm install in the oracle checkout, then rerun oracle doctor chatgpt.",
     };
   }
 }
