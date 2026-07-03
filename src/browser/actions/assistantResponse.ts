@@ -6,7 +6,7 @@ import {
   COPY_BUTTON_SELECTOR,
   FINISHED_ACTIONS_SELECTOR,
   MIN_TRUSTWORTHY_ANSWER_CHARS,
-  STOP_BUTTON_SELECTOR,
+  STOP_BUTTON_SELECTORS,
 } from "../constants.js";
 import { delay } from "../utils.js";
 import {
@@ -17,6 +17,7 @@ import {
 import { buildClickDispatcher } from "./domEvents.js";
 
 const ASSISTANT_POLL_TIMEOUT_ERROR = "assistant-response-watchdog-timeout";
+const STOP_CONTROL_SELECTOR = STOP_BUTTON_SELECTORS.join(", ");
 const PREAMBLE_SIZED_ANSWER_CHARS = 500;
 const PREAMBLE_COMPLETION_STABLE_MS = 60_000;
 // Consecutive accepting samples (~3.2s at the 400ms poll cadence) required
@@ -989,7 +990,7 @@ async function pollAssistantCompletion(
 async function isStopButtonVisible(Runtime: ChromeClient["Runtime"]): Promise<boolean> {
   try {
     const { result } = await Runtime.evaluate({
-      expression: `Boolean(document.querySelector('${STOP_BUTTON_SELECTOR}'))`,
+      expression: buildStopButtonVisibilityExpression(),
       returnByValue: true,
     });
     return result?.value === true;
@@ -1023,6 +1024,33 @@ async function isThinkingActive(Runtime: ChromeClient["Runtime"]): Promise<boole
     return false;
   }
 }
+
+function buildStopButtonVisibilityExpression(): string {
+  return `(() => {
+    ${buildStopButtonVisibilityPredicateJs("isStopControlVisible")}
+    return isStopControlVisible();
+  })()`;
+}
+
+function buildStopButtonVisibilityPredicateJs(fnName: string): string {
+  const selectorLiteral = JSON.stringify(STOP_CONTROL_SELECTOR);
+  return `const ${fnName} = () => {
+    const isVisible = (node) => {
+      if (!(node instanceof HTMLElement)) return false;
+      const rect = node.getBoundingClientRect();
+      if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+      const style = window.getComputedStyle(node);
+      return !(
+        style.display === 'none' ||
+        style.visibility === 'hidden' ||
+        (style.opacity !== '' && Number(style.opacity) === 0)
+      );
+    };
+    return Array.from(document.querySelectorAll(${selectorLiteral})).some((node) => isVisible(node));
+  };`;
+}
+
+export const buildStopButtonVisibilityExpressionForTest = buildStopButtonVisibilityExpression;
 
 async function isCompletionVisible(Runtime: ChromeClient["Runtime"]): Promise<boolean> {
   try {
@@ -1180,7 +1208,7 @@ function buildResponseObserverExpression(
   return `(() => {
     ${buildClickDispatcher()}
     const SELECTORS = ${selectorsLiteral};
-    const STOP_SELECTOR = '${STOP_BUTTON_SELECTOR}';
+    const STOP_SELECTOR = ${JSON.stringify(STOP_CONTROL_SELECTOR)};
     const FINISHED_SELECTOR = '${FINISHED_ACTIONS_SELECTOR}';
     const PREAMBLE_SIZED_ANSWER_CHARS = ${PREAMBLE_SIZED_ANSWER_CHARS};
     const PREAMBLE_COMPLETION_STABLE_MS = ${PREAMBLE_COMPLETION_STABLE_MS};
@@ -1250,7 +1278,6 @@ function buildResponseObserverExpression(
     const captureViaObserver = () =>
       new Promise((resolve, reject) => {
         const deadline = Date.now() + ${timeoutMs};
-        let stopInterval = null;
         let timeoutId = null;
         let cleanedUp = false;
         let observer = null;
@@ -1259,10 +1286,6 @@ function buildResponseObserverExpression(
         const cleanup = () => {
           if (cleanedUp) return;
           cleanedUp = true;
-          if (stopInterval) {
-            clearInterval(stopInterval);
-            stopInterval = null;
-          }
           if (timeoutId) {
             clearTimeout(timeoutId);
             timeoutId = null;
@@ -1313,20 +1336,6 @@ function buildResponseObserverExpression(
 
         observer = new MutationObserver(observerCallback);
         observer.observe(document.body, { childList: true, subtree: true, characterData: true });
-
-        stopInterval = setInterval(() => {
-          if (cleanedUp) return;
-          const stop = document.querySelector(STOP_SELECTOR);
-          if (!stop) {
-            return;
-          }
-          const isStopButton =
-            stop.getAttribute('data-testid') === 'stop-button' || stop.getAttribute('aria-label')?.toLowerCase()?.includes('stop');
-          if (isStopButton) {
-            return;
-          }
-          dispatchClickSequence(stop);
-        }, 500);
 
         timeoutId = setTimeout(() => {
           cleanup();

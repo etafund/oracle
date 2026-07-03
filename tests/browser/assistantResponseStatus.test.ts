@@ -3,18 +3,31 @@ import { describe, expect, test } from "vitest";
 import {
   buildActiveThinkingStatusPredicateJsForTest,
   buildAssistantSnapshotExpressionForTest,
+  buildStopButtonVisibilityExpressionForTest,
   isAnswerNowPlaceholderTextForTest,
   matchesThinkingStatusLabelForTest,
   shouldAcceptStableAssistantSnapshotForTest,
   shouldReplaceAssistantSnapshotForTest,
 } from "../../src/browser/actions/assistantResponse.js";
+import { STOP_BUTTON_SELECTORS } from "../../src/browser/constants.js";
 
 function evaluatePredicate(text: string, generating: boolean): boolean {
   const predicate = buildActiveThinkingStatusPredicateJsForTest("isActiveThinkingStatus");
+  class FakeHtmlElement {
+    getBoundingClientRect() {
+      return { width: 120, height: 40 };
+    }
+  }
   const context = createContext({
+    Array,
+    Number,
     String,
+    HTMLElement: FakeHtmlElement,
     document: {
-      querySelector: () => (generating ? {} : null),
+      querySelectorAll: () => (generating ? [new FakeHtmlElement()] : []),
+    },
+    window: {
+      getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
     },
   });
   return new Script(
@@ -280,6 +293,74 @@ describe("assistant thinking-status capture", () => {
         elapsedMs: 240_000,
       }),
     ).toBe(true);
+  });
+
+  test("shares all stop-control selectors with completion capture", () => {
+    let observedSelector = "";
+    new Script(buildStopButtonVisibilityExpressionForTest()).runInContext(
+      createContext({
+        Array,
+        Number,
+        HTMLElement: class {},
+        document: {
+          querySelectorAll: (selector: string) => {
+            observedSelector = selector;
+            return [];
+          },
+        },
+        window: { getComputedStyle: () => ({}) },
+      }),
+    );
+    expect(observedSelector).toBe(STOP_BUTTON_SELECTORS.join(", "));
+  });
+
+  test.each([
+    {
+      width: 120,
+      height: 40,
+      display: "block",
+      visibility: "visible",
+      opacity: "1",
+      expected: true,
+    },
+    {
+      width: 0,
+      height: 40,
+      display: "block",
+      visibility: "visible",
+      opacity: "1",
+      expected: false,
+    },
+    {
+      width: 120,
+      height: 40,
+      display: "none",
+      visibility: "visible",
+      opacity: "1",
+      expected: false,
+    },
+  ])("requires a visible stop control before blocking completion: %o", (fixture) => {
+    class FakeHtmlElement {
+      getBoundingClientRect() {
+        return { width: fixture.width, height: fixture.height };
+      }
+    }
+    const result = new Script(buildStopButtonVisibilityExpressionForTest()).runInContext(
+      createContext({
+        Array,
+        Number,
+        HTMLElement: FakeHtmlElement,
+        document: { querySelectorAll: () => [new FakeHtmlElement()] },
+        window: {
+          getComputedStyle: () => ({
+            display: fixture.display,
+            visibility: fixture.visibility,
+            opacity: fixture.opacity,
+          }),
+        },
+      }),
+    );
+    expect(result).toBe(fixture.expected);
   });
 });
 
