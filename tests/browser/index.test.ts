@@ -8,6 +8,7 @@ import {
   formatBrowserTurnTranscript,
   isLocalChromeHostForTest,
   maybeArchiveCompletedConversationForTest,
+  pollConversationUrlForTest,
   redactBrowserConfigForDebugLogForTest,
   resolveRemoteTabLeaseProfileDirForTest,
   runBrowserMode,
@@ -716,4 +717,83 @@ describe("isLocalChromeHostForTest", () => {
       expect(isLocalChromeHostForTest(host)).toBe(false);
     },
   );
+});
+
+describe("pollConversationUrlForTest", () => {
+  const instantDelay = async () => {};
+
+  test("persists the conversation URL once it appears", async () => {
+    const urls = ["https://chatgpt.com/", "https://chatgpt.com/", "https://chatgpt.com/c/abc-123"];
+    let reads = 0;
+    const onConversationUrl = vi.fn(async () => {});
+
+    const found = await pollConversationUrlForTest({
+      readUrl: async () => urls[Math.min(reads++, urls.length - 1)],
+      onConversationUrl,
+      timeoutMs: 5_000,
+      delayFn: instantDelay,
+    });
+
+    expect(found).toBe(true);
+    expect(onConversationUrl).toHaveBeenCalledTimes(1);
+    expect(onConversationUrl).toHaveBeenCalledWith("https://chatgpt.com/c/abc-123");
+  });
+
+  test("keeps polling through read errors until the URL appears", async () => {
+    let reads = 0;
+    const onConversationUrl = vi.fn(async () => {});
+
+    const found = await pollConversationUrlForTest({
+      readUrl: async () => {
+        reads += 1;
+        if (reads < 3) {
+          throw new Error("evaluate failed");
+        }
+        return "https://chatgpt.com/c/def-456";
+      },
+      onConversationUrl,
+      timeoutMs: 5_000,
+      delayFn: instantDelay,
+    });
+
+    expect(found).toBe(true);
+    expect(reads).toBe(3);
+  });
+
+  test("stops when the caller marks the loop stopped", async () => {
+    let stopped = false;
+    let reads = 0;
+    const onConversationUrl = vi.fn(async () => {});
+
+    const found = await pollConversationUrlForTest({
+      readUrl: async () => {
+        reads += 1;
+        if (reads >= 2) {
+          stopped = true;
+        }
+        return "https://chatgpt.com/";
+      },
+      isStopped: () => stopped,
+      onConversationUrl,
+      timeoutMs: 60_000,
+      delayFn: instantDelay,
+    });
+
+    expect(found).toBe(false);
+    expect(onConversationUrl).not.toHaveBeenCalled();
+  });
+
+  test("does not treat the ChatGPT root URL as a conversation", async () => {
+    const onConversationUrl = vi.fn(async () => {});
+
+    const found = await pollConversationUrlForTest({
+      readUrl: async () => "https://chatgpt.com/",
+      onConversationUrl,
+      timeoutMs: 50,
+      delayFn: instantDelay,
+    });
+
+    expect(found).toBe(false);
+    expect(onConversationUrl).not.toHaveBeenCalled();
+  });
 });

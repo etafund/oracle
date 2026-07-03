@@ -2940,6 +2940,42 @@ async function maybeReuseRunningChrome(
   } as unknown as LaunchedChrome;
 }
 
+// Poll for the ChatGPT /c/<id> conversation URL until it appears, the caller
+// stops the loop, or the timeout elapses. Mirrors the local-mode background
+// conversation hint loop so killed runs leave a recoverable URL in metadata.
+async function pollConversationUrl(args: {
+  readUrl: () => Promise<string | null | undefined>;
+  onConversationUrl: (url: string) => Promise<void>;
+  isStopped?: () => boolean;
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+  delayFn?: (ms: number) => Promise<void>;
+}): Promise<boolean> {
+  const timeoutMs = args.timeoutMs ?? 10_000;
+  const pollIntervalMs = args.pollIntervalMs ?? 250;
+  const wait = args.delayFn ?? delay;
+  const start = Date.now();
+  while (!(args.isStopped?.() ?? false) && Date.now() - start < timeoutMs) {
+    try {
+      const url = await args.readUrl();
+      if (url && isConversationUrl(url)) {
+        await args.onConversationUrl(url);
+        return true;
+      }
+    } catch {
+      // ignore; keep polling until timeout
+    }
+    await wait(pollIntervalMs);
+  }
+  return false;
+}
+
+export async function pollConversationUrlForTest(
+  args: Parameters<typeof pollConversationUrl>[0],
+): Promise<boolean> {
+  return pollConversationUrl(args);
+}
+
 async function runRemoteBrowserMode(
   promptText: string,
   attachments: BrowserAttachment[],
@@ -2963,6 +2999,8 @@ async function runRemoteBrowserMode(
   let promptSubmitted = false;
   let attachedExistingTab = false;
   let ownsTarget = true;
+  let conversationHintInFlight: Promise<boolean> | null = null;
+  let conversationHintStopped = false;
   const runtimeHintCb = options.runtimeHintCb;
   const emitRuntimeHint = async () => {
     if (!runtimeHintCb) return;
@@ -3066,6 +3104,37 @@ async function runRemoteBrowserMode(
     }
     await Promise.all(domainEnablers);
     removeDialogHandler = installJavaScriptDialogAutoDismissal(Page, logger);
+    // Remote targets typically live in background or occluded windows where
+    // ChatGPT drops synthetic send clicks (rendering/focus throttling). Emulate
+    // focus so the page behaves like a foreground tab, matching local mode.
+    try {
+      await client.Emulation.setFocusEmulationEnabled({ enabled: true });
+      logger("[browser] Focus emulation enabled for remote target");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger(`[browser] Focus emulation unavailable: ${message}`);
+    }
+    const scheduleConversationHint = (label: string, timeoutMs?: number): void => {
+      if (conversationHintInFlight) {
+        return;
+      }
+      // Learned: remote runs killed mid-wait need the /c/ URL persisted early so
+      // reattach/harvest can recover by conversation URL instead of a stale target id.
+      conversationHintInFlight = pollConversationUrl({
+        readUrl: () => readConversationUrl(Runtime),
+        isStopped: () => conversationHintStopped || connectionClosedUnexpectedly,
+        timeoutMs,
+        onConversationUrl: async (url) => {
+          lastUrl = url;
+          logger(`[browser] conversation url (${label}) = ${url}`);
+          await emitRuntimeHint();
+        },
+      })
+        .catch(() => false)
+        .finally(() => {
+          conversationHintInFlight = null;
+        });
+    };
 
     // Skip cookie sync for remote Chrome - it already has cookies
     logger("Skipping cookie sync for remote Chrome (using existing session)");
@@ -3267,6 +3336,7 @@ async function runRemoteBrowserMode(
     baselineAssistantText = submission.baselineAssistantText;
     deepResearchTargetKeys = submission.deepResearchTargetKeys ?? [];
     deepResearchTargetBaselineCaptured = submission.deepResearchTargetBaselineCaptured ?? false;
+    scheduleConversationHint("post-submit", config.timeoutMs ?? 120_000);
     const imageArtifactMinTurnIndex = baselineTurns;
     if (deepResearch) {
       await waitForResearchPlanAutoConfirm(Runtime, logger);
@@ -3888,6 +3958,7 @@ async function runRemoteBrowserMode(
       },
     });
   } finally {
+    conversationHintStopped = true;
     try {
       await closeRemoteConnectionAfterRun({
         connectionClosedUnexpectedly,
