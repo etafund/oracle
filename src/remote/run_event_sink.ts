@@ -207,6 +207,29 @@ export async function appendOracleRunEvent(
   });
 }
 
+const RUN_ERROR_CLASSES: ReadonlySet<string> = new Set([
+  "integrity_binding_failed",
+  "integrity_ui_unknown",
+  "capacity_busy",
+  "account_quarantine",
+  "transport_interrupted_before_submit",
+  "transport_interrupted_after_submit",
+]);
+
+export function isRunErrorClass(value: unknown): value is RunErrorClass {
+  return typeof value === "string" && RUN_ERROR_CLASSES.has(value);
+}
+
+/**
+ * Typed retry semantics per class. Post-submit interruptions are NOT
+ * auto-retryable (the prompt may have reached the account), quarantine is
+ * never retried, integrity failures need investigation rather than retries;
+ * only capacity and pre-submit transport failures are safe to retry.
+ */
+export function isRetryableRunErrorClass(errorClass: RunErrorClass | null): boolean {
+  return errorClass === "capacity_busy" || errorClass === "transport_interrupted_before_submit";
+}
+
 /**
  * Initial heuristic error classification for the sink (refined by the
  * terminal done-event work, which shares this enum). `submitted` reflects

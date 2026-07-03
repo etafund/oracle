@@ -18,9 +18,12 @@ import type {
   RemoteAttachmentPayload,
   RemoteRunPayload,
   RemoteRunEvent,
+  RemoteRunProvenanceSummary,
   RemoteUploadIntegrity,
 } from "./types.js";
 import { MAX_REMOTE_ARTIFACT_BYTES } from "./types.js";
+import { getQuarantineLatchState } from "../browser/quarantineLatch.js";
+import type { OracleUserError } from "../oracle/errors.js";
 import { getCookies, type Cookie } from "@steipete/sweet-cookie";
 import { CHATGPT_URL } from "../browser/constants.js";
 import { getCliVersion } from "../version.js";
@@ -38,7 +41,9 @@ import { countActiveBrowserTabLeases } from "../browser/tabLeaseRegistry.js";
 import {
   appendOracleRunEvent,
   classifyRunErrorClass,
+  isRunErrorClass,
   type RunAttachmentDigest,
+  type RunErrorClass,
 } from "./run_event_sink.js";
 import { sanitizeRemoteRunPayloadForHost } from "./payload_sanitize.js";
 import {
@@ -611,7 +616,12 @@ export async function createRemoteServer(
           `[serve] ${JSON.stringify({ event: "run.refused", runId, laneId, accountId, reason, status })}`,
         );
       };
-      const refuseRun = (status: number, code: string, extra: Record<string, unknown> = {}) => {
+      const refuseRun = (
+        status: number,
+        code: string,
+        extra: Record<string, unknown> = {},
+        extraHeaders: Record<string, string> = {},
+      ) => {
         logRefusal(code, status);
         if (res.destroyed || res.writableEnded) {
           return;
@@ -623,6 +633,7 @@ export async function createRemoteServer(
             "Content-Type": "application/json",
             Connection: "close",
             ...identityHeaders(runId),
+            ...extraHeaders,
           });
         }
         res.end(JSON.stringify({ error: code, runId, ...extra }));
@@ -643,10 +654,19 @@ export async function createRemoteServer(
             `[serve] Busy: rejecting run ${runId} from ${formatSocket(req)} while another run is active`,
           );
         }
-        refuseRun(409, "busy", {
-          busy: true,
-          ...(activeRun ? { activeRun: serializeActiveRun(activeRun) } : {}),
-        });
+        refuseRun(
+          409,
+          "busy",
+          {
+            busy: true,
+            // Typed retry semantics for the router/caller: capacity refusals
+            // are safe to retry elsewhere after the hinted delay.
+            errorClass: "capacity_busy",
+            retryable: true,
+            ...(activeRun ? { activeRun: serializeActiveRun(activeRun) } : {}),
+          },
+          { "Retry-After": "15" },
+        );
         return;
       }
 
@@ -675,9 +695,17 @@ export async function createRemoteServer(
           // prepared a browser" into a profile race between sibling workers.
           attachProbeForRun = await probeAttachTargetCached();
           if (!attachProbeForRun.ok) {
-            refuseRun(503, "browser_unavailable", {
-              reason: attachProbeForRun.reason,
-            });
+            refuseRun(
+              503,
+              "browser_unavailable",
+              {
+                reason: attachProbeForRun.reason,
+                // Substrate outages are retryable on another lane; this
+                // worker cannot serve until its browser returns.
+                retryable: true,
+              },
+              { "Retry-After": "30" },
+            );
             return;
           }
         }
@@ -802,6 +830,9 @@ export async function createRemoteServer(
 
       let runResult: BrowserRunResult | null = null;
       let runErrorMessage: string | null = null;
+      let runErrorClass: RunErrorClass | null = null;
+      let runRetryable: boolean | null = null;
+      let bindingVerified: boolean | null = null;
       try {
         if (uploadIntegrity && uploadIntegrity.attachments.length + (uploadIntegrity.fallbackAttachments?.length ?? 0) > 0) {
           // Emit the staging proof before the browser stage starts so the
@@ -820,6 +851,13 @@ export async function createRemoteServer(
                   activeTabLeasesAtSubmit = census.activeLeaseCount;
                 })
                 .catch(() => undefined);
+            }
+            // Structural capture-binding markers feed the provenance summary
+            // of the terminal done event.
+            if (/capture binding verified/i.test(message)) {
+              bindingVerified = true;
+            } else if (/capture binding (?:failed|mismatch|lost|unverified)/i.test(message)) {
+              bindingVerified = false;
             }
             sendEvent({ type: "log", message });
           }
@@ -875,8 +913,20 @@ export async function createRemoteServer(
         for (const artifact of artifactDescriptors) {
           sendEvent({ type: "artifact-ready", runId, artifact });
         }
+        // TERMINAL event: the caller-usable answer travels ONLY here.
+        // Success is defined as done.ok, never as "stream ended after some
+        // result-shaped bytes" — loose wrappers must not act on a truncated
+        // stream or on non-authoritative intermediate events.
         sendEvent({
-          type: "result",
+          type: "done",
+          ok: true,
+          errorClass: null,
+          retryable: null,
+          provenance: await buildRunProvenance({
+            result,
+            bindingVerified,
+            accountId,
+          }),
           result: sanitizeResult(result, artifactRegistration.warnings),
           // Repeat the staging proof on the terminal event so consumers that
           // only persist the result still get the upload-plumbing evidence.
@@ -892,8 +942,32 @@ export async function createRemoteServer(
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         runErrorMessage = message;
-        sendEvent({ type: "error", message });
-        logger(`[serve] Run ${runId} failed after ${Date.now() - runStartedAt}ms: ${message}`);
+        const details = (error as Partial<OracleUserError>)?.details;
+        const declaredClass = details?.oracleErrorClass;
+        const declaredRetryable = details?.retryable;
+        runErrorClass = isRunErrorClass(declaredClass)
+          ? declaredClass
+          : classifyRunErrorClass(message, submittedAt !== null);
+        runRetryable =
+          typeof declaredRetryable === "boolean"
+            ? declaredRetryable
+            : runErrorClass === "capacity_busy" ||
+              runErrorClass === "transport_interrupted_before_submit";
+        sendEvent({
+          type: "done",
+          ok: false,
+          errorClass: runErrorClass,
+          errorMessage: message,
+          retryable: runRetryable,
+          provenance: await buildRunProvenance({
+            result: runResult,
+            bindingVerified,
+            accountId,
+          }),
+        });
+        logger(
+          `[serve] Run ${runId} failed after ${Date.now() - runStartedAt}ms (${runErrorClass}, retryable=${runRetryable}): ${message}`,
+        );
       } finally {
         busy = false;
         lastRunProgressAtMs = null;
@@ -932,9 +1006,10 @@ export async function createRemoteServer(
               scheduled_concurrency: null,
               active_tab_leases: activeTabLeasesAtSubmit,
               busy_workers: null,
-              error_class: classifyRunErrorClass(runErrorMessage, submittedAt !== null),
+              error_class: runErrorClass,
               done_ok: runErrorMessage === null,
-              challenge_detected: challengeMatched,
+              challenge_detected:
+                runErrorClass === "account_quarantine" ? true : challengeMatched,
               model_verified: runResult?.modelSelection?.verified ?? null,
               max_active_before_first_token: null,
               mean_active_during_ttft: null,
@@ -1607,6 +1682,33 @@ async function readFleetManifestStatus(worker: {
 /** Plain hex sha256 for hashed identifiers (e.g. conversation ids). */
 function sha256Hex(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+/**
+ * Provenance summary for the terminal done event: what the worker VERIFIED
+ * (model selection, structural capture binding, quarantine-latch cleanliness).
+ * Provenance proves plumbing, not answer correctness; unknowns stay null.
+ */
+async function buildRunProvenance(params: {
+  result: BrowserRunResult | null;
+  bindingVerified: boolean | null;
+  accountId: string;
+}): Promise<RemoteRunProvenanceSummary> {
+  let challengeClean: boolean | null = null;
+  try {
+    const latch = await getQuarantineLatchState({ accountId: params.accountId });
+    challengeClean = !latch.quarantined;
+  } catch {
+    challengeClean = null;
+  }
+  const selection = params.result?.modelSelection ?? null;
+  return {
+    modelVerified: selection?.verified ?? null,
+    modelRequested: selection?.requestedModel ?? null,
+    modelResolved: selection?.resolvedLabel ?? null,
+    captureBindingVerified: params.bindingVerified,
+    challengeClean,
+  };
 }
 
 function parsePositiveIntEnv(value: string | undefined): number | undefined {

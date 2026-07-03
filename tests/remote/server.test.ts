@@ -653,7 +653,8 @@ async function createFakeArtifactBridge({
       );
       res.end(
         `${JSON.stringify({
-          type: "result",
+          type: "done",
+          ok: true,
           result: {
             answerText: "done",
             answerMarkdown: "done",

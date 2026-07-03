@@ -127,9 +127,10 @@ describe("remote server attachment integrity", () => {
         // The hash fragment in the stored name is the manifest hash prefix.
         expect(stagedBasenames[0]!.slice(4, 16)).toBe(sha256Hex(FIRST_CONTENT).slice(0, 12));
 
-        // The staging proof is repeated on the terminal result event.
-        const resultEvent = events.find((event) => event.type === "result");
-        expect(resultEvent?.uploadIntegrity).toEqual(manifestEvent?.uploadIntegrity);
+        // The staging proof is repeated on the terminal done event.
+        const doneEvent = events.find((event) => event.type === "done");
+        expect(doneEvent?.ok).toBe(true);
+        expect(doneEvent?.uploadIntegrity).toEqual(manifestEvent?.uploadIntegrity);
       } finally {
         await server.close();
       }

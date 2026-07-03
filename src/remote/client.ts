@@ -54,6 +54,29 @@ export function isPromptFallbackOptInEnabled(env: NodeJS.ProcessEnv = process.en
   return raw === "1" || raw === "true";
 }
 
+/**
+ * Typed terminal failure for a remote run. `errorClass` is one of the fleet's
+ * typed retry classes; `retryable` states whether an AUTOMATIC retry is
+ * permissible. Post-submit interruptions, integrity failures, and account
+ * quarantine are never auto-retried (and never retried into another account):
+ * the prompt may already have reached the account, so blind resubmission
+ * risks duplicate submissions and cross-account contamination.
+ */
+export class RemoteRunFailedError extends Error {
+  readonly errorClass: string | null;
+  readonly retryable: boolean | null;
+
+  constructor(
+    message: string,
+    options: { errorClass?: string | null; retryable?: boolean | null } = {},
+  ) {
+    super(message);
+    this.name = "RemoteRunFailedError";
+    this.errorClass = options.errorClass ?? null;
+    this.retryable = options.retryable ?? null;
+  }
+}
+
 export function createRemoteBrowserExecutor({
   host,
   token,
@@ -108,6 +131,10 @@ export function createRemoteBrowserExecutor({
       let artifactTransferQueue = Promise.resolve();
       let settled = false;
       let resolved: BrowserRunResult | null = null;
+      // Success is defined by the terminal done event and nothing else: a
+      // stream that ends without one (crash, truncation, proxy cut) must
+      // never be treated as a completed run.
+      let doneObserved = false;
 
       const fail = (error: Error) => {
         if (settled) return;
@@ -129,8 +156,15 @@ export function createRemoteBrowserExecutor({
         },
         (res) => {
           if (res.statusCode !== 200) {
-            collectError(res)
-              .then((message) => fail(new Error(message)))
+            collectRefusal(res)
+              .then((refusal) =>
+                fail(
+                  new RemoteRunFailedError(refusal.message, {
+                    errorClass: refusal.errorClass,
+                    retryable: refusal.retryable,
+                  }),
+                ),
+              )
               .catch(fail);
             return;
           }
@@ -151,6 +185,9 @@ export function createRemoteBrowserExecutor({
                   token,
                   onResult: (result) => {
                     resolved = result;
+                  },
+                  onDone: () => {
+                    doneObserved = true;
                   },
                   onArtifact: (artifact) => {
                     transferredFiles.push(artifact);
@@ -176,8 +213,16 @@ export function createRemoteBrowserExecutor({
             void (async () => {
               await Promise.allSettled(transferPromises);
               if (settled) return;
-              if (!resolved) {
-                fail(new Error("Remote browser run completed without a result."));
+              if (!doneObserved || !resolved) {
+                // EOF without a terminal done event is a FAILURE, not an
+                // answer. Post-submit conservatism: the prompt may have
+                // reached the account, so this is never auto-retryable.
+                fail(
+                  new RemoteRunFailedError(
+                    "Remote run stream ended without a terminal done event; refusing to treat it as success.",
+                    { errorClass: "transport_interrupted_after_submit", retryable: false },
+                  ),
+                );
                 return;
               }
               settled = true;
@@ -228,6 +273,7 @@ function handleEvent(params: {
   port: number;
   token?: string;
   onResult: (result: BrowserRunResult) => void;
+  onDone: () => void;
   onArtifact: (artifact: SavedBrowserFile) => void;
   onArtifactFailure: (message: string) => void;
   enqueueArtifactTransfer: (transfer: () => Promise<void>) => Promise<void>;
@@ -290,8 +336,47 @@ function handleEvent(params: {
     );
     return transfer;
   }
+  if (event.type === "done") {
+    if (event.ok && event.result) {
+      // §14.16 provenance distinction: what the worker verified is plumbing
+      // evidence (model, capture binding, challenge-clean) — it does not
+      // certify the answer's correctness.
+      if (event.provenance) {
+        const p = event.provenance;
+        params.options.log?.(
+          `[remote] Terminal done.ok observed. Provenance: model=${String(p.modelVerified)} ` +
+            `binding=${String(p.captureBindingVerified)} challengeClean=${String(p.challengeClean)} ` +
+            "(provenance verified means the plumbing was right, not that the answer is correct).",
+        );
+      }
+      params.onResult(event.result);
+      params.onDone();
+      return null;
+    }
+    if (event.ok) {
+      params.onError(
+        new RemoteRunFailedError("Terminal done event claimed success but carried no result.", {
+          errorClass: "integrity_ui_unknown",
+          retryable: false,
+        }),
+      );
+      return null;
+    }
+    params.onError(
+      new RemoteRunFailedError(
+        event.errorMessage ?? `Remote run failed (${event.errorClass ?? "unclassified"})`,
+        { errorClass: event.errorClass ?? null, retryable: event.retryable ?? false },
+      ),
+    );
+    return null;
+  }
   if (event.type === "result") {
-    params.onResult(event.result);
+    // NON-AUTHORITATIVE legacy event: only the terminal done event may
+    // certify success. Deliberately ignored (no back-compat shims).
+    params.options.log?.(
+      "[remote] Ignoring non-authoritative result event; waiting for the terminal done event.",
+    );
+    return null;
   }
   return null;
 }
@@ -509,6 +594,37 @@ function collectError(res: http.IncomingMessage): Promise<string> {
         resolve(parsed.error ?? `Remote host responded with status ${res.statusCode}`);
       } catch {
         resolve(raw || `Remote host responded with status ${res.statusCode}`);
+      }
+    });
+    res.on("error", reject);
+  });
+}
+
+/**
+ * Typed refusal reader for non-200 /runs responses: surfaces the worker's
+ * errorClass/retryable fields (e.g. capacity_busy + Retry-After on 409) so
+ * callers apply the right retry policy instead of guessing from strings.
+ */
+function collectRefusal(
+  res: http.IncomingMessage,
+): Promise<{ message: string; errorClass: string | null; retryable: boolean | null }> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    res.on("data", (chunk: Buffer | string) => {
+      chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+    });
+    res.on("end", () => {
+      const raw = Buffer.concat(chunks).toString("utf8");
+      const fallback = `Remote host responded with status ${res.statusCode}`;
+      try {
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        resolve({
+          message: typeof parsed.error === "string" ? parsed.error : fallback,
+          errorClass: typeof parsed.errorClass === "string" ? parsed.errorClass : null,
+          retryable: typeof parsed.retryable === "boolean" ? parsed.retryable : null,
+        });
+      } catch {
+        resolve({ message: raw || fallback, errorClass: null, retryable: null });
       }
     });
     res.on("error", reject);

@@ -2,6 +2,7 @@ import type { BrowserSessionConfig } from "../sessionStore.js";
 import type { BrowserRunResult } from "../browserMode.js";
 import type { BrowserAttachment } from "../browser/types.js";
 import type { SessionArtifactValidation } from "../sessionManager.js";
+import type { RunErrorClass } from "./run_event_sink.js";
 
 export const MAX_REMOTE_ARTIFACT_BYTES = 512 * 1024 * 1024;
 
@@ -76,6 +77,20 @@ export interface RemoteUploadIntegrity {
   preSendDomCheck: "composer-chips-by-stored-name";
 }
 
+/**
+ * What the worker actually verified for a run. Provenance proves PLUMBING
+ * (the right model was selected, the capture was bound to this run's own
+ * submitted message, no challenge/quarantine was latched) — it does NOT
+ * prove the answer is correct. Unknown facts are null, never guessed.
+ */
+export interface RemoteRunProvenanceSummary {
+  modelVerified: boolean | null;
+  modelRequested: string | null;
+  modelResolved: string | null;
+  captureBindingVerified: boolean | null;
+  challengeClean: boolean | null;
+}
+
 export type RemoteRunEvent =
   // `runId` is stamped onto every event by the server so each NDJSON line of a
   // run is joinable end-to-end (client logs, server logs, forensics) even when
@@ -92,7 +107,31 @@ export type RemoteRunEvent =
       runId?: string;
     }
   | { type: "attachment-manifest"; uploadIntegrity: RemoteUploadIntegrity; runId?: string }
+  /**
+   * NON-AUTHORITATIVE legacy event. The caller-usable answer travels ONLY in
+   * the terminal `done` event; clients must ignore `result` events and treat
+   * a stream that ends without `done` as a failure. Kept in the union so
+   * fixtures/parsers stay type-checked while the fleet transitions.
+   */
   | { type: "result"; result: BrowserRunResult; uploadIntegrity?: RemoteUploadIntegrity; runId?: string }
+  /**
+   * TERMINAL event — exactly one per accepted run, always the last line the
+   * server writes. Success is defined as done.ok === true; the answer payload
+   * is carried here and nowhere else. On failure `errorClass` is one of the
+   * typed retry classes and `retryable` states whether an automatic retry is
+   * permissible (post-submit and quarantine failures are never auto-retried).
+   */
+  | {
+      type: "done";
+      ok: boolean;
+      runId?: string;
+      errorClass?: RunErrorClass | null;
+      errorMessage?: string;
+      retryable?: boolean | null;
+      provenance?: RemoteRunProvenanceSummary;
+      result?: BrowserRunResult;
+      uploadIntegrity?: RemoteUploadIntegrity;
+    }
   | { type: "error"; message: string; runId?: string };
 
 export interface RemoteActiveRunInfo {

@@ -95,7 +95,7 @@ describe("remote server run identity", () => {
         for (const event of events) {
           expect(event.runId).toBe(runId);
         }
-        expect(events.some((event) => event.type === "result")).toBe(true);
+        expect(events.some((event) => event.type === "done")).toBe(true);
       } finally {
         await server.close();
       }

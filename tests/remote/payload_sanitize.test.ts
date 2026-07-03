@@ -96,7 +96,7 @@ describe("remote payload sanitization", () => {
       try {
         const response = await postRun(server.port, maliciousPayload(), "server-token");
         expect(response.statusCode).toBe(200);
-        expect(response.body).toContain('"type":"result"');
+        expect(response.body).toContain('"type":"done"');
       } finally {
         await server.close();
       }
