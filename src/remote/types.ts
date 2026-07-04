@@ -2,9 +2,20 @@ import type { BrowserSessionConfig } from "../sessionStore.js";
 import type { BrowserRunResult } from "../browserMode.js";
 import type { BrowserAttachment } from "../browser/types.js";
 import type { SessionArtifactValidation } from "../sessionManager.js";
+import type { OracleBuildInfo } from "../version.js";
 import type { RunErrorClass } from "./run_event_sink.js";
 
 export const MAX_REMOTE_ARTIFACT_BYTES = 512 * 1024 * 1024;
+
+export type RemoteActiveRunPhase = "running" | "completed";
+
+export type RemoteRunReadinessState =
+  | "idle-ready"
+  | "active-run-client-connected"
+  | "active-run-client-disconnected"
+  | "completed-but-not-finalized"
+  | "wedged-no-progress"
+  | "substrate-broken";
 
 export interface RemoteAttachmentPayload {
   fileName: string;
@@ -119,7 +130,12 @@ export type RemoteRunEvent =
    * a stream that ends without `done` as a failure. Kept in the union so
    * fixtures/parsers stay type-checked while the fleet transitions.
    */
-  | { type: "result"; result: BrowserRunResult; uploadIntegrity?: RemoteUploadIntegrity; runId?: string }
+  | {
+      type: "result";
+      result: BrowserRunResult;
+      uploadIntegrity?: RemoteUploadIntegrity;
+      runId?: string;
+    }
   /**
    * TERMINAL event — exactly one per accepted run, always the last line the
    * server writes. Success is defined as done.ok === true; the answer payload
@@ -146,6 +162,9 @@ export interface RemoteActiveRunInfo {
   ageSeconds: number;
   clientConnected: boolean;
   promptChars: number;
+  phase?: RemoteActiveRunPhase;
+  completedAt?: string;
+  completedAgeSeconds?: number;
   sessionId?: string;
   desiredModel?: string;
 }
@@ -177,6 +196,7 @@ export interface RemoteBrowserEndpointV1 {
   doctor_command: string;
   recover_command: string;
   version: string | null;
+  build?: OracleBuildInfo | null;
   uptimeSeconds: number | null;
   busy?: boolean;
   activeRun?: RemoteActiveRunInfo | null;

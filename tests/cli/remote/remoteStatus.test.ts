@@ -68,6 +68,11 @@ describe("runRemoteStatus --json", () => {
     expect(out.host_env).toBe("ORACLE_REMOTE_HOST");
     expect(out.token_env).toBe("ORACLE_REMOTE_TOKEN");
     expect(out.no_plaintext_secrets).toBe(true);
+    expect(out.build).toBeNull();
+    expect(out.oracle_build).toMatchObject({
+      schema_version: "oracle_build_provenance.v1",
+      version: expect.stringMatching(/\d+\.\d+\.\d+/),
+    });
   });
 
   test("never prints the raw token", async () => {

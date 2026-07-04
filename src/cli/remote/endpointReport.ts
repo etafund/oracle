@@ -10,7 +10,7 @@
 import { checkRemoteHealth, checkTcpConnection } from "../../remote/health.js";
 import type { ResolvedRemoteServiceConfig } from "../../remote/remoteServiceConfig.js";
 import type { RemoteActiveRunInfo, RemoteBrowserEndpointV1 } from "../../remote/types.js";
-import { getCliVersion } from "../../version.js";
+import { getCliVersion, getOracleBuildInfo, type OracleBuildInfo } from "../../version.js";
 
 /**
  * Status values the report can emit. The wider union (including
@@ -33,6 +33,7 @@ export interface RemoteEndpointProbe {
     uptimeSeconds?: number;
     authProfileIdHash?: string;
     providerLocks?: string[];
+    build?: OracleBuildInfo;
     busy?: boolean;
     activeRun?: RemoteActiveRunInfo;
   };
@@ -107,6 +108,7 @@ export async function buildRemoteEndpointReport(
     doctor_command: "oracle remote doctor --json",
     recover_command: "oracle remote doctor --json",
     version: null,
+    build: null,
     uptimeSeconds: null,
   };
 
@@ -180,6 +182,7 @@ function applyHealthMetadata(
     return;
   }
   report.version = health.version ?? null;
+  report.build = health.build ?? null;
   report.uptimeSeconds = health.uptimeSeconds ?? null;
   report.auth_profile_id_hash = health.authProfileIdHash ?? null;
   report.provider_locks = health.providerLocks ?? [];
@@ -199,7 +202,12 @@ export function reportLeaksToken(
 
 /** Add the CLI version onto a report's `meta`-style top-level fields. */
 export function annotateClientVersion(report: RemoteBrowserEndpointV1): RemoteBrowserEndpointV1 {
-  return { ...report, oracle_version: getCliVersion() } as RemoteBrowserEndpointV1 & {
+  return {
+    ...report,
+    oracle_version: getCliVersion(),
+    oracle_build: getOracleBuildInfo(),
+  } as RemoteBrowserEndpointV1 & {
     oracle_version: string;
+    oracle_build: OracleBuildInfo;
   };
 }

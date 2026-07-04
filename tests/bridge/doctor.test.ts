@@ -62,6 +62,29 @@ describe("oracle bridge doctor", () => {
     expect(process.exitCode ?? 0).toBe(0);
   });
 
+  it("emits the shared endpoint envelope in JSON mode", async () => {
+    process.env.ORACLE_REMOTE_HOST = "127.0.0.1:9473";
+    process.env.ORACLE_REMOTE_TOKEN = "json-secret";
+
+    const logs: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((msg) => logs.push(String(msg)));
+
+    await runBridgeDoctor({ verbose: false, json: true });
+
+    const out = JSON.parse(logs[0]);
+    expect(out._schema).toBe("remote_browser_endpoint.v1");
+    expect(out.status).toBe("healthy");
+    expect(out.host_env).toBe("ORACLE_REMOTE_HOST");
+    expect(out.token_env).toBe("ORACLE_REMOTE_TOKEN");
+    expect(out.no_plaintext_secrets).toBe(true);
+    expect(out.oracle_build).toMatchObject({
+      schema_version: "oracle_build_provenance.v1",
+      version: expect.stringMatching(/\d+\.\d+\.\d+/),
+    });
+    expect(logs[0]).not.toContain("json-secret");
+    expect(process.exitCode ?? 0).toBe(0);
+  });
+
   it("fails when remote token is missing", async () => {
     await fs.writeFile(
       path.join(tempDir, "config.json"),

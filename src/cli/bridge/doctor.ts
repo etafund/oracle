@@ -7,9 +7,11 @@ import { resolveRemoteServiceConfig } from "../../remote/remoteServiceConfig.js"
 import { checkTcpConnection, checkRemoteHealth } from "../../remote/health.js";
 import { detectChromeBinary, detectChromeCookieDb } from "../../browser/detect.js";
 import { formatCodexMcpSnippet } from "./codexConfig.js";
-
-import type { RemoteBrowserEndpointV1 } from "../../remote/types.js";
-import type { RemoteHealthResult } from "../../remote/health.js";
+import {
+  annotateClientVersion,
+  buildRemoteEndpointReport,
+  isHealthyReport,
+} from "../remote/endpointReport.js";
 
 export interface BridgeDoctorCliOptions {
   verbose?: boolean;
@@ -23,22 +25,6 @@ function normalizeOptionalString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed.length ? trimmed : undefined;
-}
-
-function applyHealthMetadata(endpoint: RemoteBrowserEndpointV1, health: RemoteHealthResult): void {
-  endpoint.version = health.version ?? null;
-  endpoint.uptimeSeconds = health.uptimeSeconds ?? null;
-  endpoint.auth_profile_id_hash = health.authProfileIdHash ?? null;
-  endpoint.provider_locks = health.providerLocks ?? [];
-  endpoint.busy = health.busy || undefined;
-  endpoint.activeRun = health.activeRun ?? null;
-}
-
-function formatHealthFailure(health: RemoteHealthResult): string | undefined {
-  if (!health.statusCode) {
-    return health.error;
-  }
-  return `HTTP ${health.statusCode} (${health.error ?? "unknown error"})`;
 }
 
 function resolveRemoteServiceConfigForDoctor(
@@ -88,56 +74,10 @@ export async function runBridgeDoctor(options: BridgeDoctorCliOptions): Promise<
   });
 
   if (options.json) {
-    const endpoint: RemoteBrowserEndpointV1 = {
-      _schema: "remote_browser_endpoint.v1",
-      endpoint_id: resolvedRemote.hostHash || "local",
-      mode: resolvedRemote.mode,
-      status: "unknown",
-      host_env: process.env.ORACLE_REMOTE_HOST || null,
-      token_env: process.env.ORACLE_REMOTE_TOKEN ? "***" : null,
-      host_hash: resolvedRemote.hostHash || null,
-      auth_profile_id_hash: null,
-      no_plaintext_secrets: true,
-      shared_profile_policy: true,
-      provider_locks: [],
-      doctor_command: "oracle remote doctor --json",
-      recover_command: "oracle remote doctor --json",
-      version: null,
-      uptimeSeconds: null,
-    };
-
-    if (!resolvedRemote.host) {
-      endpoint.status = "not_configured";
-    } else if (!resolvedRemote.token) {
-      endpoint.status = "missing_token";
-    } else {
-      const tcp = await checkTcpConnection(resolvedRemote.host, 2000);
-      if (!tcp.ok) {
-        endpoint.status = "unreachable";
-        endpoint.error = tcp.error;
-      } else {
-        const health = await checkRemoteHealth({
-          host: resolvedRemote.host,
-          token: resolvedRemote.token,
-          timeoutMs: 5000,
-        });
-        if (health.ok) {
-          endpoint.status = "healthy";
-          applyHealthMetadata(endpoint, health);
-        } else if (health.busy) {
-          endpoint.status = "busy";
-          applyHealthMetadata(endpoint, health);
-          endpoint.error = formatHealthFailure(health) ?? "remote host is busy";
-        } else {
-          endpoint.status = "auth_failed";
-          endpoint.error = formatHealthFailure(health);
-        }
-      }
-    }
-
-    console.log(JSON.stringify(endpoint, null, 2));
-    process.exitCode =
-      endpoint.status === "healthy" || endpoint.status === "not_configured" ? 0 : 1;
+    const { report } = await buildRemoteEndpointReport({ resolved: resolvedRemote });
+    const annotated = annotateClientVersion(report);
+    console.log(JSON.stringify(annotated, null, 2));
+    process.exitCode = isHealthyReport(report) ? 0 : 1;
     return;
   }
 

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en" data-provider="chatgpt" data-requirement="chatgpt-nested-assistant-turn">
+  <body>
+    <main data-testid="chat-thread" aria-label="ChatGPT nested assistant turn fixture">
+      <article data-testid="conversation-turn-1">
+        <div data-message-author-role="user">
+          <p>Earlier prompt</p>
+        </div>
+      </article>
+
+      <article data-testid="conversation-turn-2">
+        <div data-message-author-role="assistant" data-message-id="assistant-msg-prior">
+          <div class="markdown">
+            <p>Stale prior answer that must not bind to the latest prompt.</p>
+          </div>
+        </div>
+        <div class="turn-actions">
+          <button data-testid="copy-turn-action-button" aria-label="Copy">Copy</button>
+        </div>
+      </article>
+
+      <article data-testid="conversation-turn-3">
+        <div data-message-author-role="user">
+          <p>Latest prompt that produced the nested assistant response.</p>
+        </div>
+      </article>
+
+      <article data-testid="conversation-turn-4" data-requirement="outer-finished-controls">
+        <div
+          data-message-author-role="assistant"
+          data-message-id="assistant-msg-current"
+          data-testid="assistant-message-current"
+        >
+          <div class="markdown">
+            <p>Nested turn regression answer.</p>
+            <p>The inner assistant role node owns the text for full-answer capture.</p>
+          </div>
+        </div>
+        <div class="turn-actions" data-current-actions>
+          <button data-testid="copy-turn-action-button" aria-label="Copy">Copy</button>
+          <button data-testid="good-response-turn-action-button" aria-label="Good response">
+            Good response
+          </button>
+        </div>
+      </article>
+    </main>
+  </body>
+</html>

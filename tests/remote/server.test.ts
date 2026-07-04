@@ -227,6 +227,10 @@ describe("remote browser service", () => {
       expect(healthOk.statusCode).toBe(200);
       expect(healthOk.json?.ok).toBe(true);
       expect(typeof healthOk.json?.version).toBe("string");
+      expect(healthOk.json?.build).toMatchObject({
+        schema_version: "oracle_build_provenance.v1",
+        version: expect.any(String),
+      });
       expect(healthOk.json?.capabilities).toMatchObject({
         artifactTransfer: true,
         artifactProtocolVersion: 1,

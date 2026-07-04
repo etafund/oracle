@@ -432,6 +432,10 @@ export function buildCopyExpressionForTest(
   return buildCopyExpression(meta);
 }
 
+export function buildCompletionVisibleExpressionForTest(): string {
+  return buildCompletionVisibleExpression();
+}
+
 async function recoverAssistantResponse(
   Runtime: ChromeClient["Runtime"],
   timeoutMs: number,
@@ -745,49 +749,53 @@ async function isThinkingActive(Runtime: ChromeClient["Runtime"]): Promise<boole
 async function isCompletionVisible(Runtime: ChromeClient["Runtime"]): Promise<boolean> {
   try {
     const { result } = await Runtime.evaluate({
-      expression: `(() => {
-        // Find the LAST assistant turn to check completion status
-        // Must match the same logic as buildAssistantExtractor for consistency
-        const ASSISTANT_SELECTOR = '${ASSISTANT_ROLE_SELECTOR}';
-        const isAssistantTurn = (node) => {
-          if (!(node instanceof HTMLElement)) return false;
-          const turnAttr = (node.getAttribute('data-turn') || node.dataset?.turn || '').toLowerCase();
-          if (turnAttr === 'assistant') return true;
-          const role = (node.getAttribute('data-message-author-role') || node.dataset?.messageAuthorRole || '').toLowerCase();
-          if (role === 'assistant') return true;
-          const testId = (node.getAttribute('data-testid') || '').toLowerCase();
-          if (testId.includes('assistant')) return true;
-          return Boolean(node.querySelector(ASSISTANT_SELECTOR) || node.querySelector('[data-testid*="assistant"]'));
-        };
-
-        const turns = Array.from(document.querySelectorAll('${CONVERSATION_TURN_SELECTOR}'));
-        let lastAssistantTurn = null;
-        for (let i = turns.length - 1; i >= 0; i--) {
-          if (isAssistantTurn(turns[i])) {
-            lastAssistantTurn = turns[i];
-            break;
-          }
-        }
-        if (!lastAssistantTurn) {
-          return false;
-        }
-        const turnScope =
-          lastAssistantTurn.closest('article[data-testid^="conversation-turn"], section[data-testid^="conversation-turn"], div[data-testid^="conversation-turn"]') ||
-          lastAssistantTurn;
-        // Check if the last assistant turn has finished action buttons (copy, thumbs up/down, share)
-        if (turnScope.querySelector('${FINISHED_ACTIONS_SELECTOR}')) {
-          return true;
-        }
-        // Also check for "Done" text in the last assistant turn's markdown
-        const markdowns = turnScope.querySelectorAll('.markdown');
-        return Array.from(markdowns).some((n) => (n.textContent || '').trim() === 'Done');
-      })()`,
+      expression: buildCompletionVisibleExpression(),
       returnByValue: true,
     });
     return result?.value === true;
   } catch {
     return false;
   }
+}
+
+function buildCompletionVisibleExpression(): string {
+  return `(() => {
+    // Find the LAST assistant turn to check completion status
+    // Must match the same logic as buildAssistantExtractor for consistency
+    const ASSISTANT_SELECTOR = '${ASSISTANT_ROLE_SELECTOR}';
+    const isAssistantTurn = (node) => {
+      if (!(node instanceof HTMLElement)) return false;
+      const turnAttr = (node.getAttribute('data-turn') || node.dataset?.turn || '').toLowerCase();
+      if (turnAttr === 'assistant') return true;
+      const role = (node.getAttribute('data-message-author-role') || node.dataset?.messageAuthorRole || '').toLowerCase();
+      if (role === 'assistant') return true;
+      const testId = (node.getAttribute('data-testid') || '').toLowerCase();
+      if (testId.includes('assistant')) return true;
+      return Boolean(node.querySelector(ASSISTANT_SELECTOR) || node.querySelector('[data-testid*="assistant"]'));
+    };
+
+    const turns = Array.from(document.querySelectorAll('${CONVERSATION_TURN_SELECTOR}'));
+    let lastAssistantTurn = null;
+    for (let i = turns.length - 1; i >= 0; i--) {
+      if (isAssistantTurn(turns[i])) {
+        lastAssistantTurn = turns[i];
+        break;
+      }
+    }
+    if (!lastAssistantTurn) {
+      return false;
+    }
+    const turnScope =
+      lastAssistantTurn.closest('article[data-testid^="conversation-turn"], section[data-testid^="conversation-turn"], div[data-testid^="conversation-turn"]') ||
+      lastAssistantTurn;
+    // Check if the last assistant turn has finished action buttons (copy, thumbs up/down, share)
+    if (turnScope.querySelector('${FINISHED_ACTIONS_SELECTOR}')) {
+      return true;
+    }
+    // Also check for "Done" text in the last assistant turn's markdown
+    const markdowns = turnScope.querySelectorAll('.markdown');
+    return Array.from(markdowns).some((n) => (n.textContent || '').trim() === 'Done');
+  })()`;
 }
 
 function normalizeAssistantSnapshot(snapshot: AssistantSnapshot | null): {

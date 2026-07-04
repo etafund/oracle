@@ -10,8 +10,9 @@ import type { BrowserRunResult } from "../../src/browserMode.js";
 // GET /ready: layered, fail-closed per-worker readiness (probed directly,
 // never through the router LB which masks per-worker truth).
 //   200 idle-ready | 409 busy-but-healthy (client connected/disconnected
-//   distinguished) | 503 substrate-broken or wedged-no-progress | 401 bad
-//   token. Unknown values are null, never omitted.
+//   distinguished, plus completed-but-not-finalized) | 503 substrate-broken
+//   or wedged-no-progress | 401 bad token. Unknown values are null, never
+//   omitted.
 // Fail-closed inputs: attach-target probe (chromeReachable/chromeOwnerOk),
 // browser cleanup taint, lease-registry census; fleet-manifest agreement is
 // exposure-only.
@@ -314,6 +315,72 @@ describe("GET /ready", () => {
   );
 
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "a browser-completed run reports completed-but-not-finalized until done is emitted",
+    async () => {
+      await isolateManifest();
+      const profileDir = await tempDir("oracle-ready-profile-");
+      let releaseFinalize: () => void = () => {};
+      let markFinalizeStarted: () => void = () => {};
+      const finalizeStarted = new Promise<void>((resolve) => {
+        markFinalizeStarted = resolve;
+      });
+      const finalizeBarrier = new Promise<void>((resolve) => {
+        releaseFinalize = resolve;
+      });
+      const server = await createRemoteServer(
+        {
+          host: "127.0.0.1",
+          port: 0,
+          token: "secret",
+          logger: () => {},
+          attachOnly: false,
+          manualLoginProfileDir: profileDir,
+        },
+        {
+          runBrowser: async () => MINIMAL_RESULT,
+          beforeFinalizeRun: async ({ result }) => {
+            expect(result.answerText).toBe("ok");
+            markFinalizeStarted();
+            await finalizeBarrier;
+          },
+        },
+      );
+
+      const active = startRun(server.port, "secret");
+      void active.finished.catch(() => undefined);
+      try {
+        await finalizeStarted;
+        const finalizing = await getReady(server.port, "secret");
+        expect(finalizing.statusCode).toBe(409);
+        expect(finalizing.json?.state).toBe("completed-but-not-finalized");
+        expect(finalizing.json?.busy).toBe(true);
+        expect(finalizing.json?.activeRun).toMatchObject({
+          phase: "completed",
+          clientConnected: true,
+        });
+        expect(typeof (finalizing.json?.activeRun as Record<string, unknown>).completedAt).toBe(
+          "string",
+        );
+        expect(
+          typeof (finalizing.json?.activeRun as Record<string, unknown>).completedAgeSeconds,
+        ).toBe("number");
+
+        releaseFinalize();
+        const finished = await active.finished;
+        expect(finished.statusCode).toBe(200);
+        expect(finished.body).toContain('"type":"done"');
+        const idle = await getReady(server.port, "secret");
+        expect(idle.statusCode).toBe(200);
+        expect(idle.json?.state).toBe("idle-ready");
+      } finally {
+        releaseFinalize();
+        await active.finished.catch(() => undefined);
+        await server.close();
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
     "latched cleanup taint fails readiness closed (503)",
     async () => {
       await isolateManifest();
@@ -501,10 +568,7 @@ function startRun(
   };
 }
 
-async function waitFor<T>(
-  read: () => Promise<T | null>,
-  timeoutMs = 3000,
-): Promise<T> {
+async function waitFor<T>(read: () => Promise<T | null>, timeoutMs = 3000): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   let last: T | null = null;
   while (Date.now() <= deadline) {

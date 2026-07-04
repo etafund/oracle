@@ -1,10 +1,12 @@
 import http from "node:http";
 import net from "node:net";
 import { parseHostPort } from "../bridge/connection.js";
+import { parseOracleBuildInfo, type OracleBuildInfo } from "../version.js";
 import {
   MAX_REMOTE_ARTIFACT_BYTES,
   type RemoteActiveRunInfo,
   type RemoteArtifactCapabilities,
+  type RemoteRunReadinessState,
 } from "./types.js";
 
 export interface RemoteHealthResult {
@@ -13,7 +15,9 @@ export interface RemoteHealthResult {
   error?: string;
   busy?: boolean;
   activeRun?: RemoteActiveRunInfo;
+  state?: RemoteRunReadinessState;
   version?: string;
+  build?: OracleBuildInfo;
   uptimeSeconds?: number;
   authProfileIdHash?: string;
   providerLocks?: string[];
@@ -26,6 +30,7 @@ export interface RemoteRunAvailabilityResult {
   error?: string;
   busy?: boolean;
   activeRun?: RemoteActiveRunInfo;
+  state?: RemoteRunReadinessState;
 }
 
 export async function checkTcpConnection(
@@ -92,10 +97,15 @@ export async function checkRemoteHealth({
       const ok = (response.json as { ok?: unknown }).ok === true;
       const busy = (response.json as { busy?: unknown }).busy === true;
       const version = (response.json as { version?: unknown }).version;
+      const build = parseOracleBuildInfo(
+        (response.json as { build?: unknown }).build,
+        typeof version === "string" ? version : "0.0.0",
+      );
       const uptimeSeconds = (response.json as { uptimeSeconds?: unknown }).uptimeSeconds;
       const authProfileIdHash = (response.json as { authProfileIdHash?: unknown })
         .authProfileIdHash;
       const providerLocks = (response.json as { providerLocks?: unknown }).providerLocks;
+      const state = parseReadinessState((response.json as { state?: unknown }).state);
       const activeRun = parseActiveRun((response.json as { activeRun?: unknown }).activeRun);
       const capabilities = parseCapabilities(
         (response.json as { capabilities?: unknown }).capabilities,
@@ -104,8 +114,10 @@ export async function checkRemoteHealth({
         ok: ok && !busy,
         statusCode: response.statusCode,
         busy: busy || undefined,
+        state,
         activeRun,
         version: typeof version === "string" ? version : undefined,
+        build: build ?? undefined,
         uptimeSeconds: typeof uptimeSeconds === "number" ? uptimeSeconds : undefined,
         authProfileIdHash: typeof authProfileIdHash === "string" ? authProfileIdHash : undefined,
         providerLocks: Array.isArray(providerLocks) ? providerLocks : undefined,
@@ -143,6 +155,7 @@ export async function checkRemoteHealth({
           statusCode: runAvailability.statusCode,
           error: runAvailability.error,
           busy: runAvailability.busy,
+          state: runAvailability.state,
           activeRun: runAvailability.activeRun,
         };
       }
@@ -153,15 +166,19 @@ export async function checkRemoteHealth({
       const capabilities = parseCapabilities(
         (response.json as { capabilities?: unknown }).capabilities,
       );
+      const version = (response.json as { version?: unknown }).version;
+      const build = parseOracleBuildInfo(
+        (response.json as { build?: unknown }).build,
+        typeof version === "string" ? version : "0.0.0",
+      );
       return {
         ok: false,
         statusCode: response.statusCode,
         busy: true,
+        state: parseReadinessState((response.json as { state?: unknown }).state),
         activeRun: parseActiveRun((response.json as { activeRun?: unknown }).activeRun),
-        version:
-          typeof (response.json as { version?: unknown }).version === "string"
-            ? ((response.json as { version?: unknown }).version as string)
-            : undefined,
+        version: typeof version === "string" ? version : undefined,
+        build: build ?? undefined,
         uptimeSeconds:
           typeof (response.json as { uptimeSeconds?: unknown }).uptimeSeconds === "number"
             ? ((response.json as { uptimeSeconds?: unknown }).uptimeSeconds as number)
@@ -243,6 +260,9 @@ async function probeRemoteRunAvailability({
       ok: false,
       statusCode: response.statusCode,
       busy: true,
+      state: response.json
+        ? parseReadinessState((response.json as { state?: unknown }).state)
+        : undefined,
       activeRun: parseActiveRun(
         response.json ? (response.json as { activeRun?: unknown }).activeRun : undefined,
       ),
@@ -286,9 +306,32 @@ function parseActiveRun(value: unknown): RemoteActiveRunInfo | undefined {
     ageSeconds: record.ageSeconds,
     clientConnected: record.clientConnected,
     promptChars: record.promptChars,
+    ...(isActiveRunPhase(record.phase) ? { phase: record.phase } : {}),
+    ...(typeof record.completedAt === "string" ? { completedAt: record.completedAt } : {}),
+    ...(typeof record.completedAgeSeconds === "number"
+      ? { completedAgeSeconds: record.completedAgeSeconds }
+      : {}),
     ...(typeof record.sessionId === "string" ? { sessionId: record.sessionId } : {}),
     ...(typeof record.desiredModel === "string" ? { desiredModel: record.desiredModel } : {}),
   };
+}
+
+function parseReadinessState(value: unknown): RemoteRunReadinessState | undefined {
+  if (
+    value === "idle-ready" ||
+    value === "active-run-client-connected" ||
+    value === "active-run-client-disconnected" ||
+    value === "completed-but-not-finalized" ||
+    value === "wedged-no-progress" ||
+    value === "substrate-broken"
+  ) {
+    return value;
+  }
+  return undefined;
+}
+
+function isActiveRunPhase(value: unknown): value is NonNullable<RemoteActiveRunInfo["phase"]> {
+  return value === "running" || value === "completed";
 }
 
 function parseCapabilities(value: unknown): RemoteArtifactCapabilities | undefined {

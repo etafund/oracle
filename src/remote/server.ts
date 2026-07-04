@@ -11,6 +11,7 @@ import type { BrowserAttachment, BrowserLogger, CookieParam } from "../browser/t
 import { runBrowserMode } from "../browserMode.js";
 import type { BrowserRunResult } from "../browserMode.js";
 import type {
+  RemoteActiveRunPhase,
   RemoteActiveRunInfo,
   RemoteArtifactCapabilities,
   RemoteArtifactDescriptor,
@@ -19,6 +20,7 @@ import type {
   RemoteRunPayload,
   RemoteRunEvent,
   RemoteRunProvenanceSummary,
+  RemoteRunReadinessState,
   RemoteUploadIntegrity,
 } from "./types.js";
 import { MAX_REMOTE_ARTIFACT_BYTES } from "./types.js";
@@ -26,7 +28,7 @@ import { getQuarantineLatchState } from "../browser/quarantineLatch.js";
 import type { OracleUserError } from "../oracle/errors.js";
 import { getCookies, type Cookie } from "@steipete/sweet-cookie";
 import { CHATGPT_URL } from "../browser/constants.js";
-import { getCliVersion } from "../version.js";
+import { getCliVersion, getOracleBuildInfo, type OracleBuildInfo } from "../version.js";
 import { getOracleHomeDir } from "../oracleHome.js";
 import {
   isProcessAlive,
@@ -114,6 +116,15 @@ export interface RemoteServerOptions {
 interface RemoteServerDeps {
   runBrowser?: typeof runBrowserMode;
   /**
+   * Test/future-instrumentation hook after the browser has returned a result
+   * but before the worker emits artifacts/provenance/done and releases the
+   * single-flight slot.
+   */
+  beforeFinalizeRun?: (context: {
+    runId: string;
+    result: BrowserRunResult;
+  }) => void | Promise<void>;
+  /**
    * Cleanup-taint provider for readiness probes (defaults to the browser
    * layer's latched cleanup-failure flag). Injectable so fault-isolation
    * tests can exercise the tainted path without breaking a real browser.
@@ -132,6 +143,8 @@ interface ActiveRunState {
   startedAtMs: number;
   clientConnected: boolean;
   promptChars: number;
+  phase: RemoteActiveRunPhase;
+  completedAtMs?: number;
   sessionId?: string;
   desiredModel?: string;
 }
@@ -361,9 +374,12 @@ export async function createRemoteServer(
    * - 503 substrate-broken: attach target missing/stale/foreign-owned,
    *   cleanup taint latched, account quarantine latched (human-clear only),
    *   lease registry unverifiable, or any probe error;
-   * - 503 wedged-no-progress: an active run with no events for wedgeAfterMs;
+   * - 503 wedged-no-progress: an active/finalizing run with no events for
+   *   wedgeAfterMs;
    * - 409 active-run-client-connected / active-run-client-disconnected:
    *   busy but healthy;
+   * - 409 completed-but-not-finalized: browser returned a result, but the
+   *   terminal done/provenance/artifact response is still being finalized;
    * - 200 idle-ready.
    * Unknown values are emitted as null, never omitted.
    */
@@ -452,16 +468,13 @@ export async function createRemoteServer(
       });
 
       if (busy) {
-        const progressAge =
-          lastRunProgressAtMs === null ? null : Date.now() - lastRunProgressAtMs;
+        const progressAge = lastRunProgressAtMs === null ? null : Date.now() - lastRunProgressAtMs;
         if (progressAge !== null && progressAge > wedgeAfterMs) {
           base.state = "wedged-no-progress";
           base.reason = `no-progress-for-ms: ${progressAge}`;
           return { statusCode: 503, body: base };
         }
-        base.state = activeRun?.clientConnected
-          ? "active-run-client-connected"
-          : "active-run-client-disconnected";
+        base.state = classifyActiveRunReadinessState(activeRun);
         base.reason = "busy";
         return { statusCode: 409, body: base };
       }
@@ -515,8 +528,7 @@ export async function createRemoteServer(
   // (never an email/hostname); the default lane id incorporates the bound port
   // once the listener is up so co-hosted workers stay distinguishable.
   const accountId =
-    sanitizeIdentityLabel(options.accountId ?? process.env.ORACLE_ACCOUNT_ID) ??
-    DEFAULT_ACCOUNT_ID;
+    sanitizeIdentityLabel(options.accountId ?? process.env.ORACLE_ACCOUNT_ID) ?? DEFAULT_ACCOUNT_ID;
   const explicitLaneId = sanitizeIdentityLabel(options.laneId ?? process.env.ORACLE_LANE_ID);
   let laneId = explicitLaneId ?? accountId;
   const identityHeaders = (runId: string): Record<string, string> => ({
@@ -686,6 +698,7 @@ export async function createRemoteServer(
             // are safe to retry elsewhere after the hinted delay.
             errorClass: "capacity_busy",
             retryable: true,
+            ...(activeRun ? { state: classifyActiveRunReadinessState(activeRun) } : {}),
             ...(activeRun ? { activeRun: serializeActiveRun(activeRun) } : {}),
           },
           { "Retry-After": "15" },
@@ -725,8 +738,7 @@ export async function createRemoteServer(
           refuseRun(503, "account_quarantined", {
             errorClass: "account_quarantine",
             retryable: false,
-            reason:
-              quarantine.record?.reason ?? quarantine.readError ?? "quarantine latch present",
+            reason: quarantine.record?.reason ?? quarantine.readError ?? "quarantine latch present",
           });
           return;
         }
@@ -756,10 +768,7 @@ export async function createRemoteServer(
           const body = await readRequestBody(req, bodyLimits);
           payload = sanitizeRemoteRunPayloadForHost(JSON.parse(body) as RemoteRunPayload);
           if (payload?.browserConfig) {
-            payload.browserConfig.url = normalizeChatgptUrl(
-              payload.browserConfig.url,
-              CHATGPT_URL,
-            );
+            payload.browserConfig.url = normalizeChatgptUrl(payload.browserConfig.url, CHATGPT_URL);
           }
         } catch (error) {
           if (error instanceof RequestBodyError && error.kind === "too_large") {
@@ -840,6 +849,7 @@ export async function createRemoteServer(
         startedAtMs: runStartedAt,
         clientConnected: true,
         promptChars: payload?.prompt?.length ?? 0,
+        phase: "running",
         sessionId: payload.options?.sessionId,
         desiredModel:
           typeof payload.browserConfig?.desiredModel === "string"
@@ -896,7 +906,11 @@ export async function createRemoteServer(
       let runRetryable: boolean | null = null;
       let bindingVerified: boolean | null = null;
       try {
-        if (uploadIntegrity && uploadIntegrity.attachments.length + (uploadIntegrity.fallbackAttachments?.length ?? 0) > 0) {
+        if (
+          uploadIntegrity &&
+          uploadIntegrity.attachments.length + (uploadIntegrity.fallbackAttachments?.length ?? 0) >
+            0
+        ) {
           // Emit the staging proof before the browser stage starts so the
           // manifest survives even if the run later fails.
           sendEvent({ type: "attachment-manifest", uploadIntegrity });
@@ -972,6 +986,13 @@ export async function createRemoteServer(
           signal: runAbort.signal,
         });
         runResult = result;
+        if (activeRun?.id === runId) {
+          const completedAtMs = Date.now();
+          activeRun.phase = "completed";
+          activeRun.completedAtMs = completedAtMs;
+          lastRunProgressAtMs = completedAtMs;
+        }
+        await deps.beforeFinalizeRun?.({ runId, result });
         const artifactRegistration = await registerRemoteArtifacts({
           runId,
           result,
@@ -1057,14 +1078,13 @@ export async function createRemoteServer(
         // allowed to disturb the response path.
         try {
           const attachmentDigests: RunAttachmentDigest[] | null = uploadIntegrity
-            ? [
-                ...uploadIntegrity.attachments,
-                ...(uploadIntegrity.fallbackAttachments ?? []),
-              ].map((entry) => ({
-                index: entry.index,
-                bytes: entry.bytes,
-                sha256: entry.sha256,
-              }))
+            ? [...uploadIntegrity.attachments, ...(uploadIntegrity.fallbackAttachments ?? [])].map(
+                (entry) => ({
+                  index: entry.index,
+                  bytes: entry.bytes,
+                  sha256: entry.sha256,
+                }),
+              )
             : null;
           const challengeMatched = runErrorMessage
             ? /challenge|captcha|interstitial/i.test(runErrorMessage)
@@ -1088,8 +1108,7 @@ export async function createRemoteServer(
               busy_workers: null,
               error_class: runErrorClass,
               done_ok: runErrorMessage === null,
-              challenge_detected:
-                runErrorClass === "account_quarantine" ? true : challengeMatched,
+              challenge_detected: runErrorClass === "account_quarantine" ? true : challengeMatched,
               model_verified: runResult?.modelSelection?.verified ?? null,
               max_active_before_first_token: null,
               mean_active_during_ttft: null,
@@ -1141,7 +1160,12 @@ export async function createRemoteServer(
           ...(requestRunId ? identityHeaders(requestRunId) : {}),
         });
       }
-      res.end(JSON.stringify({ error: "internal_error", ...(requestRunId ? { runId: requestRunId } : {}) }));
+      res.end(
+        JSON.stringify({
+          error: "internal_error",
+          ...(requestRunId ? { runId: requestRunId } : {}),
+        }),
+      );
       // Own-run-only reset: releasing the single-flight slot on behalf of a
       // request that never acquired it would admit a second run into the
       // single Chrome while another run is still active.
@@ -1234,8 +1258,10 @@ function buildHealthResponse({
 }): {
   ok: boolean;
   version: string;
+  build: OracleBuildInfo;
   uptimeSeconds: number;
   busy: boolean;
+  state: RemoteRunReadinessState;
   activeRun?: RemoteActiveRunInfo;
   capabilities: RemoteArtifactCapabilities;
   effectiveConfig: {
@@ -1248,8 +1274,10 @@ function buildHealthResponse({
   return {
     ok: !busy,
     version: getCliVersion(),
+    build: getOracleBuildInfo(),
     uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
     busy,
+    state: busy ? classifyActiveRunReadinessState(activeRun) : "idle-ready",
     capabilities: ARTIFACT_CAPABILITIES,
     // Integration point for the dedicated /ready endpoint: it should surface
     // these exact field names (timeoutMs, profileLockTimeoutMs,
@@ -1267,9 +1295,23 @@ function serializeActiveRun(run: ActiveRunState): RemoteActiveRunInfo {
     ageSeconds: Math.max(0, Math.round((Date.now() - run.startedAtMs) / 1000)),
     clientConnected: run.clientConnected,
     promptChars: run.promptChars,
+    phase: run.phase,
+    ...(run.completedAtMs !== undefined
+      ? {
+          completedAt: new Date(run.completedAtMs).toISOString(),
+          completedAgeSeconds: Math.max(0, Math.round((Date.now() - run.completedAtMs) / 1000)),
+        }
+      : {}),
     ...(run.sessionId ? { sessionId: run.sessionId } : {}),
     ...(run.desiredModel ? { desiredModel: run.desiredModel } : {}),
   };
+}
+
+function classifyActiveRunReadinessState(run: ActiveRunState | null): RemoteRunReadinessState {
+  if (run?.phase === "completed") {
+    return "completed-but-not-finalized";
+  }
+  return run?.clientConnected ? "active-run-client-connected" : "active-run-client-disconnected";
 }
 
 export async function serveRemote(options: RemoteServerOptions = {}): Promise<void> {
@@ -1281,13 +1323,9 @@ export async function serveRemote(options: RemoteServerOptions = {}): Promise<vo
   await resolveServeAuthToken({ tokenFile: options.tokenFile, token: options.token });
   const manualProfileDir =
     options.manualLoginProfileDir ?? path.join(os.homedir(), ".oracle", "browser-profile");
-  const attachOnlyRequested =
-    options.attachOnly ?? process.env.ORACLE_SERVE_ATTACH_ONLY === "1";
+  const attachOnlyRequested = options.attachOnly ?? process.env.ORACLE_SERVE_ATTACH_ONLY === "1";
   const preferManualLogin =
-    options.manualLoginDefault ||
-    attachOnlyRequested ||
-    process.platform === "win32" ||
-    isWsl();
+    options.manualLoginDefault || attachOnlyRequested || process.platform === "win32" || isWsl();
   let cookies: CookieParam[] | null = null;
   let opened = false;
 
@@ -1653,10 +1691,7 @@ async function readRequestBody(
       if (totalBytes > limits.maxBytes) {
         settle(() =>
           reject(
-            new RequestBodyError(
-              "too_large",
-              `request body exceeds ${limits.maxBytes} byte limit`,
-            ),
+            new RequestBodyError("too_large", `request body exceeds ${limits.maxBytes} byte limit`),
           ),
         );
         return;

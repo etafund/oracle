@@ -45,6 +45,15 @@ interface MockHealth {
   uptimeSeconds?: number;
   authProfileIdHash?: string;
   providerLocks?: string[];
+  build?: {
+    schema_version: "oracle_build_provenance.v1";
+    version: string;
+    commit: string | null;
+    commit_short: string | null;
+    dirty: boolean | null;
+    built_at: string | null;
+    source: string;
+  };
 }
 
 const { checkTcpConnection, checkRemoteHealth } = vi.hoisted(() => ({
@@ -90,6 +99,15 @@ describe("runRemoteDoctor --json", () => {
       uptimeSeconds: 9001,
       authProfileIdHash: "auth-hash-789",
       providerLocks: ["browser:shared-profile:chatgpt", "browser:shared-profile:gemini"],
+      build: {
+        schema_version: "oracle_build_provenance.v1",
+        version: "1.2.3",
+        commit: "0123456789abcdef0123456789abcdef01234567",
+        commit_short: "0123456789ab",
+        dirty: false,
+        built_at: "2026-07-04T20:00:00.000Z",
+        source: "build-provenance",
+      },
     });
   });
 
@@ -109,6 +127,12 @@ describe("runRemoteDoctor --json", () => {
     expect(out._schema).toBe("remote_browser_endpoint.v1");
     expect(out.status).toBe("healthy");
     expect(out.version).toBe("1.2.3");
+    expect(out.build).toMatchObject({
+      schema_version: "oracle_build_provenance.v1",
+      version: "1.2.3",
+      commit_short: "0123456789ab",
+      source: "build-provenance",
+    });
     expect(out.auth_profile_id_hash).toBe("auth-hash-789");
     expect(out.provider_locks).toEqual([
       "browser:shared-profile:chatgpt",
@@ -118,6 +142,10 @@ describe("runRemoteDoctor --json", () => {
     expect(out.token_env).toBe("ORACLE_REMOTE_TOKEN");
     expect(out.no_plaintext_secrets).toBe(true);
     expect(out.oracle_version).toMatch(/\d+\.\d+\.\d+/);
+    expect(out.oracle_build).toMatchObject({
+      schema_version: "oracle_build_provenance.v1",
+      version: expect.stringMatching(/\d+\.\d+\.\d+/),
+    });
     expect(process.exitCode).toBe(0);
   });
 

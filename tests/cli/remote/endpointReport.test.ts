@@ -35,6 +35,15 @@ interface MockHealth {
   uptimeSeconds?: number;
   authProfileIdHash?: string;
   providerLocks?: string[];
+  build?: {
+    schema_version: "oracle_build_provenance.v1";
+    version: string;
+    commit: string | null;
+    commit_short: string | null;
+    dirty: boolean | null;
+    built_at: string | null;
+    source: string;
+  };
 }
 
 const { checkTcpConnection, checkRemoteHealth } = vi.hoisted(() => ({
@@ -68,6 +77,15 @@ beforeEach(() => {
     uptimeSeconds: 42,
     authProfileIdHash: "auth-hash",
     providerLocks: ["browser:shared-profile:chatgpt", "browser:shared-profile:gemini"],
+    build: {
+      schema_version: "oracle_build_provenance.v1",
+      version: "9.9.9",
+      commit: "abcdef0123456789abcdef0123456789abcdef01",
+      commit_short: "abcdef012345",
+      dirty: false,
+      built_at: "2026-07-04T20:00:00.000Z",
+      source: "build-provenance",
+    },
   } satisfies MockHealth);
 });
 
@@ -177,6 +195,12 @@ describe("buildRemoteEndpointReport — status precedence", () => {
     });
     expect(report.status).toBe("healthy");
     expect(report.version).toBe("9.9.9");
+    expect(report.build).toMatchObject({
+      schema_version: "oracle_build_provenance.v1",
+      version: "9.9.9",
+      commit_short: "abcdef012345",
+      source: "build-provenance",
+    });
     expect(report.uptimeSeconds).toBe(42);
     expect(report.auth_profile_id_hash).toBe("auth-hash");
     expect(report.provider_locks).toEqual([
@@ -193,6 +217,7 @@ describe("buildRemoteEndpointReport — status precedence", () => {
       env: { ORACLE_REMOTE_HOST: "h", ORACLE_REMOTE_TOKEN: "t" },
     });
     expect(report.status).toBe("unknown");
+    expect(report.build).toBeNull();
     expect(probe).toEqual({});
     expect(checkTcpConnection).not.toHaveBeenCalled();
     expect(checkRemoteHealth).not.toHaveBeenCalled();

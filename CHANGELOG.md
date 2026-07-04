@@ -10,6 +10,8 @@
 - API: add user-only `modelOverrides` for remapping known models and their metadata on custom OpenAI-compatible gateways. Fixes #273. Thanks @wangwllu!
 - Browser: structurally bind every ChatGPT capture to the run's own submitted user message (conversation pinned from submit to capture, document-order proof against the exact submitted turn, start-of-run blank-target assertion), failing loudly instead of returning cross-run or stale-tab answers; the submitted prompt's SHA-256 is logged for provenance.
 - Remote: refuse the prompt-altering fallback submission on remote runs unless `ORACLE_ALLOW_PROMPT_FALLBACK` is set; opting in logs primary and fallback prompt SHA-256 hashes so the run trail proves which question was actually submitted.
+- Remote: expose installed-package build provenance in `oracle remote status --json`, `oracle remote doctor --json`, and authenticated `/health` responses, including sanitized commit, dirty-state, and build-time metadata when available.
+- Remote: add `pnpm smoke:remote-browser`, a live full-response smoke harness that requires remote browser answers to echo a generated marker, attachment checksum, sentinel, minimum length, and repeated operational-implication labels before passing.
 - Browser: read-only access-state gates for login walls, verification interstitials, account security blocks, and rate limits — a pre-run gate refuses before any prompt is composed and a pre-result gate ensures an access-wall page is never emitted as an answer; challenge-class detections atomically trip a worker-local account quarantine latch (cleared only manually by a human) so a challenged account is never retried into or worked around.
 
 ### Changed
@@ -32,6 +34,7 @@
 - Browser: report `response streaming` from the thinking-status heartbeat when a visible stop control is the only remaining liveness signal, so ChatGPT selector drift no longer logs an active generation as `no thinking status detected yet`. Fixes #284.
 - Browser: avoid archiving short ChatGPT Pro thinking preambles as completed answers when finished-turn controls appear before the final response has expanded.
 - Browser: accept completed ChatGPT answers that follow the latest user prompt even when nested turn wrappers make their numeric turn index look older than the submitted baseline, and scope finished-action controls to the outer assistant turn so full answers no longer stall in the CLI after appearing in the DOM.
+- Remote: distinguish connected, disconnected, and completed-but-not-finalized active runs in `/ready`, `/health`, and busy `/runs` metadata so operators can tell stale-busy lanes from runs that are only finishing artifact/provenance emission.
 
 ## 0.15.0 — 2026-06-19
 
