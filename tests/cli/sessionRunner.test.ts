@@ -1056,6 +1056,169 @@ describe("performSessionRun", () => {
     );
   });
 
+  describe("claude-code file attachment hardening (claude-provider-map.md finding #1)", () => {
+    function minimalClaudeCodeRunnerResult() {
+      return {
+        stdoutRaw: Buffer.from('{"type":"assistant","text":"Final answer"}\n'),
+        stderrRaw: Buffer.from(""),
+        normalizedEventsNdjson:
+          '{"seq":0,"stream":"stdout","type":"assistant","text":"Final answer"}\n',
+        finalAnswerMarkdown: "Final answer",
+        progressMarkdown: "Visible progress",
+        finalAnswerText: "Final answer",
+        elapsedMs: 5,
+        exitCode: 0,
+        eventsComplete: true,
+        streamsComplete: true,
+        stdoutEvents: 1,
+        stderrEvents: 0,
+        modelRequested: "fable",
+        modelObserved: "claude-fable-5",
+        modelResolvedFromInit: "claude-fable-5",
+        modelUsageKeys: ["claude-fable-5"],
+        modelVerificationStatus: "observed" as const,
+        totalCostUsdObserved: 0,
+        visibleThinkingCaptured: false,
+        localOwnerVerified: true,
+        anthropicApiKeyPresent: false,
+        anthropicApiKeyRefusalChecked: true,
+        childEnvScrubbed: true,
+      };
+    }
+
+    test("rejects a binary file attachment before spawning claude, naming the file", async () => {
+      const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "oracle-claude-code-binary-"));
+      const binaryPath = path.join(repoDir, "photo.png");
+      // PNG magic bytes followed by a NUL byte: unambiguously binary under
+      // either half of the sniff (NUL-byte scan or strict-UTF-8 decode).
+      fs.writeFileSync(
+        binaryPath,
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe]),
+      );
+      const claudeCodeRunner = vi.fn();
+
+      await expect(
+        performSessionRun({
+          sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+          runOptions: { prompt: "Review this local lane", model: "fable", file: [binaryPath] },
+          mode: "claude-code",
+          cwd: repoDir,
+          log,
+          write,
+          version: cliVersion,
+          muteStdout: true,
+          claudeCodeRunner,
+        }),
+      ).rejects.toThrow(/photo\.png/);
+
+      expect(claudeCodeRunner).not.toHaveBeenCalled();
+      const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+      expect(finalUpdate).toMatchObject({ status: "error", mode: "claude-code" });
+    });
+
+    test("rejects when combined prompt and attachments exceed the configured inline-byte budget", async () => {
+      const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "oracle-claude-code-budget-"));
+      const contextPath = path.join(repoDir, "notes.md");
+      fs.writeFileSync(contextPath, "x".repeat(200), "utf8");
+      const claudeCodeRunner = vi.fn();
+
+      await expect(
+        performSessionRun({
+          sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+          runOptions: {
+            prompt: "Review this local lane",
+            model: "fable",
+            file: [contextPath],
+            claudeCode: { ...fableClaudeCodePolicy, maxInlineBytes: 50 },
+          },
+          mode: "claude-code",
+          cwd: repoDir,
+          log,
+          write,
+          version: cliVersion,
+          muteStdout: true,
+          claudeCodeRunner,
+        }),
+      ).rejects.toThrow(/exceeding the Claude Code local-mode inline budget of 50 bytes/);
+
+      expect(claudeCodeRunner).not.toHaveBeenCalled();
+    });
+
+    test("ORACLE_CLAUDE_CODE_MAX_INLINE_BYTES env var changes the effective inline budget", async () => {
+      const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "oracle-claude-code-budget-env-"));
+      const contextPath = path.join(repoDir, "notes.md");
+      fs.writeFileSync(contextPath, "y".repeat(200), "utf8");
+
+      // Default budget (64 MB) comfortably allows a ~200-byte attachment.
+      const claudeCodeRunnerOk = vi.fn(async () => minimalClaudeCodeRunnerResult());
+      await performSessionRun({
+        sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+        runOptions: { prompt: "Review this local lane", model: "fable", file: [contextPath] },
+        mode: "claude-code",
+        cwd: repoDir,
+        log,
+        write,
+        version: cliVersion,
+        muteStdout: true,
+        claudeCodeRunner: claudeCodeRunnerOk,
+      });
+      expect(claudeCodeRunnerOk).toHaveBeenCalledTimes(1);
+
+      // The previously-dead env var now lowers the same effective budget.
+      const claudeCodeRunnerBlocked = vi.fn();
+      await withExactEnv({ ORACLE_CLAUDE_CODE_MAX_INLINE_BYTES: "40" }, async () => {
+        await expect(
+          performSessionRun({
+            sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+            runOptions: { prompt: "Review this local lane", model: "fable", file: [contextPath] },
+            mode: "claude-code",
+            cwd: repoDir,
+            log,
+            write,
+            version: cliVersion,
+            muteStdout: true,
+            claudeCodeRunner: claudeCodeRunnerBlocked,
+          }),
+        ).rejects.toThrow(/exceeding the Claude Code local-mode inline budget of 40 bytes/);
+      });
+      expect(claudeCodeRunnerBlocked).not.toHaveBeenCalled();
+    });
+
+    test("still runs a normal multi-file text attachment set unchanged", async () => {
+      const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "oracle-claude-code-text-set-"));
+      const fileA = path.join(repoDir, "a.md");
+      const fileB = path.join(repoDir, "b.ts");
+      fs.writeFileSync(fileA, "# Notes\nSome unicode: café, 🎉", "utf8");
+      fs.writeFileSync(fileB, "export const x = 1;\n", "utf8");
+      let promptSent = "";
+      const claudeCodeRunner = vi.fn(async (input) => {
+        promptSent = input.prompt;
+        return minimalClaudeCodeRunnerResult();
+      });
+
+      await performSessionRun({
+        sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+        runOptions: {
+          prompt: "Review this local lane",
+          model: "fable",
+          file: [fileA, fileB],
+        },
+        mode: "claude-code",
+        cwd: repoDir,
+        log,
+        write,
+        version: cliVersion,
+        muteStdout: true,
+        claudeCodeRunner,
+      });
+
+      expect(claudeCodeRunner).toHaveBeenCalledTimes(1);
+      expect(promptSent).toContain("café");
+      expect(promptSent).toContain("🎉");
+      expect(promptSent).toContain("export const x = 1;");
+    });
+  });
+
   test("keeps claude-code artifacts when the local runner reports an error", async () => {
     const claudeCodeRunner = vi.fn(async () => ({
       stdoutRaw: Buffer.from('{"type":"system","subtype":"init"}\n'),

@@ -381,6 +381,89 @@ describe("oracle utility helpers", () => {
     }
   });
 
+  describe("readFiles binaryFileHandling (claude-provider-map.md finding #1)", () => {
+    test("default behavior still force-decodes binary content as text (unchanged for existing callers)", async () => {
+      const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-readfiles-binary-default-"));
+      try {
+        const binaryFile = path.join(dir, "blob.bin");
+        await writeFile(binaryFile, Buffer.from([0x00, 0x01, 0xff, 0xfe, 0x00]));
+        const files = await readFiles([binaryFile], { cwd: dir });
+        expect(files).toHaveLength(1);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    test("binaryFileHandling: reject rejects a NUL-containing file, naming it in the error", async () => {
+      const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-readfiles-binary-nul-"));
+      try {
+        const binaryFile = path.join(dir, "photo.png");
+        await writeFile(
+          binaryFile,
+          Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe]),
+        );
+        await expect(
+          readFiles([binaryFile], { cwd: dir, binaryFileHandling: "reject" }),
+        ).rejects.toThrow(/photo\.png/);
+        await expect(
+          readFiles([binaryFile], { cwd: dir, binaryFileHandling: "reject" }),
+        ).rejects.toThrow(/binary/i);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    test("binaryFileHandling: reject rejects invalid-UTF-8 content even without a NUL byte", async () => {
+      const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-readfiles-binary-invalid-utf8-"));
+      try {
+        const invalidUtf8File = path.join(dir, "mystery.dat");
+        // 0xff/0xfe are never valid UTF-8 lead bytes; no NUL byte present, so
+        // only the strict-decode half of the sniff can catch this one.
+        await writeFile(invalidUtf8File, Buffer.from([0x48, 0x65, 0x6c, 0x6c, 0x6f, 0xff, 0xfe]));
+        await expect(
+          readFiles([invalidUtf8File], { cwd: dir, binaryFileHandling: "reject" }),
+        ).rejects.toThrow(/mystery\.dat/);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    test("binaryFileHandling: reject lists every offending file when several are binary", async () => {
+      const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-readfiles-binary-multi-"));
+      try {
+        const binaryOne = path.join(dir, "one.bin");
+        const binaryTwo = path.join(dir, "two.bin");
+        await writeFile(binaryOne, Buffer.from([0x00, 0x01, 0x02]));
+        await writeFile(binaryTwo, Buffer.from([0x00, 0x03, 0x04]));
+        await expect(
+          readFiles([binaryOne, binaryTwo], { cwd: dir, binaryFileHandling: "reject" }),
+        ).rejects.toThrow(/one\.bin/);
+        await expect(
+          readFiles([binaryOne, binaryTwo], { cwd: dir, binaryFileHandling: "reject" }),
+        ).rejects.toThrow(/two\.bin/);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    test("binaryFileHandling: reject still accepts a normal text file set unchanged", async () => {
+      const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-readfiles-binary-textset-"));
+      try {
+        const fileA = path.join(dir, "a.md");
+        const fileB = path.join(dir, "b.ts");
+        await writeFile(fileA, "# Notes\nSome unicode: café, 🎉", "utf8");
+        await writeFile(fileB, "export const x = 1;\n", "utf8");
+        const files = await readFiles([fileA, fileB], { cwd: dir, binaryFileHandling: "reject" });
+        expect(files).toHaveLength(2);
+        const contents = files.map((file) => file.content);
+        expect(contents).toContain("# Notes\nSome unicode: café, 🎉");
+        expect(contents).toContain("export const x = 1;\n");
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   test("createFileSections renders relative paths", () => {
     const sections = createFileSections(
       [{ path: "/tmp/example/file.txt", content: "contents" }],

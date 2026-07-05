@@ -57,6 +57,12 @@ const DEFAULT_CHILD_ENV_ALLOWLIST = [
   "FORCE_COLOR",
   "CI",
   "ORACLE_HOME_DIR",
+  // Aggregate inline-bytes budget for this lane (claude-provider-map.md
+  // finding #1); a size threshold, not a secret. Now actually read on the
+  // parent side by `resolveClaudeCodeMaxInlineBytes`
+  // (`claude-code/inlineBudget.ts`), which gates both the pre-spawn
+  // aggregate input check and the existing post-spawn output-flood
+  // detector — previously allowlisted here but never consumed anywhere.
   "ORACLE_CLAUDE_CODE_MAX_INLINE_BYTES",
   // Opt-in `caam shallow-spawn` profile name (caam-map.md §4a/§4b). This is
   // an argv-derived selector, not a secret — the same value is also passed

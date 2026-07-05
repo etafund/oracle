@@ -74,11 +74,14 @@ import {
   type ClaudeCodeNormalizedEvent,
 } from "../claude-code/streamParser.js";
 import { verifyClaudeCodeRun } from "../claude-code/startupVerifier.js";
+import {
+  assertClaudeCodeInlineBudget,
+  resolveClaudeCodeMaxInlineBytes,
+} from "../claude-code/inlineBudget.js";
 
 const isTty = process.stdout.isTTY;
 const dim = (text: string): string => (isTty ? kleur.dim(text) : text);
 const CLAUDE_CODE_SESSION_FINALIZED = Symbol("claudeCodeSessionFinalized");
-const DEFAULT_CLAUDE_CODE_MAX_INLINE_BYTES = 64 * 1024 * 1024;
 
 type ClaudeCodeFinalizedError = Error & {
   [CLAUDE_CODE_SESSION_FINALIZED]?: true;
@@ -198,8 +201,17 @@ export async function performSessionRun({
       const files = await readFiles(runOptions.file ?? [], {
         cwd,
         maxFileSizeBytes: runOptions.maxFileSizeBytes,
+        // claude-provider-map.md finding #1: never silently force-decode a
+        // binary attachment as UTF-8 garbage for this lane.
+        binaryFileHandling: "reject",
       });
       const promptWithFiles = buildPrompt(runOptions.prompt ?? "", files, cwd);
+      // Aggregate pre-spawn budget check (finding #1, concrete gap #2) —
+      // must run before any of the claude-code-specific spawn machinery
+      // (single-flight lock, executable resolution, `spawn()`) so an
+      // oversized attachment bundle fails fast with an actionable error
+      // instead of silently producing an arbitrarily large stdin write.
+      assertClaudeCodeInlineBudget(promptWithFiles, runOptions.claudeCode?.maxInlineBytes);
       const artifactPaths = await buildClaudeCodeArtifactPaths(sessionMeta.id);
       log(
         dim(
@@ -1005,6 +1017,7 @@ async function runLocalClaudeCodeSession(
     const timeoutMs = resolveClaudeCodeTimeoutMs(input.runOptions.timeoutSeconds);
     const maxInlineBytes = resolveClaudeCodeMaxInlineBytes(
       input.runOptions.claudeCode?.maxInlineBytes,
+      process.env,
     );
 
     // TOCTOU re-check: time has passed since the initial resolution above
@@ -1581,13 +1594,6 @@ function resolveClaudeCodeWaitForLockMs(waitForLockMs: number | undefined): numb
     return waitForLockMs;
   }
   return 0;
-}
-
-function resolveClaudeCodeMaxInlineBytes(maxInlineBytes: number | undefined): number {
-  if (typeof maxInlineBytes === "number" && Number.isFinite(maxInlineBytes) && maxInlineBytes > 0) {
-    return Math.floor(maxInlineBytes);
-  }
-  return DEFAULT_CLAUDE_CODE_MAX_INLINE_BYTES;
 }
 
 interface ClaudeCodeSingleFlightLockMetadata {

@@ -1,10 +1,20 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { TextDecoder } from "node:util";
 import fg from "fast-glob";
 import type { FileContent, FileSection, MinimalFsModule, FsStats } from "./types.js";
 import { FileValidationError } from "./errors.js";
 
 export const DEFAULT_MAX_FILE_SIZE_BYTES = 1 * 1024 * 1024; // 1 MB
+/**
+ * `readFiles`'s `binaryFileHandling` option (claude-provider-map.md finding
+ * #1). Default `"allow"` preserves the original behavior for every existing
+ * caller (API/browser lanes inline whatever text-ish content is handed to
+ * them, unchanged). `"reject"` sniffs each accepted file for binary content
+ * before decoding it and throws a `FileValidationError` naming every
+ * offending file instead of silently force-decoding raw bytes as UTF-8.
+ */
+export type BinaryFileHandling = "allow" | "reject";
 const DEFAULT_FS = fs as MinimalFsModule;
 const DEFAULT_IGNORED_DIRS = new Set([
   "node_modules",
@@ -31,11 +41,13 @@ export async function readFiles(
     fsModule = DEFAULT_FS,
     maxFileSizeBytes = DEFAULT_MAX_FILE_SIZE_BYTES,
     readContents = true,
+    binaryFileHandling = "allow",
   }: {
     cwd?: string;
     fsModule?: MinimalFsModule;
     maxFileSizeBytes?: number;
     readContents?: boolean;
+    binaryFileHandling?: BinaryFileHandling;
   } = {},
 ): Promise<FileContent[]> {
   if (!filePaths || filePaths.length === 0) {
@@ -133,11 +145,65 @@ export async function readFiles(
   }
 
   const files: FileContent[] = [];
+  const binaryRejections: string[] = [];
   for (const filePath of accepted) {
-    const content = readContents ? await fsModule.readFile(filePath, "utf8") : "";
-    files.push({ path: filePath, content });
+    if (!readContents) {
+      files.push({ path: filePath, content: "" });
+      continue;
+    }
+    if (binaryFileHandling === "allow") {
+      const content = await fsModule.readFile(filePath, "utf8");
+      files.push({ path: filePath, content });
+      continue;
+    }
+    // Read as latin1 first (a lossless 1:1 byte<->code-unit mapping) so the
+    // exact original bytes can be sniffed for binary content *before* we
+    // commit to decoding them as UTF-8 — the original bug this replaces
+    // force-decoded every file as UTF-8 unconditionally, silently turning
+    // binary files into garbage inlined into the prompt.
+    const rawLatin1 = await fsModule.readFile(filePath, "latin1");
+    const decoded = decodeIfNotBinary(rawLatin1);
+    if (decoded === undefined) {
+      binaryRejections.push(relativePath(filePath, cwd));
+      continue;
+    }
+    files.push({ path: filePath, content: decoded });
   }
+
+  if (binaryRejections.length > 0) {
+    throw new FileValidationError(
+      `The following files appear to be binary and cannot be safely attached as text:\n- ${binaryRejections.join("\n- ")}\nRemove them from --file, or attach a text-only excerpt instead — binary/image attachment is not supported by this lane.`,
+      { files: binaryRejections },
+    );
+  }
+
   return files;
+}
+
+const BINARY_SNIFF_SAMPLE_BYTES = 8192;
+
+/**
+ * Classic binary-content heuristic (the same one git and most text tools
+ * use): a NUL byte anywhere in a leading sample is a near-certain sign of
+ * binary content, and content that doesn't round-trip through strict UTF-8
+ * decoding either isn't UTF-8 text at all or is itself corrupt — either way,
+ * unsafe to force-decode and paste into a prompt. `raw` is the file's exact
+ * original bytes, obtained via a lossless latin1 read (see call site).
+ * Returns the decoded UTF-8 text on success, or `undefined` if the content
+ * looks binary.
+ */
+function decodeIfNotBinary(raw: string): string | undefined {
+  const sampleLength = Math.min(raw.length, BINARY_SNIFF_SAMPLE_BYTES);
+  for (let i = 0; i < sampleLength; i += 1) {
+    if (raw.charCodeAt(i) === 0) {
+      return undefined;
+    }
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(raw, "latin1"));
+  } catch {
+    return undefined;
+  }
 }
 
 async function partitionFileInputs(

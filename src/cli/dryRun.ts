@@ -26,6 +26,7 @@ import {
 } from "../claude-code/command.js";
 import { findBlockedClaudeCodeEnvironmentSources } from "../claude-code/envGuard.js";
 import { runClaudeCodePreflight, type ClaudeCodePreflightResult } from "../claude-code/preflight.js";
+import { assertClaudeCodeInlineBudget } from "../claude-code/inlineBudget.js";
 
 interface DryRunDeps {
   readFilesImpl?: typeof readFiles;
@@ -83,9 +84,16 @@ async function runClaudeCodeDryRun(
     await readFilesImpl(runOptions.file ?? [], {
       cwd,
       maxFileSizeBytes: runOptions.maxFileSizeBytes,
+      // claude-provider-map.md finding #1: keep dry-run parity with the real
+      // run path so a binary attachment fails here instead of only at spawn
+      // time.
+      binaryFileHandling: "reject",
     }),
   );
   const combinedPrompt = buildPrompt(runOptions.prompt ?? "", files, cwd);
+  // Aggregate pre-spawn budget check (finding #1, concrete gap #2) — same
+  // parity rationale as the binary check above.
+  assertClaudeCodeInlineBudget(combinedPrompt, runOptions.claudeCode?.maxInlineBytes);
   const tokenizer = MODEL_CONFIGS["gpt-5.1"].tokenizer;
   const estimatedInputTokens = tokenizer(
     [

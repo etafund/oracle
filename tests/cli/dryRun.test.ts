@@ -1,4 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { DRY_RUN_TIMESTAMP, runDryRunSummary } from "../../src/cli/dryRun.js";
 import type { RunOracleOptions } from "../../src/oracle.js";
 
@@ -7,6 +10,20 @@ const baseRunOptions: RunOracleOptions = {
   model: "gpt-5.2-pro",
   file: [],
 };
+
+const fableClaudeCodePolicy = {
+  model: "fable",
+  readOnly: true,
+  inlineEvents: true,
+  outputFormat: "stream-json",
+  permissionMode: "plan",
+  toolMode: "none",
+  safeMode: true,
+  disableSlashCommands: true,
+  strictMcpConfig: true,
+  noChrome: true,
+  noSessionPersistence: true,
+} as const;
 
 describe("runDryRunSummary", () => {
   test("prints claude-code dry-run summary without starting Claude", async () => {
@@ -443,5 +460,58 @@ describe("runDryRunSummary", () => {
         String(entry).includes("leaves the existing browser process alone"),
       ),
     ).toBe(true);
+  });
+
+  describe("claude-code file attachment hardening (claude-provider-map.md finding #1)", () => {
+    test("rejects a binary file attachment, naming it (dry-run parity with the real run)", async () => {
+      const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-dryrun-binary-"));
+      try {
+        const binaryPath = path.join(dir, "photo.png");
+        await writeFile(
+          binaryPath,
+          Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe]),
+        );
+        const log = vi.fn();
+        await expect(
+          runDryRunSummary(
+            {
+              engine: "claude-code",
+              runOptions: { prompt: "Review", model: "fable", file: [binaryPath] },
+              cwd: dir,
+              version: "1.2.3",
+              log,
+            },
+            {},
+          ),
+        ).rejects.toThrow(/photo\.png/);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    test("rejects an oversized combined prompt+attachments bundle before printing a plan", async () => {
+      const log = vi.fn();
+      await expect(
+        runDryRunSummary(
+          {
+            engine: "claude-code",
+            runOptions: {
+              prompt: "Review",
+              model: "fable",
+              file: ["notes.md"],
+              claudeCode: { ...fableClaudeCodePolicy, maxInlineBytes: 10 },
+            },
+            cwd: "/repo",
+            version: "1.2.3",
+            log,
+          },
+          {
+            readFilesImpl: async () => [
+              { path: "/repo/notes.md", content: "far more than ten bytes of context" },
+            ],
+          },
+        ),
+      ).rejects.toThrow(/exceeding the Claude Code local-mode inline budget of 10 bytes/);
+    });
   });
 });
