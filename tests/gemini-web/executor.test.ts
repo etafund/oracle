@@ -383,6 +383,25 @@ describe("gemini-web executor", () => {
     );
   });
 
+  it("throws GeminiDeepThinkFallbackBlockedError when fallback=fail and attachments force HTTP", async () => {
+    const { createGeminiWebExecutor, GeminiDeepThinkFallbackBlockedError } = await import(
+      "../../src/gemini-web/executor.js"
+    );
+    const exec = createGeminiWebExecutor({ deepThinkFallback: "fail" });
+    const run = () =>
+      exec({
+        prompt: "summarize this file",
+        attachments: [{ path: "/tmp/attach.txt", displayPath: "attach.txt" }],
+        config: { desiredModel: "gemini-3-deep-think", chromeProfile: "Default" },
+        log: () => {},
+      });
+
+    await expect(run()).rejects.toThrow(GeminiDeepThinkFallbackBlockedError);
+    await expect(run()).rejects.toThrow(/attachments/);
+    expect(getCookies).not.toHaveBeenCalled();
+    expect(runGeminiWebWithFallback).not.toHaveBeenCalled();
+  });
+
   it("keeps the launched browser alive when Deep Think uses the keep-browser default", async () => {
     const { createGeminiWebExecutor } = await import("../../src/gemini-web/executor.js");
     const exec = createGeminiWebExecutor({});

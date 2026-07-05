@@ -1855,6 +1855,10 @@ function applyStringLaneDefault(
   }
 }
 
+function toGeminiDeepThinkFallback(value: string | undefined): "fail" | undefined {
+  return value === "fail" ? "fail" : undefined;
+}
+
 function laneStringOption(options: Record<string, unknown>, name: string): string | undefined {
   const value = options[name];
   return typeof value === "string" && value.length > 0 ? value : undefined;
@@ -2972,6 +2976,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
         outputPath: options.output,
         aspectRatio: options.aspect,
         showThoughts: options.geminiShowThoughts,
+        deepThinkFallback: toGeminiDeepThinkFallback(options.geminiDeepThinkFallback),
       }),
     };
     console.log(chalk.dim("Using Gemini web client for browser automation"));
@@ -3058,6 +3063,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
       outputPath: options.output,
       aspectRatio: options.aspect,
       geminiShowThoughts: options.geminiShowThoughts,
+      geminiDeepThinkFallback: toGeminiDeepThinkFallback(options.geminiDeepThinkFallback),
     },
     process.cwd(),
     notifications,
@@ -3396,6 +3402,7 @@ async function restartSession(sessionId: string, options: RestartCommandOptions)
         outputPath: storedOptions.outputPath,
         aspectRatio: storedOptions.aspectRatio,
         showThoughts: storedOptions.geminiShowThoughts,
+        deepThinkFallback: toGeminiDeepThinkFallback(storedOptions.geminiDeepThinkFallback),
       }),
     };
     console.log(chalk.dim("Using Gemini web client for browser automation"));
@@ -3564,6 +3571,7 @@ async function executeSession(sessionId: string) {
             outputPath: storedOptions.outputPath,
             aspectRatio: storedOptions.aspectRatio,
             showThoughts: storedOptions.geminiShowThoughts,
+            deepThinkFallback: toGeminiDeepThinkFallback(storedOptions.geminiDeepThinkFallback),
           }),
         };
         logLine("Using Gemini web client for browser automation");

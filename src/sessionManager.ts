@@ -402,6 +402,8 @@ export interface StoredRunOptions {
   browserResumeConversationUrl?: string;
   aspectRatio?: string;
   geminiShowThoughts?: boolean;
+  /** Deep Think fallback policy ("fail" = refuse the unverified HTTP fallback). */
+  geminiDeepThinkFallback?: "fail";
   providerBoundary?: SessionProviderBoundaryOptions;
   lane?: string;
   claudeCode?: {
@@ -832,6 +834,7 @@ export async function initializeSession(
       browserResumeConversationUrl: options.browserResumeConversationUrl,
       aspectRatio: options.aspectRatio,
       geminiShowThoughts: options.geminiShowThoughts,
+      geminiDeepThinkFallback: options.geminiDeepThinkFallback,
       lane: options.lane,
       claudeCode: options.claudeCode,
     },

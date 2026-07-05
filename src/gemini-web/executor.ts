@@ -16,6 +16,18 @@ import { openGeminiBrowserSession } from "./browserSessionManager.js";
 import { selectGeminiExecutionMode } from "./executionMode.js";
 import type { IGeminiExecutionClient } from "./executionClients.js";
 
+export class GeminiDeepThinkFallbackBlockedError extends Error {
+  constructor(public readonly reasons: string[]) {
+    super(
+      `Gemini Deep Think cannot use its verified DOM path for this run (blocked by: ${reasons.join(", ")}), ` +
+        "and --gemini-deep-think-fallback fail refuses the unverified HTTP/header fallback path.\n" +
+        "Fix: drop --file/--generate-image/--edit-image from this Deep Think run, or explicitly accept the " +
+        "less-verified fallback by omitting --gemini-deep-think-fallback fail.",
+    );
+    this.name = "GeminiDeepThinkFallbackBlockedError";
+  }
+}
+
 const GEMINI_COOKIE_NAMES = [
   "__Secure-1PSID",
   "__Secure-1PSIDTS",
@@ -533,6 +545,9 @@ export function createGeminiWebExecutor(
     };
 
     if (model === "gemini-3-pro-deep-think" && modeSelection.mode === "http") {
+      if (geminiOptions.deepThinkFallback === "fail") {
+        throw new GeminiDeepThinkFallbackBlockedError(modeSelection.reasons);
+      }
       log?.(
         `[gemini-web] Deep Think DOM path skipped (${modeSelection.reasons.join(", ")} requested); using HTTP/header fallback path.`,
       );
