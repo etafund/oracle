@@ -459,6 +459,34 @@ describe("browser conversation archiving", () => {
     });
     expect(runtime.evaluate).not.toHaveBeenCalled();
   });
+
+  test("does not auto-archive suspiciously short captured answers", async () => {
+    const runtime = {
+      evaluate: vi.fn(),
+    };
+    const log = vi.fn();
+
+    await expect(
+      maybeArchiveCompletedConversationForTest({
+        Runtime: runtime as never,
+        logger: log as never,
+        config: resolveBrowserConfig({ archiveConversations: "always" }),
+        conversationUrl: "https://chatgpt.com/c/abc",
+        answerText: "I",
+        followUpCount: 0,
+        requiredArtifactsSaved: true,
+      }),
+    ).resolves.toMatchObject({
+      mode: "always",
+      attempted: false,
+      archived: false,
+      reason: "suspicious-short-answer",
+    });
+    expect(runtime.evaluate).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(
+      "[browser] ChatGPT archive skipped (suspicious-short-answer).",
+    );
+  });
 });
 
 describe("remote Chrome option warnings", () => {

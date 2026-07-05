@@ -122,6 +122,7 @@ function shouldAcceptStableAssistantSnapshot({
   stableMs,
   minStableMs,
 }: AssistantCompletionState): boolean {
+  const ultraShortAnswer = currentLength === 1;
   const shortAnswer = currentLength > 0 && currentLength < 16;
   const mediumAnswer = currentLength >= 16 && currentLength < 40;
   const compactAnswer = shortAnswer || mediumAnswer;
@@ -142,6 +143,7 @@ function shouldAcceptStableAssistantSnapshot({
   if (stopVisible) {
     const staleStopStableMs = 12_000;
     return (
+      !ultraShortAnswer &&
       compactAnswer &&
       stableCycles >= requiredStableCycles &&
       stableMs >= Math.max(minStableMs, staleStopStableMs)
@@ -164,7 +166,7 @@ function shouldAcceptStableAssistantSnapshot({
   // unreliable (the Pro thinking gate hides it mid-turn), so never treat it as
   // final without finished-action controls.
   if (compactAnswer) {
-    return stableEnough;
+    return !ultraShortAnswer && stableEnough;
   }
   return false;
 }
@@ -331,11 +333,14 @@ export async function waitForAssistantResponse(
     // Confirm every capture from that transition with the stability-based watchdog; a
     // partial first paragraph can be arbitrarily long.
     const candidateText = String(candidate?.text ?? "").trim();
-    if (stopVisible || completionVisible) {
+    const ultraShortAnswer = candidateText.length === 1;
+    if (stopVisible || completionVisible || ultraShortAnswer) {
       logger(
         stopVisible
           ? "Assistant still generating; waiting for completion"
-          : candidateText.length < MIN_TRUSTWORTHY_ANSWER_CHARS
+          : ultraShortAnswer
+            ? "Captured one-character assistant response; re-polling for completion"
+            : candidateText.length < MIN_TRUSTWORTHY_ANSWER_CHARS
             ? "Captured suspiciously short answer at completion; re-polling for completion"
             : "Completion controls surfaced; confirming stable assistant response",
       );
@@ -1129,6 +1134,7 @@ function buildResponseObserverExpression(
       // Learned: long streaming responses (esp. thinking models) can pause mid-stream;
       // use progressively longer windows to avoid truncation (#71).
       const classifyLength = (length) => ({
+        ultraShortAnswer: length === 1,
         shortAnswer: length > 0 && length < 16,
         mediumAnswer: length >= 16 && length < 40,
         longAnswer: length >= 40 && length < 500,
@@ -1219,7 +1225,7 @@ function buildResponseObserverExpression(
           // Compact answers may never render a copy button promptly; accept them
           // on stop-button absence + stability. Substantial answers must instead
           // wait for finished controls to avoid capturing a mid-stream preamble.
-          if (compactAnswer) {
+          if (compactAnswer && !size.ultraShortAnswer) {
             break;
           }
           deadline = Math.max(deadline, Math.min(overallDeadline, Date.now() + settleIntervalMs));
@@ -1228,7 +1234,7 @@ function buildResponseObserverExpression(
       const finalLength = latest?.text?.length ?? snapshot?.text?.length ?? 0;
       const finalSize = classifyLength(finalLength);
       const finalCompact = finalSize.shortAnswer || finalSize.mediumAnswer;
-      if (finalCompact) {
+      if (finalCompact && !finalSize.ultraShortAnswer) {
         return latest ?? snapshot;
       }
       if (completionAccepted && isLastAssistantTurnFinished()) {

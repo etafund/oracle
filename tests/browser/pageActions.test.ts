@@ -1071,6 +1071,45 @@ describe("waitForAssistantResponse", () => {
     }
   });
 
+  test("does not return a one-character capture without completion evidence", async () => {
+    vi.useFakeTimers();
+    try {
+      const answer = { text: "I", messageId: "mid", turnId: "tid" };
+      const evaluate = vi
+        .fn()
+        .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
+          if (params.awaitPromise) {
+            return { result: { type: "object", value: answer } };
+          }
+          const expression = String(params.expression ?? "");
+          if (expression.includes("extractAssistantTurn")) {
+            return { result: { value: answer } };
+          }
+          if (expression.includes("Find the LAST assistant turn")) {
+            return { result: { value: false } };
+          }
+          return { result: { value: false } };
+        });
+
+      const promise = waitForAssistantResponse(
+        { evaluate } as unknown as ChromeClient["Runtime"],
+        2_000,
+        logger,
+      );
+      const expectation = expect(promise).rejects.toThrow(
+        "Assistant response did not reach stable completion",
+      );
+      await vi.advanceTimersByTimeAsync(3_000);
+
+      await expectation;
+      expect(logger).toHaveBeenCalledWith(
+        "Captured one-character assistant response; re-polling for completion",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("response observer watches character data mutations", async () => {
     let capturedExpression = "";
     const runtime = {

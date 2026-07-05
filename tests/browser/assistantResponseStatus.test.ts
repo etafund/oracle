@@ -224,4 +224,20 @@ describe("assistant thinking-status capture", () => {
       }),
     ).toBe(true);
   });
+
+  test("does not accept a one-character answer on bare stop-button absence", () => {
+    expect(
+      shouldAcceptStableAssistantSnapshotForTest({
+        stopVisible: false,
+        completionVisible: false,
+        thinkingActive: false,
+        currentLength: 1,
+        stableCycles: 30,
+        requiredStableCycles: 12,
+        completionStableTarget: 12,
+        stableMs: 30_000,
+        minStableMs: 8000,
+      }),
+    ).toBe(false);
+  });
 });

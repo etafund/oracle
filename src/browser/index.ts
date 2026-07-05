@@ -650,6 +650,7 @@ async function maybeArchiveCompletedConversation({
   logger,
   config,
   conversationUrl,
+  answerText,
   followUpCount,
   requiredArtifactsSaved,
 }: {
@@ -657,6 +658,7 @@ async function maybeArchiveCompletedConversation({
   logger: BrowserLogger;
   config: ResolvedBrowserConfig;
   conversationUrl?: string | null;
+  answerText?: string | null;
   followUpCount: number;
   requiredArtifactsSaved: boolean;
 }): Promise<BrowserArchiveResult> {
@@ -687,6 +689,16 @@ async function maybeArchiveCompletedConversation({
       conversationUrl: conversationUrl ?? undefined,
     };
   }
+  if (isSuspiciouslyShortArchiveAnswer(answerText)) {
+    logger("[browser] ChatGPT archive skipped (suspicious-short-answer).");
+    return {
+      mode: decision.mode,
+      attempted: false,
+      archived: false,
+      reason: "suspicious-short-answer",
+      conversationUrl: conversationUrl ?? undefined,
+    };
+  }
   return archiveChatGptConversation(Runtime, logger, {
     mode: decision.mode,
     conversationUrl,
@@ -702,6 +714,11 @@ async function maybeArchiveCompletedConversation({
       error: message,
     };
   });
+}
+
+function isSuspiciouslyShortArchiveAnswer(answerText: string | null | undefined): boolean {
+  const normalized = String(answerText ?? "").replace(/\s+/g, " ").trim();
+  return normalized.length > 0 && normalized.length < 16;
 }
 
 export function maybeArchiveCompletedConversationForTest(
@@ -1846,6 +1863,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         logger,
         config,
         conversationUrl: lastUrl,
+        answerText: researchResult.text,
         followUpCount: 0,
         requiredArtifactsSaved: Boolean(reportArtifact && transcriptArtifact),
       });
@@ -2360,6 +2378,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       logger,
       config,
       conversationUrl: lastUrl,
+      answerText,
       followUpCount: followUpPrompts.length,
       requiredArtifactsSaved:
         Boolean(transcriptArtifact) &&
@@ -3383,6 +3402,7 @@ async function runRemoteBrowserMode(
         logger,
         config,
         conversationUrl: lastUrl,
+        answerText: researchResult.text,
         followUpCount: 0,
         requiredArtifactsSaved: Boolean(reportArtifact && transcriptArtifact),
       });
@@ -3893,6 +3913,7 @@ async function runRemoteBrowserMode(
       logger,
       config,
       conversationUrl: lastUrl,
+      answerText,
       followUpCount: followUpPrompts.length,
       requiredArtifactsSaved:
         Boolean(transcriptArtifact) &&

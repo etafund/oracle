@@ -849,9 +849,31 @@ describe("performSessionRun", () => {
       log: path.join(sessionDir, "output.log"),
     });
     setOracleHomeDirOverrideForTest(oracleHome);
-    const interrupt = setTimeout(() => {
+    let interrupted = false;
+    let interruptPoll: ReturnType<typeof setInterval> | null = null;
+    let interruptFallback: ReturnType<typeof setTimeout> | null = null;
+    const clearInterruptTimers = () => {
+      if (interruptPoll) {
+        clearInterval(interruptPoll);
+        interruptPoll = null;
+      }
+      if (interruptFallback) {
+        clearTimeout(interruptFallback);
+        interruptFallback = null;
+      }
+    };
+    const emitInterrupt = () => {
+      if (interrupted) return;
+      interrupted = true;
+      clearInterruptTimers();
       process.emit("SIGINT");
-    }, 50);
+    };
+    interruptPoll = setInterval(() => {
+      if (fs.existsSync(markerPath)) {
+        emitInterrupt();
+      }
+    }, 10);
+    interruptFallback = setTimeout(emitInterrupt, 1_000);
 
     try {
       await withExactEnv(
@@ -897,7 +919,7 @@ describe("performSessionRun", () => {
         },
       });
     } finally {
-      clearTimeout(interrupt);
+      clearInterruptTimers();
       setOracleHomeDirOverrideForTest(null);
       fs.rmSync(root, { recursive: true, force: true });
     }
