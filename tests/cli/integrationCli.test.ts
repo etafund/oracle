@@ -309,6 +309,76 @@ module.exports = () => ({
   );
 
   test(
+    "a successful --json run emits a json_envelope.v1 success payload on stdout, not just human text",
+    async () => {
+      // Regression test for the bug where root `--json` only formatted the
+      // ERROR path (see main().catch() dispatch): a successful consult run
+      // used to print plain human-readable text, which broke any agent piping
+      // `oracle -p ... --json | jq .`.
+      const oracleHome = await mkdtemp(path.join(os.tmpdir(), "oracle-json-success-"));
+      const testFile = path.join(oracleHome, "notes.md");
+      await writeFile(testFile, "Integration dry run content", "utf8");
+
+      const env = {
+        ...process.env,
+        // biome-ignore lint/style/useNamingConvention: env var name
+        OPENAI_API_KEY: "sk-integration",
+        // biome-ignore lint/style/useNamingConvention: env var name
+        ORACLE_HOME_DIR: oracleHome,
+        // biome-ignore lint/style/useNamingConvention: env var name
+        ORACLE_CLIENT_FACTORY: CLIENT_FACTORY,
+        // biome-ignore lint/style/useNamingConvention: env var name
+        ORACLE_NO_DETACH: "1",
+        // biome-ignore lint/style/useNamingConvention: env var name
+        ORACLE_DISABLE_KEYTAR: "1",
+      };
+
+      try {
+        const { stdout, stderr } = await execFileAsync(
+          process.execPath,
+          [
+            "--import",
+            "tsx",
+            CLI_ENTRY,
+            "--engine",
+            "api",
+            "--prompt",
+            "Integration check",
+            "--model",
+            "gpt-5.1",
+            "--file",
+            testFile,
+            "--json",
+          ],
+          { env },
+        );
+
+        // The whole of stdout must parse as a single JSON document — any
+        // human-readable noise (lifecycle block, tips, completion summary)
+        // ahead of the envelope would break `JSON.parse`/`jq .` for a caller
+        // piping the output, which is exactly what this bug allowed through.
+        expect(stderr).toBe("");
+        const envelope = JSON.parse(stdout) as Record<string, unknown>;
+        expect(envelope).toMatchObject({
+          schema_version: "json_envelope.v1",
+          ok: true,
+          status: "success",
+        });
+        const data = envelope.data as Record<string, unknown>;
+        expect(typeof data.answer).toBe("string");
+        // mockClientFactory streams this exact delta text (see
+        // tests/fixtures/mockClientFactory.cjs) regardless of prompt content.
+        expect(data.answer as string).toContain("Mock answer text.");
+        expect(data.model).toBe("gpt-5.1");
+        expect(typeof data.session_id).toBe("string");
+      } finally {
+        await rm(oracleHome, { recursive: true, force: true });
+      }
+    },
+    INTEGRATION_TIMEOUT,
+  );
+
+  test(
     "honors --provider openai by ignoring Azure env routing",
     async () => {
       const oracleHome = await mkdtemp(path.join(os.tmpdir(), "oracle-provider-openai-"));

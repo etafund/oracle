@@ -29,6 +29,7 @@ import { CHATGPT_URL } from "../src/browser/constants.js";
 import { applyHelpStyling } from "../src/cli/help.js";
 import {
   buildTopLevelCliErrorEnvelope,
+  buildTopLevelCliSuccessEnvelope,
   isJsonModeRequested,
   stableJsonStringify,
 } from "../src/cli/errorEnvelope.js";
@@ -629,7 +630,12 @@ program
       .choices(["redacted"])
       .argParser(parseGeminiDeepThinkEvidenceOption),
   )
-  .addOption(new Option("--json", "Accept canonical protected-run JSON flag.").default(false))
+  .addOption(
+    new Option(
+      "--json",
+      "Emit a json_envelope.v1 result on stdout instead of human-readable output, for both success and error outcomes.",
+    ).default(false),
+  )
   .addOption(
     new Option("--mode <mode>", "Alias for --engine (api | browser | claude-code).")
       .choices(["api", "browser", "claude-code"])
@@ -2215,6 +2221,7 @@ function getBrowserConfigFromMetadata(metadata: SessionMetadata): BrowserSession
 
 async function runRootCommand(options: CliOptions): Promise<void> {
   perfTrace.mark("root-command-start");
+  const jsonMode = isJsonModeRequested(userCliArgs);
   if (process.env.ORACLE_FORCE_TUI === "1" && userCliArgs.length === 0) {
     const { launchTui } = await import("../src/cli/tui/index.js");
     await sessionStore.ensureStorage();
@@ -3154,6 +3161,8 @@ async function runRootCommand(options: CliOptions): Promise<void> {
       userConfig,
       true,
       browserDeps,
+      process.cwd(),
+      jsonMode,
     );
     return;
   }
@@ -3175,32 +3184,46 @@ async function runInteractiveSession(
   suppressSummary = false,
   browserDeps?: BrowserSessionRunnerDeps,
   cwd: string = process.cwd(),
+  jsonMode = false,
 ): Promise<void> {
   const { logLine, writeChunk, stream } = sessionStore.createLogWriter(sessionMeta.id);
   let headerAugmented = false;
+  const answerChunks: string[] = [];
   const combinedLog = (message = ""): void => {
     if (!headerAugmented && message.startsWith("oracle (")) {
       headerAugmented = true;
-      if (showReattachHint) {
+      if (showReattachHint && !jsonMode) {
         console.log(`${message}\n${chalk.blue(`Reattach via: oracle session ${sessionMeta.id}`)}`);
-      } else {
+      } else if (!jsonMode) {
         console.log(message);
       }
       logLine(message);
       return;
     }
-    console.log(message);
+    if (!jsonMode) {
+      console.log(message);
+    }
     logLine(message);
   };
   const combinedWrite = (chunk: string): boolean => {
     // runOracle handles stdout; keep this write hook for session logs only to avoid double-printing
     writeChunk(chunk);
+    if (jsonMode) {
+      answerChunks.push(chunk);
+    }
     return true;
   };
-  for (const line of formatSessionLifecycleBlock(sessionMeta)) {
-    console.log(line);
-    logLine(line);
+  if (!jsonMode) {
+    for (const line of formatSessionLifecycleBlock(sessionMeta)) {
+      console.log(line);
+      logLine(line);
+    }
+  } else {
+    for (const line of formatSessionLifecycleBlock(sessionMeta)) {
+      logLine(line);
+    }
   }
+  let latest: SessionMetadata | null = null;
   try {
     const { performSessionRun } = await import("../src/cli/sessionRunner.js");
     await performSessionRun({
@@ -3216,9 +3239,10 @@ async function runInteractiveSession(
         notifications ??
         deriveNotificationSettingsFromMetadata(sessionMeta, process.env, userConfig?.notify),
       browserDeps,
+      muteStdout: jsonMode,
     });
-    const latest = await sessionStore.readSession(sessionMeta.id);
-    if (!suppressSummary) {
+    latest = await sessionStore.readSession(sessionMeta.id);
+    if (!suppressSummary && !jsonMode) {
       const { formatCompletionSummary } = await import("../src/cli/sessionDisplay.js");
       const summary = latest ? formatCompletionSummary(latest, { includeSlug: true }) : null;
       if (summary) {
@@ -3228,6 +3252,20 @@ async function runInteractiveSession(
     }
   } finally {
     stream.end();
+  }
+  if (jsonMode) {
+    process.stdout.write(
+      stableJsonStringify(
+        buildTopLevelCliSuccessEnvelope({
+          answer: answerChunks.join(""),
+          model: latest?.model ?? runOptions.model ?? null,
+          sessionId: sessionMeta.id,
+          usage: latest?.usage ?? null,
+          elapsedMs: latest?.elapsedMs ?? null,
+          command: "oracle",
+        }),
+      ),
+    );
   }
 }
 

@@ -15,6 +15,66 @@ export interface TopLevelCliErrorEnvelope extends JsonEnvelope {
   };
 }
 
+export interface TopLevelCliSuccessEnvelope extends JsonEnvelope {
+  status: "success";
+  data: {
+    answer: string;
+    model: string | null;
+    session_id: string;
+    usage: Record<string, unknown> | null;
+    elapsed_ms: number | null;
+  };
+}
+
+export interface BuildTopLevelCliSuccessEnvelopeInput {
+  answer: string;
+  model: string | null;
+  sessionId: string;
+  usage?: Record<string, unknown> | null;
+  elapsedMs?: number | null;
+  command: string;
+  generatedAt?: string;
+}
+
+/**
+ * Mirrors {@link buildTopLevelCliErrorEnvelope}'s json_envelope.v1 shape for the
+ * success path, so `oracle --json` produces a structurally symmetric envelope
+ * regardless of whether the run succeeded or failed.
+ */
+export function buildTopLevelCliSuccessEnvelope({
+  answer,
+  model,
+  sessionId,
+  usage = null,
+  elapsedMs = null,
+  command,
+  generatedAt = new Date().toISOString(),
+}: BuildTopLevelCliSuccessEnvelopeInput): TopLevelCliSuccessEnvelope {
+  return {
+    schema_version: JSON_ENVELOPE_SCHEMA_VERSION,
+    ok: true,
+    status: "success",
+    data: {
+      answer,
+      model,
+      session_id: sessionId,
+      usage,
+      elapsed_ms: elapsedMs,
+    },
+    meta: {
+      command,
+      generated_at: generatedAt,
+    },
+    blocked_reason: null,
+    next_command: null,
+    fix_command: null,
+    retry_safe: true,
+    errors: [],
+    warnings: [],
+    commands: {},
+  };
+}
+
 export interface BuildTopLevelCliErrorEnvelopeInput {
   error: unknown;
   command: string;
