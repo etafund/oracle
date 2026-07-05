@@ -31,6 +31,7 @@ import { CHATGPT_URL } from "../browser/constants.js";
 import { getCliVersion, getOracleBuildInfo, type OracleBuildInfo } from "../version.js";
 import { getOracleHomeDir } from "../oracleHome.js";
 import {
+  findRunningChromeDebugTargetForProfile,
   isProcessAlive,
   readChromePid,
   readDevToolsPort,
@@ -213,6 +214,9 @@ export async function probeAttachTarget(params: {
   profileDir?: string;
   fixedPort?: number;
   probe?: typeof verifyDevToolsReachable;
+  /** Test seam: override the ps-based process-identity fallback used on the
+   * attach path (see `checkAttachTargetOwner`) instead of shelling out. */
+  findRunningTarget?: typeof findRunningChromeDebugTargetForProfile;
 }): Promise<AttachTargetProbe> {
   const probedAt = new Date().toISOString();
   const probe = params.probe ?? verifyDevToolsReachable;
@@ -246,7 +250,11 @@ export async function probeAttachTarget(params: {
       probedAt,
     };
   }
-  const ownerOk = await checkAttachTargetOwner(params.profileDir, port);
+  const ownerOk = await checkAttachTargetOwner(
+    params.profileDir,
+    port,
+    params.findRunningTarget,
+  );
   if (ownerOk === false) {
     return {
       ok: false,
@@ -265,15 +273,21 @@ export async function probeAttachTarget(params: {
  * recorded for this profile (split-brain / rogue-listener defense):
  * - the profile's recorded DevToolsActivePort must agree with the probed
  *   port when both exist;
- * - the recorded owner pid must still be alive, and (on Linux) its command
- *   line must reference this profile directory.
- * Returns null when ownership cannot be established (no recorded state, or
- * platform without readable process info) — callers decide policy; a
- * definitive false always means "do not attach".
+ * - a recorded chrome.pid must still be alive, and (on Linux) its command
+ *   line must reference this profile directory; when no chrome.pid was
+ *   recorded (the attach-only topology never writes one — see
+ *   oracle-router-t38), fall back to a live `ps`-based process-table lookup
+ *   keyed on this profile's --user-data-dir so the check has a real signal
+ *   to evaluate on that path too, instead of only ever seeing "unknown".
+ * Returns null ("unverified") when ownership cannot be established (no
+ * recorded state, no matching running process, or platform without
+ * readable process info) — callers must treat this as distinct from a
+ * confirmed match; a definitive false always means "do not attach".
  */
 async function checkAttachTargetOwner(
   profileDir: string | undefined,
   port: number,
+  findRunningTarget: typeof findRunningChromeDebugTargetForProfile = findRunningChromeDebugTargetForProfile,
 ): Promise<boolean | null> {
   if (!profileDir) {
     return null;
@@ -284,20 +298,41 @@ async function checkAttachTargetOwner(
       return false;
     }
     const pid = await readChromePid(profileDir).catch(() => null);
-    if (pid === null) {
+    if (pid !== null) {
+      if (!isProcessAlive(pid)) {
+        return false;
+      }
+      if (process.platform === "linux") {
+        const cmdline = await readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => null);
+        if (cmdline === null) {
+          return null;
+        }
+        return cmdline.includes(profileDir);
+      }
       return null;
     }
-    if (!isProcessAlive(pid)) {
+    // Attach-only topology: nothing (yet) writes chrome.pid for the
+    // operator-launched Chrome this worker attaches to, so the owner check
+    // would otherwise always resolve "unknown" here and never be able to
+    // fire (oracle-router-t38: a structurally inert discriminator is worse
+    // than none, because it reads as verified when it never ran). Fall back
+    // to a live process-table lookup keyed on this profile's
+    // --user-data-dir so attach-only workers get a real identity signal
+    // too, not just port+reachability. `findRunningTarget` already confirms
+    // the command line references both a chrome/chromium binary and this
+    // profile's user-data-dir, so a port match plus a final liveness check
+    // is sufficient here (no redundant /proc/cmdline re-check needed).
+    const discovered = await findRunningTarget(profileDir).catch(() => null);
+    if (discovered === null) {
+      return null;
+    }
+    if (discovered.port !== port) {
+      // A Chrome process for this profile exists, but not on the port we
+      // probed: something else is answering on our attach port. That is
+      // exactly the split-brain shape this check exists to catch.
       return false;
     }
-    if (process.platform === "linux") {
-      const cmdline = await readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => null);
-      if (cmdline === null) {
-        return null;
-      }
-      return cmdline.includes(profileDir);
-    }
-    return null;
+    return isProcessAlive(discovered.pid);
   } catch {
     return null;
   }
@@ -345,6 +380,7 @@ export async function createRemoteServer(
     options.devtoolsPort ?? parsePositiveIntEnv(process.env.ORACLE_SERVE_DEVTOOLS_PORT);
   let lastAttachProbe: AttachTargetProbe | null = null;
   let lastAttachProbeAtMs = 0;
+  let lastLoggedOwnerOk: boolean | null | "unset" = "unset";
   const probeAttachTargetCached = async (): Promise<AttachTargetProbe> => {
     if (lastAttachProbe && Date.now() - lastAttachProbeAtMs < 2_000) {
       return lastAttachProbe;
@@ -354,6 +390,21 @@ export async function createRemoteServer(
       fixedPort: attachDevtoolsPort,
     });
     lastAttachProbeAtMs = Date.now();
+    // Surface owner-identity state on transitions rather than staying
+    // silent: `ownerOk: null` ("unverified") must never read as "verified" —
+    // log it distinctly from both true and false so an operator watching
+    // logs can tell the split-brain discriminator is actually unresolved,
+    // not passing.
+    if (lastAttachProbe.ok && lastAttachProbe.ownerOk !== lastLoggedOwnerOk) {
+      if (lastAttachProbe.ownerOk === null) {
+        logger(
+          "[serve] Attach target owner identity UNVERIFIED (no chrome.pid and no matching process found for this profile); relying on port+reachability only.",
+        );
+      } else if (lastAttachProbe.ownerOk === true) {
+        logger("[serve] Attach target owner identity verified.");
+      }
+      lastLoggedOwnerOk = lastAttachProbe.ownerOk;
+    }
     return lastAttachProbe;
   };
 
