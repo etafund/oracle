@@ -1909,6 +1909,20 @@ function validateApiProviderRoutingForCli(runOptions: RunOracleOptions): void {
   }
 }
 
+export function warnGeminiIgnoredThinkingTime(
+  model: string,
+  thinkingTime: BrowserSessionConfig["thinkingTime"],
+  logFn: (message: string) => void = console.log,
+): void {
+  if (model.startsWith("gemini") && thinkingTime) {
+    logFn(
+      chalk.dim(
+        "Browser thinking-time is ignored for Gemini web runs (no lighter-mode control exists for Deep Think).",
+      ),
+    );
+  }
+}
+
 export function enforceBrowserSearchFlag(
   runOptions: RunOracleOptions,
   sessionMode: SessionMode,
@@ -2964,6 +2978,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     if (browserConfig.modelStrategy && browserConfig.modelStrategy !== "select") {
       console.log(chalk.dim("Browser model strategy is ignored for Gemini web runs."));
     }
+    warnGeminiIgnoredThinkingTime(activeModel, browserConfig.thinkingTime);
   }
   const remoteExecutionActive = Boolean(browserDeps);
 
@@ -3387,6 +3402,7 @@ async function restartSession(sessionId: string, options: RestartCommandOptions)
     if (browserConfig.modelStrategy && browserConfig.modelStrategy !== "select") {
       console.log(chalk.dim("Browser model strategy is ignored for Gemini web runs."));
     }
+    warnGeminiIgnoredThinkingTime(runOptions.model, browserConfig.thinkingTime);
   }
   const remoteExecutionActive = Boolean(browserDeps);
 

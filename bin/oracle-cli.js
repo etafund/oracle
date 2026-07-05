@@ -51,6 +51,7 @@ try {
 }
 
 export const enforceBrowserSearchFlag = tsModule.enforceBrowserSearchFlag;
+export const warnGeminiIgnoredThinkingTime = tsModule.warnGeminiIgnoredThinkingTime;
 
 // ─── Script-invocation mode: spawn the .ts entrypoint via tsx ───────────────
 
