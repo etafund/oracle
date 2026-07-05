@@ -155,4 +155,50 @@ describe("provider doctor json_envelope.v1 output", () => {
       },
     });
   });
+
+  test("error-teaches: gemini's default auth-missing check names the exact env-var fix", async () => {
+    // Axiom 6 (error-teaches): pins the CORE `doctor gemini` surface's
+    // default (non-mocked) auth probe, which must name the exact
+    // copy-pasteable fix (`export GEMINI_API_KEY=<key>`), not just say
+    // "auth missing".
+    const output: string[] = [];
+
+    await runGeminiDoctor(
+      {
+        json: true,
+        sessionStore: store("gemini"),
+        env: {},
+        uiProbe: async () => ({ status: "skipped" }),
+      },
+      { stdout: (text) => output.push(text) },
+    );
+
+    const envelope = jsonEnvelopeStrictSchema.parse(JSON.parse(output[0]));
+    expect(envelope.blocked_reason).toBe("provider_login_required");
+    expect(envelope.fix_command).toBe("export GEMINI_API_KEY=<key>");
+    expect(envelope.errors[0]).toMatchObject({
+      message: "Gemini auth was not found. Set GEMINI_API_KEY or sign in to gemini.google.com.",
+    });
+  });
+
+  test("error-teaches: chatgpt's login-required check names the exact sign-in fix", async () => {
+    // Same axiom, `doctor chatgpt` surface: a login_required UI probe must
+    // resolve to a concrete fix_command, not just a status code.
+    const output: string[] = [];
+
+    await runChatGptDoctor(
+      {
+        json: true,
+        sessionStore: store("chatgpt"),
+        cookieSyncProbe: passProbe("cookie_sync_ok"),
+        cookieBackendProbe: passProbe("cookie_backend_ok"),
+        uiProbe: async () => ({ status: "login_required" }),
+      },
+      { stdout: (text) => output.push(text) },
+    );
+
+    const envelope = jsonEnvelopeStrictSchema.parse(JSON.parse(output[0]));
+    expect(envelope.blocked_reason).toBe("provider_login_required");
+    expect(envelope.fix_command).toBe("Sign in to chatgpt.com in Chrome.");
+  });
 });

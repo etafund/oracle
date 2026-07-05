@@ -134,7 +134,9 @@ describe("handleSessionCommand", () => {
 
     await handleSessionCommand(undefined, command, createDeps());
 
-    expect(errorSpy).toHaveBeenCalledWith("The --path flag requires a session ID.");
+    expect(errorSpy).toHaveBeenCalledWith(
+      "The --path flag requires a session ID. Run: oracle session <sessionId> --path (find IDs via `oracle status --json`).",
+    );
     expect(process.exitCode).toBe(1);
   });
 
@@ -356,7 +358,9 @@ describe("handleSessionCommand", () => {
 
     await handleSessionCommand("abc", command, createDeps());
 
-    expect(errorSpy).toHaveBeenCalledWith("Cannot combine --harvest and --live. Choose one.");
+    expect(errorSpy).toHaveBeenCalledWith(
+      "Cannot combine --harvest and --live. Choose one: oracle session <sessionId> --harvest, or oracle session <sessionId> --live",
+    );
     expect(process.exitCode).toBe(1);
   });
 
@@ -371,7 +375,43 @@ describe("handleSessionCommand", () => {
 
     await handleSessionCommand("abc", command, createDeps());
 
-    expect(errorSpy).toHaveBeenCalledWith("The --write-output flag requires --harvest or --live.");
+    expect(errorSpy).toHaveBeenCalledWith(
+      "The --write-output flag requires --harvest or --live. Run: oracle session <sessionId> --harvest --write-output /tmp/out.md (or --live instead of --harvest)",
+    );
+    expect(process.exitCode).toBe(1);
+  });
+
+  test("errors when --harvest is provided without an id, naming the exact fix", async () => {
+    const command = createCommandWithOptions({
+      hours: 24,
+      limit: 10,
+      all: false,
+      harvest: true,
+    } as StatusOptions);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await handleSessionCommand(undefined, command, createDeps());
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      "The --harvest flag requires a session ID. Run: oracle session <sessionId> --harvest (find IDs via `oracle status --json`).",
+    );
+    expect(process.exitCode).toBe(1);
+  });
+
+  test("errors when --live is provided without an id, naming the exact fix", async () => {
+    const command = createCommandWithOptions({
+      hours: 24,
+      limit: 10,
+      all: false,
+      live: true,
+    } as StatusOptions);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await handleSessionCommand(undefined, command, createDeps());
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      "The --live flag requires a session ID. Run: oracle session <sessionId> --live (find IDs via `oracle status --json`).",
+    );
     expect(process.exitCode).toBe(1);
   });
 });

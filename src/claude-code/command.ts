@@ -138,7 +138,7 @@ function rejectRawPassThroughOptions(options: BuildClaudeCodeCommandOptions): vo
     if (Object.prototype.hasOwnProperty.call(optionRecord, key)) {
       throw new ClaudeCodeCommandError(
         "raw_claude_code_args_rejected",
-        `Claude Code local mode owns the full argv; raw pass-through option ${key} is not allowed.`,
+        `Claude Code local mode owns the full argv; raw pass-through option "${key}" is not allowed. Use the reviewed lane's own flags instead: oracle -p "<prompt>" --lane fable-local (run \`oracle doctor lanes --json\` to see exactly which argv it builds).`,
       );
     }
   }
@@ -149,13 +149,13 @@ function assertNoDangerousFlags(args: string[]): void {
     if (DANGEROUS_OR_OUT_OF_SCOPE_FLAGS.has(arg)) {
       throw new ClaudeCodeCommandError(
         "dangerous_claude_code_flag",
-        `Claude Code command builder emitted blocked flag ${arg}.`,
+        `Claude Code command builder emitted blocked flag "${arg}" (internal invariant violation, not a user-fixable input). Please report this as an Oracle bug; do not retry with --dangerously-skip-permissions or similar bypass flags — those stay refused.`,
       );
     }
     if (arg === "bypassPermissions") {
       throw new ClaudeCodeCommandError(
         "dangerous_claude_code_permission_mode",
-        "Claude Code command builder must not emit permission-mode bypassPermissions.",
+        'Claude Code command builder must not emit permission-mode bypassPermissions (internal invariant violation, not a user-fixable input). Please report this as an Oracle bug; fable-local always runs read-only "plan" permission mode.',
       );
     }
   }

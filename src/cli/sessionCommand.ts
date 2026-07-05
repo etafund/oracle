@@ -129,7 +129,7 @@ export async function handleSessionCommand(
   if (clearRequested) {
     if (sessionId) {
       console.error(
-        "Cannot combine a session ID with --clear. Remove the ID to delete cached sessions.",
+        `Cannot combine a session ID with --clear. Drop the ID: oracle session --clear --hours ${sessionOptions.hours}`,
       );
       process.exitCode = 1;
       return;
@@ -150,7 +150,9 @@ export async function handleSessionCommand(
   }
   if (pathRequested) {
     if (!sessionId) {
-      console.error("The --path flag requires a session ID.");
+      console.error(
+        "The --path flag requires a session ID. Run: oracle session <sessionId> --path (find IDs via `oracle status --json`).",
+      );
       process.exitCode = 1;
       return;
     }
@@ -195,18 +197,25 @@ export async function handleSessionCommand(
   const harvestRequested = Boolean(sessionOptions.harvest);
   const liveRequested = Boolean(sessionOptions.live);
   if (harvestRequested && liveRequested) {
-    console.error("Cannot combine --harvest and --live. Choose one.");
+    console.error(
+      "Cannot combine --harvest and --live. Choose one: oracle session <sessionId> --harvest, or oracle session <sessionId> --live",
+    );
     process.exitCode = 1;
     return;
   }
   if (writeOutputPath && !harvestRequested && !liveRequested) {
-    console.error("The --write-output flag requires --harvest or --live.");
+    console.error(
+      `The --write-output flag requires --harvest or --live. Run: oracle session <sessionId> --harvest --write-output ${writeOutputPath} (or --live instead of --harvest)`,
+    );
     process.exitCode = 1;
     return;
   }
   if (harvestRequested || liveRequested) {
     if (!sessionId) {
-      console.error(`The ${harvestRequested ? "--harvest" : "--live"} flag requires a session ID.`);
+      const flag = harvestRequested ? "--harvest" : "--live";
+      console.error(
+        `The ${flag} flag requires a session ID. Run: oracle session <sessionId> ${flag} (find IDs via \`oracle status --json\`).`,
+      );
       process.exitCode = 1;
       return;
     }

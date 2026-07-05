@@ -513,7 +513,13 @@ describe("performSessionRun", () => {
               write,
               version: cliVersion,
             }),
-          ).rejects.toThrow(/already running in session busy-session/);
+            // Error-teaches (Axiom 6): names what failed (busy lock, which
+            // session), and offers all three exact fixes — wait
+            // automatically, inspect the running session, or remove a
+            // confirmed-stale lock — not just a bare "busy" message.
+          ).rejects.toThrow(
+            /already running in session busy-session.*--wait-for-lock 5m.*oracle session busy-session --render.*rm "/s,
+          );
         },
       );
 

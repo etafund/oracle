@@ -469,7 +469,9 @@ program.hook("preAction", async (thisCommand) => {
   }
   if (shouldRequirePrompt(routingCliArgs, opts)) {
     console.log(
-      chalk.yellow('Prompt is required. Provide it via --prompt "<text>" or positional [prompt].'),
+      chalk.yellow(
+        'Prompt is required. Provide it via --prompt "<text>" or positional [prompt], e.g.: oracle -p "<prompt>" --lane fable-local',
+      ),
     );
     thisCommand.help({ error: true });
     return;
@@ -1488,7 +1490,7 @@ program
     if (statusOptions.browserTabs) {
       if (sessionId) {
         console.error(
-          "Cannot combine a session ID with --browser-tabs. Remove the ID to inspect live browser tabs.",
+          "Cannot combine a session ID with --browser-tabs. Drop the ID: oracle status --browser-tabs",
         );
         process.exitCode = 1;
         return;
@@ -1501,7 +1503,7 @@ program
     if (clearRequested) {
       if (sessionId) {
         console.error(
-          "Cannot combine a session ID with --clear. Remove the ID to delete cached sessions.",
+          `Cannot combine a session ID with --clear. Drop the ID: oracle status --clear --hours ${statusOptions.hours}`,
         );
         process.exitCode = 1;
         return;
@@ -3195,14 +3197,22 @@ async function runFollowUpCommand(
 async function restartSession(sessionId: string, options: RestartCommandOptions): Promise<void> {
   const metadata = await sessionStore.readSession(sessionId);
   if (!metadata) {
-    console.error(chalk.red(`No session found with ID ${sessionId}`));
+    console.error(
+      chalk.red(
+        `No session found with ID ${sessionId}. List valid IDs with: oracle status --json`,
+      ),
+    );
     process.exitCode = 1;
     return;
   }
 
   const runOptions = buildRunOptionsFromMetadata(metadata);
   if (!runOptions.prompt) {
-    console.error(chalk.red(`Session ${sessionId} has no stored prompt; cannot restart.`));
+    console.error(
+      chalk.red(
+        `Session ${sessionId} has no stored prompt; cannot restart. Start a fresh run instead: oracle -p "<prompt>" --lane fable-local`,
+      ),
+    );
     process.exitCode = 1;
     return;
   }
@@ -3211,7 +3221,11 @@ async function restartSession(sessionId: string, options: RestartCommandOptions)
   const engine: EngineMode = sessionMode === "browser" ? "browser" : "api";
   const browserConfig = getBrowserConfigFromMetadata(metadata);
   if (sessionMode === "browser" && !browserConfig) {
-    console.error(chalk.red(`Session ${sessionId} is missing browser config; cannot restart.`));
+    console.error(
+      chalk.red(
+        `Session ${sessionId} is missing browser config; cannot restart. Start a fresh run instead: oracle -p "<prompt>" --lane chatgpt-pro (or --lane gemini-deep-think)`,
+      ),
+    );
     process.exitCode = 1;
     return;
   }

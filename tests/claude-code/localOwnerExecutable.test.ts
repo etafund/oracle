@@ -443,3 +443,100 @@ describe("Claude Code executable resolver — native-installer symlink layout", 
     ).rejects.toHaveProperty("reason", "claude_executable_world_writable_component");
   });
 });
+
+describe("error-teaches: guard errors name the exact fix command", () => {
+  // Agent-ergonomics Axiom 6 (error-teaches): every guard error here must
+  // name what failed, where, and the exact copy-pasteable corrected
+  // command/flag — not just a bare reason code. These pin the message
+  // content (not just `.reason`) so a future edit can't silently regress
+  // back to a vague message.
+  test("running as root names the exact non-root retry command", async () => {
+    await expect(
+      assertClaudeCodeLocalOwner({
+        oracleHome: "/safe/oracle",
+        uid: 0,
+        platform: "linux",
+        fsModule: safeFs(),
+        env: {},
+      }),
+    ).rejects.toThrow(/--lane fable-local/);
+  });
+
+  test("remote/network transport names the two browser-lane alternatives", async () => {
+    await expect(
+      assertClaudeCodeLocalOwner({
+        oracleHome: "/safe/oracle",
+        uid: 1000,
+        platform: "linux",
+        fsModule: safeFs(),
+        env: {},
+        transport: "network",
+      }),
+    ).rejects.toThrow(/--lane chatgpt-pro.*--lane gemini-deep-think/s);
+  });
+
+  test("world-writable oracle_home names the exact chmod fix", async () => {
+    const worldWritable = safeFs().add("/safe/oracle", { type: "dir", mode: 0o777, uid: 1000 });
+    await expect(
+      assertClaudeCodeLocalOwner({
+        oracleHome: "/safe/oracle",
+        uid: 1000,
+        platform: "linux",
+        fsModule: worldWritable,
+        env: {},
+      }),
+    ).rejects.toThrow(/chmod o-w "\/safe\/oracle"/);
+  });
+
+  test("unsafe symlink names the exact path and refuses silently guessing", async () => {
+    const symlinked = safeFs()
+      .add("/safe/link", { type: "symlink", mode: 0o777, uid: 1000, realpath: "/safe/oracle" })
+      .add("/safe/link/session", { type: "dir", mode: 0o700, uid: 1000 });
+    await expect(
+      assertClaudeCodeLocalOwner({
+        oracleHome: "/safe/link",
+        uid: 1000,
+        platform: "linux",
+        fsModule: symlinked,
+        env: {},
+      }),
+    ).rejects.toThrow(/is a symlink, which fable-local refuses to follow/);
+  });
+
+  test("relative executable path names an absolute-path fix with ORACLE_CLAUDE_CODE_EXECUTABLE", async () => {
+    await expect(
+      resolveClaudeExecutable({ executable: "bin/claude", fsModule: safeFs() }),
+    ).rejects.toThrow(/ORACLE_CLAUDE_CODE_EXECUTABLE=\/usr\/local\/bin\/claude/);
+  });
+
+  test("inside-reviewed-repo executable names the exact fix", async () => {
+    await expect(
+      resolveClaudeExecutable({
+        executable: "/repo/claude",
+        repoRoot: "/repo",
+        uid: 1000,
+        fsModule: safeFs(),
+      }),
+    ).rejects.toThrow(/ORACLE_CLAUDE_CODE_EXECUTABLE/);
+  });
+
+  test("foreign-owned executable names the exact chown fix", async () => {
+    const foreignOwnedTarget = safeFs()
+      .add("/safe/bin/claude", {
+        type: "symlink",
+        mode: 0o777,
+        uid: 1000,
+        realpath: "/safe/versions/2.1.201",
+      })
+      .add("/safe/versions", { type: "dir", mode: 0o755, uid: 1000 })
+      .add("/safe/versions/2.1.201", { type: "file", mode: 0o755, uid: 4242 });
+    await expect(
+      resolveClaudeExecutable({
+        executable: "/safe/bin/claude",
+        repoRoot: "/repo",
+        uid: 1000,
+        fsModule: foreignOwnedTarget,
+      }),
+    ).rejects.toThrow(/chown \$\(whoami\)/);
+  });
+});

@@ -148,4 +148,12 @@ describe("Claude Code command builder", () => {
       } as unknown as Parameters<typeof buildClaudeCodeCommand>[0]),
     ).toThrow(/raw pass-through/);
   });
+
+  test("error-teaches: raw pass-through rejection names the exact reviewed-lane fix", () => {
+    expect(() =>
+      buildClaudeCodeCommand({ extraArgs: ["--bare"] } as unknown as Parameters<
+        typeof buildClaudeCodeCommand
+      >[0]),
+    ).toThrow(/oracle -p "<prompt>" --lane fable-local/);
+  });
 });

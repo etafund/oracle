@@ -114,7 +114,10 @@ export async function resolveHardenedExecutable(
     env[options.envVarName]?.trim() ||
     options.defaultCommand;
   if (!requested) {
-    throw options.makeError("empty_executable");
+    throw options.makeError(
+      "empty_executable",
+      `No "${options.defaultCommand}" executable was resolved (the requested path was empty). Set ${options.envVarName}=/path/to/${options.defaultCommand}, or install \`${options.defaultCommand}\` so it is on PATH.`,
+    );
   }
 
   const candidates = path.isAbsolute(requested)
@@ -143,7 +146,10 @@ export async function resolveHardenedExecutable(
   throw options.makeError("not_found", options.notFoundMessage);
 
   function failRelativePath(): never {
-    throw options.makeError("relative_path");
+    throw options.makeError(
+      "relative_path",
+      `"${requested}" is a relative path, which is refused. Pass an absolute path (e.g. ${options.envVarName}=/usr/local/bin/${options.defaultCommand}) or a bare command found on PATH.`,
+    );
   }
 }
 
@@ -184,10 +190,16 @@ async function verifyExecutable(
   }
 
   if (!stat.isFile()) {
-    throw options.makeError("not_file");
+    throw options.makeError(
+      "not_file",
+      `Resolved executable "${candidate}" is not a regular file. Point the executable override at the real binary (a file, not a directory).`,
+    );
   }
   if ((stat.mode & 0o111) === 0) {
-    throw options.makeError("not_executable");
+    throw options.makeError(
+      "not_executable",
+      `Resolved executable "${candidate}" is missing the executable bit (+x). Run: chmod +x "${candidate}"`,
+    );
   }
 
   // First pass: walk the requested (possibly-symlinked) candidate path.
@@ -218,11 +230,17 @@ async function verifyExecutable(
   await assertNoSymlinkOrWorldWritableComponents(real, options.fsModule, options.label);
 
   if (options.repoRoot && isInside(await options.fsModule.realpath(options.repoRoot), real)) {
-    throw options.makeError("inside_reviewed_repo");
+    throw options.makeError(
+      "inside_reviewed_repo",
+      `Resolved executable "${real}" lives inside the Oracle repo checkout itself, which fable-local refuses for safety. Install it outside this repo and point the executable override (e.g. ORACLE_CLAUDE_CODE_EXECUTABLE) at the external path.`,
+    );
   }
 
   if (options.uid !== undefined && stat.uid !== options.uid && stat.uid !== 0) {
-    throw options.makeError("not_owned_by_current_user_or_root");
+    throw options.makeError(
+      "not_owned_by_current_user_or_root",
+      `Resolved executable "${real}" is owned by a different, non-root user (uid mismatch), which fable-local refuses to trust. Reinstall it as your own user, or run: chown $(whoami) "${real}"`,
+    );
   }
 
   return {

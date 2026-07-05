@@ -149,6 +149,41 @@ describe("bin/oracle-cli preview and visibility routing", () => {
   });
 });
 
+describe("error-teaches: restart/status name the exact corrected command", () => {
+  // Agent-ergonomics Axiom 6 (error-teaches): a missing/invalid session ID
+  // must not just say "not found" — it must name the exact command an
+  // agent can run to find a valid ID or start over.
+  test("oracle restart <bogus-id> points at `oracle status --json` to find a valid ID", async () => {
+    await expect(runOracle(["restart", "definitely-not-a-real-session-id"])).rejects.toMatchObject(
+      {
+        stderr: expect.stringMatching(
+          /No session found with ID definitely-not-a-real-session-id\. List valid IDs with: oracle status --json/,
+        ),
+      },
+    );
+  });
+
+  test("oracle status <id> --clear names the exact fixed command (drop the ID)", async () => {
+    await expect(
+      runOracle(["status", "some-id", "--clear"]),
+    ).rejects.toMatchObject({
+      stderr: expect.stringMatching(
+        /Cannot combine a session ID with --clear\. Drop the ID: oracle status --clear --hours 24/,
+      ),
+    });
+  });
+
+  test("oracle status <id> --browser-tabs names the exact fixed command (drop the ID)", async () => {
+    await expect(
+      runOracle(["status", "some-id", "--browser-tabs"]),
+    ).rejects.toMatchObject({
+      stderr: expect.stringMatching(
+        /Cannot combine a session ID with --browser-tabs\. Drop the ID: oracle status --browser-tabs/,
+      ),
+    });
+  });
+});
+
 function parseJsonEnvelope(stdout: string): Record<string, unknown> {
   const start = stdout.indexOf("{");
   expect(start).toBeGreaterThanOrEqual(0);

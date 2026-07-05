@@ -1904,7 +1904,9 @@ async function tryAcquireClaudeCodeSingleFlightLock(
     }
   }
 
-  throw new Error(`Claude Code local mode could not acquire single-flight lock at ${lockPath}.`);
+  throw new Error(
+    `Claude Code local mode could not acquire the single-flight lock at "${lockPath}" after 2 attempts (likely racing another process cleaning up a stale lock). Retry the run, add --wait-for-lock 30s to wait automatically, or remove the lock manually once you've confirmed no Claude Code run is active: rm "${lockPath}"`,
+  );
 }
 
 async function readClaudeCodeSingleFlightLock(
@@ -1963,8 +1965,8 @@ function formatClaudeCodeLockBusyMessage(
   const sessionId = existing?.session_id ?? "unknown";
   return [
     `Claude Code local mode is already running in session ${sessionId}.`,
-    "Only one local subscription run is allowed at a time.",
-    `Wait for it to finish, inspect it with \`oracle session ${sessionId} --render\`, or remove stale lock ${lockPath} after confirming no Claude Code run is active.`,
+    "Only one local subscription run is allowed at a time (single-flight lock).",
+    `Fix — pick one: wait automatically with --wait-for-lock 5m, inspect the running session with \`oracle session ${sessionId} --render\`, or (only after confirming no Claude Code run is active) remove the stale lock: rm "${lockPath}"`,
   ].join("\n");
 }
 

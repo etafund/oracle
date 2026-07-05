@@ -90,7 +90,9 @@ export function collectTextValues(value: string, previous: string[] = []): strin
 export function parseFloatOption(value: string): number {
   const parsed = parseStrictNumber(value);
   if (parsed === undefined) {
-    throw new InvalidArgumentError("Value must be a number.");
+    throw new InvalidArgumentError(
+      `Value must be a number. Example: 24 or 1.5 (got ${JSON.stringify(value)}).`,
+    );
   }
   return parsed;
 }
@@ -101,7 +103,9 @@ export function parseIntOption(value: string | undefined): number | undefined {
   }
   const parsed = parseStrictInteger(value);
   if (parsed === undefined) {
-    throw new InvalidArgumentError("Value must be an integer.");
+    throw new InvalidArgumentError(
+      `Value must be an integer. Example: 100 (got ${JSON.stringify(value)}).`,
+    );
   }
   return parsed;
 }
@@ -112,7 +116,9 @@ export function parseHeartbeatOption(value: string | number | undefined): number
   }
   if (typeof value === "number") {
     if (Number.isNaN(value) || value < 0) {
-      throw new InvalidArgumentError("Heartbeat interval must be zero or a positive number.");
+      throw new InvalidArgumentError(
+        `Heartbeat interval must be zero or a positive number, e.g. 30 or "off" (got ${value}).`,
+      );
     }
     return value;
   }
@@ -125,7 +131,9 @@ export function parseHeartbeatOption(value: string | number | undefined): number
   }
   const parsed = parseStrictNumber(normalized);
   if (parsed === undefined || parsed < 0) {
-    throw new InvalidArgumentError("Heartbeat interval must be zero or a positive number.");
+    throw new InvalidArgumentError(
+      `Heartbeat interval must be zero or a positive number, e.g. 30 or "off" (got ${JSON.stringify(value)}).`,
+    );
   }
   return parsed;
 }

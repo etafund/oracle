@@ -52,17 +52,27 @@ export async function assertClaudeCodeLocalOwner(
 ): Promise<ClaudeCodeLocalOwnerResult> {
   const platform = options.platform ?? process.platform;
   if (platform !== "linux" && platform !== "darwin") {
-    throw new ClaudeCodeLocalOwnerError("unsupported_platform");
+    throw new ClaudeCodeLocalOwnerError(
+      "unsupported_platform",
+      `Claude Code lane (fable-local) only runs on linux or darwin; this host reports "${platform}". Use one of the browser lanes instead: oracle -p "<prompt>" --lane chatgpt-pro (or --lane gemini-deep-think).`,
+    );
   }
 
   const uid = options.uid ?? process.getuid?.();
   const env = options.env ?? process.env;
   if (uid === 0) {
-    throw new ClaudeCodeLocalOwnerError(env.SUDO_USER ? "sudo_root_context" : "running_as_root");
+    const viaSudo = Boolean(env.SUDO_USER);
+    throw new ClaudeCodeLocalOwnerError(
+      viaSudo ? "sudo_root_context" : "running_as_root",
+      `Claude Code lane refuses to run as root${viaSudo ? " (invoked via sudo)" : ""} — spawning \`claude\` as root would give the model root-owned file access. Re-run as a normal user, e.g.: su - ${env.SUDO_USER ?? "<user>"} -c 'oracle -p "<prompt>" --lane fable-local'`,
+    );
   }
 
   if (options.transport && options.transport !== "stdio" && options.transport !== "local-socket") {
-    throw new ClaudeCodeLocalOwnerError("remote_or_network_transport");
+    throw new ClaudeCodeLocalOwnerError(
+      "remote_or_network_transport",
+      `--lane fable-local only supports local stdio/local-socket transport (got "${options.transport}"). Drop --remote-host/--remote-chrome/--remote-browser, or use a remote-eligible lane: oracle -p "<prompt>" --lane chatgpt-pro (or --lane gemini-deep-think).`,
+    );
   }
 
   const warnings: string[] = [];
@@ -105,14 +115,24 @@ async function verifyOwnerPath(
   await assertNoSymlinkOrWorldWritableComponents(absolute, options.fsModule, label);
   const real = await options.fsModule.realpath(absolute);
   const stat = await options.fsModule.stat(real);
+  const envVarHint = label === "oracle_home" ? "ORACLE_HOME_DIR" : "the session directory";
   if (!stat.isDirectory()) {
-    throw new ClaudeCodeLocalOwnerError(`${label}_not_directory`);
+    throw new ClaudeCodeLocalOwnerError(
+      `${label}_not_directory`,
+      `Path "${real}" (${envVarHint}) is not a directory. Fix the path and re-run \`oracle doctor lanes --json\` to confirm.`,
+    );
   }
   if ((stat.mode & 0o002) !== 0) {
-    throw new ClaudeCodeLocalOwnerError(`${label}_world_writable`);
+    throw new ClaudeCodeLocalOwnerError(
+      `${label}_world_writable`,
+      `Path "${real}" (${envVarHint}) is world-writable, which fable-local refuses for safety. Run: chmod o-w "${real}"`,
+    );
   }
   if (options.requireOwner && options.uid !== undefined && stat.uid !== options.uid) {
-    throw new ClaudeCodeLocalOwnerError(`${label}_not_owned_by_current_user`);
+    throw new ClaudeCodeLocalOwnerError(
+      `${label}_not_owned_by_current_user`,
+      `Path "${real}" (${envVarHint}) is owned by a different user than the current process, which fable-local refuses to trust. Run: chown $(whoami) "${real}"   # or point ${envVarHint} elsewhere`,
+    );
   }
   return real;
 }
@@ -163,10 +183,16 @@ export async function assertNoSymlinkOrWorldWritableComponents(
         // check below too — the resolved real path gets the full check.
         continue;
       }
-      throw new ClaudeCodeLocalOwnerError(`${label}_unsafe_symlink`);
+      throw new ClaudeCodeLocalOwnerError(
+        `${label}_unsafe_symlink`,
+        `Path component "${current}" (part of "${absolutePath}") is a symlink, which fable-local refuses to follow here for safety. Replace it with a real file/directory, or point the relevant setting (ORACLE_HOME_DIR / ORACLE_CLAUDE_CODE_EXECUTABLE) directly at the fully-resolved real path.`,
+      );
     }
     if ((stat.mode & 0o002) !== 0) {
-      throw new ClaudeCodeLocalOwnerError(`${label}_world_writable_component`);
+      throw new ClaudeCodeLocalOwnerError(
+        `${label}_world_writable_component`,
+        `Path component "${current}" (part of "${absolutePath}") is world-writable, which fable-local refuses for safety. Run: chmod o-w "${current}"`,
+      );
     }
   }
 }
