@@ -158,6 +158,26 @@ function isUnknownJsonFlagRejection(stderr: string): boolean {
   return /unknown (flag|shorthand flag)/i.test(stderr) && /json/i.test(stderr);
 }
 
+/**
+ * Validates that plain-text `--print-env` stdout actually matches the
+ * documented contract — one `KEY=VALUE` env-assignment per non-blank line —
+ * rather than being merely non-empty. A caam build that prints any other
+ * informational text (a deprecation notice, help text, a garbled partial
+ * output, ...) while still exiting 0 must NOT be read as a healthy verdict:
+ * the same fail-closed discipline the JSON path applies to an unrecognized
+ * `success` shape.
+ */
+function isEnvAssignmentOutput(stdout: string): boolean {
+  const lines = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length === 0) {
+    return false;
+  }
+  return lines.every((line) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(line));
+}
+
 export async function runCaamShallowProfileDoctor(
   caamExecutablePath: string,
   profile: string,
@@ -227,7 +247,16 @@ export async function runCaamShallowProfileDoctor(
   );
 
   if (plainOutcome.code === 0 && plainOutcome.stdout.trim().length > 0) {
-    return { healthy: true, raw: { plainTextOutput: plainOutcome.stdout } };
+    if (isEnvAssignmentOutput(plainOutcome.stdout)) {
+      return { healthy: true, raw: { plainTextOutput: plainOutcome.stdout } };
+    }
+    // Exited 0 with output, but not the documented env-assignment shape.
+    // An unrecognized shape isn't a verified pass — fail closed, same as
+    // the JSON path does for an unrecognized "success" shape.
+    throw new CaamShallowProfileDoctorError(
+      `caam shallow-spawn ${profile} --print-env exited 0 but its stdout does not match the expected KEY=VALUE env-assignment output.`,
+      { stdout: plainOutcome.stdout, stderr: plainOutcome.stderr },
+    );
   }
 
   throw new CaamShallowProfileDoctorError(

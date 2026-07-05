@@ -117,6 +117,31 @@ describe("caam shallow-spawn --print-env pre-flight (caam-map.md §4c)", () => {
     expect(calls).toHaveLength(2);
   });
 
+  test("CLI drift: fails closed (not assumed healthy) when plain-text `--print-env` exits 0 with non-env-assignment stdout", async () => {
+    const { impl, calls } = fakeExecFileSequence([
+      { exitCode: 1, stdout: "", stderr: UNKNOWN_JSON_FLAG_STDERR },
+      // Exit 0 with non-empty stdout, but it's an informational notice, not
+      // the documented KEY=VALUE env-assignment output.
+      { stdout: "warning: shallow-spawn is deprecated; see caam docs\n" },
+    ]);
+
+    await expect(
+      runCaamShallowProfileDoctor("/opt/caam", "arthur", { execFileImpl: impl }),
+    ).rejects.toThrow(/does not match the expected KEY=VALUE/);
+    expect(calls).toHaveLength(2);
+  });
+
+  test("CLI drift: fails closed when plain-text stdout mixes env assignments with unexpected non-assignment lines", async () => {
+    const { impl } = fakeExecFileSequence([
+      { exitCode: 1, stdout: "", stderr: UNKNOWN_JSON_FLAG_STDERR },
+      { stdout: "note: profile schema will change in v3\nHOME=/orch-homes/arthur\nSHALLOW_PROFILE=arthur\n" },
+    ]);
+
+    await expect(
+      runCaamShallowProfileDoctor("/opt/caam", "arthur", { execFileImpl: impl }),
+    ).rejects.toThrow(CaamShallowProfileDoctorError);
+  });
+
   test("fails closed when the command itself fails to run (binary missing / ENOENT) — no retry", async () => {
     const { impl, calls } = fakeExecFileSequence([
       { spawnError: Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" }) },
