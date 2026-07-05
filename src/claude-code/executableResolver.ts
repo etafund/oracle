@@ -1,6 +1,5 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { Stats } from "node:fs";
 
 import {
   assertNoSymlinkOrWorldWritableComponents,
@@ -179,9 +178,8 @@ async function verifyExecutable(
     label: string;
   },
 ): Promise<ResolvedClaudeExecutable> {
-  let stat: Stats;
   try {
-    stat = await options.fsModule.stat(candidate);
+    await options.fsModule.stat(candidate);
     await options.fsModule.access(candidate, X_OK);
   } catch (error) {
     const wrapped = options.makeError("not_found");
@@ -189,18 +187,22 @@ async function verifyExecutable(
     throw wrapped;
   }
 
-  if (!stat.isFile()) {
-    throw options.makeError(
-      "not_file",
-      `Resolved executable "${candidate}" is not a regular file. Point the executable override at the real binary (a file, not a directory).`,
-    );
-  }
-  if ((stat.mode & 0o111) === 0) {
-    throw options.makeError(
-      "not_executable",
-      `Resolved executable "${candidate}" is missing the executable bit (+x). Run: chmod +x "${candidate}"`,
-    );
-  }
+  // NOTE: the stat/access pair above only establishes that *something*
+  // executable exists at `candidate` right now, so the PATH-search loop
+  // above can tell "this candidate doesn't exist, try the next one" apart
+  // from a real hardening failure. Its result is deliberately DISCARDED —
+  // every is-file/executable-bit/ownership decision below is made against
+  // `realStat` (stat'd from the fully resolved `real` path, further down),
+  // never against this early, pre-resolution stat. Validating against the
+  // pre-resolution stat and only *spawning* the later-resolved `real` path
+  // is exactly the TOCTOU gap this function used to have: an attacker who
+  // can rewrite the (allowed) trailing symlink could point it at a
+  // legitimate, current-user-owned binary just long enough for this early
+  // check to pass, then swap it to their own binary before `realpath`
+  // resolved it — the ownership check would then pass with a stale-but-legit
+  // uid while an unvalidated binary got returned for spawning. Mirrors
+  // localOwnerGuard.ts's `verifyOwnerPath`, which stats `real` (never the
+  // pre-resolution candidate) for exactly this reason.
 
   // First pass: walk the requested (possibly-symlinked) candidate path.
   // Every PARENT directory must still be a real, non-world-writable
@@ -227,6 +229,28 @@ async function verifyExecutable(
   // lock) MUST re-run `resolveClaudeExecutable` against `real` immediately
   // before spawning — see `sessionRunner.ts`.
   const real = await options.fsModule.realpath(candidate);
+
+  // Stat the fully resolved, real target — NOT `candidate` from before
+  // resolution — and validate everything below against `realStat`. This is
+  // the binary that actually gets returned (and spawned by the caller), so
+  // it must be the one every is-file/executable-bit/ownership check is
+  // performed against; stating anything else reopens the symlink-swap
+  // TOCTOU this function exists to close.
+  const realStat = await options.fsModule.stat(real);
+
+  if (!realStat.isFile()) {
+    throw options.makeError(
+      "not_file",
+      `Resolved executable "${real}" is not a regular file. Point the executable override at the real binary (a file, not a directory).`,
+    );
+  }
+  if ((realStat.mode & 0o111) === 0) {
+    throw options.makeError(
+      "not_executable",
+      `Resolved executable "${real}" is missing the executable bit (+x). Run: chmod +x "${real}"`,
+    );
+  }
+
   await assertNoSymlinkOrWorldWritableComponents(real, options.fsModule, options.label);
 
   if (options.repoRoot && isInside(await options.fsModule.realpath(options.repoRoot), real)) {
@@ -236,7 +260,7 @@ async function verifyExecutable(
     );
   }
 
-  if (options.uid !== undefined && stat.uid !== options.uid && stat.uid !== 0) {
+  if (options.uid !== undefined && realStat.uid !== options.uid && realStat.uid !== 0) {
     throw options.makeError(
       "not_owned_by_current_user_or_root",
       `Resolved executable "${real}" is owned by a different, non-root user (uid mismatch), which fable-local refuses to trust. Reinstall it as your own user, or run: chown $(whoami) "${real}"`,
@@ -246,8 +270,8 @@ async function verifyExecutable(
   return {
     requested: options.requested,
     path: real,
-    ownerUid: stat.uid,
-    mode: stat.mode,
+    ownerUid: realStat.uid,
+    mode: realStat.mode,
   };
 }
 

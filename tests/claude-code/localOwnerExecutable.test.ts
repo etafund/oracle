@@ -540,3 +540,95 @@ describe("error-teaches: guard errors name the exact fix command", () => {
     ).rejects.toThrow(/chown \$\(whoami\)/);
   });
 });
+
+describe("Claude Code executable resolver — TOCTOU symlink-swap regression (oracle-router-oracle-newcode-1-oup)", () => {
+  // Regression for the bug where the ownership/is-file/executable-bit
+  // checks were performed against a `stat()` captured from `candidate`
+  // BEFORE `realpath()` resolved the (allowed) trailing symlink, while the
+  // path actually returned/spawned (`real`) came from realpath() called
+  // afterward. An attacker who can rewrite the trailing symlink could point
+  // it at a legitimate, current-user-owned binary just long enough for the
+  // early check to capture a passing stat, then swap it to their own
+  // binary before realpath() resolved — smuggling an unvalidated binary
+  // through with a stale-but-passing ownerUid. The fix stats the fully
+  // resolved `real` path and validates against THAT stat, so the swap is
+  // caught: the attacker's binary fails the ownership check on its own
+  // (foreign) uid, not the stale, legitimate one.
+  class SwapOnFirstStatFs extends FakeFs {
+    private calls = 0;
+
+    override async stat(targetPath: string) {
+      this.calls += 1;
+      const result = await super.stat(targetPath);
+      if (this.calls === 1) {
+        // Simulate the attacker rewriting the trailing symlink at the
+        // exact moment between this initial existence-check stat() and
+        // the later realpath()/stat(real) calls further down
+        // verifyExecutable().
+        this.add("/safe/bin/claude", {
+          type: "symlink",
+          mode: 0o777,
+          uid: 1000,
+          realpath: "/attacker/evil",
+        });
+      }
+      return result;
+    }
+  }
+
+  function swapFs(): SwapOnFirstStatFs {
+    return new SwapOnFirstStatFs()
+      .add("/", { type: "dir", mode: 0o755, uid: 0 })
+      .add("/safe", { type: "dir", mode: 0o755, uid: 1000 })
+      .add("/safe/bin", { type: "dir", mode: 0o755, uid: 1000 })
+      .add("/safe/bin/claude", {
+        type: "symlink",
+        mode: 0o777,
+        uid: 1000,
+        realpath: "/safe/versions/legit",
+      })
+      .add("/safe/versions", { type: "dir", mode: 0o755, uid: 1000 })
+      .add("/safe/versions/legit", { type: "file", mode: 0o755, uid: 1000 })
+      .add("/attacker", { type: "dir", mode: 0o755, uid: 4242 })
+      .add("/attacker/evil", { type: "file", mode: 0o755, uid: 4242 });
+  }
+
+  test("a trailing-symlink swap between the initial stat and realpath() is caught, not smuggled through", async () => {
+    const fsModule = swapFs();
+    await expect(
+      resolveClaudeExecutable({
+        executable: "/safe/bin/claude",
+        repoRoot: "/repo",
+        uid: 1000,
+        fsModule,
+      }),
+    ).rejects.toHaveProperty("reason", "not_owned_by_current_user_or_root");
+  });
+
+  test("sanity check: without the swap, the same layout resolves the legitimate target", async () => {
+    // Confirms the regression test's fixture is otherwise valid (i.e. the
+    // rejection above is caused by the swap, not by some unrelated fixture
+    // mistake) by resolving the identical layout through plain FakeFs
+    // (no swap-on-stat behavior).
+    const fsModule = new FakeFs()
+      .add("/", { type: "dir", mode: 0o755, uid: 0 })
+      .add("/safe", { type: "dir", mode: 0o755, uid: 1000 })
+      .add("/safe/bin", { type: "dir", mode: 0o755, uid: 1000 })
+      .add("/safe/bin/claude", {
+        type: "symlink",
+        mode: 0o777,
+        uid: 1000,
+        realpath: "/safe/versions/legit",
+      })
+      .add("/safe/versions", { type: "dir", mode: 0o755, uid: 1000 })
+      .add("/safe/versions/legit", { type: "file", mode: 0o755, uid: 1000 });
+    await expect(
+      resolveClaudeExecutable({
+        executable: "/safe/bin/claude",
+        repoRoot: "/repo",
+        uid: 1000,
+        fsModule,
+      }),
+    ).resolves.toMatchObject({ path: "/safe/versions/legit", ownerUid: 1000 });
+  });
+});
