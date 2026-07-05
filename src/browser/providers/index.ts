@@ -7,6 +7,8 @@ export {
   GeminiDeepThinkFsmError,
   GEMINI_DEEP_THINK_SELECTORS,
   wireGeminiDeepThinkFsm,
+  emitGeminiDeepThinkV18ArtifactsForRun,
   type WiredGeminiDeepThinkAdapter,
   type WireGeminiDeepThinkFsmOptions,
+  type EmitGeminiDeepThinkArtifactsInput,
 } from "./geminiDeepThinkDomProvider.js";

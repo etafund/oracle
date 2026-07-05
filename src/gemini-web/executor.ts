@@ -1,4 +1,5 @@
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import type {
   BrowserRunOptions,
   BrowserRunResult,
@@ -9,12 +10,17 @@ import { getCookies } from "@steipete/sweet-cookie";
 import { runProviderDomFlow } from "../browser/providerDomFlow.js";
 import { delay } from "../browser/utils.js";
 import { runGeminiWebWithFallback, saveFirstGeminiImageFromOutput } from "./client.js";
-import { geminiDeepThinkDomProviderWithFsm } from "../browser/providers/index.js";
+import {
+  geminiDeepThinkDomProviderWithFsm,
+  emitGeminiDeepThinkV18ArtifactsForRun,
+  type WiredGeminiDeepThinkAdapter,
+} from "../browser/providers/index.js";
 import { resolveGeminiWebModel, type GeminiWebModelId } from "./models.js";
 import type { GeminiWebOptions, GeminiWebResponse } from "./types.js";
 import { openGeminiBrowserSession } from "./browserSessionManager.js";
 import { selectGeminiExecutionMode } from "./executionMode.js";
 import type { IGeminiExecutionClient } from "./executionClients.js";
+import { buildGeminiStreamCaptureSummary, sha256OfGeminiText } from "./streamSafeguards.js";
 
 export class GeminiDeepThinkFallbackBlockedError extends Error {
   constructor(public readonly reasons: string[]) {
@@ -176,6 +182,7 @@ async function loadGeminiCookiesFromCDP(
 
 async function runGeminiDeepThinkViaBrowser(
   prompt: string,
+  wired: WiredGeminiDeepThinkAdapter,
   browserConfig: BrowserRunOptions["config"],
   log?: BrowserLogger,
 ): Promise<{ text: string; thoughts: string | null }> {
@@ -212,9 +219,10 @@ async function runGeminiDeepThinkViaBrowser(
 
     // Production path: wrap through the v18 verification FSM so the
     // adapter cannot call submitPrompt before Deep Think is verified
-    // in the same browser session (oracle-svt). A fresh wired adapter
-    // is built per run so each browser session owns its own FSM.
-    const domResult = await runProviderDomFlow(geminiDeepThinkDomProviderWithFsm(), {
+    // in the same browser session (oracle-svt). The caller owns the
+    // wired adapter (one per run) so it can also emit v18 artifacts
+    // from the FSM's recorded verdict after this call resolves.
+    const domResult = await runProviderDomFlow(wired, {
       prompt,
       evaluate,
       delay,
@@ -385,19 +393,86 @@ export function createGeminiWebExecutor(
       mode: "dom",
       execute: async () => {
         log?.("[gemini-web] Using browser DOM automation for Deep Think.");
-        const browserResult = await runGeminiDeepThinkViaBrowser(prompt, runOptions.config, log);
+        // A fresh wired adapter is built per run so each browser session
+        // owns its own FSM. We keep the reference here (rather than
+        // inside runGeminiDeepThinkViaBrowser) so the v18 emission call
+        // below can read the FSM's recorded verdict on BOTH the success
+        // and failure paths (oracle-scb: live Deep Think DOM runs must
+        // stop shipping zero v18 artifacts/evidence-ledger entries).
+        const wired = geminiDeepThinkDomProviderWithFsm();
+        const sessionId = runOptions.sessionId ?? `gemini-deep-think-dom-${randomUUID()}`;
+
+        let browserResult: { text: string; thoughts: string | null } | null = null;
+        let runError: unknown = null;
+        try {
+          browserResult = await runGeminiDeepThinkViaBrowser(
+            prompt,
+            wired,
+            runOptions.config,
+            log,
+          );
+        } catch (error) {
+          runError = error;
+        }
+
+        const answerText = browserResult?.text ?? "";
+        const stream = buildGeminiStreamCaptureSummary({
+          text: answerText,
+          chunkCount: answerText.length > 0 ? 1 : 0,
+          nonEmptyCandidateCount: answerText.length > 0 ? 1 : 0,
+          currentSessionId: sessionId,
+        });
+
+        try {
+          const emitResult = await emitGeminiDeepThinkV18ArtifactsForRun({
+            wired,
+            sessionId,
+            promptText: prompt,
+            answerText,
+            stream,
+            promptManifestSha256: sha256OfGeminiText(prompt),
+            sourceBaselineSha256: sha256OfGeminiText(
+              "oracle-gemini-deep-think-dom-source-baseline:v1",
+            ),
+            providerResultId: `provider-result-${sessionId}-gemini_deep_think`,
+            evidenceId: `evidence-${sessionId}-gemini_deep_think`,
+            runId: sessionId,
+          });
+          log?.(
+            `[gemini-web] v18 artifacts: ${emitResult.synthesisEligible ? "eligible" : "blocked"}` +
+              (emitResult.blockedErrorCodes.length
+                ? ` (blocked: ${emitResult.blockedErrorCodes.join(", ")})`
+                : ""),
+          );
+        } catch (emitError) {
+          // Mirror the ChatGPT v18 wrapper's contract (runLive_emit_artifacts.ts):
+          // a live browser run that already succeeded/failed on its own
+          // terms must not be re-classified just because artifact
+          // emission tripped. Log and move on.
+          log?.(
+            `[gemini-web] v18 artifact emission failed: ${
+              emitError instanceof Error ? emitError.message : String(emitError)
+            }`,
+          );
+        }
+
+        if (runError) {
+          throw runError;
+        }
+        const result = browserResult as { text: string; thoughts: string | null };
+
         const tookMs = Date.now() - startTime;
-        let answerMarkdown = browserResult.text;
-        if (geminiOptions.showThoughts && browserResult.thoughts) {
-          answerMarkdown = `## Thinking\n\n${browserResult.thoughts}\n\n## Response\n\n${browserResult.text}`;
+        let answerMarkdown = result.text;
+        if (geminiOptions.showThoughts && result.thoughts) {
+          answerMarkdown = `## Thinking\n\n${result.thoughts}\n\n## Response\n\n${result.text}`;
         }
         log?.(`[gemini-web] Completed in ${tookMs}ms`);
         return {
-          answerText: browserResult.text,
+          answerText: result.text,
           answerMarkdown,
           tookMs,
-          answerTokens: estimateTokenCount(browserResult.text),
-          answerChars: browserResult.text.length,
+          answerTokens: estimateTokenCount(result.text),
+          answerChars: result.text.length,
         };
       },
     };

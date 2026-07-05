@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
+import { setOracleHomeDirOverrideForTest } from "../../src/oracleHome.js";
+import { readEvidenceLedger } from "../../src/oracle/evidence_ledger.js";
 
 const {
   launchChrome,
@@ -400,6 +402,44 @@ describe("gemini-web executor", () => {
     await expect(run()).rejects.toThrow(/attachments/);
     expect(getCookies).not.toHaveBeenCalled();
     expect(runGeminiWebWithFallback).not.toHaveBeenCalled();
+  });
+
+  it("emits v18 evidence + ledger artifacts for a live Deep Think DOM run (oracle-scb regression)", async () => {
+    // Regression for: emitGeminiDeepThinkV18ArtifactsForRun was fully
+    // wired but never invoked by the live executor, so every live
+    // Gemini Deep Think DOM run shipped zero v18 artifacts /
+    // evidence-ledger entries. This drives the real DOM path (as the
+    // "uses DOM automation" test above does) and asserts the v18
+    // evidence + ledger side effects actually land on disk.
+    const oracleHomeDir = await mkdtemp(path.join(os.tmpdir(), "oracle-gemini-v18-home-"));
+    setOracleHomeDirOverrideForTest(oracleHomeDir);
+    try {
+      const { createGeminiWebExecutor } = await import("../../src/gemini-web/executor.js");
+      const exec = createGeminiWebExecutor({});
+      const sessionId = "gemini-v18-regression-session";
+      const result = await exec({
+        prompt: "hello",
+        attachments: [],
+        sessionId,
+        config: { desiredModel: "gemini-3-deep-think", keepBrowser: false },
+        log: () => {},
+      });
+
+      expect(result.answerText).toBe("deep-think answer");
+
+      const ledger = await readEvidenceLedger(sessionId, { homeDir: oracleHomeDir });
+      const eventTypes = ledger.entries.map((e) => e.event.type);
+      expect(eventTypes).toContain("evidence_written");
+      expect(eventTypes.some((t) => t === "run_completed" || t === "run_failed")).toBe(true);
+      const written = ledger.entries.find((e) => e.event.type === "evidence_written");
+      expect(written).toBeTruthy();
+      expect((written!.event as { provider_slot?: string }).provider_slot).toBe(
+        "gemini_deep_think",
+      );
+    } finally {
+      setOracleHomeDirOverrideForTest(null);
+      await rm(oracleHomeDir, { recursive: true, force: true });
+    }
   });
 
   it("keeps the launched browser alive when Deep Think uses the keep-browser default", async () => {
