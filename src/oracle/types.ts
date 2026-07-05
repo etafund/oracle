@@ -246,6 +246,15 @@ export interface RunOracleOptions {
   lane?: string;
   claudeCode?: {
     executable?: string;
+    /**
+     * Opt-in `caam shallow-spawn` profile name (caam-map.md §4). Mirrors
+     * `executable`'s override pattern: this programmatic ("config key")
+     * form takes precedence over the `ORACLE_CLAUDE_CODE_CAAM_PROFILE` env
+     * var. Unset by default — the claude-code lane only activates caam when
+     * a profile is explicitly configured; otherwise it falls back to
+     * today's exact direct-`claude` behavior.
+     */
+    caamProfile?: string;
     model?: string;
     readOnly: true;
     inlineEvents: true;

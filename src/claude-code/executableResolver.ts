@@ -22,6 +22,39 @@ export interface ResolvedClaudeExecutable {
   mode: number;
 }
 
+/**
+ * Shared shape used by every hardened-executable resolver (`claude`, `caam`,
+ * ...). Kept generic so a second caller (`caamResolver.ts`) can reuse the
+ * exact same symlink/world-writable/ownership/inside-repo hardening as
+ * `resolveClaudeExecutable` below without duplicating it.
+ */
+export interface ResolveHardenedExecutableOptions {
+  /** Explicit override, takes precedence over `env[envVarName]` and `defaultCommand`. */
+  executable?: string;
+  /** Env var consulted (in the caller's own `env`) when `executable` is not set. */
+  envVarName: string;
+  /** Bare command searched for on `$PATH` when neither of the above is set. */
+  defaultCommand: string;
+  repoRoot?: string;
+  env?: NodeJS.ProcessEnv;
+  uid?: number;
+  fsModule?: LocalOwnerFsModule & { access(path: string, mode?: number): Promise<void> };
+  /** Constructs the caller's own error type so reason codes stay caller-specific. */
+  makeError: (reason: string, message?: string) => Error;
+  /** Message used for the final `not_found` error once every PATH candidate misses. */
+  notFoundMessage: string;
+  /**
+   * Label passed through to `assertNoSymlinkOrWorldWritableComponents`
+   * (default `"claude_executable"`, preserved for exact backward
+   * compatibility with existing `resolveClaudeExecutable` reason strings).
+   * Callers resolving a different binary (e.g. `caam`) should pass their
+   * own label so a symlink/world-writable failure reads as e.g.
+   * `caam_executable_unsafe_symlink` instead of a misleading
+   * `claude_executable_*` reason.
+   */
+  label?: string;
+}
+
 export class ClaudeCodeExecutableError extends Error {
   readonly reason: string;
 
@@ -50,12 +83,38 @@ export const ORACLE_CLAUDE_CODE_EXECUTABLE_ENV_VAR = "ORACLE_CLAUDE_CODE_EXECUTA
 export async function resolveClaudeExecutable(
   options: ResolveClaudeExecutableOptions = {},
 ): Promise<ResolvedClaudeExecutable> {
+  return resolveHardenedExecutable({
+    executable: options.executable,
+    envVarName: ORACLE_CLAUDE_CODE_EXECUTABLE_ENV_VAR,
+    defaultCommand: "claude",
+    repoRoot: options.repoRoot,
+    env: options.env,
+    uid: options.uid,
+    fsModule: options.fsModule,
+    makeError: (reason, message) => new ClaudeCodeExecutableError(reason, message),
+    notFoundMessage: "Claude Code local mode requires the `claude` command on PATH.",
+  });
+}
+
+/**
+ * Generic hardened-executable resolver shared by `resolveClaudeExecutable`
+ * above and `resolveCaamExecutable` (`caamResolver.ts`). Identical
+ * precedence (`executable` option > env var > bare-command PATH search) and
+ * identical hardening (symlink-chain, world-writable, ownership,
+ * inside-reviewed-repo) for every caller — only the error type, env var
+ * name, and default bare command differ per caller.
+ */
+export async function resolveHardenedExecutable(
+  options: ResolveHardenedExecutableOptions,
+): Promise<ResolvedClaudeExecutable> {
   const fsLike = options.fsModule ?? fs;
   const env = options.env ?? process.env;
   const requested =
-    options.executable?.trim() || env[ORACLE_CLAUDE_CODE_EXECUTABLE_ENV_VAR]?.trim() || "claude";
+    options.executable?.trim() ||
+    env[options.envVarName]?.trim() ||
+    options.defaultCommand;
   if (!requested) {
-    throw new ClaudeCodeExecutableError("empty_executable");
+    throw options.makeError("empty_executable");
   }
 
   const candidates = path.isAbsolute(requested)
@@ -64,7 +123,6 @@ export async function resolveClaudeExecutable(
       ? pathCandidates(requested, env)
       : failRelativePath();
 
-  let lastNotFound: unknown;
   for (const candidate of candidates) {
     try {
       return await verifyExecutable(candidate, {
@@ -72,23 +130,36 @@ export async function resolveClaudeExecutable(
         repoRoot: options.repoRoot,
         uid: options.uid ?? process.getuid?.(),
         fsModule: fsLike,
+        makeError: options.makeError,
+        label: options.label ?? "claude_executable",
       });
     } catch (error) {
-      if (!(error instanceof ClaudeCodeExecutableError) || error.reason !== "not_found") {
+      if (!isNotFoundError(error)) {
         throw error;
       }
-      lastNotFound = error;
     }
   }
 
-  throw new ClaudeCodeExecutableError(
-    "not_found",
-    "Claude Code local mode requires the `claude` command on PATH.",
-  );
+  throw options.makeError("not_found", options.notFoundMessage);
 
   function failRelativePath(): never {
-    throw new ClaudeCodeExecutableError("relative_path");
+    throw options.makeError("relative_path");
   }
+}
+
+/**
+ * Every error constructed by a `makeError` factory (`ClaudeCodeExecutableError`,
+ * `CaamExecutableError`, ...) exposes a `.reason` string by convention, so the
+ * PATH-search loop above can duck-type "try the next candidate" apart from a
+ * real hardening failure without importing every caller's error class here.
+ */
+function isNotFoundError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "reason" in error &&
+    (error as { reason: unknown }).reason === "not_found"
+  );
 }
 
 async function verifyExecutable(
@@ -98,6 +169,8 @@ async function verifyExecutable(
     repoRoot?: string;
     uid?: number;
     fsModule: LocalOwnerFsModule & { access(path: string, mode?: number): Promise<void> };
+    makeError: (reason: string, message?: string) => Error;
+    label: string;
   },
 ): Promise<ResolvedClaudeExecutable> {
   let stat: Stats;
@@ -105,16 +178,16 @@ async function verifyExecutable(
     stat = await options.fsModule.stat(candidate);
     await options.fsModule.access(candidate, X_OK);
   } catch (error) {
-    const wrapped = new ClaudeCodeExecutableError("not_found");
+    const wrapped = options.makeError("not_found");
     (wrapped as Error & { cause?: unknown }).cause = error;
     throw wrapped;
   }
 
   if (!stat.isFile()) {
-    throw new ClaudeCodeExecutableError("not_file");
+    throw options.makeError("not_file");
   }
   if ((stat.mode & 0o111) === 0) {
-    throw new ClaudeCodeExecutableError("not_executable");
+    throw options.makeError("not_executable");
   }
 
   // First pass: walk the requested (possibly-symlinked) candidate path.
@@ -126,7 +199,7 @@ async function verifyExecutable(
   // version-manager symlink under `~/.local/share/claude/versions/<v>`),
   // and rejecting it outright makes oracle unusable with the officially
   // recommended install method.
-  await assertNoSymlinkOrWorldWritableComponents(candidate, options.fsModule, "claude_executable", {
+  await assertNoSymlinkOrWorldWritableComponents(candidate, options.fsModule, options.label, {
     allowTrailingSymlink: true,
   });
 
@@ -142,14 +215,14 @@ async function verifyExecutable(
   // lock) MUST re-run `resolveClaudeExecutable` against `real` immediately
   // before spawning — see `sessionRunner.ts`.
   const real = await options.fsModule.realpath(candidate);
-  await assertNoSymlinkOrWorldWritableComponents(real, options.fsModule, "claude_executable");
+  await assertNoSymlinkOrWorldWritableComponents(real, options.fsModule, options.label);
 
   if (options.repoRoot && isInside(await options.fsModule.realpath(options.repoRoot), real)) {
-    throw new ClaudeCodeExecutableError("inside_reviewed_repo");
+    throw options.makeError("inside_reviewed_repo");
   }
 
   if (options.uid !== undefined && stat.uid !== options.uid && stat.uid !== 0) {
-    throw new ClaudeCodeExecutableError("not_owned_by_current_user_or_root");
+    throw options.makeError("not_owned_by_current_user_or_root");
   }
 
   return {

@@ -90,4 +90,26 @@ describe("Claude Code env guard", () => {
       ),
     ).toThrow(/ANTHROPIC_MODEL/);
   });
+
+  test("allowlists ORACLE_CLAUDE_CODE_CAAM_PROFILE as an argv-derived value, not a secret", () => {
+    const prepared = prepareClaudeCodeEnvironment({
+      PATH: "/usr/bin",
+      ORACLE_CLAUDE_CODE_CAAM_PROFILE: "arthur",
+    });
+
+    expect(prepared.childEnv).toEqual({
+      PATH: "/usr/bin",
+      ORACLE_CLAUDE_CODE_CAAM_PROFILE: "arthur",
+    });
+  });
+
+  test("a configured caam profile does not loosen the ANTHROPIC_* refusal", () => {
+    expect(() =>
+      prepareClaudeCodeEnvironment({
+        PATH: "/usr/bin",
+        ORACLE_CLAUDE_CODE_CAAM_PROFILE: "arthur",
+        ANTHROPIC_API_KEY: "sk-ant-secret",
+      }),
+    ).toThrow(ClaudeCodeEnvGuardError);
+  });
 });

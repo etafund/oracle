@@ -55,10 +55,20 @@ import type { BrowserLogger } from "../browser/types.js";
 import { formatElapsed } from "../oracle/format.js";
 import { formatBrowserReattachGuidance } from "./reattachGuidance.js";
 import { getOracleHomeDir } from "../oracleHome.js";
-import { buildClaudeCodeCommand } from "../claude-code/command.js";
+import { buildClaudeCodeCommand, type ClaudeCodeCommand } from "../claude-code/command.js";
 import { prepareClaudeCodeEnvironment } from "../claude-code/envGuard.js";
 import { resolveClaudeExecutable } from "../claude-code/executableResolver.js";
 import { assertClaudeCodeLocalOwner } from "../claude-code/localOwnerGuard.js";
+import {
+  buildCaamShallowSpawnCommand,
+  resolveClaudeCodeCaamProfile,
+  validateCaamProfileName,
+} from "../claude-code/caamCommand.js";
+import {
+  resolveCaamExecutable,
+  type ResolvedCaamExecutable,
+} from "../claude-code/caamResolver.js";
+import { runCaamShallowProfileDoctor } from "../claude-code/caamDoctor.js";
 import {
   ClaudeCodeStreamNormalizer,
   type ClaudeCodeNormalizedEvent,
@@ -939,6 +949,21 @@ async function runLocalClaudeCodeSession(
     executable: executable.path,
     model: input.model,
   });
+
+  // Opt-in `caam shallow-spawn` integration (caam-map.md §4). Activates ONLY
+  // when a profile is configured; any failure to stand it up (caam absent,
+  // hardening failure, unhealthy profile doctor) falls back to today's exact
+  // direct-`claude` behavior rather than breaking the run — see
+  // `tryActivateCaamShallowSpawn`.
+  const caamProfileRequested = resolveClaudeCodeCaamProfile(
+    input.runOptions.claudeCode?.caamProfile,
+    process.env,
+  );
+  const caam = caamProfileRequested
+    ? await tryActivateCaamShallowSpawn(caamProfileRequested, command, input)
+    : undefined;
+  const spawnCommand = caam?.command ?? command;
+
   const waitForLockMs = resolveClaudeCodeWaitForLockMs(input.runOptions.claudeCode?.waitForLockMs);
   if (waitForLockMs > 0) {
     input.log(
@@ -947,10 +972,15 @@ async function runLocalClaudeCodeSession(
   }
   const singleFlightLock = await acquireClaudeCodeSingleFlightLock(input.sessionId, {
     waitForLockMs,
+    // Keying the lock on the caam profile (instead of the fixed global
+    // filename) is what lets distinct profiles run in parallel while same
+    // -profile sessions still serialize (caam-map.md §4b). No profile active
+    // -> unchanged global lock.
+    lockKey: caam?.profile,
   });
   input.log(
     dim(
-      `Claude Code command: ${command.file} ${command.args.map(redactClaudeCodeArgForLog).join(" ")}`,
+      `Claude Code command: ${spawnCommand.file} ${spawnCommand.args.map(redactClaudeCodeArgForLog).join(" ")}`,
     ),
   );
   for (const warning of preparedEnv.warnings) {
@@ -989,9 +1019,20 @@ async function runLocalClaudeCodeSession(
       repoRoot: input.cwd,
       env: process.env,
     });
+    if (caam) {
+      // Same TOCTOU re-check, mirrored for the caam executable — it is
+      // about to `exec` into a repointed `$HOME`, so it gets the same
+      // "re-verify the resolved real path immediately before spawn"
+      // treatment as `claude` above.
+      await resolveCaamExecutable({
+        executable: caam.executable.path,
+        repoRoot: input.cwd,
+        env: process.env,
+      });
+    }
 
-    const child = spawn(command.file, command.args, {
-      ...command.spawnOptions,
+    const child = spawn(spawnCommand.file, spawnCommand.args, {
+      ...spawnCommand.spawnOptions,
       cwd: input.cwd,
       detached: process.platform !== "win32",
       env: preparedEnv.childEnv,
@@ -1136,8 +1177,8 @@ async function runLocalClaudeCodeSession(
       errorMessage,
       adapterMetadata: {
         command: {
-          executable: command.file,
-          args_redacted: command.args.map(redactClaudeCodeArgForAdapter),
+          executable: spawnCommand.file,
+          args_redacted: spawnCommand.args.map(redactClaudeCodeArgForAdapter),
         },
         executable: {
           requested: executable.requested,
@@ -1145,6 +1186,13 @@ async function runLocalClaudeCodeSession(
           owner_uid: executable.ownerUid,
           mode: executable.mode,
         },
+        caam: caam
+          ? {
+              active: true,
+              profile: caam.profile,
+              executable: caam.executable.path,
+            }
+          : { active: false },
         env_warnings: preparedEnv.warnings,
         env_scrubbed_sources: preparedEnv.scrubbedSources,
         local_owner: ownerResult,
@@ -1463,6 +1511,64 @@ function extractFinalTextFromNdjson(result: ClaudeCodeRunnerResult): string {
   return pieces.join("");
 }
 
+interface ClaudeCodeCaamActivation {
+  command: ClaudeCodeCommand;
+  profile: string;
+  executable: ResolvedCaamExecutable;
+}
+
+/**
+ * caam-map.md §4: resolve `caam`, run its read-only `shallow-profile doctor`
+ * pre-flight, and build the `caam shallow-spawn` outer command. Any failure
+ * along this path is caught and logged as a graceful-fallback warning —
+ * per the opt-in + graceful-fallback contract, a caam misconfiguration must
+ * never break the claude-code lane for callers who didn't ask for it;
+ * `runLocalClaudeCodeSession` falls back to today's exact direct-`claude`
+ * behavior (single global lock) whenever this returns `undefined`.
+ */
+async function tryActivateCaamShallowSpawn(
+  profile: string,
+  innerCommand: ClaudeCodeCommand,
+  input: ClaudeCodeRunnerInput,
+): Promise<ClaudeCodeCaamActivation | undefined> {
+  try {
+    // Validate the profile name up front — before it is passed as an argv
+    // value to `caam shallow-profile doctor` AND before it is embedded in
+    // the per-profile lock filename below — so a malformed profile name
+    // never reaches an external process or a `path.join`.
+    const validatedProfile = validateCaamProfileName(profile);
+    const caamExecutable = await resolveCaamExecutable({
+      repoRoot: input.cwd,
+      env: process.env,
+    });
+    await runCaamShallowProfileDoctor(caamExecutable.path, validatedProfile, {
+      env: process.env,
+    });
+    const base = path.join(getOracleHomeDir(), "claude-code-shallow-homes");
+    const command = buildCaamShallowSpawnCommand({
+      caamExecutable: caamExecutable.path,
+      profile: validatedProfile,
+      base,
+      inner: innerCommand,
+    });
+    input.log(
+      dim(
+        `Claude Code caam shallow-spawn active: profile "${validatedProfile}" via ${caamExecutable.path}.`,
+      ),
+    );
+    return { command, profile: validatedProfile, executable: caamExecutable };
+  } catch (error) {
+    input.log(
+      dim(
+        `Claude Code caam shallow-spawn unavailable, falling back to direct \`claude\` with the shared single-flight lock: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      ),
+    );
+    return undefined;
+  }
+}
+
 function resolveClaudeCodeTimeoutMs(timeoutSeconds: RunOracleOptions["timeoutSeconds"]): number {
   if (typeof timeoutSeconds === "number" && Number.isFinite(timeoutSeconds) && timeoutSeconds > 0) {
     return timeoutSeconds * 1000;
@@ -1490,6 +1596,8 @@ interface ClaudeCodeSingleFlightLockMetadata {
   pid: number;
   nonce: string;
   created_at: string;
+  /** caam shallow-spawn profile this lock is keyed on, if any (caam-map.md §4b). */
+  caam_profile?: string;
 }
 
 interface ClaudeCodeSingleFlightLock {
@@ -1516,20 +1624,29 @@ class ClaudeCodeSingleFlightLockBusyError extends Error {
 
 async function acquireClaudeCodeSingleFlightLock(
   sessionId: string,
-  options: { waitForLockMs?: number; retryIntervalMs?: number } = {},
+  options: { waitForLockMs?: number; retryIntervalMs?: number; lockKey?: string } = {},
 ): Promise<ClaudeCodeSingleFlightLock> {
   const locksDir = path.join(getOracleHomeDir(), "locks");
   await fs.mkdir(locksDir, { recursive: true, mode: 0o700 });
   if (process.platform !== "win32") {
     await fs.chmod(locksDir, 0o700).catch(() => undefined);
   }
-  const lockPath = path.join(locksDir, "claude-code-subscription.lock");
+  // Keying the lock filename on `options.lockKey` (the caam shallow-spawn
+  // profile — already validated by `validateCaamProfileName` before this is
+  // called) is what lets distinct profiles run in parallel while same
+  // -profile sessions still serialize (caam-map.md §4b). No `lockKey` ->
+  // the original fixed global filename, i.e. today's exact behavior.
+  const lockFileName = options.lockKey
+    ? `claude-code-subscription-${options.lockKey}.lock`
+    : "claude-code-subscription.lock";
+  const lockPath = path.join(locksDir, lockFileName);
   const metadata: ClaudeCodeSingleFlightLockMetadata = {
     schema_version: "claude_code_single_flight_lock.v1",
     session_id: sessionId,
     pid: process.pid,
     nonce: randomUUID(),
     created_at: new Date().toISOString(),
+    ...(options.lockKey ? { caam_profile: options.lockKey } : {}),
   };
   const waitForLockMs = resolveClaudeCodeWaitForLockMs(options.waitForLockMs);
   const deadline = waitForLockMs > 0 ? Date.now() + waitForLockMs : 0;

@@ -58,6 +58,11 @@ const DEFAULT_CHILD_ENV_ALLOWLIST = [
   "CI",
   "ORACLE_HOME_DIR",
   "ORACLE_CLAUDE_CODE_MAX_INLINE_BYTES",
+  // Opt-in `caam shallow-spawn` profile name (caam-map.md §4a/§4b). This is
+  // an argv-derived selector, not a secret — the same value is also passed
+  // as a `caam shallow-spawn <profile>` argv token, never as a credential —
+  // so allowlisting it here is consistent with `ORACLE_HOME_DIR` above.
+  "ORACLE_CLAUDE_CODE_CAAM_PROFILE",
 ] as const;
 
 export function prepareClaudeCodeEnvironment(

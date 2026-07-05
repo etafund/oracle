@@ -75,6 +75,8 @@ import { getCliVersion } from "../../src/version.ts";
 import { deriveModelOutputPath } from "../../src/cli/sessionRunner.ts";
 import { resumeBrowserSession } from "../../src/browser/reattach.ts";
 import { setOracleHomeDirOverrideForTest } from "../../src/oracleHome.ts";
+import { buildClaudeCodeCommand } from "../../src/claude-code/command.ts";
+import { ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR } from "../../src/claude-code/caamCommand.ts";
 
 const baseSessionMeta: SessionMetadata = {
   id: "sess-1",
@@ -211,6 +213,75 @@ function createFakeClaudeExecutable({
     "    setTimeout(() => process.exit(0), lingerMs);",
     "  }",
     "});",
+    "",
+  ].join("\n");
+  fs.writeFileSync(executablePath, script, { mode: 0o700 });
+  return executablePath;
+}
+
+// Simulates `caam` for the shallow-spawn integration (caam-map.md §4): a
+// `shallow-profile doctor <profile> --json` invocation (its own separate
+// process, via `execFile`) followed by a `shallow-spawn <profile> --base
+// <base> -- <claude> <args...>` invocation (the actual spawned child) that
+// behaves like `createFakeClaudeExecutable` above once "exec'd".
+function createFakeCaamExecutable({
+  binDir,
+  doctorInvocationArgvPath,
+  shallowSpawnArgvPath,
+  markerPath,
+  stdinPath,
+  doctorHealthy = true,
+  stdoutEvents,
+}: {
+  binDir: string;
+  doctorInvocationArgvPath: string;
+  shallowSpawnArgvPath: string;
+  markerPath: string;
+  stdinPath: string;
+  doctorHealthy?: boolean;
+  stdoutEvents?: unknown[];
+}): string {
+  const executablePath = path.join(binDir, "caam");
+  const initEvent = fakeClaudeCodeInitEvent();
+  const resultEvent = {
+    type: "result",
+    result: "Fake final answer from Claude Code",
+    modelUsage: { "claude-fable-5": {} },
+    total_cost_usd: 0,
+  };
+  const events = stdoutEvents ?? [initEvent, resultEvent];
+  const script = [
+    "#!/usr/bin/env node",
+    "const fs = require('node:fs');",
+    `const doctorInvocationArgvPath = ${JSON.stringify(doctorInvocationArgvPath)};`,
+    `const shallowSpawnArgvPath = ${JSON.stringify(shallowSpawnArgvPath)};`,
+    `const markerPath = ${JSON.stringify(markerPath)};`,
+    `const stdinPath = ${JSON.stringify(stdinPath)};`,
+    `const doctorHealthy = ${JSON.stringify(doctorHealthy)};`,
+    `const stdoutEvents = ${JSON.stringify(events)};`,
+    "const argv = process.argv.slice(2);",
+    "if (argv[0] === 'shallow-profile' && argv[1] === 'doctor') {",
+    "  fs.writeFileSync(doctorInvocationArgvPath, JSON.stringify(argv, null, 2));",
+    "  process.stdout.write(JSON.stringify({ healthy: doctorHealthy, profile: argv[2] }) + '\\n');",
+    "  process.exit(0);",
+    "}",
+    "if (argv[0] === 'shallow-spawn') {",
+    "  fs.writeFileSync(shallowSpawnArgvPath, JSON.stringify(argv, null, 2));",
+    "  let input = '';",
+    "  process.stdin.setEncoding('utf8');",
+    "  process.stdin.on('data', (chunk) => { input += chunk; });",
+    "  process.stdin.on('end', () => {",
+    "    fs.writeFileSync(markerPath, 'spawned\\n');",
+    "    fs.writeFileSync(stdinPath, input);",
+    "    for (const event of stdoutEvents) {",
+    "      process.stdout.write(`${JSON.stringify(event)}\\n`);",
+    "    }",
+    "    process.stderr.write('fake stderr\\n');",
+    "  });",
+    "} else {",
+    "  process.stderr.write('unexpected caam invocation\\n');",
+    "  process.exit(1);",
+    "}",
     "",
   ].join("\n");
   fs.writeFileSync(executablePath, script, { mode: 0o700 });
@@ -2716,5 +2787,319 @@ describe("performSessionRun", () => {
       expect.objectContaining({ status: "error" }),
     );
     expect(log).toHaveBeenCalledWith(expect.stringContaining("User error (file-validation)"));
+  });
+});
+
+describe("claude-code caam shallow-spawn integration (caam-map.md §4)", () => {
+  interface CaamFixture {
+    root: string;
+    oracleHome: string;
+    sessionsDir: string;
+    sessionDir: string;
+    repoDir: string;
+    binDir: string;
+  }
+
+  function setupCaamFixture(): CaamFixture {
+    const root = fs.mkdtempSync(path.join(os.homedir(), ".oracle-claude-code-caam-test-"));
+    const oracleHome = path.join(root, "oracle-home");
+    const sessionsDir = path.join(root, "sessions");
+    const sessionDir = path.join(sessionsDir, "sess-1");
+    const repoDir = path.join(root, "repo");
+    const binDir = path.join(root, "bin");
+    for (const dir of [oracleHome, sessionsDir, sessionDir, repoDir, binDir]) {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      fs.chmodSync(dir, 0o700);
+    }
+    sessionStoreMock.sessionsDir.mockReturnValue(sessionsDir);
+    sessionStoreMock.getPaths.mockResolvedValue({
+      dir: sessionDir,
+      metadata: path.join(sessionDir, "meta.json"),
+      request: path.join(sessionDir, "request.json"),
+      log: path.join(sessionDir, "output.log"),
+    });
+    setOracleHomeDirOverrideForTest(oracleHome);
+    return { root, oracleHome, sessionsDir, sessionDir, repoDir, binDir };
+  }
+
+  function teardownCaamFixture(fixture: CaamFixture): void {
+    setOracleHomeDirOverrideForTest(null);
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+
+  test("caam profile configured + healthy: wraps buildClaudeCodeCommand() argv and keys the lock on the profile", async () => {
+    vi.mocked(fsPromises.mkdir).mockRestore();
+    vi.mocked(fsPromises.writeFile).mockRestore();
+    const fixture = setupCaamFixture();
+    try {
+      const claudePath = createFakeClaudeExecutable({
+        binDir: fixture.binDir,
+        argvPath: path.join(fixture.root, "claude-argv-unused.json"),
+        stdinPath: path.join(fixture.root, "claude-stdin-unused.txt"),
+        markerPath: path.join(fixture.root, "claude-marker-unused.txt"),
+      });
+      const doctorInvocationArgvPath = path.join(fixture.root, "doctor-argv.json");
+      const shallowSpawnArgvPath = path.join(fixture.root, "shallow-spawn-argv.json");
+      const caamMarkerPath = path.join(fixture.root, "caam-spawned.txt");
+      createFakeCaamExecutable({
+        binDir: fixture.binDir,
+        doctorInvocationArgvPath,
+        shallowSpawnArgvPath,
+        markerPath: caamMarkerPath,
+        stdinPath: path.join(fixture.root, "caam-stdin.txt"),
+        doctorHealthy: true,
+      });
+
+      // A busy GLOBAL lock (no profile) must NOT block a caam-profiled run —
+      // this is the concrete "distinct profiles run in parallel" payoff of
+      // keying the lock filename on the profile (caam-map.md §4b).
+      const locksDir = path.join(fixture.oracleHome, "locks");
+      fs.mkdirSync(locksDir, { recursive: true, mode: 0o700 });
+      const globalLockPath = path.join(locksDir, "claude-code-subscription.lock");
+      fs.writeFileSync(
+        globalLockPath,
+        `${JSON.stringify({
+          schema_version: "claude_code_single_flight_lock.v1",
+          session_id: "unrelated-global-session",
+          pid: 999_999_999,
+          nonce: "stale",
+          created_at: "2026-07-02T00:00:00.000Z",
+        })}\n`,
+        { mode: 0o600 },
+      );
+
+      await withExactEnv(
+        {
+          ...blockedClaudeCodeEnvDefaults,
+          PATH: `${fixture.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "arthur",
+        },
+        async () => {
+          await performSessionRun({
+            sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+            runOptions: { prompt: "Review via caam", model: "fable" },
+            mode: "claude-code",
+            cwd: fixture.repoDir,
+            log,
+            write,
+            version: cliVersion,
+            muteStdout: true,
+          });
+        },
+      );
+
+      // Doctor ran read-only, scoped to the right profile, before the spawn.
+      const doctorArgv = JSON.parse(fs.readFileSync(doctorInvocationArgvPath, "utf8")) as string[];
+      expect(doctorArgv).toEqual(["shallow-profile", "doctor", "arthur", "--json"]);
+
+      // The outer command is exactly:
+      //   caam shallow-spawn arthur --base <oracleHome>/claude-code-shallow-homes -- <claude> <inner argv...>
+      // where the inner argv is byte-for-byte buildClaudeCodeCommand()'s
+      // own output — untouched by the caam wrapper (caam-map.md §4a).
+      const shallowSpawnArgv = JSON.parse(fs.readFileSync(shallowSpawnArgvPath, "utf8")) as string[];
+      const expectedInner = buildClaudeCodeCommand({ executable: claudePath, model: "fable" });
+      expect(shallowSpawnArgv).toEqual([
+        "shallow-spawn",
+        "arthur",
+        "--base",
+        path.join(fixture.oracleHome, "claude-code-shallow-homes"),
+        "--",
+        claudePath,
+        ...expectedInner.args,
+      ]);
+
+      expect(fs.readFileSync(caamMarkerPath, "utf8")).toBe("spawned\n");
+
+      // Per-profile lock was used and released — not the global one.
+      expect(fs.existsSync(path.join(locksDir, "claude-code-subscription-arthur.lock"))).toBe(
+        false,
+      );
+      expect(fs.existsSync(globalLockPath)).toBe(true);
+
+      const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+      expect(finalUpdate).toMatchObject({ status: "completed", mode: "claude-code" });
+    } finally {
+      teardownCaamFixture(fixture);
+    }
+  });
+
+  test("caam profile configured: a busy SAME-profile lock still serializes (refuses, does not spawn)", async () => {
+    vi.mocked(fsPromises.mkdir).mockRestore();
+    vi.mocked(fsPromises.writeFile).mockRestore();
+    const fixture = setupCaamFixture();
+    try {
+      createFakeClaudeExecutable({
+        binDir: fixture.binDir,
+        argvPath: path.join(fixture.root, "claude-argv-unused.json"),
+        stdinPath: path.join(fixture.root, "claude-stdin-unused.txt"),
+        markerPath: path.join(fixture.root, "claude-marker-unused.txt"),
+      });
+      const caamMarkerPath = path.join(fixture.root, "caam-spawned.txt");
+      createFakeCaamExecutable({
+        binDir: fixture.binDir,
+        doctorInvocationArgvPath: path.join(fixture.root, "doctor-argv.json"),
+        shallowSpawnArgvPath: path.join(fixture.root, "shallow-spawn-argv.json"),
+        markerPath: caamMarkerPath,
+        stdinPath: path.join(fixture.root, "caam-stdin.txt"),
+        doctorHealthy: true,
+      });
+
+      const locksDir = path.join(fixture.oracleHome, "locks");
+      fs.mkdirSync(locksDir, { recursive: true, mode: 0o700 });
+      const profileLockPath = path.join(locksDir, "claude-code-subscription-arthur.lock");
+      fs.writeFileSync(
+        profileLockPath,
+        `${JSON.stringify({
+          schema_version: "claude_code_single_flight_lock.v1",
+          session_id: "busy-arthur-session",
+          pid: process.pid,
+          nonce: "busy-lock",
+          created_at: "2026-07-02T00:00:00.000Z",
+        })}\n`,
+        { mode: 0o600 },
+      );
+
+      await withExactEnv(
+        {
+          ...blockedClaudeCodeEnvDefaults,
+          PATH: `${fixture.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "arthur",
+        },
+        async () => {
+          await expect(
+            performSessionRun({
+              sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+              runOptions: { prompt: "Review via caam", model: "fable" },
+              mode: "claude-code",
+              cwd: fixture.repoDir,
+              log,
+              write,
+              version: cliVersion,
+            }),
+          ).rejects.toThrow(/already running in session busy-arthur-session/);
+        },
+      );
+
+      expect(fs.existsSync(caamMarkerPath)).toBe(false);
+      expect(fs.existsSync(profileLockPath)).toBe(true);
+    } finally {
+      teardownCaamFixture(fixture);
+    }
+  });
+
+  test("graceful fallback: caam absent from PATH runs the exact direct-claude behavior (global lock)", async () => {
+    vi.mocked(fsPromises.mkdir).mockRestore();
+    vi.mocked(fsPromises.writeFile).mockRestore();
+    const fixture = setupCaamFixture();
+    try {
+      const claudeArgvPath = path.join(fixture.root, "claude-argv.json");
+      const claudeMarkerPath = path.join(fixture.root, "claude-marker.txt");
+      createFakeClaudeExecutable({
+        binDir: fixture.binDir,
+        argvPath: claudeArgvPath,
+        stdinPath: path.join(fixture.root, "claude-stdin.txt"),
+        markerPath: claudeMarkerPath,
+      });
+      // Deliberately no `caam` binary anywhere on PATH.
+
+      await withExactEnv(
+        {
+          ...blockedClaudeCodeEnvDefaults,
+          PATH: `${fixture.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "arthur",
+        },
+        async () => {
+          await performSessionRun({
+            sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+            runOptions: { prompt: "Review without caam installed", model: "fable" },
+            mode: "claude-code",
+            cwd: fixture.repoDir,
+            log,
+            write,
+            version: cliVersion,
+            muteStdout: true,
+          });
+        },
+      );
+
+      // The direct `claude` fake ran, and received the UNWRAPPED inner argv
+      // — no "shallow-spawn"/"--base" prefix — exactly today's behavior.
+      expect(fs.readFileSync(claudeMarkerPath, "utf8")).toBe("spawned\n");
+      const argv = JSON.parse(fs.readFileSync(claudeArgvPath, "utf8")) as string[];
+      expect(argv[0]).toBe("-p");
+      expect(argv).not.toContain("shallow-spawn");
+
+      // The GLOBAL lock filename was used (no profile keying) and released.
+      const locksDir = path.join(fixture.oracleHome, "locks");
+      expect(fs.existsSync(path.join(locksDir, "claude-code-subscription.lock"))).toBe(false);
+      expect(fs.existsSync(path.join(locksDir, "claude-code-subscription-arthur.lock"))).toBe(
+        false,
+      );
+
+      const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+      expect(finalUpdate).toMatchObject({ status: "completed", mode: "claude-code" });
+    } finally {
+      teardownCaamFixture(fixture);
+    }
+  });
+
+  test("graceful fallback: caam present but shallow-profile doctor reports unhealthy runs direct-claude behavior", async () => {
+    vi.mocked(fsPromises.mkdir).mockRestore();
+    vi.mocked(fsPromises.writeFile).mockRestore();
+    const fixture = setupCaamFixture();
+    try {
+      const claudeArgvPath = path.join(fixture.root, "claude-argv.json");
+      const claudeMarkerPath = path.join(fixture.root, "claude-marker.txt");
+      createFakeClaudeExecutable({
+        binDir: fixture.binDir,
+        argvPath: claudeArgvPath,
+        stdinPath: path.join(fixture.root, "claude-stdin.txt"),
+        markerPath: claudeMarkerPath,
+      });
+      const caamMarkerPath = path.join(fixture.root, "caam-spawned.txt");
+      createFakeCaamExecutable({
+        binDir: fixture.binDir,
+        doctorInvocationArgvPath: path.join(fixture.root, "doctor-argv.json"),
+        shallowSpawnArgvPath: path.join(fixture.root, "shallow-spawn-argv.json"),
+        markerPath: caamMarkerPath,
+        stdinPath: path.join(fixture.root, "caam-stdin.txt"),
+        doctorHealthy: false,
+      });
+
+      await withExactEnv(
+        {
+          ...blockedClaudeCodeEnvDefaults,
+          PATH: `${fixture.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "unhealthy-profile",
+        },
+        async () => {
+          await performSessionRun({
+            sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+            runOptions: { prompt: "Review with an unhealthy caam profile", model: "fable" },
+            mode: "claude-code",
+            cwd: fixture.repoDir,
+            log,
+            write,
+            version: cliVersion,
+            muteStdout: true,
+          });
+        },
+      );
+
+      // caam's shallow-spawn branch never ran; the direct claude fake did.
+      expect(fs.existsSync(caamMarkerPath)).toBe(false);
+      expect(fs.readFileSync(claudeMarkerPath, "utf8")).toBe("spawned\n");
+
+      const locksDir = path.join(fixture.oracleHome, "locks");
+      expect(fs.existsSync(path.join(locksDir, "claude-code-subscription.lock"))).toBe(false);
+      expect(
+        fs.existsSync(path.join(locksDir, "claude-code-subscription-unhealthy-profile.lock")),
+      ).toBe(false);
+
+      const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+      expect(finalUpdate).toMatchObject({ status: "completed", mode: "claude-code" });
+    } finally {
+      teardownCaamFixture(fixture);
+    }
   });
 });
