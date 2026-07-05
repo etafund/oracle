@@ -60,7 +60,7 @@ interface BrowserTabLeaseDeps {
  */
 type RegistryReadOutcome =
   | { readable: true; valid: BrowserTabLeaseRecord[]; opaque: unknown[] }
-  | { readable: false; reason: string; cause?: unknown };
+  | { readable: false; reason: string; cause?: unknown; corruptRaw?: string };
 
 /** Typed refusal for the lease-grant path when the registry is unverifiable. */
 export class TabLeaseRegistryUnreadableError extends Error {
@@ -71,6 +71,44 @@ export class TabLeaseRegistryUnreadableError extends Error {
       cause === undefined ? undefined : { cause },
     );
     this.name = "TabLeaseRegistryUnreadableError";
+  }
+}
+
+/**
+ * Surfaced when a process discovers, while releasing the registry lock, that
+ * the lock directory it is about to remove no longer belongs to it (a peer's
+ * dead-owner reclamation ran while this process held the lock and completed
+ * the callback under it). Deleting the directory in that state would tear
+ * down a different process's active critical section, so the release path
+ * fails closed and throws instead of silently releasing or silently
+ * abandoning it.
+ */
+export class TabLeaseRegistryLockOwnershipLostError extends Error {
+  constructor(lockDir: string) {
+    super(
+      `Tab-lease registry lock at ${lockDir} was reclaimed by another process while this process held it; ` +
+        "refusing to release a lock that is no longer ours. Treat the operation just performed under this " +
+        "lock as unverified, not successful.",
+    );
+    this.name = "TabLeaseRegistryLockOwnershipLostError";
+  }
+}
+
+/**
+ * Surfaced when a lock-steal attempt renames away what turns out to be a
+ * fresh acquirer's lock directory (raced in between the liveness check and
+ * the reclaim rename) and the subsequent attempt to hand it back collides
+ * with yet another acquirer. There is no way to restore the displaced
+ * owner's lock at that point, so the steal fails closed with a thrown error
+ * instead of logging a warning and reporting the steal as successful.
+ */
+export class TabLeaseRegistryLockCollisionError extends Error {
+  constructor(lockDir: string) {
+    super(
+      `Tab-lease registry lock steal at ${lockDir} collided with a concurrent acquirer while trying to ` +
+        "restore a displaced fresh owner's lock; failing closed instead of assuming the steal succeeded cleanly.",
+    );
+    this.name = "TabLeaseRegistryLockCollisionError";
   }
 }
 
@@ -115,7 +153,7 @@ export async function acquireBrowserTabLease(
     const acquired = await withRegistryLock(
       profileDir,
       async () => {
-        const outcome = await readRegistryOutcome(profileDir, options.logger);
+        const outcome = await readRegistryOutcomeLocked(profileDir, options.logger);
         if (!outcome.readable) {
           // Fail-closed grant path: an unverifiable registry cannot prove a
           // free slot, so refuse with a typed error instead of assuming free.
@@ -184,7 +222,7 @@ export async function updateBrowserTabLease(
   await withRegistryLock(
     profileDir,
     async () => {
-      const outcome = await readRegistryOutcome(profileDir, logger);
+      const outcome = await readRegistryOutcomeLocked(profileDir, logger);
       if (!outcome.readable) {
         // Metadata patches gate nothing destructive. Skipping the patch keeps
         // the ASSUME-ACTIVE state intact, whereas rewriting an unverifiable
@@ -213,7 +251,7 @@ export async function releaseBrowserTabLease(
   await withRegistryLock(
     profileDir,
     async () => {
-      const outcome = await readRegistryOutcome(profileDir, logger);
+      const outcome = await readRegistryOutcomeLocked(profileDir, logger);
       if (!outcome.readable) {
         // Truthful release: we cannot prove the record was removed from an
         // unverifiable registry, so surface the fault instead of pretending.
@@ -253,7 +291,7 @@ export async function countActiveBrowserTabLeases(
 ): Promise<TabLeaseCensus> {
   const now = options.now ?? Date.now;
   const staleMs = Math.max(60_000, options.staleMs ?? DEFAULT_STALE_MS);
-  const outcome = await readRegistryOutcome(profileDir, options.logger);
+  const outcome = await readRegistryOutcome(profileDir);
   if (!outcome.readable) {
     return { readable: false, activeLeaseCount: null, reason: outcome.reason };
   }
@@ -282,7 +320,7 @@ export async function hasOtherActiveBrowserTabLeases(
   return withRegistryLock(
     profileDir,
     async () => {
-      const outcome = await readRegistryOutcome(profileDir, options.logger);
+      const outcome = await readRegistryOutcomeLocked(profileDir, options.logger);
       if (!outcome.readable) {
         // Fail-closed: we cannot prove "no other leases", so report other
         // leases active and let destructive cleanup (Chrome termination,
@@ -362,10 +400,99 @@ async function withRegistryLock<T>(
     token: randomUUID(),
   };
   await writeFile(ownerPath, `${JSON.stringify(owner)}\n`, "utf8").catch(() => undefined);
+  // Hold an open handle on the directory we just created so release-time can
+  // prove it is still the SAME directory (see releaseRegistryLockIfOwned): a
+  // peer's dead-owner reclamation replaces `lockDir` with a brand-new
+  // directory, which self-ownership verification must detect even when no
+  // owner file is involved on either side. Comparing inode numbers alone is
+  // NOT sufficient — many filesystems reuse a freed inode number immediately
+  // for the next mkdir() at the same path, so a delete+recreate can produce
+  // an identical (dev, ino) to the one we started with. Keeping our own file
+  // descriptor open on the ORIGINAL directory for the lifetime of the lock
+  // prevents the kernel from recycling its inode for anything else in the
+  // meantime, which is what makes the dev/ino comparison at release time a
+  // real proof of identity rather than a coincidence.
+  const myLockHandle = await openDirIdentityHandle(lockDir);
   try {
     return await callback();
   } finally {
+    await releaseRegistryLockIfOwned(lockDir, myLockHandle, logger);
+  }
+}
+
+/**
+ * An open directory handle plus the (dev, ino) pair captured from it,
+ * pinned for the lifetime of a registry-lock hold. Used to prove directory
+ * identity across a delete+recreate at the same path — see
+ * `openDirIdentityHandle` for why a live handle (not just a stat() snapshot)
+ * is required.
+ */
+interface DirIdentityHandle {
+  dev: number;
+  ino: number;
+  close: () => Promise<void>;
+}
+
+/**
+ * Open a directory and capture its (dev, ino) identity via the open
+ * descriptor (fstat), not a plain stat() by path. Holding the descriptor
+ * open keeps the underlying inode allocated for as long as the caller holds
+ * it, even if the directory is later renamed away and removed — so a
+ * DIFFERENT directory later mkdir()'d at the same path is guaranteed a
+ * different (dev, ino), never a coincidentally-recycled match. Returns
+ * `null` when the directory cannot be opened/stat()'d, which callers must
+ * treat as "identity unproven", never as a match.
+ */
+async function openDirIdentityHandle(dirPath: string): Promise<DirIdentityHandle | null> {
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(dirPath, "r");
+  } catch {
+    return null;
+  }
+  try {
+    const stats = await handle.stat();
+    return { dev: stats.dev, ino: stats.ino, close: () => handle.close() };
+  } catch {
+    await handle.close().catch(() => undefined);
+    return null;
+  }
+}
+
+/**
+ * Release the registry lock directory, but only after proving it is still
+ * the exact directory this process created (via the held-open identity
+ * handle captured at acquire time). A concurrent dead-owner reclamation
+ * (`stealRegistryLockFromDeadOwner`) can replace `lockDir` with a different
+ * owner's lock while our callback was running; a blind `rm()` here would
+ * tear down that owner's critical section instead of releasing our own.
+ * When self-ownership cannot be proven, fail closed by throwing rather than
+ * guessing which directory to delete.
+ */
+async function releaseRegistryLockIfOwned(
+  lockDir: string,
+  myLockHandle: DirIdentityHandle | null,
+  logger?: BrowserLogger,
+): Promise<void> {
+  try {
+    const current = await stat(lockDir).catch(() => null);
+    const sameDir =
+      myLockHandle !== null &&
+      current !== null &&
+      current.dev === myLockHandle.dev &&
+      current.ino === myLockHandle.ino;
+    if (!sameDir) {
+      logger?.(
+        `[browser] ERROR: tab-lease registry lock at ${lockDir} no longer matches the directory this ` +
+          "process acquired; refusing to release it (it may belong to another owner now).",
+      );
+      throw new TabLeaseRegistryLockOwnershipLostError(lockDir);
+    }
     await rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
+  } finally {
+    if (myLockHandle) {
+      await myLockHandle.close().catch(() => undefined);
+    }
   }
 }
 
@@ -409,6 +536,16 @@ async function stealRegistryLockFromDeadOwner(
       return false;
     }
   }
+  // Open a handle on the lock directory (and pin its identity) immediately
+  // before the reclaim rename. Holding the descriptor open prevents the
+  // filesystem from recycling this exact (dev, ino) for anything else until
+  // we close it below, so comparing identity against what actually landed in
+  // the tombstone (not just owner-file content) reliably detects a fresh
+  // acquirer that slipped in between the liveness read above and the rename
+  // below — including the case where NEITHER side has a (yet-unwritten)
+  // owner file. Two absent owner files are NOT proof it is the same lock;
+  // only a provably-unrecycled identity match is.
+  const preStealHandle = await openDirIdentityHandle(lockDir);
   // Atomic reclamation: rename the lock directory to a tombstone (exactly one
   // stealer wins the rename), verify the tombstone still holds the same dead
   // owner we judged, then remove it. If a fresh owner slipped in between the
@@ -418,27 +555,43 @@ async function stealRegistryLockFromDeadOwner(
     await rename(lockDir, tomb);
   } catch {
     // Lock released or another stealer won; let the caller retry mkdir().
+    if (preStealHandle) await preStealHandle.close().catch(() => undefined);
     return false;
   }
+  const postStealStats = await stat(tomb).catch(() => null);
   let tombRaw: string | null = null;
   try {
     tombRaw = await readFile(path.join(tomb, REGISTRY_LOCK_OWNER_FILENAME), "utf8");
   } catch {
     tombRaw = null;
   }
-  if (tombRaw !== ownerRaw) {
+  // Same-lock proof requires BOTH signals to agree. Requiring the identity
+  // match (rather than trusting content alone) is what prevents a false
+  // "same owner" verdict when both owner-file reads come back null/null — an
+  // indeterminate content comparison must never be treated as a match.
+  const sameLock =
+    preStealHandle !== null &&
+    postStealStats !== null &&
+    postStealStats.dev === preStealHandle.dev &&
+    postStealStats.ino === preStealHandle.ino &&
+    tombRaw === ownerRaw;
+  if (preStealHandle) await preStealHandle.close().catch(() => undefined);
+  if (!sameLock) {
     try {
       await rename(tomb, lockDir);
       return false;
     } catch {
-      // A third process created a new lock while we held the tombstone. The
-      // displaced fresh owner loses its lock; log loudly — the registry file
-      // itself stays consistent because writes are atomic (temp + rename).
+      // A third process created a new lock while we held the tombstone, so
+      // the displaced fresh owner's lock cannot be restored. The registry
+      // FILE itself stays consistent (writes are atomic temp+rename), but the
+      // displaced owner may still be executing under what it believes is
+      // exclusive access. Do not paper over this with a warning-and-continue:
+      // fail closed so the caller's operation is not reported as successful
+      // while an ambiguous concurrent-ownership state exists. The displaced
+      // owner's own release path (releaseRegistryLockIfOwned) independently
+      // detects and rejects the lost lock when it finishes.
       await rm(tomb, { recursive: true, force: true }).catch(() => undefined);
-      logger?.(
-        `[browser] WARNING: tab-lease lock steal collided with a concurrent acquirer at ${lockDir}; a lock holder may have been displaced.`,
-      );
-      return true;
+      throw new TabLeaseRegistryLockCollisionError(lockDir);
     }
   }
   await rm(tomb, { recursive: true, force: true }).catch(() => undefined);
@@ -447,6 +600,23 @@ async function stealRegistryLockFromDeadOwner(
     : `ownerless lock older than ${Math.round(OWNERLESS_LOCK_STEAL_AGE_MS / 1000)}s`;
   logger?.(`[browser] Reclaimed tab-lease registry lock at ${lockDir} from ${detail}.`);
   return true;
+}
+
+/** Test-only direct access to the internal dead-owner lock-steal logic. */
+export async function stealRegistryLockFromDeadOwnerForTest(
+  lockDir: string,
+  logger?: BrowserLogger,
+): Promise<boolean> {
+  return stealRegistryLockFromDeadOwner(lockDir, logger);
+}
+
+/** Test-only direct access to the internal registry-lock critical section. */
+export async function withRegistryLockForTest<T>(
+  profileDir: string,
+  callback: () => Promise<T>,
+  logger?: BrowserLogger,
+): Promise<T> {
+  return withRegistryLock(profileDir, callback, logger);
 }
 
 function isLockOwnerAlive(owner: RegistryLockOwner): boolean {
@@ -496,10 +666,16 @@ async function lockDirAgeMs(lockDir: string): Promise<number | null> {
   }
 }
 
-async function readRegistryOutcome(
-  profileDir: string,
-  logger?: BrowserLogger,
-): Promise<RegistryReadOutcome> {
+/**
+ * Pure, read-only registry read. Never mutates the registry file, even when
+ * the bytes are corrupt: a corrupt/wrong-shape document is reported as
+ * `readable: false` with the raw bytes attached via `corruptRaw` so a
+ * *locked* caller may attempt bounded recovery (see
+ * `readRegistryOutcomeLocked`). This function is safe to call without
+ * holding the registry lock (used by the lock-free census path,
+ * `countActiveBrowserTabLeases`) precisely because it never writes.
+ */
+async function readRegistryOutcome(profileDir: string): Promise<RegistryReadOutcome> {
   const file = registryPath(profileDir);
   let raw: string;
   try {
@@ -517,20 +693,19 @@ async function readRegistryOutcome(
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    return maybeRecoverCorruptRegistry(
-      profileDir,
-      raw,
-      "not valid JSON (torn or corrupt)",
-      error,
-      logger,
-    );
+    return {
+      readable: false,
+      reason: "not valid JSON (torn or corrupt)",
+      cause: error,
+      corruptRaw: raw,
+    };
   }
   if (
     !parsed ||
     typeof parsed !== "object" ||
     !Array.isArray((parsed as { leases?: unknown }).leases)
   ) {
-    return maybeRecoverCorruptRegistry(profileDir, raw, "wrong document shape", undefined, logger);
+    return { readable: false, reason: "wrong document shape", corruptRaw: raw };
   }
   const valid: BrowserTabLeaseRecord[] = [];
   const opaque: unknown[] = [];
@@ -545,6 +720,33 @@ async function readRegistryOutcome(
     }
   }
   return { readable: true, valid, opaque };
+}
+
+/**
+ * Locked variant of `readRegistryOutcome`: identical read, but when the
+ * document is corrupt/wrong-shape it may additionally attempt bounded
+ * quarantine recovery (`maybeRecoverCorruptRegistry`), which mutates the
+ * registry file (rename to a quarantine path). Callers MUST already hold the
+ * registry lock (`withRegistryLock`) before calling this — that is what
+ * makes the mutation safe. The lock-free census path
+ * (`countActiveBrowserTabLeases`) must never call this function; it uses the
+ * read-only `readRegistryOutcome` instead.
+ */
+async function readRegistryOutcomeLocked(
+  profileDir: string,
+  logger?: BrowserLogger,
+): Promise<RegistryReadOutcome> {
+  const outcome = await readRegistryOutcome(profileDir);
+  if (outcome.readable || outcome.corruptRaw === undefined) {
+    return outcome;
+  }
+  return maybeRecoverCorruptRegistry(
+    profileDir,
+    outcome.corruptRaw,
+    outcome.reason,
+    outcome.cause,
+    logger,
+  );
 }
 
 /**
