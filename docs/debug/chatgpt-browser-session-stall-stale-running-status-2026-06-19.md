@@ -5,13 +5,13 @@ Status: issue-style diagnostic report for the Oracle coding swarm.
 Source: moved and expanded from
 `/data/projects/<org>/scratch/260618E-throughput-rulings/ORACLE-DIAGNOSTICS.md`.
 
-Captured: 2026-06-19 during the `FETAOS-THROUGHPUT-OPTIMIZATION.md` ruling
+Captured: 2026-06-19 during the `<ORG>-THROUGHPUT-OPTIMIZATION.md` ruling
 session.
 
 ## Summary
 
 Oracle browser-mode ChatGPT runs failed in two different ways during a live
-FetaOS review workflow:
+<org> review workflow:
 
 1. A `gpt-5.5-pro` browser run with multiple attachments failed because
    attachments did not finish uploading before timeout.
@@ -85,7 +85,7 @@ writeOutputPath: /data/projects/<org>/scratch/260618E-throughput-rulings/ORACLE-
 files:
   AGENTS.md
   /data/projects/AGENTS.md
-  FETAOS-THROUGHPUT-OPTIMIZATION.md
+  <ORG>-THROUGHPUT-OPTIMIZATION.md
   DEFERRED-ITEMS-REGISTER.md
   Cargo.toml
   scripts/verify.sh
@@ -134,7 +134,7 @@ browserInlineFiles: false
 writeOutputPath: /data/projects/<org>/scratch/260618E-throughput-rulings/ORACLE-RESULT.md
 files:
   AGENTS.md
-  FETAOS-THROUGHPUT-OPTIMIZATION.md
+  <ORG>-THROUGHPUT-OPTIMIZATION.md
   Cargo.toml
   scripts/verify.sh
 ```
@@ -342,7 +342,7 @@ oracle --engine browser \
   --prompt-file scratch/260618E-throughput-rulings/ORACLE-PROMPT.md \
   --file AGENTS.md \
   --file /data/projects/AGENTS.md \
-  --file FETAOS-THROUGHPUT-OPTIMIZATION.md \
+  --file <ORG>-THROUGHPUT-OPTIMIZATION.md \
   --file DEFERRED-ITEMS-REGISTER.md \
   --file Cargo.toml \
   --file scripts/verify.sh
@@ -368,7 +368,7 @@ oracle --engine browser \
   --write-output scratch/oracle-repro-bundled-response-stall.md \
   --prompt-file scratch/260618E-throughput-rulings/ORACLE-PROMPT.md \
   --file AGENTS.md \
-  --file FETAOS-THROUGHPUT-OPTIMIZATION.md \
+  --file <ORG>-THROUGHPUT-OPTIMIZATION.md \
   --file Cargo.toml \
   --file scripts/verify.sh
 ```
@@ -442,7 +442,7 @@ browser-automation error.
 - Prefer smaller prompts and `--browser-bundle-files` when testing upload
   behavior. This avoided the initial attachment-upload failure but did not fix
   the response-wait stall.
-- Treat any Oracle recommendation as absent for the FetaOS Changes 3-4 ruling.
+- Treat any Oracle recommendation as absent for the <org> Changes 3-4 ruling.
   The only usable second-pass lens for those pending rulings was Agent Mail
   message `5132`.
 
