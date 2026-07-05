@@ -219,11 +219,14 @@ function createFakeClaudeExecutable({
   return executablePath;
 }
 
-// Simulates `caam` for the shallow-spawn integration (caam-map.md §4): a
-// `shallow-profile doctor <profile> --json` invocation (its own separate
-// process, via `execFile`) followed by a `shallow-spawn <profile> --base
-// <base> -- <claude> <args...>` invocation (the actual spawned child) that
-// behaves like `createFakeClaudeExecutable` above once "exec'd".
+// Simulates `caam` for the shallow-spawn integration (caam-map.md §4c/§4a): a
+// read-only `shallow-spawn <profile> --print-env --json` pre-flight
+// invocation (its own separate process, via `execFile`) followed by the real
+// `shallow-spawn <profile> --base <base> -- <claude> <args...>` invocation
+// (the actual spawned child) that behaves like `createFakeClaudeExecutable`
+// above once "exec'd". Both use the `shallow-spawn` subcommand, so they are
+// told apart by the presence of `--print-env` (the pre-flight never passes
+// `--base`/`--`, and the real spawn never passes `--print-env`).
 function createFakeCaamExecutable({
   binDir,
   doctorInvocationArgvPath,
@@ -260,10 +263,13 @@ function createFakeCaamExecutable({
     `const doctorHealthy = ${JSON.stringify(doctorHealthy)};`,
     `const stdoutEvents = ${JSON.stringify(events)};`,
     "const argv = process.argv.slice(2);",
-    "if (argv[0] === 'shallow-profile' && argv[1] === 'doctor') {",
+    "if (argv[0] === 'shallow-spawn' && argv.includes('--print-env')) {",
     "  fs.writeFileSync(doctorInvocationArgvPath, JSON.stringify(argv, null, 2));",
-    "  process.stdout.write(JSON.stringify({ healthy: doctorHealthy, profile: argv[2] }) + '\\n');",
-    "  process.exit(0);",
+    "  const verdict = doctorHealthy",
+    "    ? { success: true, home: '/fake/shallow-home/' + argv[1], shallow_profile: argv[1] }",
+    "    : { success: false, error: 'fake unhealthy profile ' + argv[1] };",
+    "  process.stdout.write(JSON.stringify(verdict) + '\\n');",
+    "  process.exit(doctorHealthy ? 0 : 1);",
     "}",
     "if (argv[0] === 'shallow-spawn') {",
     "  fs.writeFileSync(shallowSpawnArgvPath, JSON.stringify(argv, null, 2));",
@@ -3051,9 +3057,9 @@ describe("claude-code caam shallow-spawn integration (caam-map.md §4)", () => {
         },
       );
 
-      // Doctor ran read-only, scoped to the right profile, before the spawn.
+      // Doctor pre-flight ran read-only, scoped to the right profile, before the spawn.
       const doctorArgv = JSON.parse(fs.readFileSync(doctorInvocationArgvPath, "utf8")) as string[];
-      expect(doctorArgv).toEqual(["shallow-profile", "doctor", "arthur", "--json"]);
+      expect(doctorArgv).toEqual(["shallow-spawn", "arthur", "--print-env", "--json"]);
 
       // The outer command is exactly:
       //   caam shallow-spawn arthur --base <oracleHome>/claude-code-shallow-homes -- <claude> <inner argv...>
@@ -3206,7 +3212,7 @@ describe("claude-code caam shallow-spawn integration (caam-map.md §4)", () => {
     }
   });
 
-  test("graceful fallback: caam present but shallow-profile doctor reports unhealthy runs direct-claude behavior", async () => {
+  test("graceful fallback: caam present but shallow-spawn --print-env pre-flight reports unhealthy runs direct-claude behavior", async () => {
     vi.mocked(fsPromises.mkdir).mockRestore();
     vi.mocked(fsPromises.writeFile).mockRestore();
     const fixture = setupCaamFixture();
