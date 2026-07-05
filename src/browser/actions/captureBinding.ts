@@ -500,6 +500,23 @@ const CAPTURE_BINDING_ATTEMPTS = 3;
 const CAPTURE_BINDING_RETRY_DELAY_MS = 250;
 
 /**
+ * Verified-marker log line for a passed capture-binding validation. Full
+ * message-handle bindings and the weaker fallback tiers deliberately produce
+ * DIFFERENT wording so downstream log matchers (remote server provenance)
+ * can distinguish full structural verification from degraded
+ * conversation-level verification. Both variants keep the literal
+ * "capture binding verified" so older matchers stay compatible.
+ */
+export function formatCaptureBindingVerifiedLog(
+  quality: SubmittedMessageBindingQuality,
+  promptSha256: string,
+): string {
+  const strength =
+    quality === "message-handle" ? `(${quality})` : `at degraded strength (${quality})`;
+  return `[browser] Structural capture binding verified ${strength}; prompt sha256 ${promptSha256}`;
+}
+
+/**
  * Post-capture structural validation: the captured assistant message must be
  * bound to THIS run's own submitted user message, in the same conversation
  * the prompt was submitted to. Throws a typed `BrowserAutomationError`
@@ -549,9 +566,7 @@ export async function assertCapturedAssistantResponseBound(
         // later capture in this run is held to the same conversation.
         binding.conversationId = facts.conversationId;
       }
-      logger(
-        `[browser] Structural capture binding verified (${binding.quality}); prompt sha256 ${binding.promptSha256}`,
-      );
+      logger(formatCaptureBindingVerifiedLog(binding.quality, binding.promptSha256));
       return facts;
     }
     lastVerdict = verdict;

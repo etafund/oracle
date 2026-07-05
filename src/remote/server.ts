@@ -40,6 +40,7 @@ import {
 import { normalizeChatgptUrl } from "../browser/utils.js";
 import { resolveBrowserConfig } from "../browser/config.js";
 import { getBrowserCleanupTaint, type BrowserCleanupTaint } from "../browser/index.js";
+import type { SubmittedMessageBindingQuality } from "../browser/actions/captureBinding.js";
 import { countActiveBrowserTabLeases } from "../browser/tabLeaseRegistry.js";
 import {
   appendOracleRunEvent,
@@ -956,6 +957,7 @@ export async function createRemoteServer(
       let runErrorClass: RunErrorClass | null = null;
       let runRetryable: boolean | null = null;
       let bindingVerified: boolean | null = null;
+      let bindingQuality: SubmittedMessageBindingQuality | null = null;
       try {
         if (
           uploadIntegrity &&
@@ -994,11 +996,16 @@ export async function createRemoteServer(
               firstTokenAt = new Date().toISOString();
             }
             // Structural capture-binding markers feed the provenance summary
-            // of the terminal done event.
+            // of the terminal done event. bindingVerified means the
+            // validation PASSED at some tier; bindingQuality records the
+            // tier so a degraded conversation-only pass is never mistaken
+            // for full structural (message-handle) verification.
             if (/capture binding verified/i.test(message)) {
               bindingVerified = true;
+              bindingQuality = parseCaptureBindingVerifiedQuality(message);
             } else if (/capture binding (?:failed|mismatch|lost|unverified)/i.test(message)) {
               bindingVerified = false;
+              bindingQuality = null;
             }
             sendEvent({ type: "log", message });
           }
@@ -1079,6 +1086,7 @@ export async function createRemoteServer(
           provenance: await buildRunProvenance({
             result,
             bindingVerified,
+            bindingQuality,
             accountId,
           }),
           result: sanitizeResult(result, artifactRegistration.warnings),
@@ -1122,6 +1130,7 @@ export async function createRemoteServer(
           provenance: await buildRunProvenance({
             result: runResult,
             bindingVerified,
+            bindingQuality,
             accountId,
           }),
         });
@@ -1876,6 +1885,7 @@ function sha256Hex(value: string): string {
 async function buildRunProvenance(params: {
   result: BrowserRunResult | null;
   bindingVerified: boolean | null;
+  bindingQuality: SubmittedMessageBindingQuality | null;
   accountId: string;
 }): Promise<RemoteRunProvenanceSummary> {
   let challengeClean: boolean | null = null;
@@ -1891,8 +1901,27 @@ async function buildRunProvenance(params: {
     modelRequested: selection?.requestedModel ?? null,
     modelResolved: selection?.resolvedLabel ?? null,
     captureBindingVerified: params.bindingVerified,
+    captureBindingQuality: params.bindingVerified === true ? params.bindingQuality : null,
     challengeClean,
   };
+}
+
+/**
+ * Extract the strength tier from a capture-binding verified log line
+ * (see formatCaptureBindingVerifiedLog in browser/actions/captureBinding.ts).
+ * Full structural verification logs "verified (message-handle)"; the weaker
+ * fallbacks log "verified at degraded strength (guessed|conversation-only)".
+ * Returns null when the line carries no recognizable tier (e.g. an older
+ * browser layer) so the provenance never over-claims strength.
+ */
+export function parseCaptureBindingVerifiedQuality(
+  message: string,
+): SubmittedMessageBindingQuality | null {
+  const match =
+    /capture binding verified(?: at degraded strength)? \((message-handle|guessed|conversation-only)\)/i.exec(
+      message,
+    );
+  return match ? (match[1]!.toLowerCase() as SubmittedMessageBindingQuality) : null;
 }
 
 function parsePositiveIntEnv(value: string | undefined): number | undefined {

@@ -435,7 +435,8 @@ function handleEvent(params: {
         const p = event.provenance;
         params.options.log?.(
           `[remote] Terminal done.ok observed. Provenance: model=${String(p.modelVerified)} ` +
-            `binding=${String(p.captureBindingVerified)} challengeClean=${String(p.challengeClean)} ` +
+            `binding=${String(p.captureBindingVerified)} bindingQuality=${String(p.captureBindingQuality ?? null)} ` +
+            `challengeClean=${String(p.challengeClean)} ` +
             "(provenance verified means the plumbing was right, not that the answer is correct).",
         );
       }

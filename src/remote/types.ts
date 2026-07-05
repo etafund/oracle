@@ -1,6 +1,7 @@
 import type { BrowserSessionConfig } from "../sessionStore.js";
 import type { BrowserRunResult } from "../browserMode.js";
 import type { BrowserAttachment } from "../browser/types.js";
+import type { SubmittedMessageBindingQuality } from "../browser/actions/captureBinding.js";
 import type { SessionArtifactValidation } from "../sessionManager.js";
 import type { OracleBuildInfo } from "../version.js";
 import type { RunErrorClass } from "./run_event_sink.js";
@@ -105,6 +106,17 @@ export interface RemoteRunProvenanceSummary {
   modelRequested: string | null;
   modelResolved: string | null;
   captureBindingVerified: boolean | null;
+  /**
+   * Strength tier of a passed capture-binding validation:
+   * "message-handle" is full structural verification (the captured reply is
+   * provably bound to this run's own submitted message); "guessed" and
+   * "conversation-only" are degraded conversation-level verification only.
+   * `captureBindingVerified: true` alone therefore does NOT imply full
+   * structural binding — consumers needing the strong guarantee must also
+   * require quality "message-handle". Null when unverified, when validation
+   * failed, or when the worker's log did not report a recognizable tier.
+   */
+  captureBindingQuality: SubmittedMessageBindingQuality | null;
   challengeClean: boolean | null;
 }
 

@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
-import { createRemoteServer } from "../../src/remote/server.js";
+import { createRemoteServer, parseCaptureBindingVerifiedQuality } from "../../src/remote/server.js";
+import { formatCaptureBindingVerifiedLog } from "../../src/browser/actions/captureBinding.js";
 import { createRemoteBrowserExecutor, RemoteRunFailedError } from "../../src/remote/client.js";
 import { BrowserAutomationError } from "../../src/oracle/errors.js";
 import type { BrowserRunResult } from "../../src/browserMode.js";
@@ -81,7 +82,7 @@ describe("server: terminal done event", () => {
         {
           runBrowser: async (options) => {
             options.log?.("Submitted prompt via Enter key");
-            options.log?.("[browser] Structural capture binding verified (strict)");
+            options.log?.(formatCaptureBindingVerifiedLog("message-handle", "abc123"));
             return MINIMAL_RESULT;
           },
         },
@@ -106,6 +107,7 @@ describe("server: terminal done event", () => {
           modelRequested: "Pro",
           modelResolved: "Extended Pro",
           captureBindingVerified: true,
+          captureBindingQuality: "message-handle",
           challengeClean: true,
         });
       } finally {
@@ -113,6 +115,61 @@ describe("server: terminal done event", () => {
       }
     },
   );
+
+  // Regression (oracle-router-8em): a conversation-only degraded binding pass
+  // must not be reported as full structural verification — the provenance
+  // carries the tier so captureBindingVerified:true is never vacuous.
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "degraded conversation-only binding is distinguishable in provenance",
+    async () => {
+      await isolatedFleetDir();
+      const server = await createRemoteServer(
+        { host: "127.0.0.1", port: 0, token: "secret", logger: () => {}, attachOnly: false },
+        {
+          runBrowser: async (options) => {
+            options.log?.("Submitted prompt via Enter key");
+            options.log?.(formatCaptureBindingVerifiedLog("conversation-only", "abc123"));
+            return MINIMAL_RESULT;
+          },
+        },
+      );
+      try {
+        const response = await rawRun(server.port, "secret");
+        expect(response.statusCode).toBe(200);
+        const events = response.body
+          .split("\n")
+          .filter((line) => line.trim().length > 0)
+          .map((line) => JSON.parse(line) as Record<string, unknown>);
+        const done = events[events.length - 1]!;
+        expect(done.type).toBe("done");
+        expect(done.ok).toBe(true);
+        const provenance = done.provenance as Record<string, unknown>;
+        expect(provenance.captureBindingVerified).toBe(true);
+        expect(provenance.captureBindingQuality).toBe("conversation-only");
+      } finally {
+        await server.close();
+      }
+    },
+  );
+
+  describe("parseCaptureBindingVerifiedQuality", () => {
+    // Coupled to the REAL log format: the parser must understand exactly what
+    // formatCaptureBindingVerifiedLog emits, for every quality tier.
+    test("extracts each tier from the actual verified log line", () => {
+      for (const quality of ["message-handle", "guessed", "conversation-only"] as const) {
+        expect(
+          parseCaptureBindingVerifiedQuality(formatCaptureBindingVerifiedLog(quality, "deadbeef")),
+        ).toBe(quality);
+      }
+    });
+
+    test("returns null for legacy lines without a recognizable tier", () => {
+      expect(
+        parseCaptureBindingVerifiedQuality("[browser] Structural capture binding verified (strict)"),
+      ).toBeNull();
+      expect(parseCaptureBindingVerifiedQuality("capture binding verified")).toBeNull();
+    });
+  });
 
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
     "failure: done.ok=false carries the declared typed class and retry verdict",
