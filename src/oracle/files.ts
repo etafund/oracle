@@ -180,24 +180,24 @@ export async function readFiles(
   return files;
 }
 
-const BINARY_SNIFF_SAMPLE_BYTES = 8192;
-
 /**
- * Classic binary-content heuristic (the same one git and most text tools
- * use): a NUL byte anywhere in a leading sample is a near-certain sign of
- * binary content, and content that doesn't round-trip through strict UTF-8
- * decoding either isn't UTF-8 text at all or is itself corrupt — either way,
- * unsafe to force-decode and paste into a prompt. `raw` is the file's exact
- * original bytes, obtained via a lossless latin1 read (see call site).
- * Returns the decoded UTF-8 text on success, or `undefined` if the content
- * looks binary.
+ * Classic binary-content heuristic: a NUL byte anywhere in the content is a
+ * near-certain sign of binary data, and content that doesn't round-trip
+ * through strict UTF-8 decoding either isn't UTF-8 text at all or is itself
+ * corrupt — either way, unsafe to force-decode and paste into a prompt.
+ *
+ * Unlike git's leading-sample sniff, the NUL scan covers the ENTIRE content,
+ * not just the first 8 KiB: NUL (U+0000) is individually valid UTF-8, so a
+ * file whose first bytes are clean text but which embeds NULs past the sample
+ * would otherwise slip through the strict decode below. `raw` is the file's
+ * exact original bytes (already fully in memory, size-capped upstream by the
+ * max-file-size check), obtained via a lossless latin1 read (see call site),
+ * so the full scan costs no additional memory. Returns the decoded UTF-8
+ * text on success, or `undefined` if the content looks binary.
  */
 function decodeIfNotBinary(raw: string): string | undefined {
-  const sampleLength = Math.min(raw.length, BINARY_SNIFF_SAMPLE_BYTES);
-  for (let i = 0; i < sampleLength; i += 1) {
-    if (raw.charCodeAt(i) === 0) {
-      return undefined;
-    }
+  if (raw.includes("\u0000")) {
+    return undefined;
   }
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(raw, "latin1"));

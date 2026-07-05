@@ -413,6 +413,28 @@ describe("oracle utility helpers", () => {
       }
     });
 
+    test("binaryFileHandling: reject rejects a file whose only NUL byte sits past the first 8192 bytes (oracle-newcode-4-elf)", async () => {
+      const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-readfiles-binary-late-nul-"));
+      try {
+        const lateNulFile = path.join(dir, "sneaky.bin");
+        // First 16 KiB is clean printable ASCII; a single NUL byte lands at
+        // offset 12000 — past the old 8192-byte sniff window. NUL is itself
+        // valid UTF-8 (U+0000), so the strict-decode step alone would never
+        // catch it; only a full-content NUL scan does.
+        const bytes = Buffer.alloc(16384, 0x61); // 'a'
+        bytes[12000] = 0x00;
+        await writeFile(lateNulFile, bytes);
+        await expect(
+          readFiles([lateNulFile], { cwd: dir, binaryFileHandling: "reject" }),
+        ).rejects.toThrow(/sneaky\.bin/);
+        await expect(
+          readFiles([lateNulFile], { cwd: dir, binaryFileHandling: "reject" }),
+        ).rejects.toThrow(/binary/i);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
     test("binaryFileHandling: reject rejects invalid-UTF-8 content even without a NUL byte", async () => {
       const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-readfiles-binary-invalid-utf8-"));
       try {
