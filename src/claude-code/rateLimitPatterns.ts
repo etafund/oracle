@@ -22,12 +22,23 @@
  * checked FIRST. An ambiguous line that matches both pattern sets never
  * rotates — it hard-halts. Fail safe toward "ask a human", never toward
  * "auto-retry into a possibly-compromised account."
+ *
+ * `/capacity/i` was removed from the rate-limit set (oracle-router-n0t):
+ * it is too generic a token — it matched ordinary prose about capacity
+ * planning, disk capacity, etc. — and was a HIGH-severity false-positive
+ * source once these patterns started getting checked against a broader
+ * scan surface. The caller (`src/cli/sessionRunner.ts`'s
+ * `findClaudeCodeRateLimitOrChallengeSignal`) is additionally responsible
+ * for only ever handing this matcher CLI/system-level error text (stderr,
+ * or a `result` event with an explicit `is_error`/error-subtype flag) —
+ * never the model's own free-form answer/delta/message content — so a
+ * healthy session whose *task* is about rate limiting or auth no longer
+ * gets killed/rotated/hard-halted just for discussing the topic.
  */
 
 export const CLAUDE_CODE_RATE_LIMIT_PATTERNS: readonly RegExp[] = [
   /rate.?limit/i,
   /usage.?limit/i,
-  /capacity/i,
   /\b429\b/,
   /too.?many.?requests/i,
   /exceeded.*quota/i,

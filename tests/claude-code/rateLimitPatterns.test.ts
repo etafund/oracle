@@ -13,7 +13,7 @@ describe("matchClaudeCodeRateLimitOrChallengeText", () => {
       "429 Too Many Requests",
       "You have exceeded your quota",
       "rate limit exceeded, please retry later",
-      "capacity exceeded, try again shortly",
+      "quota exceeded, try again shortly",
     ]) {
       const match = matchClaudeCodeRateLimitOrChallengeText(text);
       expect(match?.kind).toBe("rate_limit");
@@ -56,5 +56,14 @@ describe("matchClaudeCodeRateLimitOrChallengeText", () => {
   test("pattern sets are non-empty and exported for extension", () => {
     expect(CLAUDE_CODE_RATE_LIMIT_PATTERNS.length).toBeGreaterThan(0);
     expect(CLAUDE_CODE_CHALLENGE_PATTERNS.length).toBeGreaterThan(0);
+  });
+
+  test("no longer matches a bare 'capacity' word (oracle-router-n0t: too generic, dropped)", () => {
+    expect(
+      matchClaudeCodeRateLimitOrChallengeText("the storage volume has more capacity now"),
+    ).toBeUndefined();
+    expect(
+      matchClaudeCodeRateLimitOrChallengeText("let's raise the team's capacity for next sprint"),
+    ).toBeUndefined();
   });
 });

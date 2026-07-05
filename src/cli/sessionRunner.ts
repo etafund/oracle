@@ -2335,16 +2335,34 @@ interface ClaudeCodeRateLimitOrChallengeSignal {
 
 /**
  * Sibling to `findClaudeCodeReadOnlyPolicyViolation` (caam-ratelimit-
- * rotation-design.md §1.3): scans the visible event stream for a Claude
- * -side rate-limit or challenge/auth signal, ported directly from caam's
- * own shipped text-pattern detector rather than any assumed JSON schema —
- * exit code is deliberately NOT a discriminator here (§1.3).
+ * rotation-design.md §1.3): scans for a Claude-side rate-limit or
+ * challenge/auth signal, ported from caam's own shipped text-pattern
+ * detector.
  *
- * Scan surface per event, in order: (a) `event.text` (the already-extracted
- * visible text), (b) `event.rawText` (stderr chunk events), and (c) as a
- * recall backstop, `JSON.stringify(event.json)` for stdout JSON events
- * whose extracted `.text` was empty — a rate-limit/auth message could ride
- * in a field `extractVisibleText` doesn't surface.
+ * (oracle-router-n0t, HIGH-severity fix) The scan surface is deliberately
+ * restricted to CLI/system-level error signals — it must NEVER scan the
+ * model's own free-form output. The original version scanned
+ * `extractVisibleText`'s output (and the raw JSON line text, which contains
+ * the same string) unconditionally: that is the assistant's final answer,
+ * streamed delta text, or message content, so a HEALTHY session whose
+ * *task* is about rate-limiting/auth/quotas (e.g. "write a rate limiter
+ * that returns 429", "explain OAuth unauthorized errors") matched the exact
+ * same generic word patterns as a real rate limit and got SIGTERM'd,
+ * cooled down, or hard-halted for a false "account challenge".
+ *
+ * Eligible candidates per event, in order:
+ *  (a) `event.rawText` for a raw stderr chunk (`event.stream === "stderr"`)
+ *      — the CLI process's own stderr stream, never model output, so it is
+ *      always eligible.
+ *  (b) a stdout event's extracted text plus its full JSON, but ONLY when
+ *      that event's JSON is itself an explicit CLI-reported error:
+ *      `is_error === true` (whatever the event `type`), or a `result` event
+ *      whose `subtype` is anything other than `"success"` (the CLI's real
+ *      error subtypes, e.g. `error_during_execution`, `error_max_turns`).
+ *      A *successful* result event's `.result` text is the model's final
+ *      answer and is NEVER a candidate, no matter what words it contains.
+ * Assistant `message`/`stream_event` delta content is never a candidate —
+ * it carries no error flag of its own, and is excluded outright regardless.
  *
  * Precedence, ported from caam's `penalty.go` (`isAuthError` before
  * `isRateLimitError`): challenge/auth is checked first, within EACH
@@ -2355,16 +2373,7 @@ function findClaudeCodeRateLimitOrChallengeSignal(
   events: readonly ClaudeCodeNormalizedEvent[],
 ): ClaudeCodeRateLimitOrChallengeSignal | undefined {
   for (const event of events) {
-    const candidates: string[] = [];
-    if (event.text) {
-      candidates.push(event.text);
-    }
-    if (event.rawText) {
-      candidates.push(event.rawText);
-    }
-    if ((!event.text || !event.text.trim()) && event.json) {
-      candidates.push(JSON.stringify(event.json));
-    }
+    const candidates = collectClaudeCodeErrorSignalCandidates(event);
     for (const candidate of candidates) {
       const match = matchClaudeCodeRateLimitOrChallengeText(candidate);
       if (match) {
@@ -2379,6 +2388,45 @@ function findClaudeCodeRateLimitOrChallengeSignal(
     }
   }
   return undefined;
+}
+
+/**
+ * Scan-surface gate for `findClaudeCodeRateLimitOrChallengeSignal`
+ * (oracle-router-n0t): builds the list of strings actually eligible for
+ * rate-limit/challenge pattern matching for one normalized event. See the
+ * doc comment above for exactly which events qualify and why.
+ */
+function collectClaudeCodeErrorSignalCandidates(event: ClaudeCodeNormalizedEvent): string[] {
+  if (event.stream === "stderr") {
+    return event.rawText ? [event.rawText] : [];
+  }
+  const json = claudeCodeObject(event.json);
+  if (!json || !isClaudeCodeErrorSignalJson(json)) {
+    return [];
+  }
+  const candidates: string[] = [];
+  if (event.text) {
+    candidates.push(event.text);
+  }
+  candidates.push(JSON.stringify(json));
+  return candidates;
+}
+
+/**
+ * True only for a stdout event's JSON that is itself an explicit CLI
+ * -reported error — `is_error === true`, or a `result` event whose
+ * `subtype` is anything other than `"success"`. A successful `result`
+ * event (`is_error` false/absent, `subtype: "success"`, or no subtype at
+ * all) is never an error signal here, even though its `.result` string is
+ * exactly what `extractVisibleText` surfaces as `event.text`.
+ */
+function isClaudeCodeErrorSignalJson(json: Record<string, unknown>): boolean {
+  if (json.is_error === true) {
+    return true;
+  }
+  const type = claudeCodeStringField(json, "type");
+  const subtype = claudeCodeStringField(json, "subtype");
+  return type === "result" && subtype !== undefined && subtype !== "success";
 }
 
 function findClaudeCodeReadOnlyPolicyViolation(

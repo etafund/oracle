@@ -409,8 +409,39 @@ function readJsonlLog(logsDir: string, name: string): unknown[] {
     .map((line) => JSON.parse(line) as unknown);
 }
 
+// A genuine CLI-reported error result (oracle-router-n0t): real rate-limit
+// / challenge signals carry the CLI's own explicit error markers
+// (`is_error: true`, a non-"success" `subtype`), which is exactly what the
+// narrowed `findClaudeCodeRateLimitOrChallengeSignal` scan surface now
+// requires before it will treat matched vocabulary as authoritative. This
+// is deliberately NOT a plain successful result — see
+// `benignSuccessResultEvent` below for that shape.
 function rateLimitResultEvent(text: string): Record<string, unknown> {
-  return { type: "result", result: text, modelUsage: { "claude-fable-5": {} }, total_cost_usd: 0 };
+  return {
+    type: "result",
+    subtype: "error_during_execution",
+    is_error: true,
+    result: text,
+    modelUsage: { "claude-fable-5": {} },
+    total_cost_usd: 0,
+  };
+}
+
+// A benign, SUCCESSFUL result event (oracle-router-n0t finding #2): the
+// model's own final-answer text may contain rate-limit/auth vocabulary as
+// ordinary content (the task is *about* rate limiting or auth) without the
+// run itself having failed. `is_error` is false and `subtype` is
+// `"success"`, so this must never be treated as a rate-limit/challenge
+// signal no matter what words `text` contains.
+function benignSuccessResultEvent(text: string): Record<string, unknown> {
+  return {
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: text,
+    modelUsage: { "claude-fable-5": {} },
+    total_cost_usd: 0,
+  };
 }
 
 beforeAll(() => {
@@ -3722,6 +3753,86 @@ describe("claude-code caam rate-limit rotation (caam-ratelimit-rotation-design.m
       expect(finalUpdate).toMatchObject({ status: "completed", errorMessage: undefined });
       const adapter = readAdapterMetadata(fixture) as { rotation?: unknown };
       expect(adapter.rotation).toBeUndefined();
+    } finally {
+      teardownRotationFixture(fixture);
+    }
+  });
+
+  test("caam active: a benign SUCCESSFUL transcript containing trigger vocabulary as ordinary content is left alone (oracle-router-n0t)", async () => {
+    // This is the key regression test for the HIGH-severity false-positive
+    // fix: a HEALTHY session whose task is *about* rate limiting/auth (the
+    // model's own final answer happens to say "rate limiter", "429",
+    // "quota", "unauthorized", "403") must NOT be killed, cooled down, or
+    // rotated just because those words appear in a *successful* result.
+    vi.mocked(fsPromises.mkdir).mockRestore();
+    vi.mocked(fsPromises.writeFile).mockRestore();
+    const fixture = setupRotationFixture();
+    try {
+      createFakeCaamExecutableWithRotation({
+        binDir: fixture.binDir,
+        logsDir: fixture.logsDir,
+        profileStdoutEvents: {
+          arthur: [
+            fakeClaudeCodeInitEvent(),
+            benignSuccessResultEvent(
+              "Implemented a token-bucket rate limiter that returns 429 when the quota is exceeded; unauthorized requests get 403.",
+            ),
+          ],
+        },
+        // Deliberately empty: `robot next` must never be invoked for this
+        // run. If a regression makes it get called, the fake `caam`
+        // executable will crash on the missing response entry, failing the
+        // test loudly.
+        robotNextResponses: [],
+      });
+
+      await withExactEnv(
+        {
+          ...blockedClaudeCodeEnvDefaults,
+          PATH: `${fixture.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "arthur",
+        },
+        async () => {
+          await performSessionRun({
+            sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+            runOptions: {
+              prompt: "Write a rate limiter that returns 429 for unauthorized requests",
+              model: "fable",
+            },
+            mode: "claude-code",
+            cwd: fixture.repoDir,
+            log,
+            write,
+            version: cliVersion,
+            muteStdout: true,
+          });
+        },
+      );
+
+      // Zero cooldown/rotation machinery invoked, and no second spawn.
+      expect(readJsonlLog(fixture.logsDir, "cooldown-calls.jsonl")).toHaveLength(0);
+      expect(readJsonlLog(fixture.logsDir, "robot-next-calls.jsonl")).toHaveLength(0);
+      expect(readJsonlLog(fixture.logsDir, "doctor-calls.jsonl")).toHaveLength(1);
+      expect(readJsonlLog(fixture.logsDir, "shallow-spawn-calls.jsonl")).toHaveLength(1);
+
+      const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+      expect(finalUpdate).toMatchObject({ status: "completed", mode: "claude-code" });
+      expect((finalUpdate as { errorMessage?: string }).errorMessage).toBeUndefined();
+
+      const adapter = readAdapterMetadata(fixture) as {
+        rotation?: {
+          attempts: Array<{ profile?: string; outcome: string }>;
+          final_profile: string | null;
+          rotations_used: number;
+          exhausted: boolean;
+        };
+      };
+      expect(adapter.rotation?.attempts).toEqual([
+        expect.objectContaining({ profile: "arthur", outcome: "success" }),
+      ]);
+      expect(adapter.rotation?.final_profile).toBe("arthur");
+      expect(adapter.rotation?.rotations_used).toBe(0);
+      expect(adapter.rotation?.exhausted).toBe(false);
     } finally {
       teardownRotationFixture(fixture);
     }
