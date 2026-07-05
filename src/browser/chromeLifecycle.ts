@@ -229,23 +229,31 @@ export async function connectToRemoteChrome(
   };
 }
 
+/**
+ * Close a remote Chrome target over the HTTP DevTools endpoint (independent of
+ * any page WebSocket session). Returns true when the target was closed (or
+ * there was nothing to close), false when the close attempt failed so callers
+ * can account for a possibly-orphaned tab instead of assuming settled-clean.
+ */
 export async function closeRemoteChromeTarget(
   host: string,
   port: number,
   targetId: string | undefined,
   logger: BrowserLogger,
-): Promise<void> {
+): Promise<boolean> {
   if (!targetId) {
-    return;
+    return true;
   }
   try {
     await CDP.Close({ host, port, id: targetId });
     if (logger.verbose) {
       logger(`Closed remote Chrome tab ${targetId}`);
     }
+    return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger(`Failed to close remote Chrome tab ${targetId}: ${message}`);
+    return false;
   }
 }
 
@@ -560,19 +568,26 @@ export async function connectWithNewTab(
   return { client };
 }
 
+/**
+ * Close an isolated tab over the HTTP DevTools endpoint. Returns true when the
+ * tab was closed, false when the close attempt failed so callers can account
+ * for a possibly-orphaned tab instead of assuming settled-clean.
+ */
 export async function closeTab(
   port: number,
   targetId: string,
   logger: BrowserLogger,
   host?: string,
-): Promise<void> {
+): Promise<boolean> {
   const effectiveHost = host ?? "127.0.0.1";
   try {
     await CDP.Close({ host: effectiveHost, port, id: targetId });
     logger(`Closed isolated browser tab (target=${targetId})`);
+    return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger(`Failed to close browser tab ${targetId}: ${message}`);
+    return false;
   }
 }
 

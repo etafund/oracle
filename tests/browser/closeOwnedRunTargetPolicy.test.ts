@@ -20,6 +20,7 @@ import {
 
 const {
   closeOwnedTargetWithDeadline,
+  closeRemoteConnectionAfterRun,
   resolveCloseOwnedRunTargetPolicy,
   shouldCloseOwnedRunTargetAfterRun,
 } = __test__;
@@ -152,15 +153,45 @@ describe("closeOwnedTargetWithDeadline (bounded close; §14.13 cleanup-taint)", 
     expect(messages.some((message) => message.includes("CLEANUP-TAINT"))).toBe(false);
   });
 
-  test("a rejected close still counts as settled (no worker pinning, no taint)", async () => {
-    const { logger } = makeLogger();
+  test("a rejected close settles (no worker pinning) but latches cleanup-taint, not settled-clean (oracle-router-lv2)", async () => {
+    const { logger, messages } = makeLogger();
     const closed = await closeOwnedTargetWithDeadline(
       Promise.reject(new Error("close failed")),
       logger,
       { targetId: "target-err", timeoutMs: 1_000 },
     );
+    expect(closed).toBe(false);
+    const taint = getBrowserCleanupTaint();
+    expect(taint).not.toBeNull();
+    expect(taint?.reason).toContain("owned-target close failed");
+    expect(taint?.reason).toContain("target-err");
+    expect(taint?.reason).toContain("close failed");
+    expect(messages.some((message) => message.includes("CLEANUP-TAINT"))).toBe(true);
+  });
+
+  test("a close helper that resolves false (fast failed close) latches cleanup-taint (oracle-router-lv2)", async () => {
+    const { logger, messages } = makeLogger();
+    const closed = await closeOwnedTargetWithDeadline(Promise.resolve(false), logger, {
+      targetId: "target-fast-fail",
+      timeoutMs: 1_000,
+    });
+    expect(closed).toBe(false);
+    const taint = getBrowserCleanupTaint();
+    expect(taint).not.toBeNull();
+    expect(taint?.reason).toContain("owned-target close failed");
+    expect(taint?.reason).toContain("target-fast-fail");
+    expect(messages.some((message) => message.includes("CLEANUP-TAINT"))).toBe(true);
+  });
+
+  test("a close helper that resolves true is settled-clean (no taint)", async () => {
+    const { logger, messages } = makeLogger();
+    const closed = await closeOwnedTargetWithDeadline(Promise.resolve(true), logger, {
+      targetId: "target-true",
+      timeoutMs: 1_000,
+    });
     expect(closed).toBe(true);
     expect(getBrowserCleanupTaint()).toBeNull();
+    expect(messages.some((message) => message.includes("CLEANUP-TAINT"))).toBe(false);
   });
 
   test("a wedged close times out, logs loudly, and latches the cleanup-taint flag", async () => {
@@ -180,6 +211,19 @@ describe("closeOwnedTargetWithDeadline (bounded close; §14.13 cleanup-taint)", 
     expect(messages.some((message) => message.includes("CLEANUP-TAINT"))).toBe(true);
   });
 
+  test("a rejected close from a boolean-returning helper reports the rejection detail", async () => {
+    const { logger } = makeLogger();
+    const failing = async (): Promise<boolean> => {
+      throw new Error("target already detached");
+    };
+    const closed = await closeOwnedTargetWithDeadline(failing(), logger, {
+      targetId: "target-bool-err",
+      timeoutMs: 1_000,
+    });
+    expect(closed).toBe(false);
+    expect(getBrowserCleanupTaint()?.reason).toContain("target already detached");
+  });
+
   test("clearBrowserCleanupTaint resets the latch", async () => {
     const { logger } = makeLogger();
     await closeOwnedTargetWithDeadline(new Promise<void>(() => {}), logger, {
@@ -188,6 +232,56 @@ describe("closeOwnedTargetWithDeadline (bounded close; §14.13 cleanup-taint)", 
     });
     expect(getBrowserCleanupTaint()).not.toBeNull();
     clearBrowserCleanupTaint();
+    expect(getBrowserCleanupTaint()).toBeNull();
+  });
+});
+
+describe("closeRemoteConnectionAfterRun cleanup-taint accounting (oracle-router-lv2)", () => {
+  test("a rejected connection close latches cleanup-taint instead of reporting settled-clean", async () => {
+    const { logger, messages } = makeLogger();
+    await closeRemoteConnectionAfterRun({
+      connectionClosedUnexpectedly: false,
+      connection: {
+        close: async () => {
+          throw new Error("dedicated target close blew up");
+        },
+      },
+      client: { close: async () => undefined },
+      runStatus: "complete",
+      logger,
+    });
+    const taint = getBrowserCleanupTaint();
+    expect(taint).not.toBeNull();
+    expect(taint?.reason).toContain("remote connection close failed");
+    expect(taint?.reason).toContain("dedicated target close blew up");
+    expect(messages.some((message) => message.includes("CLEANUP-TAINT"))).toBe(true);
+  });
+
+  test("a rejected client detach on an attempted run also latches cleanup-taint", async () => {
+    const { logger } = makeLogger();
+    await closeRemoteConnectionAfterRun({
+      connectionClosedUnexpectedly: false,
+      connection: { close: async () => undefined },
+      client: {
+        close: async () => {
+          throw new Error("detach failed");
+        },
+      },
+      runStatus: "attempted",
+      logger,
+    });
+    expect(getBrowserCleanupTaint()?.reason).toContain("detach failed");
+  });
+
+  test("a clean close latches no taint", async () => {
+    const { logger } = makeLogger();
+    await closeRemoteConnectionAfterRun({
+      connectionClosedUnexpectedly: false,
+      connection: { close: async () => undefined },
+      client: { close: async () => undefined },
+      runStatus: "complete",
+      logger,
+    });
     expect(getBrowserCleanupTaint()).toBeNull();
   });
 });

@@ -42,8 +42,10 @@ const SRC_ROOT = fileURLToPath(new URL("../../src", import.meta.url));
 const RELEASE_ANCHOR = "tabLease=null;awaithandle.release().catch(()=>undefined);";
 const REMOTE_CLOSE_ANCHOR =
   "awaitcloseRemoteChromeTarget(host,port,remoteTargetId??undefined,logger);";
-const LOCAL_CLOSE_ANCHOR =
-  "awaitcloseTab(chrome.port,isolatedTargetId,logger,chromeHost).catch(()=>undefined);";
+// No `.catch(...)` tail: runBrowserMode()'s close now returns the boolean
+// close outcome (so a failed close can taint cleanup state, oracle-router-lv2)
+// while projectSourcesRunner still swallows; the anchor is the shared prefix.
+const LOCAL_CLOSE_ANCHOR = "awaitcloseTab(chrome.port,isolatedTargetId,logger,chromeHost)";
 
 async function readSource(relative: string): Promise<string> {
   return readFile(path.join(SRC_ROOT, relative), "utf8");

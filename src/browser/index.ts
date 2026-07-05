@@ -848,18 +848,33 @@ async function closeRemoteConnectionAfterRun(options: {
   connection: { close: () => Promise<void> } | null;
   client: Pick<ChromeClient, "close"> | null;
   runStatus: "attempted" | "complete";
+  logger?: BrowserLogger;
 }): Promise<void> {
   if (options.connectionClosedUnexpectedly) {
+    // The CDP socket is already gone, so there is no live session to close
+    // here. This is NOT a silent skip of target cleanup: the owned-target
+    // close in the run's finally block still attempts the tab close over a
+    // fresh HTTP DevTools call and taints cleanup state if it fails.
     return;
   }
-  if (!options.connection) {
-    await options.client?.close();
-    return;
-  }
-  if (options.runStatus === "complete") {
-    await options.connection.close();
-  } else {
-    await options.client?.close();
+  try {
+    if (!options.connection) {
+      await options.client?.close();
+      return;
+    }
+    if (options.runStatus === "complete") {
+      await options.connection.close();
+    } else {
+      await options.client?.close();
+    }
+  } catch (error) {
+    // A rejected close must not report settled-clean: the dedicated target may
+    // still be open, so latch cleanup-taint for /ready instead of swallowing.
+    const detail = error instanceof Error ? error.message : String(error);
+    latchBrowserCleanupTaint(
+      `remote connection close failed after ${options.runStatus} run: ${detail}`,
+      options.logger,
+    );
   }
 }
 
@@ -925,27 +940,51 @@ export function clearBrowserCleanupTaint(): void {
   lastBrowserCleanupTaint = null;
 }
 
+function latchBrowserCleanupTaint(reason: string, logger?: BrowserLogger): void {
+  lastBrowserCleanupTaint = { at: new Date().toISOString(), reason };
+  logger?.(`[browser] CLEANUP-TAINT: ${reason}`);
+}
+
+type OwnedTargetCloseOutcome =
+  | { kind: "closed" }
+  | { kind: "failed"; detail: string }
+  | { kind: "timeout" };
+
+/**
+ * Awaits an owned-target close, bounded by the deadline. Returns true only for
+ * a clean close. A close that FAILS (rejects, or resolves `false` from the
+ * boolean-returning close helpers) is settled — the worker is not pinned — but
+ * it is NOT clean: the tab may still be open, so cleanup-taint is latched for
+ * /ready instead of reporting settled-clean (tabs would otherwise accumulate
+ * silently under the "always" close policy).
+ */
 async function closeOwnedTargetWithDeadline(
-  closePromise: Promise<void>,
+  closePromise: Promise<boolean | void>,
   logger: BrowserLogger,
   context: { targetId: string | null; timeoutMs?: number },
 ): Promise<boolean> {
   const timeoutMs = Math.max(1, context.timeoutMs ?? OWNED_TARGET_CLOSE_TIMEOUT_MS);
   let timer: ReturnType<typeof setTimeout> | null = null;
-  const timedOut = await Promise.race([
+  const outcome = await Promise.race<OwnedTargetCloseOutcome>([
     closePromise.then(
-      () => false,
-      () => false,
+      (result): OwnedTargetCloseOutcome =>
+        result === false
+          ? { kind: "failed", detail: "close attempt reported failure" }
+          : { kind: "closed" },
+      (error): OwnedTargetCloseOutcome => ({
+        kind: "failed",
+        detail: error instanceof Error ? error.message : String(error),
+      }),
     ),
-    new Promise<boolean>((resolve) => {
-      timer = setTimeout(() => resolve(true), timeoutMs);
+    new Promise<OwnedTargetCloseOutcome>((resolve) => {
+      timer = setTimeout(() => resolve({ kind: "timeout" }), timeoutMs);
       timer.unref?.();
     }),
   ]);
   if (timer) {
     clearTimeout(timer);
   }
-  if (timedOut) {
+  if (outcome.kind === "timeout") {
     const reason = `owned-target close timed out after ${timeoutMs}ms (target=${context.targetId ?? "unknown"})`;
     lastBrowserCleanupTaint = { at: new Date().toISOString(), reason };
     logger(
@@ -954,8 +993,16 @@ async function closeOwnedTargetWithDeadline(
     // Let the wedged close settle in the background without surfacing an
     // unhandled rejection.
     closePromise.catch(() => undefined);
+    return false;
   }
-  return !timedOut;
+  if (outcome.kind === "failed") {
+    latchBrowserCleanupTaint(
+      `owned-target close failed (target=${context.targetId ?? "unknown"}): ${outcome.detail}`,
+      logger,
+    );
+    return false;
+  }
+  return true;
 }
 
 function buildSkippedModelSelectionEvidence(
@@ -2513,6 +2560,10 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     // tab accumulation across repeated runs. Under the default policy, keep the
     // tab open on incomplete runs so reattach can recover the response; under
     // "always" (serve/manual-login) the owned tab closes on failure too.
+    // connectionClosedUnexpectedly does NOT skip this: the close goes over a
+    // fresh HTTP DevTools call, so a dead CDP socket is a close-attempt-needed
+    // case, and a failed attempt latches cleanup-taint instead of silently
+    // leaving the tab behind.
     if (
       shouldCloseOwnedRunTargetAfterRun({
         runStatus,
@@ -2521,11 +2572,10 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         policy: resolveCloseOwnedRunTargetPolicy(config),
       }) &&
       isolatedTargetId &&
-      chrome?.port &&
-      !connectionClosedUnexpectedly
+      chrome?.port
     ) {
-      const closeOwnedRunTab = async (isolatedTargetId: string): Promise<void> => {
-        await closeTab(chrome.port, isolatedTargetId, logger, chromeHost).catch(() => undefined);
+      const closeOwnedRunTab = async (isolatedTargetId: string): Promise<boolean> => {
+        return await closeTab(chrome.port, isolatedTargetId, logger, chromeHost);
       };
       await closeOwnedTargetWithDeadline(closeOwnedRunTab(isolatedTargetId), logger, {
         targetId: isolatedTargetId,
@@ -3986,6 +4036,7 @@ async function runRemoteBrowserMode(
         connection,
         client,
         runStatus,
+        logger,
       });
     } catch {
       // ignore
@@ -3996,6 +4047,10 @@ async function runRemoteBrowserMode(
     // Chrome"; releasing first opens a window in which a zero-lease reaper or
     // a peer's termination gate can kill the shared Chrome mid-close, and
     // concurrent runs can count a free slot that is still physically occupied.
+    // connectionClosedUnexpectedly does NOT skip this: the close goes over a
+    // fresh HTTP DevTools call, so a dead CDP socket is a close-attempt-needed
+    // case, and a failed attempt latches cleanup-taint instead of silently
+    // leaving the tab behind.
     if (
       shouldCloseOwnedRunTargetAfterRun({
         runStatus,
@@ -4003,11 +4058,10 @@ async function runRemoteBrowserMode(
         keepBrowser: Boolean(config.keepBrowser),
         policy: resolveCloseOwnedRunTargetPolicy(config),
       }) &&
-      remoteTargetId &&
-      !connectionClosedUnexpectedly
+      remoteTargetId
     ) {
-      const closeOwnedRunTarget = async (): Promise<void> => {
-        await closeRemoteChromeTarget(host, port, remoteTargetId ?? undefined, logger);
+      const closeOwnedRunTarget = async (): Promise<boolean> => {
+        return await closeRemoteChromeTarget(host, port, remoteTargetId ?? undefined, logger);
       };
       await closeOwnedTargetWithDeadline(closeOwnedRunTarget(), logger, {
         targetId: remoteTargetId,
