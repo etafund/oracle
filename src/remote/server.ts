@@ -449,6 +449,7 @@ export async function createRemoteServer(
       state: "substrate-broken",
       reason: null,
       busy,
+      admitting,
       attachOnly,
       chromeReachable: null,
       chromeOwnerOk: null,
@@ -528,6 +529,20 @@ export async function createRemoteServer(
         }
         base.state = classifyActiveRunReadinessState(activeRun);
         base.reason = "busy";
+        return { statusCode: 409, body: base };
+      }
+
+      // The admit window (request body being read/validated, `busy` not yet
+      // flipped) is NOT idle: a second run would be refused with 409, so
+      // /ready must not advertise idle-ready during it. Telemetry-only —
+      // admission itself is gated by the admitting/busy flags at /runs.
+      // Re-read the flag after the async probes above: the admit stage can
+      // open or close while they run, and the body must report the value the
+      // verdict was based on.
+      base.admitting = admitting;
+      if (admitting) {
+        base.state = "admitting";
+        base.reason = "admitting";
         return { statusCode: 409, body: base };
       }
 

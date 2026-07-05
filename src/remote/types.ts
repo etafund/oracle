@@ -12,6 +12,7 @@ export type RemoteActiveRunPhase = "running" | "completed";
 
 export type RemoteRunReadinessState =
   | "idle-ready"
+  | "admitting"
   | "active-run-client-connected"
   | "active-run-client-disconnected"
   | "completed-but-not-finalized"

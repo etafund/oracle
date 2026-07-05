@@ -381,6 +381,54 @@ describe("GET /ready", () => {
   );
 
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "the admit window (body being read, busy not yet set) reports 409 admitting, not idle-ready",
+    async () => {
+      await isolateManifest();
+      const profileDir = await tempDir("oracle-ready-profile-");
+      const server = await createRemoteServer(
+        {
+          host: "127.0.0.1",
+          port: 0,
+          token: "secret",
+          logger: () => {},
+          attachOnly: false,
+          manualLoginProfileDir: profileDir,
+        },
+        { runBrowser: async () => MINIMAL_RESULT },
+      );
+
+      // Hold the worker in the admit stage: declare a body but never finish
+      // sending it, so `admitting` is set while `busy` is not.
+      const held = startStalledRun(server.port, "secret");
+      try {
+        const admittingProbe = await waitFor(async () => {
+          const probe = await getReady(server.port, "secret");
+          return probe.json?.admitting === true ? probe : null;
+        });
+        expect(admittingProbe.statusCode).toBe(409);
+        expect(admittingProbe.json?.ok).toBe(false);
+        expect(admittingProbe.json?.state).toBe("admitting");
+        expect(admittingProbe.json?.reason).toBe("admitting");
+        expect(admittingProbe.json?.busy).toBe(false);
+        expect(admittingProbe.json?.activeRun).toBeNull();
+
+        held.abort();
+        // Once admission fails (client disconnect), the slot releases and the
+        // worker is idle-ready again.
+        const idle = await waitFor(async () => {
+          const probe = await getReady(server.port, "secret");
+          return probe.statusCode === 200 ? probe : null;
+        });
+        expect(idle.json?.state).toBe("idle-ready");
+        expect(idle.json?.admitting).toBe(false);
+      } finally {
+        held.abort();
+        await server.close();
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
     "latched cleanup taint fails readiness closed (503)",
     async () => {
       await isolateManifest();
@@ -565,6 +613,38 @@ function startRun(
       req?.destroy();
     },
     finished,
+  };
+}
+
+/**
+ * Open a POST /runs that declares a body but transmits only part of it,
+ * holding the server in the `admitting` stage until aborted.
+ */
+function startStalledRun(port: number, token: string): { abort(): void } {
+  const declared = JSON.stringify({
+    prompt: "hold",
+    attachments: [],
+    browserConfig: {},
+    options: {},
+  });
+  const req = http.request({
+    hostname: "127.0.0.1",
+    port,
+    path: "/runs",
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+      "content-length": Buffer.byteLength(declared),
+    },
+  });
+  req.on("error", () => undefined);
+  // Send only the first byte; the server waits on the rest.
+  req.write(declared.slice(0, 1));
+  return {
+    abort() {
+      req.destroy();
+    },
   };
 }
 
