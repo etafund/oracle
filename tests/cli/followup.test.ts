@@ -6,6 +6,7 @@ import {
   resolveClaudeCodeFollowupReference,
   assertClaudeCodeFollowupProfileMatches,
   assertClaudeCodeFollowupProfileMatchesRun,
+  assertFollowupLaneMatchesResolvedLane,
 } from "../../src/cli/followup.js";
 
 const baseMetadata: SessionMetadata = {
@@ -85,6 +86,24 @@ describe("browser follow-up resolution", () => {
     const store = { readSession: vi.fn(async () => metadata) };
 
     await expect(resolveBrowserFollowupReference("api-slug", store)).resolves.toBeNull();
+  });
+
+  test("surfaces the referenced session's recorded lane so callers can guard against a --lane mismatch", async () => {
+    const metadata: SessionMetadata = {
+      ...baseMetadata,
+      id: "chatgpt-pro-parent",
+      mode: "browser",
+      model: "gpt-5.5-pro",
+      lane: "chatgpt-pro",
+      browser: {
+        config: { url: "https://chatgpt.com/" },
+        runtime: { conversationId: "resume-me" },
+      },
+    };
+    const store = { readSession: vi.fn(async () => metadata) };
+
+    const resolved = await resolveBrowserFollowupReference("chatgpt-pro-parent", store);
+    expect(resolved?.lane).toBe("chatgpt-pro");
   });
 
   test("errors clearly when a browser session has no conversation URL", async () => {
@@ -267,6 +286,14 @@ describe("Claude Code (Fable lane) follow-up resolution — claude-provider-map.
     expect(resolved?.caamProfile).toBeUndefined();
   });
 
+  test("surfaces the referenced session's recorded lane so callers can guard against a --lane mismatch", async () => {
+    const metadata = { ...claudeCodeMetadata(), lane: "fable-local" };
+    const store = { readSession: vi.fn(async () => metadata) };
+
+    const resolved = await resolveClaudeCodeFollowupReference("fable-parent", store);
+    expect(resolved?.lane).toBe("fable-local");
+  });
+
   test("leaves stored browser/API sessions on their existing follow-up path (returns null)", async () => {
     const metadata: SessionMetadata = { ...baseMetadata, id: "api-slug", mode: "api" };
     const store = { readSession: vi.fn(async () => metadata) };
@@ -401,5 +428,77 @@ describe("Claude Code (Fable lane) follow-up resolution — claude-provider-map.
         env: {},
       }),
     ).toThrow(/SAME caam profile/);
+  });
+});
+
+describe("assertFollowupLaneMatchesResolvedLane — followup must not silently override an already-validated --lane", () => {
+  test("passes through when no --lane was requested (resolvedLane null)", () => {
+    expect(() =>
+      assertFollowupLaneMatchesResolvedLane({
+        resolvedLane: null,
+        followupSessionId: "some-session",
+        followupLane: "chatgpt-pro",
+        followupEngine: "browser",
+      }),
+    ).not.toThrow();
+  });
+
+  test("passes when the followup's engine and lane agree with the requested --lane", () => {
+    expect(() =>
+      assertFollowupLaneMatchesResolvedLane({
+        resolvedLane: { lane: "fable-local", engine: "claude-code" },
+        followupSessionId: "fable-parent",
+        followupLane: "fable-local",
+        followupEngine: "claude-code",
+      }),
+    ).not.toThrow();
+  });
+
+  test("passes when the followup session predates lane tracking (no lane recorded) but engine agrees", () => {
+    expect(() =>
+      assertFollowupLaneMatchesResolvedLane({
+        resolvedLane: { lane: "chatgpt-pro", engine: "browser" },
+        followupSessionId: "legacy-browser-session",
+        followupLane: undefined,
+        followupEngine: "browser",
+      }),
+    ).not.toThrow();
+  });
+
+  test("regression: --lane fable-local --followup <chatgpt-pro session> refuses instead of silently switching to engine=browser", () => {
+    // Bug: resolveBrowserFollowupReference resolved successfully purely off
+    // the referenced session's own metadata and the CLI then overwrote
+    // engine="claude-code" (from --lane fable-local) with engine="browser",
+    // discarding the validated Fable/read-only lane with no warning.
+    expect(() =>
+      assertFollowupLaneMatchesResolvedLane({
+        resolvedLane: { lane: "fable-local", engine: "claude-code" },
+        followupSessionId: "chatgpt-pro-parent",
+        followupLane: "chatgpt-pro",
+        followupEngine: "browser",
+      }),
+    ).toThrow(/--lane fable-local was requested and validated/);
+  });
+
+  test("regression: --lane chatgpt-pro --followup <fable session> refuses instead of silently switching to engine=claude-code", () => {
+    expect(() =>
+      assertFollowupLaneMatchesResolvedLane({
+        resolvedLane: { lane: "chatgpt-pro", engine: "browser" },
+        followupSessionId: "fable-parent",
+        followupLane: "fable-local",
+        followupEngine: "claude-code",
+      }),
+    ).toThrow(/--lane chatgpt-pro was requested and validated/);
+  });
+
+  test("error message names both the requested lane and the followup session's actual lane/engine", () => {
+    expect(() =>
+      assertFollowupLaneMatchesResolvedLane({
+        resolvedLane: { lane: "fable-local", engine: "claude-code" },
+        followupSessionId: "chatgpt-pro-parent",
+        followupLane: "chatgpt-pro",
+        followupEngine: "browser",
+      }),
+    ).toThrow(/chatgpt-pro-parent.*"chatgpt-pro".*engine=browser/s);
   });
 });

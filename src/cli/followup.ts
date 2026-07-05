@@ -12,6 +12,8 @@ export interface BrowserFollowupResolution {
   resumeConversationUrl: string;
   model: ModelName;
   browserConfig: BrowserSessionConfig;
+  /** The lane the referenced session actually ran under, if recorded (e.g. "chatgpt-pro"). */
+  lane?: string;
 }
 
 export interface FollowupSessionReader {
@@ -119,6 +121,7 @@ export async function resolveBrowserFollowupReference(
       researchMode: "off",
       archiveConversations: "never",
     },
+    lane: metadata.lane ?? metadata.options?.lane,
   };
 }
 
@@ -129,6 +132,8 @@ export interface ClaudeCodeFollowupResolution {
   /** caam shallow-spawn profile the parent run actually used, if any (caam-map.md §4). */
   caamProfile?: string;
   model?: string;
+  /** The lane the referenced session actually ran under, if recorded (e.g. "fable-local"). */
+  lane?: string;
 }
 
 /**
@@ -172,7 +177,56 @@ export async function resolveClaudeCodeFollowupReference(
     resumeSessionId,
     caamProfile: metadata.claudeCode?.caam_profile ?? undefined,
     model: typeof storedModel === "string" ? storedModel : undefined,
+    lane: metadata.lane ?? metadata.options?.lane,
   };
+}
+
+/**
+ * Fail-closed gate for the sibling bug to caam-map.md's "same profile or
+ * refuse": lane resolution (`resolveLanePolicy` in lanePolicy.ts) validates
+ * and applies a requested `--lane` (engine, model, read-only/no-tools
+ * guarantees, etc.) BEFORE `--followup` is resolved. Both
+ * `resolveBrowserFollowupReference` and `resolveClaudeCodeFollowupReference`
+ * only look at the referenced session's OWN stored metadata — they know
+ * nothing about the caller's requested lane — so a stale, copy-pasted, or
+ * mixed-lane `--followup` id can resolve to a DIFFERENT engine/lane than the
+ * one lane policy just validated. Left unchecked, the followup resolution
+ * silently overwrites `engine` (and `model`), discarding the verified lane
+ * the caller explicitly asked for with no warning. Call this once both
+ * `engine` and the followup resolution are finalized; it never guesses,
+ * only refuses.
+ */
+export function assertFollowupLaneMatchesResolvedLane({
+  resolvedLane,
+  followupSessionId,
+  followupLane,
+  followupEngine,
+}: {
+  /** The lane already validated and applied by `resolveLanePolicy`, if any. */
+  resolvedLane: { lane: string; engine: string } | null;
+  followupSessionId: string;
+  /** The lane recorded on the referenced `--followup` session, if any. */
+  followupLane?: string;
+  /** The engine the followup resolution is about to apply. */
+  followupEngine: string;
+}): void {
+  if (!resolvedLane) {
+    return;
+  }
+  const engineMatches = resolvedLane.engine === followupEngine;
+  const laneMatches = followupLane === undefined || followupLane === resolvedLane.lane;
+  if (engineMatches && laneMatches) {
+    return;
+  }
+  const actualLaneDescription =
+    followupLane !== undefined
+      ? `the "${followupLane}" lane (engine=${followupEngine})`
+      : `a session using engine=${followupEngine}`;
+  throw new Error(
+    `--lane ${resolvedLane.lane} was requested and validated (engine=${resolvedLane.engine}), but --followup ${followupSessionId} resolves to ${actualLaneDescription}, which does not match. Oracle refuses to silently switch engines/lanes after lane policy has already run. Retry with --followup ${followupSessionId} and ${
+      followupLane ? `--lane ${followupLane}` : "no --lane flag"
+    }, or choose a --followup session that actually belongs to --lane ${resolvedLane.lane}.`,
+  );
 }
 
 /**

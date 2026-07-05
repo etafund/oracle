@@ -97,6 +97,7 @@ import {
   resolveBrowserFollowupReference,
   resolveClaudeCodeFollowupReference,
   assertClaudeCodeFollowupProfileMatchesRun,
+  assertFollowupLaneMatchesResolvedLane,
 } from "../src/cli/followup.js";
 import {
   launchDetachedSessionFinalizer,
@@ -2741,6 +2742,17 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     }
     browserFollowup = await resolveBrowserFollowupReference(options.followup, sessionStore);
     if (browserFollowup) {
+      // A --lane was already validated and applied by `resolveLanePolicy`
+      // above (`resolvedLane`); resolving --followup independently of that
+      // lane must not silently reroute engine/model away from what lane
+      // policy just verified — refuse instead (mirrors the caam-profile
+      // fail-closed guard below).
+      assertFollowupLaneMatchesResolvedLane({
+        resolvedLane,
+        followupSessionId: browserFollowup.sessionId,
+        followupLane: browserFollowup.lane,
+        followupEngine: "browser",
+      });
       engine = "browser";
       resolvedOptions.model = browserFollowup.model;
       resolvedOptions.effectiveModelId = browserFollowup.model;
@@ -2752,6 +2764,13 @@ async function runRootCommand(options: CliOptions): Promise<void> {
         sessionStore,
       );
       if (claudeCodeFollowup) {
+        // Same lane-consistency guard as the browser-followup branch above.
+        assertFollowupLaneMatchesResolvedLane({
+          resolvedLane,
+          followupSessionId: claudeCodeFollowup.sessionId,
+          followupLane: claudeCodeFollowup.lane,
+          followupEngine: "claude-code",
+        });
         // caam-map.md "same profile or refuse": record what the parent ran
         // under; the actual refusal happens right after `buildRunOptions`
         // (still before anything is spawned) via
