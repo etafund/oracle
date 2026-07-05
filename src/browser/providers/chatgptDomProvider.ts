@@ -62,6 +62,13 @@ interface ChatgptDomProviderState {
   attachmentNames?: AttachmentReadyExpectation[];
   committedTurns?: number | null;
   onPromptSubmitted?: () => Promise<void> | void;
+  /**
+   * Authoritative worker account id (BrowserRunOptions.accountId, i.e. the
+   * serve layer's `options.accountId ?? env`). Threaded into the pre-run and
+   * pre-result quarantine gates so a trip is keyed on the same account id
+   * /ready and /runs admission use — see bead oracle-router-8t1.
+   */
+  accountId?: string;
 }
 
 interface ChatGptProDomVerificationOverrides {
@@ -104,7 +111,9 @@ async function waitForUi(ctx: ProviderDomFlowContext): Promise<void> {
   // login wall / verification interstitial / security block / rate limit.
   // Runs BEFORE ensurePromptReady so an access wall refuses in milliseconds
   // instead of burning the composer-wait timeout.
-  await assertPreRunAccessState(state.runtime, state.logger);
+  await assertPreRunAccessState(state.runtime, state.logger, {
+    quarantine: { accountId: state.accountId },
+  });
   await ensurePromptReady(state.runtime, state.inputTimeoutMs ?? 30_000, state.logger);
 }
 
@@ -148,6 +157,8 @@ async function waitForResponse(ctx: ProviderDomFlowContext): Promise<{
     state.timeoutMs,
     state.logger,
     state.baselineTurns ?? undefined,
+    undefined,
+    state.accountId,
   );
   return {
     text: answer.text,

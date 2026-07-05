@@ -161,6 +161,19 @@ export interface BrowserRunOptions {
    * reported with a typed post-submit transport class.
    */
   signal?: AbortSignal;
+  /**
+   * Authoritative worker account id, matching the serve layer's own
+   * resolution (`options.accountId ?? ORACLE_ACCOUNT_ID env ?? "acct1"`, see
+   * src/remote/server.ts). Threaded through to the browser-side quarantine
+   * gates (challengeDetection.ts pre-run/pre-result) so a trip is always
+   * keyed on the SAME account id the serve layer's /ready and /runs
+   * admission checks use — otherwise a caller-supplied accountId that
+   * diverges from env can make the latch trip under one identity while
+   * admission keeps checking another. Left undefined for non-server callers
+   * (CLI, direct SDK use); the quarantine layer falls back to resolving from
+   * env in that case, unchanged from prior behavior.
+   */
+  accountId?: string;
 }
 
 export interface BrowserArchiveResult {

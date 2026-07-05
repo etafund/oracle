@@ -42,6 +42,13 @@ import { assertCapturedAnswerNotAccessArtifact } from "./actions/challengeDetect
  *    interstitial is never emitted as an answer, and challenge-class
  *    findings trip the worker-local quarantine latch before the typed error
  *    surfaces.
+ *
+ * `accountId`, when supplied, is the caller's authoritative worker account
+ * id (server layer: `options.accountId ?? env`, see
+ * BrowserRunOptions.accountId) and is threaded into the quarantine gate so a
+ * trip lands under the SAME account id the serve layer's /ready and /runs
+ * admission checks use. Omitted callers keep the prior env-resolved
+ * behavior.
  */
 export async function waitForAssistantResponse(
   Runtime: ChromeClient["Runtime"],
@@ -49,6 +56,7 @@ export async function waitForAssistantResponse(
   logger: BrowserLogger,
   minTurnIndex?: number,
   expectedConversationId?: string,
+  accountId?: string,
 ): Promise<{
   text: string;
   html?: string;
@@ -66,6 +74,7 @@ export async function waitForAssistantResponse(
     Runtime,
     { text: captured.text, html: captured.html },
     logger,
+    { quarantine: { accountId } },
   );
   return captured;
 }

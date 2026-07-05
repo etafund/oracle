@@ -1706,6 +1706,10 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         baselineTurns: baselineTurns ?? undefined,
         attachmentNames: attachmentExpectations,
         onPromptSubmitted: markPromptSubmitted,
+        // Authoritative account id (server: options.accountId ?? env) so the
+        // browser-side quarantine gates trip under the same identity the
+        // serve layer's admission checks use (oracle-router-8t1).
+        accountId: options.accountId,
         chatgptProVerification: {
           enabled: isDesiredChatGptProModel(config.desiredModel),
         },
@@ -1976,6 +1980,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
                 logger,
                 baselineTurns ?? undefined,
                 expectedConversationId(),
+                options.accountId,
               ),
             timeoutMs,
             logger,
@@ -2012,6 +2017,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
                   logger,
                   baselineTurns ?? undefined,
                   expectedConversationId(),
+                  options.accountId,
                 ),
               timeoutMs: config.timeoutMs,
               logger,
@@ -3204,6 +3210,10 @@ async function runRemoteBrowserMode(
         baselineTurns: baselineTurns ?? undefined,
         attachmentNames: attachmentExpectations,
         onPromptSubmitted: markPromptSubmitted,
+        // Authoritative account id (server: options.accountId ?? env) so the
+        // browser-side quarantine gates trip under the same identity the
+        // serve layer's admission checks use (oracle-router-8t1).
+        accountId: options.accountId,
         chatgptProVerification: {
           enabled: isDesiredChatGptProModel(config.desiredModel),
         },
@@ -3435,6 +3445,7 @@ async function runRemoteBrowserMode(
               logger,
               baselineTurns ?? undefined,
               expectedConversationId(),
+              options.accountId,
             ),
           timeoutMs,
           logger,
@@ -3473,6 +3484,7 @@ async function runRemoteBrowserMode(
                 logger,
                 baselineTurns ?? undefined,
                 expectedConversationId(),
+                options.accountId,
               ),
             timeoutMs: config.timeoutMs,
             logger,
@@ -3994,6 +4006,7 @@ async function waitForAssistantResponseWithReload(
   logger: BrowserLogger,
   minTurnIndex?: number,
   expectedConversationId?: string,
+  accountId?: string,
 ) {
   try {
     return await waitForAssistantResponse(
@@ -4002,6 +4015,7 @@ async function waitForAssistantResponseWithReload(
       logger,
       minTurnIndex,
       expectedConversationId,
+      accountId,
     );
   } catch (error) {
     if (!shouldReloadAfterAssistantError(error)) {
@@ -4020,6 +4034,7 @@ async function waitForAssistantResponseWithReload(
       logger,
       minTurnIndex,
       expectedConversationId,
+      accountId,
     );
   }
 }

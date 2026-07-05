@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { mkdtemp } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import {
   ensureModelSelection,
   waitForAssistantResponse,
@@ -20,6 +23,7 @@ import * as attachments from "../../src/browser/actions/attachments.js";
 import * as attachmentDataTransfer from "../../src/browser/actions/attachmentDataTransfer.js";
 import type { ChromeClient } from "../../src/browser/types.js";
 import { BrowserAutomationError } from "../../src/oracle/errors.js";
+import { getQuarantineLatchState } from "../../src/browser/quarantineLatch.js";
 
 const logger = vi.fn();
 
@@ -1151,6 +1155,51 @@ describe("waitForAssistantResponse", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("waitForAssistantResponse pre-result gate account-id threading (8t1 regression)", () => {
+  // Regression for oracle-router-8t1: the serve layer resolves the worker's
+  // account id as `options.accountId ?? env` and keys /ready + /runs
+  // admission's quarantine check on that id. Before this fix, this facade's
+  // pre-result gate (`assertCapturedAnswerNotAccessArtifact`) was called
+  // with no accountId at all, so a trip always fell back to resolving from
+  // env only — landing under the WRONG identity whenever a caller's
+  // explicit accountId (the 6th param here) diverges from env.
+  test("a captured access-wall artifact trips the latch under the caller's accountId, not env", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-pageactions-quarantine-test-"));
+    vi.stubEnv("ORACLE_FLEET_DIR", dir);
+    vi.stubEnv("ORACLE_ACCOUNT_ID", "env-account");
+
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          type: "object",
+          value: {
+            text: "Verify you are human. Checking your browser.",
+            html: "<p>Verify you are human. Checking your browser.</p>",
+          },
+        },
+      }),
+    } as unknown as ChromeClient["Runtime"];
+
+    await expect(
+      waitForAssistantResponse(runtime, 1000, logger, undefined, undefined, "options-account"),
+    ).rejects.toMatchObject({
+      details: {
+        stage: "challenge-gate",
+        code: "challenge-gate-verification_interstitial",
+        gate: "pre-result",
+        retryable: false,
+      },
+    });
+
+    expect(
+      (await getQuarantineLatchState({ accountId: "options-account" })).quarantined,
+    ).toBe(true);
+    expect(
+      (await getQuarantineLatchState({ accountId: "env-account" })).quarantined,
+    ).toBe(false);
   });
 });
 

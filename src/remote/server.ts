@@ -984,6 +984,11 @@ export async function createRemoteServer(
           sessionId: payload.options.sessionId,
           followUpPrompts: payload.options.followUpPrompts,
           signal: runAbort.signal,
+          // Same resolved identity /ready and /runs admission use (options.accountId ?? env
+          // ?? DEFAULT_ACCOUNT_ID above), so the browser-side quarantine gates trip under
+          // this worker's authoritative account id rather than re-deriving from env
+          // independently (oracle-router-8t1).
+          accountId,
         });
         runResult = result;
         if (activeRun?.id === runId) {
