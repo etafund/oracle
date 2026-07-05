@@ -16,6 +16,32 @@ export type LaneAccessPath =
 
 export type LaneReadiness = "enabled" | "hidden-alpha-only" | "deferred" | "not-ready";
 
+/** How a lane physically gets file content into the model's context. */
+export type LaneAttachmentMechanism = "dom_upload" | "inline_text_only" | "http_fallback_only";
+
+export interface LaneAttachmentCapability {
+  /** Whether this lane accepts `--file` attachments at all. */
+  supported: boolean;
+  /** Whether non-text (binary) files survive the transport, not just UTF-8 text. */
+  binary_supported: boolean;
+  /** The transport an attached file actually rides on for this lane. */
+  mechanism: LaneAttachmentMechanism;
+  /**
+   * Whether attaching a file silently trades away the lane's normal
+   * verification/automation path for a weaker fallback (true for
+   * gemini-deep-think today: any attachment forces the unverified HTTP
+   * client instead of the FSM-verified DOM flow).
+   */
+  downgrades_verification: boolean;
+}
+
+export interface LaneContinuabilityCapability {
+  /** `--followup <sessionId>`: resume a past session in a brand-new invocation. */
+  cross_invocation_resume: boolean;
+  /** `--browser-follow-up`: additional turns in the same conversation, same process. */
+  same_invocation_multi_turn: boolean;
+}
+
 export interface LaneTemplate {
   lane: OracleLane;
   canonicalId: LaneCanonicalId;
@@ -39,6 +65,17 @@ export interface LaneTemplate {
    * lane behavior).
    */
   keyFlags: readonly string[];
+  /** File-attachment support/mechanism for this lane. See `LaneAttachmentCapability`. */
+  attachments: LaneAttachmentCapability;
+  /** Follow-up/multi-turn support for this lane. See `LaneContinuabilityCapability`. */
+  continuability: LaneContinuabilityCapability;
+  /**
+   * Whether an agent can dial reasoning depth up/down for this lane
+   * (e.g. ChatGPT Pro's `--browser-thinking-time`). false when the lane's
+   * reasoning mode is fixed (Gemini Deep Think is always-on with no lighter
+   * mode; Fable always runs `--effort xhigh` with no adjustable knob).
+   */
+  reasoning_depth_adjustable: boolean;
 }
 
 export const LANE_TEMPLATES: readonly LaneTemplate[] = [
@@ -68,6 +105,17 @@ export const LANE_TEMPLATES: readonly LaneTemplate[] = [
       "extended_thinking_selected_before_submit",
     ],
     keyFlags: ["--lane chatgpt-pro", "--browser-thinking-time extended"],
+    attachments: {
+      supported: true,
+      binary_supported: true,
+      mechanism: "dom_upload",
+      downgrades_verification: false,
+    },
+    continuability: {
+      cross_invocation_resume: true,
+      same_invocation_multi_turn: true,
+    },
+    reasoning_depth_adjustable: true,
   },
   {
     lane: "gemini-deep-think",
@@ -95,6 +143,17 @@ export const LANE_TEMPLATES: readonly LaneTemplate[] = [
       "deep_think_selected_before_submit",
     ],
     keyFlags: ["--lane gemini-deep-think", "--gemini-deep-think"],
+    attachments: {
+      supported: true,
+      binary_supported: true,
+      mechanism: "http_fallback_only",
+      downgrades_verification: true,
+    },
+    continuability: {
+      cross_invocation_resume: false,
+      same_invocation_multi_turn: false,
+    },
+    reasoning_depth_adjustable: false,
   },
   {
     lane: "fable-local",
@@ -128,6 +187,17 @@ export const LANE_TEMPLATES: readonly LaneTemplate[] = [
       "fable_model_verified_when_visible",
     ],
     keyFlags: ["--lane fable-local"],
+    attachments: {
+      supported: true,
+      binary_supported: false,
+      mechanism: "inline_text_only",
+      downgrades_verification: false,
+    },
+    continuability: {
+      cross_invocation_resume: true,
+      same_invocation_multi_turn: false,
+    },
+    reasoning_depth_adjustable: false,
   },
 ] as const;
 

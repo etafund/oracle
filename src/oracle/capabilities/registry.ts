@@ -23,7 +23,12 @@ import {
   BROWSER_EVIDENCE_SCHEMA_VERSION,
   REMOTE_BROWSER_ENDPOINT_SCHEMA_VERSION,
 } from "../v18/index.js";
-import { AGENT_LANE_POLICY_VERSION, LANE_TEMPLATES } from "../../cli/laneRegistry.js";
+import {
+  AGENT_LANE_POLICY_VERSION,
+  LANE_TEMPLATES,
+  type LaneAttachmentCapability,
+  type LaneContinuabilityCapability,
+} from "../../cli/laneRegistry.js";
 import { ORACLE_EXIT_CODE_DICTIONARY } from "../../cli/exitCodes.js";
 import { CORE_READ_COMMANDS } from "../../cli/coreReadCommands.js";
 
@@ -72,6 +77,12 @@ export interface CapabilityLaneSummary {
   readonly readiness: string;
   /** The flag(s) on top of `--lane <id>` that select this exact route. */
   readonly key_flags: readonly string[];
+  /** File-attachment support/mechanism for this lane. */
+  readonly attachments: LaneAttachmentCapability;
+  /** Follow-up/multi-turn support for this lane. */
+  readonly continuability: LaneContinuabilityCapability;
+  /** Whether reasoning depth can be dialed up/down for this lane. */
+  readonly reasoning_depth_adjustable: boolean;
 }
 
 export interface CapabilityReport {
@@ -364,6 +375,9 @@ export function buildLaneSummaries(): readonly CapabilityLaneSummary[] {
     doctor_command: entry.doctorCommand,
     readiness: entry.readiness,
     key_flags: entry.keyFlags,
+    attachments: entry.attachments,
+    continuability: entry.continuability,
+    reasoning_depth_adjustable: entry.reasoning_depth_adjustable,
   }));
 }
 

@@ -250,6 +250,9 @@ describe("RobotSurfacePayload — schema-pin regression test (agent-ergonomics S
     expect(payload.lanes_policy_version).toBe(AGENT_LANE_POLICY_VERSION);
     for (const lane of payload.lanes) {
       expect(lane.paid_calls).toBe(true);
+      expect(typeof lane.attachments.supported).toBe("boolean");
+      expect(typeof lane.continuability.cross_invocation_resume).toBe("boolean");
+      expect(typeof lane.reasoning_depth_adjustable).toBe("boolean");
     }
     // The "no entry currently exposes paid_calls=true" invariant above is
     // scoped to ROBOT_COMMANDS/`commands` on purpose — lanes are a

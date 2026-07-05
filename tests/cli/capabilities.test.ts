@@ -357,6 +357,15 @@ describe("CapabilityReport — schema-pin regression test (agent-ergonomics Stag
       expect(lane.doctor_command).toMatch(/^oracle doctor /);
       expect(Array.isArray(lane.key_flags)).toBe(true);
       expect(lane.key_flags.length).toBeGreaterThan(0);
+      expect(typeof lane.attachments.supported).toBe("boolean");
+      expect(typeof lane.attachments.binary_supported).toBe("boolean");
+      expect(["dom_upload", "inline_text_only", "http_fallback_only"]).toContain(
+        lane.attachments.mechanism,
+      );
+      expect(typeof lane.attachments.downgrades_verification).toBe("boolean");
+      expect(typeof lane.continuability.cross_invocation_resume).toBe("boolean");
+      expect(typeof lane.continuability.same_invocation_multi_turn).toBe("boolean");
+      expect(typeof lane.reasoning_depth_adjustable).toBe("boolean");
     }
   });
 
@@ -366,6 +375,55 @@ describe("CapabilityReport — schema-pin regression test (agent-ergonomics Stag
     const gemini = report.lanes.find((lane) => lane.lane === "gemini-deep-think");
     expect(chatgpt?.key_flags).toContain("--browser-thinking-time extended");
     expect(gemini?.key_flags).toContain("--gemini-deep-think");
+  });
+
+  test("attachments/continuability/reasoning_depth_adjustable are sourced from laneRegistry.ts per lane", () => {
+    const report = buildCapabilityReport({ env: EMPTY_ENV, now: FROZEN_TIME });
+    const chatgpt = report.lanes.find((lane) => lane.lane === "chatgpt-pro");
+    const gemini = report.lanes.find((lane) => lane.lane === "gemini-deep-think");
+    const fable = report.lanes.find((lane) => lane.lane === "fable-local");
+
+    expect(chatgpt?.attachments).toEqual({
+      supported: true,
+      binary_supported: true,
+      mechanism: "dom_upload",
+      downgrades_verification: false,
+    });
+    expect(chatgpt?.continuability).toEqual({
+      cross_invocation_resume: true,
+      same_invocation_multi_turn: true,
+    });
+    expect(chatgpt?.reasoning_depth_adjustable).toBe(true);
+
+    // Gemini Deep Think: attaching a file silently downgrades to the
+    // unverified HTTP client (see src/gemini-web/executionMode.ts), and
+    // --followup / --browser-follow-up don't resume Gemini sessions today.
+    expect(gemini?.attachments).toEqual({
+      supported: true,
+      binary_supported: true,
+      mechanism: "http_fallback_only",
+      downgrades_verification: true,
+    });
+    expect(gemini?.continuability).toEqual({
+      cross_invocation_resume: false,
+      same_invocation_multi_turn: false,
+    });
+    expect(gemini?.reasoning_depth_adjustable).toBe(false);
+
+    // Fable (claude-code): text-only inline attachments, real cross-invocation
+    // resume via --session-id, no same-invocation multi-turn (not a browser
+    // engine), and a fixed --effort xhigh with no adjustable depth knob.
+    expect(fable?.attachments).toEqual({
+      supported: true,
+      binary_supported: false,
+      mechanism: "inline_text_only",
+      downgrades_verification: false,
+    });
+    expect(fable?.continuability).toEqual({
+      cross_invocation_resume: true,
+      same_invocation_multi_turn: false,
+    });
+    expect(fable?.reasoning_depth_adjustable).toBe(false);
   });
 
   test("exit_codes matches the shared ORACLE_EXIT_CODE_DICTIONARY exactly", () => {
