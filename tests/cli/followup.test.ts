@@ -101,6 +101,39 @@ describe("browser follow-up resolution", () => {
     );
   });
 
+  test("rejects a Gemini Deep Think session with a lane-correct teach message", async () => {
+    const metadata: SessionMetadata = {
+      ...baseMetadata,
+      id: "gemini-run",
+      mode: "browser",
+      lane: "gemini-deep-think",
+      options: { lane: "gemini-deep-think", model: "gemini-3.1-pro-deep-think" },
+      browser: { runtime: { chromePort: 9222 } },
+    };
+    const store = { readSession: vi.fn(async () => metadata) };
+
+    const rejection = expect(resolveBrowserFollowupReference("gemini-run", store)).rejects;
+    await rejection.toThrow(
+      /Session gemini-run is a Gemini Deep Think session; Oracle does not yet support resuming Gemini browser sessions via --followup \(only ChatGPT Pro and Fable sessions are resumable today\)\. Start a new run instead: oracle --lane gemini-deep-think --prompt/s,
+    );
+    await rejection.not.toThrow(/ChatGPT conversation URL/);
+  });
+
+  test("detects the Gemini lane from the stored model when lane is absent", async () => {
+    const metadata: SessionMetadata = {
+      ...baseMetadata,
+      id: "gemini-model-only",
+      mode: "browser",
+      options: { model: "gemini-3.1-pro-deep-think" },
+      browser: { runtime: { chromePort: 9222 } },
+    };
+    const store = { readSession: vi.fn(async () => metadata) };
+
+    await expect(resolveBrowserFollowupReference("gemini-model-only", store)).rejects.toThrow(
+      /Gemini Deep Think session/,
+    );
+  });
+
   test("prefers the harvested URL over a stale runtime tab URL", () => {
     const metadata: SessionMetadata = {
       ...baseMetadata,

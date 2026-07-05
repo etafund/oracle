@@ -50,6 +50,23 @@ export function resolveBrowserResumeConversationUrl(
   return null;
 }
 
+/**
+ * A Gemini Deep Think session never records a resumable conversation URL
+ * (nothing in `src/gemini-web/` captures one today), so the generic
+ * "missing ChatGPT conversation URL" error is lane-incorrect and misleading
+ * for it. Detect the Gemini lane from stored session metadata so the
+ * follow-up rejection can teach the right alternative instead (Axiom-6
+ * error-teaches pattern, same spirit as `describeLaneBlockReason`).
+ */
+export function isGeminiDeepThinkSession(metadata: SessionMetadata): boolean {
+  const lane = metadata.lane ?? metadata.options?.lane;
+  if (lane === "gemini-deep-think") {
+    return true;
+  }
+  const model = metadata.options?.model ?? metadata.model;
+  return typeof model === "string" && model.startsWith("gemini-");
+}
+
 export async function resolveBrowserFollowupReference(
   value: string,
   store: FollowupSessionReader,
@@ -73,6 +90,11 @@ export async function resolveBrowserFollowupReference(
 
   const resumeConversationUrl = resolveBrowserResumeConversationUrl(metadata);
   if (!resumeConversationUrl) {
+    if (isGeminiDeepThinkSession(metadata)) {
+      throw new Error(
+        `Session ${trimmed} is a Gemini Deep Think session; Oracle does not yet support resuming Gemini browser sessions via --followup (only ChatGPT Pro and Fable sessions are resumable today). Start a new run instead: oracle --lane gemini-deep-think --prompt "..." --file path`,
+      );
+    }
     throw new Error(
       `Session ${trimmed} is a browser session but does not contain a ChatGPT conversation URL. Run "oracle status --hours 72 --limit 20" to list recent sessions.`,
     );
