@@ -5,6 +5,7 @@ import {
   CaamRotationError,
   runCaamCooldownSet,
   runCaamRobotNext,
+  runCaamRobotStatus,
   resolveClaudeCodeMaxRateLimitRotations,
   ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS_ENV_VAR,
 } from "../../src/claude-code/caamRotation.js";
@@ -165,6 +166,105 @@ describe("runCaamRobotNext (caam robot next claude --strategy smart)", () => {
 
     await expect(runCaamRobotNext("/opt/caam", "claude", { execFileImpl: impl })).rejects.toThrow(
       /data\.profile/,
+    );
+  });
+});
+
+describe("runCaamRobotStatus (caam robot status claude)", () => {
+  test("returns per-profile health + cooldown data on a well-formed success envelope", async () => {
+    const { impl, calls } = fakeExecFileSequence([
+      {
+        stdout: JSON.stringify({
+          success: true,
+          command: "status",
+          data: {
+            providers: [
+              {
+                id: "claude",
+                profiles: [
+                  {
+                    name: "arthur",
+                    active: true,
+                    health: { status: "healthy", expires_in: "23h" },
+                    cooldown: { active: false },
+                  },
+                  {
+                    name: "beth",
+                    active: false,
+                    health: { status: "critical", reason: "token expired", error_count_1h: 4 },
+                    cooldown: {
+                      active: true,
+                      remaining_ms: 60000,
+                      remaining_str: "1m0s",
+                      reason: "429 rate_limit",
+                    },
+                  },
+                ],
+              },
+            ],
+            summary: {
+              total_profiles: 2,
+              active_profiles: 1,
+              healthy_profiles: 1,
+              cooldown_profiles: 1,
+              expiring_soon: 0,
+              all_profiles_blocked: false,
+            },
+          },
+        }),
+      },
+    ]);
+
+    const outcome = await runCaamRobotStatus("/opt/caam", "claude", { execFileImpl: impl });
+
+    expect(calls).toEqual([["/opt/caam", "robot", "status", "claude"]]);
+    expect(outcome.success).toBe(true);
+    if (outcome.success) {
+      expect(outcome.data.providers[0].profiles.map((profile) => profile.name)).toEqual([
+        "arthur",
+        "beth",
+      ]);
+      expect(outcome.data.providers[0].profiles[1].cooldown).toMatchObject({
+        active: true,
+        remaining_str: "1m0s",
+      });
+    }
+  });
+
+  test("returns a well-formed failure envelope (not thrown) when caam reports one", async () => {
+    const { impl } = fakeExecFileSequence([
+      {
+        stdout: JSON.stringify({
+          success: false,
+          error: { code: "PROVIDER_NOT_CONFIGURED", message: "claude is not configured" },
+        }),
+        exitCode: 1,
+      },
+    ]);
+
+    const outcome = await runCaamRobotStatus("/opt/caam", "claude", { execFileImpl: impl });
+
+    expect(outcome).toEqual({
+      success: false,
+      code: "PROVIDER_NOT_CONFIGURED",
+      message: "claude is not configured",
+      raw: expect.any(Object),
+    });
+  });
+
+  test("throws CaamRotationError when stdout has no parseable JSON at all (caam version skew / missing binary)", async () => {
+    const { impl } = fakeExecFileSequence([{ exitCode: 1, stdout: "", stderr: "boom\n" }]);
+
+    await expect(runCaamRobotStatus("/opt/caam", "claude", { execFileImpl: impl })).rejects.toThrow(
+      CaamRotationError,
+    );
+  });
+
+  test("throws CaamRotationError when success:true but data.providers is missing", async () => {
+    const { impl } = fakeExecFileSequence([{ stdout: JSON.stringify({ success: true, data: {} }) }]);
+
+    await expect(runCaamRobotStatus("/opt/caam", "claude", { execFileImpl: impl })).rejects.toThrow(
+      /data\.providers/,
     );
   });
 });

@@ -21,6 +21,15 @@ import { execFile } from "node:child_process";
  *    stdout, success or failure; only the first parseable JSON object is
  *    trusted (some builds append a duplicate human-readable `Error: CODE:
  *    message` + cobra usage text after it on failure, also on stdout).
+ *  - `caam robot status <provider>` (`cmd/caam/cmd/robot.go:275-291,
+ *    runRobotStatus ~L378-450`): read-only, part of the same always-JSON
+ *    "Robot Mode" surface as `robot next` (robot.go's own doc comment:
+ *    "Designed for coding agents... All output is JSON."), so it shares the
+ *    same version-stability posture — unlike `shallow-profile doctor`
+ *    (caamDoctor.ts), which was dropped from caam entirely. Returns
+ *    per-profile `RobotHealthInfo` (status/reason/expires_at/expires_in) and
+ *    `RobotCooldown` (active/remaining_ms/remaining_str/reason). Parsed with
+ *    the same leading-JSON-object tolerance as `robot next`.
  */
 
 /** Opt-in knob: caps how many EXTRA profiles rotation will try (design §3.3). */
@@ -220,6 +229,121 @@ export async function runCaamRobotNext(
       );
     }
     return { success: true, profile, raw: parsed };
+  }
+  const errorField = record.error as Record<string, unknown> | undefined;
+  const code = typeof errorField?.code === "string" ? errorField.code : "UNKNOWN";
+  const message =
+    typeof errorField?.message === "string" ? errorField.message : JSON.stringify(parsed);
+  return { success: false, code, message, raw: parsed };
+}
+
+export interface CaamRobotHealthInfo {
+  status: string;
+  reason?: string;
+  expires_at?: string;
+  expires_in?: string;
+  error_count_1h?: number;
+}
+
+export interface CaamRobotCooldownInfo {
+  active: boolean;
+  until?: string;
+  remaining_ms?: number;
+  remaining_str?: string;
+  reason?: string;
+}
+
+export interface CaamRobotProfileInfo {
+  name: string;
+  active: boolean;
+  system?: boolean;
+  email?: string;
+  plan_type?: string;
+  health: CaamRobotHealthInfo;
+  cooldown?: CaamRobotCooldownInfo;
+  recommendation?: string;
+}
+
+export interface CaamRobotProviderInfo {
+  id: string;
+  display_name?: string;
+  logged_in?: boolean;
+  active_profile?: string;
+  profiles: CaamRobotProfileInfo[];
+}
+
+export interface CaamRobotStatusSummary {
+  total_profiles: number;
+  active_profiles: number;
+  healthy_profiles: number;
+  cooldown_profiles: number;
+  expiring_soon: number;
+  all_profiles_blocked: boolean;
+}
+
+export interface CaamRobotStatusData {
+  version?: string;
+  providers: CaamRobotProviderInfo[];
+  summary: CaamRobotStatusSummary;
+}
+
+export interface CaamRobotStatusSuccess {
+  success: true;
+  data: CaamRobotStatusData;
+  raw: unknown;
+}
+
+export interface CaamRobotStatusFailure {
+  success: false;
+  code: string;
+  message: string;
+  raw: unknown;
+}
+
+export type CaamRobotStatusOutcome = CaamRobotStatusSuccess | CaamRobotStatusFailure;
+
+/**
+ * `caam robot status <provider>` (design note above). Read-only — never
+ * mutates any caam state. Throws `CaamRotationError` only when the process
+ * itself failed to produce any parseable leading JSON object (spawn
+ * failure, garbage stdout, unrecognized version's output shape entirely);
+ * callers (doctor surfaces) should treat that as "caam health is
+ * unavailable/unknown", never as a hard failure of the caller itself.
+ */
+export async function runCaamRobotStatus(
+  caamExecutablePath: string,
+  provider: string,
+  options: CaamRotationExecOptions = {},
+): Promise<CaamRobotStatusOutcome> {
+  const exec = options.execFileImpl ?? execFile;
+  const env = options.env ?? process.env;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const outcome = await execCaamRotation(
+    exec,
+    caamExecutablePath,
+    ["robot", "status", provider],
+    env,
+    timeoutMs,
+  );
+  const parsed = parseLeadingJsonObject(outcome.stdout);
+  if (parsed === undefined) {
+    throw new CaamRotationError(
+      "robot_status_unparseable",
+      `caam robot status ${provider} did not return parseable JSON on stdout (exit ${outcome.code}): ${
+        outcome.stderr.trim() || outcome.stdout.trim() || "no output"
+      }`,
+    );
+  }
+  const record = parsed as Record<string, unknown>;
+  if (record.success === true) {
+    const data = record.data as CaamRobotStatusData | undefined;
+    if (!data || !Array.isArray(data.providers)) {
+      throw new CaamRotationError(
+        "robot_status_missing_data",
+        `caam robot status ${provider} reported success but data.providers was missing/not an array.`,
+      );
+    }
+    return { success: true, data, raw: parsed };
   }
   const errorField = record.error as Record<string, unknown> | undefined;
   const code = typeof errorField?.code === "string" ? errorField.code : "UNKNOWN";

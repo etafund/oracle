@@ -7,6 +7,7 @@ import {
 } from "./aggregate.js";
 import { registerChatGptDoctorCommand, type ChatGptDoctorOptions } from "./chatgpt.js";
 import { registerGeminiDoctorCommand, type GeminiDoctorOptions } from "./gemini.js";
+import { runCaamDoctorCheck } from "./caam.js";
 import {
   BROWSER_EVIDENCE_SCHEMA_VERSION,
   BROWSER_LEASE_SCHEMA_VERSION,
@@ -98,6 +99,7 @@ export function buildDefaultAggregateDoctorOptions(
     browserLeasesCheck: overrides.browserLeasesCheck ?? (async () => defaultBrowserLeasesCheck()),
     evidenceStorageCheck:
       overrides.evidenceStorageCheck ?? (async () => defaultEvidenceStorageCheck()),
+    caamCheck: overrides.caamCheck ?? (() => runCaamDoctorCheck()),
     ...overrides,
   };
 }

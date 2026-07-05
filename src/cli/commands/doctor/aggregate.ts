@@ -36,6 +36,7 @@ export interface AggregateDoctorData {
   provider_docs?: AggregateDoctorCheck;
   browser_leases?: AggregateDoctorCheck;
   evidence_storage?: AggregateDoctorCheck;
+  caam?: AggregateDoctorCheck;
 }
 
 export interface AggregateDoctorEnvelope {
@@ -67,6 +68,14 @@ export interface AggregateDoctorOptions {
   providerDocsCheck?: () => Promise<AggregateDoctorCheck>;
   browserLeasesCheck?: () => Promise<AggregateDoctorCheck>;
   evidenceStorageCheck?: () => Promise<AggregateDoctorCheck>;
+  /**
+   * caam account health + cooldown visibility (etafund R8). Distinct from
+   * the other optional checks: it MAY resolve to `undefined` even when a
+   * callback is supplied — that is the `ORACLE_CLAUDE_CODE_CAAM_PROFILE`
+   * opt-in gate (see `doctor/caam.ts`), and is intentionally NOT treated as
+   * an error the way an absent callback vs. a thrown error are.
+   */
+  caamCheck?: () => Promise<AggregateDoctorCheck | undefined>;
 }
 
 export interface AggregateDoctorIo {
@@ -89,6 +98,7 @@ export async function runAggregateDoctor(
     providerDocs,
     browserLeases,
     evidenceStorage,
+    caam,
   ] = await Promise.all([
     runCheck(
       () => options.chatgptDoctor?.() ?? defaultChatGptDoctor(store, remoteBrowser),
@@ -110,6 +120,7 @@ export async function runAggregateDoctor(
     runOptionalCheck(options.providerDocsCheck),
     runOptionalCheck(options.browserLeasesCheck),
     runOptionalCheck(options.evidenceStorageCheck),
+    runOptionalCaamCheck(options.caamCheck),
   ]);
 
   const providerChecks = [
@@ -117,7 +128,7 @@ export async function runAggregateDoctor(
     providerEnvelopeToCheck("gemini", gemini as ProviderDoctorEnvelope),
     lanePolicy as AggregateDoctorCheck,
   ];
-  const optionalChecks = [providerDocs, browserLeases, evidenceStorage].filter(
+  const optionalChecks = [providerDocs, browserLeases, evidenceStorage, caam].filter(
     (check): check is AggregateDoctorCheck => Boolean(check),
   );
   const checks = [
@@ -149,6 +160,7 @@ export async function runAggregateDoctor(
     ...(providerDocs ? { provider_docs: providerDocs } : {}),
     ...(browserLeases ? { browser_leases: browserLeases } : {}),
     ...(evidenceStorage ? { evidence_storage: evidenceStorage } : {}),
+    ...(caam ? { caam } : {}),
   };
   const envelope: AggregateDoctorEnvelope = {
     schema_version: "json_envelope.v1",
@@ -425,6 +437,28 @@ async function runOptionalCheck(
 ): Promise<AggregateDoctorCheck | undefined> {
   if (!callback) return undefined;
   return runCheck(callback, "optional_check") as Promise<AggregateDoctorCheck>;
+}
+
+/**
+ * Like `runOptionalCheck`, but the callback itself may legitimately resolve
+ * to `undefined` (the caam opt-in gate — `ORACLE_CLAUDE_CODE_CAAM_PROFILE`
+ * not configured), which must NOT be conflated with "the check threw".
+ */
+async function runOptionalCaamCheck(
+  callback: (() => Promise<AggregateDoctorCheck | undefined>) | undefined,
+): Promise<AggregateDoctorCheck | undefined> {
+  if (!callback) return undefined;
+  try {
+    return await callback();
+  } catch (error) {
+    return {
+      component: "caam",
+      status: "unknown",
+      code: "caam_check_error",
+      message: error instanceof Error ? error.message : String(error),
+      retry_safe: true,
+    };
+  }
 }
 
 function firstAction(
