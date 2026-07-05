@@ -148,6 +148,39 @@ describe("server: terminal done event", () => {
   );
 
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "failure: a worker-local filesystem path in the error is scrubbed from the done event",
+    async () => {
+      await isolatedFleetDir();
+      const localPath = "/Users/worker-runner/oracle/tmp/session-9f21/profile/Default";
+      const server = await createRemoteServer(
+        { host: "127.0.0.1", port: 0, token: "secret", logger: () => {}, attachOnly: false },
+        {
+          runBrowser: async () => {
+            throw new BrowserAutomationError(
+              `Failed to launch Chrome profile at ${localPath}: lock held`,
+              { oracleErrorClass: "capacity_busy", retryable: true },
+            );
+          },
+        },
+      );
+      try {
+        const response = await rawRun(server.port, "secret");
+        const done = lastEvent(response.body);
+        expect(done.type).toBe("done");
+        expect(done.ok).toBe(false);
+        const errorMessage = String(done.errorMessage);
+        expect(errorMessage).not.toContain(localPath);
+        expect(errorMessage).not.toContain("worker-runner");
+        // Actionable detail (error class/reason) survives the scrub.
+        expect(errorMessage).toContain("Failed to launch Chrome profile");
+        expect(errorMessage).toContain("lock held");
+      } finally {
+        await server.close();
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
     "failure without a declared class falls back to submit-aware transport classes",
     async () => {
       await isolatedFleetDir();

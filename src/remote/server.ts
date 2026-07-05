@@ -1060,7 +1060,7 @@ export async function createRemoteServer(
           type: "done",
           ok: false,
           errorClass: runErrorClass,
-          errorMessage: message,
+          errorMessage: sanitizeErrorMessage(message),
           retryable: runRetryable,
           provenance: await buildRunProvenance({
             result: runResult,
@@ -2169,6 +2169,30 @@ function containsLocalPath(value: string): boolean {
     /(?:^|[\s"'([])[A-Za-z]:[\\/]/.test(value) ||
     value.includes("\\AppData\\")
   );
+}
+
+// Matches `containsLocalPath`'s notion of "worker-local absolute path" but
+// scrubs the matched path text with a placeholder instead of dropping the
+// whole string. Used for the `done.errorMessage` the failure path forwards
+// to the remote caller (oracle-router-zm6): unlike `sanitizeResult` on the
+// success path, error messages come straight from `error.message` and can
+// contain a worker-local filesystem path (temp dirs, profile roots, user
+// home) that has no business leaving the worker. We keep the rest of the
+// message intact — error class/reason stays actionable — and only redact
+// the path token(s).
+const LOCAL_PATH_SCRUB_PATTERNS: RegExp[] = [
+  /(?:file:\/\/)?\/(?:Users|home|private|tmp)\/[^\s"'()[\]<>]*/gi,
+  /(?:file:\/\/)?\/mnt\/[a-z]\/Users\/[^\s"'()[\]<>]*/gi,
+  /\b[A-Za-z]:[\\/][^\s"'()[\]<>]*/g,
+  /[^\s"'()[\]<>]*\\AppData\\[^\s"'()[\]<>]*/gi,
+];
+
+function sanitizeErrorMessage(message: string): string {
+  let sanitized = message;
+  for (const pattern of LOCAL_PATH_SCRUB_PATTERNS) {
+    sanitized = sanitized.replace(pattern, "[worker-path-redacted]");
+  }
+  return sanitized;
 }
 
 function formatSocket(req: http.IncomingMessage): string {
