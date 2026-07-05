@@ -4,7 +4,8 @@ import { buildConversationUrl } from "../browser/reattachHelpers.js";
 import { resolveRecoveryUrl } from "../browser/recoverConversation.js";
 import { isRecoverableChatGptConversationUrl } from "../browser/reattachability.js";
 import { DEFAULT_MODEL } from "../oracle/config.js";
-import type { ModelName } from "../oracle/types.js";
+import type { ModelName, RunOracleOptions } from "../oracle/types.js";
+import { resolveClaudeCodeCaamProfile } from "../claude-code/caamCommand.js";
 
 export interface BrowserFollowupResolution {
   sessionId: string;
@@ -177,4 +178,36 @@ export function assertClaudeCodeFollowupProfileMatches({
       childProfile ?? null,
     )}. Set ORACLE_CLAUDE_CODE_CAAM_PROFILE to match (or leave it unset to match "no profile") and retry.`,
   );
+}
+
+/**
+ * Run-shaped wrapper over `assertClaudeCodeFollowupProfileMatches` that
+ * resolves "the profile THIS run would actually use" the exact same way
+ * `sessionRunner.ts` does — `resolveClaudeCodeCaamProfile` fed BOTH profile
+ * forms: the explicit config-key form (`runOptions.claudeCode.caamProfile`,
+ * which takes precedence) and the `ORACLE_CLAUDE_CODE_CAAM_PROFILE` env
+ * form. Callers must pass the actual built `RunOracleOptions` for the run
+ * being guarded so the two resolutions can never diverge (previously the
+ * CLI guard hardcoded `undefined` for the config-key argument and only ever
+ * saw the env form).
+ */
+export function assertClaudeCodeFollowupProfileMatchesRun({
+  parentSessionId,
+  parentProfile,
+  runOptions,
+  env,
+}: {
+  parentSessionId: string;
+  parentProfile?: string;
+  /** The actual built options for this run (structurally: `RunOracleOptions`). */
+  runOptions: {
+    claudeCode?: Pick<NonNullable<RunOracleOptions["claudeCode"]>, "caamProfile">;
+  };
+  env: NodeJS.ProcessEnv;
+}): void {
+  assertClaudeCodeFollowupProfileMatches({
+    parentSessionId,
+    parentProfile,
+    childProfile: resolveClaudeCodeCaamProfile(runOptions.claudeCode?.caamProfile, env),
+  });
 }

@@ -5,6 +5,7 @@ import {
   resolveBrowserResumeConversationUrl,
   resolveClaudeCodeFollowupReference,
   assertClaudeCodeFollowupProfileMatches,
+  assertClaudeCodeFollowupProfileMatchesRun,
 } from "../../src/cli/followup.js";
 
 const baseMetadata: SessionMetadata = {
@@ -298,6 +299,73 @@ describe("Claude Code (Fable lane) follow-up resolution — claude-provider-map.
         parentSessionId: "fable-parent",
         parentProfile: "arthur",
         childProfile: undefined,
+      }),
+    ).toThrow(/SAME caam profile/);
+  });
+
+  test("assertClaudeCodeFollowupProfileMatchesRun: recognizes the config-key profile form (refuses a mismatch even when the env form matches the parent)", () => {
+    // Regression: the CLI guard used to hardcode `undefined` for the
+    // config-key argument, so a run whose runOptions.claudeCode.caamProfile
+    // pointed at a DIFFERENT profile slipped past as long as the env var
+    // matched the parent.
+    expect(() =>
+      assertClaudeCodeFollowupProfileMatchesRun({
+        parentSessionId: "fable-parent",
+        parentProfile: "arthur",
+        runOptions: { claudeCode: { caamProfile: "bob" } },
+        env: { ORACLE_CLAUDE_CODE_CAAM_PROFILE: "arthur" },
+      }),
+    ).toThrow(/SAME caam profile/);
+  });
+
+  test("assertClaudeCodeFollowupProfileMatchesRun: config-key form takes precedence over the env form (matching config key passes despite a mismatched env var)", () => {
+    // Mirrors sessionRunner.ts exactly: resolveClaudeCodeCaamProfile prefers
+    // the config-key form, so the run WILL use "arthur" here — the guard
+    // must agree and pass.
+    expect(() =>
+      assertClaudeCodeFollowupProfileMatchesRun({
+        parentSessionId: "fable-parent",
+        parentProfile: "arthur",
+        runOptions: { claudeCode: { caamProfile: "arthur" } },
+        env: { ORACLE_CLAUDE_CODE_CAAM_PROFILE: "bob" },
+      }),
+    ).not.toThrow();
+  });
+
+  test("assertClaudeCodeFollowupProfileMatchesRun: still recognizes the env form when no config key is set", () => {
+    expect(() =>
+      assertClaudeCodeFollowupProfileMatchesRun({
+        parentSessionId: "fable-parent",
+        parentProfile: "arthur",
+        runOptions: { claudeCode: undefined },
+        env: { ORACLE_CLAUDE_CODE_CAAM_PROFILE: "arthur" },
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertClaudeCodeFollowupProfileMatchesRun({
+        parentSessionId: "fable-parent",
+        parentProfile: "arthur",
+        runOptions: { claudeCode: undefined },
+        env: { ORACLE_CLAUDE_CODE_CAAM_PROFILE: "bob" },
+      }),
+    ).toThrow(/SAME caam profile/);
+  });
+
+  test("assertClaudeCodeFollowupProfileMatchesRun: no profile in either form only matches a no-profile parent", () => {
+    expect(() =>
+      assertClaudeCodeFollowupProfileMatchesRun({
+        parentSessionId: "fable-parent",
+        parentProfile: undefined,
+        runOptions: { claudeCode: undefined },
+        env: {},
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertClaudeCodeFollowupProfileMatchesRun({
+        parentSessionId: "fable-parent",
+        parentProfile: "arthur",
+        runOptions: { claudeCode: undefined },
+        env: {},
       }),
     ).toThrow(/SAME caam profile/);
   });

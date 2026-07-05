@@ -96,9 +96,8 @@ import {
 import {
   resolveBrowserFollowupReference,
   resolveClaudeCodeFollowupReference,
-  assertClaudeCodeFollowupProfileMatches,
+  assertClaudeCodeFollowupProfileMatchesRun,
 } from "../src/cli/followup.js";
-import { resolveClaudeCodeCaamProfile } from "../src/claude-code/caamCommand.js";
 import {
   launchDetachedSessionFinalizer,
   launchDetachedSessionRunner,
@@ -2685,6 +2684,16 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   }
 
   let browserFollowup: Awaited<ReturnType<typeof resolveBrowserFollowupReference>> = null;
+  // caam-map.md "same profile or refuse" (set only for a resolved Claude
+  // Code --followup): carries the parent session's caam profile forward so
+  // the guard can be asserted against the ACTUAL built RunOracleOptions —
+  // i.e. resolved the exact same way `sessionRunner.ts` will resolve it,
+  // config-key form (`runOptions.claudeCode.caamProfile`) preferred over the
+  // ORACLE_CLAUDE_CODE_CAAM_PROFILE env form — instead of an env-only guess.
+  let claudeCodeFollowupProfileGuard: {
+    parentSessionId: string;
+    parentProfile?: string;
+  } | null = null;
   if (options.followup) {
     if (normalizedMultiModels.length > 0) {
       throw new Error("--followup cannot be combined with --models.");
@@ -2702,18 +2711,18 @@ async function runRootCommand(options: CliOptions): Promise<void> {
         sessionStore,
       );
       if (claudeCodeFollowup) {
-        // caam-map.md "same profile or refuse": compute the profile THIS
-        // run would actually use the exact same way `sessionRunner.ts` will
-        // (`resolveClaudeCodeCaamProfile`, config-key-then-env), and refuse
-        // before anything is spawned if it differs from what the parent
-        // session actually ran under — a resumed session must attach to
-        // the SAME `$HOME`/credential identity as its parent.
-        const childCaamProfile = resolveClaudeCodeCaamProfile(undefined, process.env);
-        assertClaudeCodeFollowupProfileMatches({
+        // caam-map.md "same profile or refuse": record what the parent ran
+        // under; the actual refusal happens right after `buildRunOptions`
+        // (still before anything is spawned) via
+        // `assertClaudeCodeFollowupProfileMatchesRun`, which resolves the
+        // profile THIS run would use the exact same way `sessionRunner.ts`
+        // will — BOTH the config-key form (`runOptions.claudeCode.caamProfile`)
+        // and the env form, config key preferred. A resumed session must
+        // attach to the SAME `$HOME`/credential identity as its parent.
+        claudeCodeFollowupProfileGuard = {
           parentSessionId: claudeCodeFollowup.sessionId,
           parentProfile: claudeCodeFollowup.caamProfile,
-          childProfile: childCaamProfile,
-        });
+        };
         engine = "claude-code";
         if (claudeCodeFollowup.model) {
           resolvedOptions.model = claudeCodeFollowup.model as ModelName;
@@ -2752,6 +2761,13 @@ async function runRootCommand(options: CliOptions): Promise<void> {
         background: false,
         baseUrl: undefined,
       });
+      if (claudeCodeFollowupProfileGuard) {
+        assertClaudeCodeFollowupProfileMatchesRun({
+          ...claudeCodeFollowupProfileGuard,
+          runOptions,
+          env: process.env,
+        });
+      }
       const { runDryRunSummary } = await import("../src/cli/dryRun.js");
       await runDryRunSummary(
         {
@@ -2969,6 +2985,16 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     background: resolvedOptions.background ?? userConfig.background,
     baseUrl: resolvedBaseUrl,
   });
+  // caam-map.md "same profile or refuse": asserted against the ACTUAL run
+  // options (config-key + env profile forms) before any session is created
+  // or anything is spawned.
+  if (claudeCodeFollowupProfileGuard) {
+    assertClaudeCodeFollowupProfileMatchesRun({
+      ...claudeCodeFollowupProfileGuard,
+      runOptions: baseRunOptions,
+      env: process.env,
+    });
+  }
   if (sessionMode === "api") {
     validateApiProviderRoutingForCli(baseRunOptions);
   }
