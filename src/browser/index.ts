@@ -3115,6 +3115,7 @@ async function runRemoteBrowserMode(
   let connection: Awaited<ReturnType<typeof connectToRemoteChrome>> | null = null;
   const browserWSEndpoint = config.remoteChromeBrowserWSEndpoint ?? undefined;
   const chromeProfileRoot = config.remoteChromeProfileRoot ?? undefined;
+  let removeAbortListener: (() => void) | null = () => {};
 
   try {
     const remoteLeaseProfileDir = config.browserTabRef
@@ -3165,6 +3166,33 @@ async function runRemoteBrowserMode(
       connectionClosedUnexpectedly = true;
     };
     client.on("disconnect", markConnectionLost);
+    // Mirrors the local (attach/launch) path's abort race so a caller
+    // disconnect/abort during a remote-chrome run can actually terminate the
+    // run instead of being silently ignored (oracle-router-6rx). Latent today
+    // (serve strips remoteChrome before it reaches this layer), but must not
+    // be a booby trap if that option is ever re-enabled.
+    const abortPromise = new Promise<never>((_, reject) => {
+      const signal = options.signal;
+      if (!signal) {
+        return;
+      }
+      const rejectAborted = () => {
+        logger("Caller disconnected; aborting run at the next wait point.");
+        // promptSubmitted is read at abort time so the typed class reflects
+        // whether the Send boundary was crossed.
+        reject(buildClientAbortError(promptSubmitted));
+      };
+      if (signal.aborted) {
+        rejectAborted();
+        return;
+      }
+      signal.addEventListener("abort", rejectAborted, { once: true });
+      removeAbortListener = () => signal.removeEventListener("abort", rejectAborted);
+    });
+    // Keep the rejection handled even if no wait is currently racing it.
+    void abortPromise.catch(() => undefined);
+    const raceWithAbort = <T>(promise: Promise<T>): Promise<T> =>
+      Promise.race([promise, abortPromise]);
     const { Network, Page, Runtime, Input, DOM } = client;
 
     const domainEnablers = [Network.enable({}), Page.enable(), Runtime.enable()];
@@ -3209,18 +3237,20 @@ async function runRemoteBrowserMode(
     logger("Skipping cookie sync for remote Chrome (using existing session)");
 
     if (config.resumeConversationUrl) {
-      await navigateToChatGPT(Page, Runtime, config.resumeConversationUrl, logger);
+      await raceWithAbort(navigateToChatGPT(Page, Runtime, config.resumeConversationUrl, logger));
     } else if (!attachedExistingTab) {
-      await navigateToChatGPT(Page, Runtime, config.url, logger);
+      await raceWithAbort(navigateToChatGPT(Page, Runtime, config.url, logger));
     }
-    await ensureNotBlocked(Runtime, config.headless, logger);
-    await ensureLoggedIn(Runtime, logger, { remoteSession: true });
-    await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
+    await raceWithAbort(ensureNotBlocked(Runtime, config.headless, logger));
+    await raceWithAbort(ensureLoggedIn(Runtime, logger, { remoteSession: true }));
+    await raceWithAbort(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
     if (config.resumeConversationUrl) {
-      await waitForResumedConversationHydration(Runtime, config.inputTimeoutMs, logger, {
-        requirePriorTurns: true,
-        expectedConversationUrl: config.resumeConversationUrl,
-      });
+      await raceWithAbort(
+        waitForResumedConversationHydration(Runtime, config.inputTimeoutMs, logger, {
+          requirePriorTurns: true,
+          expectedConversationUrl: config.resumeConversationUrl,
+        }),
+      );
     }
     logger(
       `Prompt textarea ready (initial focus, ${promptText.length.toLocaleString()} chars queued)`,
@@ -3240,21 +3270,23 @@ async function runRemoteBrowserMode(
 
     const modelStrategy = config.modelStrategy ?? DEFAULT_MODEL_STRATEGY;
     if (config.desiredModel && modelStrategy !== "ignore" && !config.resumeConversationUrl) {
-      modelSelectionEvidence = await withRetries(
-        () => ensureModelSelection(Runtime, config.desiredModel as string, logger, modelStrategy),
-        {
-          retries: 2,
-          delayMs: 300,
-          onRetry: (attempt, error) => {
-            if (options.verbose) {
-              logger(
-                `[retry] Model picker attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
-              );
-            }
+      modelSelectionEvidence = await raceWithAbort(
+        withRetries(
+          () => ensureModelSelection(Runtime, config.desiredModel as string, logger, modelStrategy),
+          {
+            retries: 2,
+            delayMs: 300,
+            onRetry: (attempt, error) => {
+              if (options.verbose) {
+                logger(
+                  `[retry] Model picker attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
+                );
+              }
+            },
           },
-        },
+        ),
       );
-      await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
+      await raceWithAbort(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
       logger(
         `Prompt textarea ready (after model switch, ${promptText.length.toLocaleString()} chars queued)`,
       );
@@ -3274,9 +3306,8 @@ async function runRemoteBrowserMode(
     const thinkingTime = config.thinkingTime;
     if (thinkingTime && !deepResearch) {
       const thinkingTargetModel = modelStrategy === "select" ? config.desiredModel : null;
-      await withRetries(
-        () => ensureThinkingTime(Runtime, thinkingTime, logger, thinkingTargetModel),
-        {
+      await raceWithAbort(
+        withRetries(() => ensureThinkingTime(Runtime, thinkingTime, logger, thinkingTargetModel), {
           retries: 2,
           delayMs: 300,
           onRetry: (attempt, error) => {
@@ -3286,7 +3317,7 @@ async function runRemoteBrowserMode(
               );
             }
           },
-        },
+        }),
       );
     }
     const submitOnce = async (prompt: string, submissionAttachments: BrowserAttachment[]) => {
@@ -3298,8 +3329,8 @@ async function runRemoteBrowserMode(
         name: path.basename(a.path),
         generatedBundle: a.generatedBundle === true,
       }));
-      await clearPromptComposer(Runtime, logger);
-      await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
+      await raceWithAbort(clearPromptComposer(Runtime, logger));
+      await raceWithAbort(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
       if (submissionAttachments.length > 0) {
         if (!DOM) {
           throw new Error("Chrome DOM domain unavailable while uploading attachments.");
@@ -3308,8 +3339,10 @@ async function runRemoteBrowserMode(
         // Use remote file transfer for remote Chrome (reads local files and injects via CDP)
         for (const attachment of submissionAttachments) {
           logger(`Uploading attachment: ${attachment.displayPath}`);
-          await uploadAttachmentViaDataTransfer({ runtime: Runtime, dom: DOM }, attachment, logger);
-          await delay(500);
+          await raceWithAbort(
+            uploadAttachmentViaDataTransfer({ runtime: Runtime, dom: DOM }, attachment, logger),
+          );
+          await raceWithAbort(delay(500));
         }
         // Scale timeout based on number of files: base 30s + 15s per additional file
         const baseTimeout = config.inputTimeoutMs ?? 30_000;
@@ -3317,22 +3350,26 @@ async function runRemoteBrowserMode(
         const waitBudget =
           Math.max(baseTimeout, 30_000) + (submissionAttachments.length - 1) * perFileTimeout;
         const attachmentWaitBudget = Math.max(config.attachmentTimeoutMs ?? 0, waitBudget);
-        await waitForAttachmentCompletion(Runtime, attachmentWaitBudget, attachmentNames, logger);
+        await raceWithAbort(
+          waitForAttachmentCompletion(Runtime, attachmentWaitBudget, attachmentNames, logger),
+        );
         logger("All attachments uploaded");
       }
       if (deepResearch) {
-        await withRetries(() => activateDeepResearch(Runtime, Input, logger), {
-          retries: 2,
-          delayMs: 500,
-          onRetry: (attempt, error) => {
-            if (options.verbose) {
-              logger(
-                `[retry] Deep Research activation attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
-              );
-            }
-          },
-        });
-        await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
+        await raceWithAbort(
+          withRetries(() => activateDeepResearch(Runtime, Input, logger), {
+            retries: 2,
+            delayMs: 500,
+            onRetry: (attempt, error) => {
+              if (options.verbose) {
+                logger(
+                  `[retry] Deep Research activation attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
+                );
+              }
+            },
+          }),
+        );
+        await raceWithAbort(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
         logger(
           `Prompt textarea ready (after Deep Research activation, ${prompt.length.toLocaleString()} chars queued)`,
         );
@@ -3381,26 +3418,28 @@ async function runRemoteBrowserMode(
     };
     const reloadPromptComposer = async () => {
       logger("[browser] Composer became unresponsive; reloading page and retrying once.");
-      await Page.reload({ ignoreCache: true });
-      await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
+      await raceWithAbort(Page.reload({ ignoreCache: true }));
+      await raceWithAbort(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
     };
 
     let baselineTurns: number | null = null;
     let baselineAssistantText: string | null = null;
     let deepResearchTargetKeys: string[] = [];
     let deepResearchTargetBaselineCaptured = false;
-    const submission = await runSubmissionWithRecovery({
-      prompt: promptText,
-      attachments,
-      fallbackSubmission: options.fallbackSubmission,
-      submit: submitOnce,
-      reloadPromptComposer,
-      prepareFallbackSubmission: async () => {
-        await clearPromptComposer(Runtime, logger);
-        await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
-      },
-      logger,
-    });
+    const submission = await raceWithAbort(
+      runSubmissionWithRecovery({
+        prompt: promptText,
+        attachments,
+        fallbackSubmission: options.fallbackSubmission,
+        submit: submitOnce,
+        reloadPromptComposer,
+        prepareFallbackSubmission: async () => {
+          await raceWithAbort(clearPromptComposer(Runtime, logger));
+          await raceWithAbort(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+        },
+        logger,
+      }),
+    );
     baselineTurns = submission.baselineTurns;
     baselineAssistantText = submission.baselineAssistantText;
     deepResearchTargetKeys = submission.deepResearchTargetKeys ?? [];
@@ -3408,18 +3447,20 @@ async function runRemoteBrowserMode(
     scheduleConversationHint("post-submit", config.timeoutMs ?? 120_000);
     const imageArtifactMinTurnIndex = baselineTurns;
     if (deepResearch) {
-      await waitForResearchPlanAutoConfirm(Runtime, logger);
-      const researchResult = await waitForDeepResearchCompletion(
-        Runtime,
-        logger,
-        config.timeoutMs,
-        baselineTurns,
-        Page,
-        client,
-        {
-          ignoredTargetKeys: deepResearchTargetKeys,
-          targetBaselineCaptured: deepResearchTargetBaselineCaptured,
-        },
+      await raceWithAbort(waitForResearchPlanAutoConfirm(Runtime, logger));
+      const researchResult = await raceWithAbort(
+        waitForDeepResearchCompletion(
+          Runtime,
+          logger,
+          config.timeoutMs,
+          baselineTurns,
+          Page,
+          client,
+          {
+            ignoredTargetKeys: deepResearchTargetKeys,
+            targetBaselineCaptured: deepResearchTargetBaselineCaptured,
+          },
+        ),
       );
       await emitRuntimeHint();
       const durationMs = Date.now() - startedAt;
@@ -3533,13 +3574,13 @@ async function runRemoteBrowserMode(
       logger(
         `[browser] Assistant response timed out; waiting ${formatElapsed(recheckDelayMs)} before rechecking conversation.`,
       );
-      await delay(recheckDelayMs);
+      await raceWithAbort(delay(recheckDelayMs));
       const conversationUrl = await readConversationUrl(Runtime);
       if (conversationUrl && isConversationUrl(conversationUrl)) {
         lastUrl = conversationUrl;
         logger(`[browser] Rechecking assistant response at ${conversationUrl}`);
-        await Page.navigate({ url: conversationUrl });
-        await delay(1000);
+        await raceWithAbort(Page.navigate({ url: conversationUrl }));
+        await raceWithAbort(delay(1000));
       }
       // Validate session before attempting recheck - sessions can expire during the delay
       const sessionValid = await validateChatGPTSession(Runtime, logger);
@@ -3575,24 +3616,26 @@ async function runRemoteBrowserMode(
       await emitRuntimeHint();
       const timeoutMs = recheckTimeoutMs > 0 ? recheckTimeoutMs : config.timeoutMs;
       const rechecked = await waitWithThinkingMonitor(() =>
-        waitForAssistantOrGeneratedImageResponse({
-          Runtime,
-          waitForText: () =>
-            waitForAssistantResponseWithReload(
-              Runtime,
-              Page,
-              timeoutMs,
-              logger,
-              baselineTurns ?? undefined,
-              expectedConversationId(),
-              options.accountId,
-            ),
-          timeoutMs,
-          logger,
-          minTurnIndex: baselineTurns ?? undefined,
-          expectedConversationId: expectedConversationId(),
-          imageOutputRequested,
-        }),
+        raceWithAbort(
+          waitForAssistantOrGeneratedImageResponse({
+            Runtime,
+            waitForText: () =>
+              waitForAssistantResponseWithReload(
+                Runtime,
+                Page,
+                timeoutMs,
+                logger,
+                baselineTurns ?? undefined,
+                expectedConversationId(),
+                options.accountId,
+              ),
+            timeoutMs,
+            logger,
+            minTurnIndex: baselineTurns ?? undefined,
+            expectedConversationId: expectedConversationId(),
+            imageOutputRequested,
+          }),
+        ),
       );
       logger("Recovered assistant response after delayed recheck");
       return rechecked;
@@ -3614,24 +3657,26 @@ async function runRemoteBrowserMode(
           await emitRuntimeHint();
         }
         turnAnswer = await waitWithThinkingMonitor(() =>
-          waitForAssistantOrGeneratedImageResponse({
-            Runtime,
-            waitForText: () =>
-              waitForAssistantResponseWithReload(
-                Runtime,
-                Page,
-                config.timeoutMs,
-                logger,
-                baselineTurns ?? undefined,
-                expectedConversationId(),
-                options.accountId,
-              ),
-            timeoutMs: config.timeoutMs,
-            logger,
-            minTurnIndex: baselineTurns ?? undefined,
-            expectedConversationId: expectedConversationId(),
-            imageOutputRequested,
-          }),
+          raceWithAbort(
+            waitForAssistantOrGeneratedImageResponse({
+              Runtime,
+              waitForText: () =>
+                waitForAssistantResponseWithReload(
+                  Runtime,
+                  Page,
+                  config.timeoutMs,
+                  logger,
+                  baselineTurns ?? undefined,
+                  expectedConversationId(),
+                  options.accountId,
+                ),
+              timeoutMs: config.timeoutMs,
+              logger,
+              minTurnIndex: baselineTurns ?? undefined,
+              expectedConversationId: expectedConversationId(),
+              imageOutputRequested,
+            }),
+          ),
         );
       } catch (error) {
         if (isAssistantResponseTimeoutError(error)) {
@@ -3703,25 +3748,27 @@ async function runRemoteBrowserMode(
       let turnAnswerText = turnAnswer.text;
       const turnAnswerHtml = turnAnswer.html ?? "";
 
-      const copiedMarkdown = await withRetries(
-        async () => {
-          const attempt = await captureAssistantMarkdown(Runtime, turnAnswer.meta, logger);
-          if (!attempt) {
-            throw new Error("copy-missing");
-          }
-          return attempt;
-        },
-        {
-          retries: 2,
-          delayMs: 350,
-          onRetry: (attempt, error) => {
-            if (options.verbose) {
-              logger(
-                `[retry] Markdown capture attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
-              );
+      const copiedMarkdown = await raceWithAbort(
+        withRetries(
+          async () => {
+            const attempt = await captureAssistantMarkdown(Runtime, turnAnswer.meta, logger);
+            if (!attempt) {
+              throw new Error("copy-missing");
             }
+            return attempt;
           },
-        },
+          {
+            retries: 2,
+            delayMs: 350,
+            onRetry: (attempt, error) => {
+              if (options.verbose) {
+                logger(
+                  `[retry] Markdown capture attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
+                );
+              }
+            },
+          },
+        ),
       ).catch(() => null);
 
       let turnAnswerMarkdown = copiedMarkdown ?? turnAnswerText;
@@ -3854,19 +3901,21 @@ async function runRemoteBrowserMode(
     for (let index = 0; index < followUpPrompts.length; index += 1) {
       const followUpPrompt = followUpPrompts[index];
       logger(`[browser] Sending follow-up ${index + 1}/${followUpPrompts.length}`);
-      await clearPromptComposer(Runtime, logger);
-      await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
-      const submission = await runSubmissionWithRecovery({
-        prompt: followUpPrompt,
-        attachments: [],
-        submit: submitOnce,
-        reloadPromptComposer,
-        prepareFallbackSubmission: async () => {
-          await clearPromptComposer(Runtime, logger);
-          await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
-        },
-        logger,
-      });
+      await raceWithAbort(clearPromptComposer(Runtime, logger));
+      await raceWithAbort(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+      const submission = await raceWithAbort(
+        runSubmissionWithRecovery({
+          prompt: followUpPrompt,
+          attachments: [],
+          submit: submitOnce,
+          reloadPromptComposer,
+          prepareFallbackSubmission: async () => {
+            await raceWithAbort(clearPromptComposer(Runtime, logger));
+            await raceWithAbort(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+          },
+          logger,
+        }),
+      );
       baselineTurns = submission.baselineTurns;
       baselineAssistantText = submission.baselineAssistantText;
       const turn = await captureAssistantTurn(followUpPrompt, `Follow-up ${index + 1}`);
@@ -4030,6 +4079,8 @@ async function runRemoteBrowserMode(
     });
   } finally {
     conversationHintStopped = true;
+    removeAbortListener?.();
+    removeAbortListener = null;
     try {
       await closeRemoteConnectionAfterRun({
         connectionClosedUnexpectedly,
