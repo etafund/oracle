@@ -242,6 +242,32 @@ export interface ClaudeCodeSessionMetadata {
   final_answer_path?: string;
   progress_path?: string;
   error_reason?: string;
+  /**
+   * caam rate-limit rotation record (caam-ratelimit-rotation-design.md
+   * §3.2), populated only when caam shallow-spawn was active for this run.
+   * `attempts` includes the original attempt plus every profile rotated
+   * through; `exhausted` is true when rotation stopped because no further
+   * healthy profile was available (`NO_PROFILES`/`ALL_BLOCKED`/cap reached),
+   * not because of a crash.
+   */
+  rate_limit_rotation?: {
+    attempts: Array<{
+      profile?: string;
+      outcome: "rate_limited" | "challenge" | "success" | "error";
+      matched_pattern?: string;
+      started_at?: string;
+      elapsed_ms?: number;
+      exit_code?: number | null;
+    }>;
+    rotations_used: number;
+    exhausted: boolean;
+  };
+  /**
+   * Set when any attempt (original or rotated) hit a challenge/auth
+   * signal — this is always a HARD-HALT, never followed by rotation
+   * (caam-ratelimit-rotation-design.md §2.2 step 10, §3.3).
+   */
+  challenge_detected?: { profile?: string; reason: string };
 }
 
 export type SessionArtifactValidationType = "generic" | "zip";

@@ -77,6 +77,7 @@ import { resumeBrowserSession } from "../../src/browser/reattach.ts";
 import { setOracleHomeDirOverrideForTest } from "../../src/oracleHome.ts";
 import { buildClaudeCodeCommand } from "../../src/claude-code/command.ts";
 import { ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR } from "../../src/claude-code/caamCommand.ts";
+import { ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS_ENV_VAR } from "../../src/claude-code/caamRotation.ts";
 
 const baseSessionMeta: SessionMetadata = {
   id: "sess-1",
@@ -292,6 +293,124 @@ function createFakeCaamExecutable({
   ].join("\n");
   fs.writeFileSync(executablePath, script, { mode: 0o700 });
   return executablePath;
+}
+
+// Extended fake `caam` for the rate-limit rotation suite
+// (caam-ratelimit-rotation-design.md §4.1/§4.2): in addition to the
+// `shallow-spawn <profile> --print-env --json` doctor pre-flight and the
+// real `shallow-spawn <profile> --base <base> -- <claude> <args...>` exec
+// that `createFakeCaamExecutable` above already fakes, this variant also
+// intercepts `cooldown set claude/<profile> ...` and
+// `robot next claude --strategy smart` — a real `caam` fake binary can
+// branch on `process.argv` the same way. All invocations are appended as
+// JSONL to files under `logsDir` so tests can assert both what got called
+// and in what order, without pre-declaring one path per call (rotation
+// calls the same subcommands a variable number of times).
+function createFakeCaamExecutableWithRotation({
+  binDir,
+  logsDir,
+  doctorUnhealthyProfiles = [],
+  profileStdoutEvents = {},
+  cooldownResponses = [],
+  robotNextResponses,
+}: {
+  binDir: string;
+  logsDir: string;
+  doctorUnhealthyProfiles?: string[];
+  profileStdoutEvents?: Record<string, unknown[]>;
+  cooldownResponses?: Array<{ exitCode?: number; stdout?: string; stderr?: string }>;
+  robotNextResponses: Array<{ json: unknown; exitCode?: number }>;
+}): string {
+  const executablePath = path.join(binDir, "caam");
+  const initEvent = fakeClaudeCodeInitEvent();
+  const defaultResultEvent = {
+    type: "result",
+    result: "Fake final answer from Claude Code",
+    modelUsage: { "claude-fable-5": {} },
+    total_cost_usd: 0,
+  };
+  const script = [
+    "#!/usr/bin/env node",
+    "const fs = require('node:fs');",
+    "const path = require('node:path');",
+    `const logsDir = ${JSON.stringify(logsDir)};`,
+    `const doctorUnhealthyProfiles = ${JSON.stringify(doctorUnhealthyProfiles)};`,
+    `const profileStdoutEvents = ${JSON.stringify(profileStdoutEvents)};`,
+    `const defaultStdoutEvents = ${JSON.stringify([initEvent, defaultResultEvent])};`,
+    `const cooldownResponses = ${JSON.stringify(cooldownResponses)};`,
+    `const robotNextResponses = ${JSON.stringify(robotNextResponses)};`,
+    "fs.mkdirSync(logsDir, { recursive: true });",
+    "function appendLog(name, obj) {",
+    "  fs.appendFileSync(path.join(logsDir, name), JSON.stringify(obj) + '\\n');",
+    "}",
+    "function callIndex(name) {",
+    "  const p = path.join(logsDir, name);",
+    "  if (!fs.existsSync(p)) return 0;",
+    "  return fs.readFileSync(p, 'utf8').split('\\n').filter(Boolean).length;",
+    "}",
+    "const argv = process.argv.slice(2);",
+    "if (argv[0] === 'shallow-spawn' && argv.includes('--print-env') && argv.includes('--json')) {",
+    "  const profile = argv[1];",
+    "  appendLog('doctor-calls.jsonl', argv);",
+    "  const healthy = !doctorUnhealthyProfiles.includes(profile);",
+    "  const verdict = healthy",
+    "    ? { success: true, home: '/fake/shallow-home/' + profile, shallow_profile: profile }",
+    "    : { success: false, error: 'fake unhealthy profile ' + profile };",
+    "  process.stdout.write(JSON.stringify(verdict) + '\\n');",
+    "  process.exit(healthy ? 0 : 1);",
+    "} else if (argv[0] === 'shallow-spawn') {",
+    "  const profile = argv[1];",
+    "  appendLog('shallow-spawn-calls.jsonl', argv);",
+    "  fs.mkdirSync(path.join(logsDir, 'markers'), { recursive: true });",
+    "  let input = '';",
+    "  process.stdin.setEncoding('utf8');",
+    "  process.stdin.on('data', (chunk) => { input += chunk; });",
+    "  process.stdin.on('end', () => {",
+    "    fs.writeFileSync(path.join(logsDir, 'markers', profile + '.marker'), input);",
+    "    const events = profileStdoutEvents[profile] || defaultStdoutEvents;",
+    "    for (const event of events) {",
+    "      process.stdout.write(JSON.stringify(event) + '\\n');",
+    "    }",
+    "    process.stderr.write('fake stderr\\n');",
+    "  });",
+    "} else if (argv[0] === 'cooldown' && argv[1] === 'set') {",
+    "  const idx = callIndex('cooldown-calls.jsonl');",
+    "  appendLog('cooldown-calls.jsonl', argv);",
+    "  const resp = cooldownResponses[idx] || cooldownResponses[cooldownResponses.length - 1] || { exitCode: 0, stdout: 'Recorded cooldown\\n' };",
+    "  if (resp.stdout) process.stdout.write(resp.stdout);",
+    "  if (resp.stderr) process.stderr.write(resp.stderr);",
+    "  process.exit(resp.exitCode || 0);",
+    "} else if (argv[0] === 'robot' && argv[1] === 'next') {",
+    "  const idx = callIndex('robot-next-calls.jsonl');",
+    "  appendLog('robot-next-calls.jsonl', argv);",
+    "  const resp = robotNextResponses[idx] || robotNextResponses[robotNextResponses.length - 1];",
+    "  process.stdout.write(JSON.stringify(resp.json) + '\\n');",
+    "  const exitCode = resp.exitCode !== undefined ? resp.exitCode : (resp.json && resp.json.success === false ? 1 : 0);",
+    "  process.exit(exitCode);",
+    "} else {",
+    "  process.stderr.write('unexpected caam invocation: ' + argv.join(' ') + '\\n');",
+    "  process.exit(1);",
+    "}",
+    "",
+  ].join("\n");
+  fs.writeFileSync(executablePath, script, { mode: 0o700 });
+  return executablePath;
+}
+
+function readJsonlLog(logsDir: string, name: string): unknown[] {
+  const filePath = path.join(logsDir, name);
+  if (!fs.existsSync(filePath)) {
+    return [];
+  }
+  return fs
+    .readFileSync(filePath, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as unknown);
+}
+
+function rateLimitResultEvent(text: string): Record<string, unknown> {
+  return { type: "result", result: text, modelUsage: { "claude-fable-5": {} }, total_cost_usd: 0 };
 }
 
 beforeAll(() => {
@@ -3377,6 +3496,448 @@ describe("claude-code caam shallow-spawn integration (caam-map.md §4)", () => {
       expect(finalUpdate).toMatchObject({ status: "completed", mode: "claude-code" });
     } finally {
       teardownCaamFixture(fixture);
+    }
+  });
+});
+
+describe("claude-code caam rate-limit rotation (caam-ratelimit-rotation-design.md)", () => {
+  interface RotationFixture {
+    root: string;
+    oracleHome: string;
+    sessionsDir: string;
+    sessionDir: string;
+    repoDir: string;
+    binDir: string;
+    logsDir: string;
+  }
+
+  function setupRotationFixture(): RotationFixture {
+    const root = fs.mkdtempSync(path.join(os.homedir(), ".oracle-claude-code-rotation-test-"));
+    const oracleHome = path.join(root, "oracle-home");
+    const sessionsDir = path.join(root, "sessions");
+    const sessionDir = path.join(sessionsDir, "sess-1");
+    const repoDir = path.join(root, "repo");
+    const binDir = path.join(root, "bin");
+    const logsDir = path.join(root, "logs");
+    for (const dir of [oracleHome, sessionsDir, sessionDir, repoDir, binDir, logsDir]) {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      fs.chmodSync(dir, 0o700);
+    }
+    sessionStoreMock.sessionsDir.mockReturnValue(sessionsDir);
+    sessionStoreMock.getPaths.mockResolvedValue({
+      dir: sessionDir,
+      metadata: path.join(sessionDir, "meta.json"),
+      request: path.join(sessionDir, "request.json"),
+      log: path.join(sessionDir, "output.log"),
+    });
+    setOracleHomeDirOverrideForTest(oracleHome);
+    return { root, oracleHome, sessionsDir, sessionDir, repoDir, binDir, logsDir };
+  }
+
+  function teardownRotationFixture(fixture: RotationFixture): void {
+    setOracleHomeDirOverrideForTest(null);
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+
+  function readAdapterMetadata(fixture: RotationFixture): Record<string, unknown> {
+    return JSON.parse(
+      fs.readFileSync(
+        path.join(fixture.sessionDir, "artifacts", "claude-code-adapter.json"),
+        "utf8",
+      ),
+    ) as Record<string, unknown>;
+  }
+
+  test("rate-limit signal rotates to a fresh, healthy caam profile and succeeds", async () => {
+    vi.mocked(fsPromises.mkdir).mockRestore();
+    vi.mocked(fsPromises.writeFile).mockRestore();
+    const fixture = setupRotationFixture();
+    try {
+      createFakeCaamExecutableWithRotation({
+        binDir: fixture.binDir,
+        logsDir: fixture.logsDir,
+        profileStdoutEvents: {
+          arthur: [fakeClaudeCodeInitEvent(), rateLimitResultEvent("Claude AI usage limit reached")],
+        },
+        robotNextResponses: [{ json: { success: true, data: { profile: "beth" } } }],
+      });
+
+      await withExactEnv(
+        {
+          ...blockedClaudeCodeEnvDefaults,
+          PATH: `${fixture.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "arthur",
+        },
+        async () => {
+          await performSessionRun({
+            sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+            runOptions: { prompt: "Review via caam with rotation", model: "fable" },
+            mode: "claude-code",
+            cwd: fixture.repoDir,
+            log,
+            write,
+            version: cliVersion,
+            muteStdout: true,
+          });
+        },
+      );
+
+      const doctorCalls = readJsonlLog(fixture.logsDir, "doctor-calls.jsonl");
+      expect(doctorCalls).toEqual([
+        ["shallow-spawn", "arthur", "--print-env", "--json"],
+        ["shallow-spawn", "beth", "--print-env", "--json"],
+      ]);
+
+      const shallowSpawnCalls = readJsonlLog(fixture.logsDir, "shallow-spawn-calls.jsonl") as string[][];
+      expect(shallowSpawnCalls.map((argv) => argv[1])).toEqual(["arthur", "beth"]);
+
+      const cooldownCalls = readJsonlLog(fixture.logsDir, "cooldown-calls.jsonl") as string[][];
+      expect(cooldownCalls).toHaveLength(1);
+      expect(cooldownCalls[0].slice(0, 4)).toEqual(["cooldown", "set", "claude/arthur", "--minutes"]);
+      expect(cooldownCalls[0]).toContain("60");
+      expect(cooldownCalls[0].at(-1)).toContain("rate_limit pattern");
+
+      const robotNextCalls = readJsonlLog(fixture.logsDir, "robot-next-calls.jsonl") as string[][];
+      expect(robotNextCalls).toEqual([["robot", "next", "claude", "--strategy", "smart"]]);
+      expect(robotNextCalls[0]).not.toContain("--include-cooldown");
+
+      expect(fs.existsSync(path.join(fixture.logsDir, "markers", "arthur.marker"))).toBe(true);
+      expect(fs.existsSync(path.join(fixture.logsDir, "markers", "beth.marker"))).toBe(true);
+
+      // Both per-profile locks were released — not held simultaneously past
+      // their own attempt.
+      const locksDir = path.join(fixture.oracleHome, "locks");
+      expect(fs.existsSync(path.join(locksDir, "claude-code-subscription-arthur.lock"))).toBe(false);
+      expect(fs.existsSync(path.join(locksDir, "claude-code-subscription-beth.lock"))).toBe(false);
+
+      const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+      expect(finalUpdate).toMatchObject({ status: "completed", mode: "claude-code" });
+
+      const adapter = readAdapterMetadata(fixture) as {
+        rotation?: {
+          attempts: Array<{ profile?: string; outcome: string }>;
+          final_profile: string | null;
+          rotations_used: number;
+          exhausted: boolean;
+        };
+      };
+      expect(adapter.rotation?.attempts).toEqual([
+        expect.objectContaining({ profile: "arthur", outcome: "rate_limited" }),
+        expect.objectContaining({ profile: "beth", outcome: "success" }),
+      ]);
+      expect(adapter.rotation?.final_profile).toBe("beth");
+      expect(adapter.rotation?.rotations_used).toBe(1);
+      expect(adapter.rotation?.exhausted).toBe(false);
+    } finally {
+      teardownRotationFixture(fixture);
+    }
+  });
+
+  test("challenge/auth signal is a HARD-HALT: never calls cooldown/robot next, never spawns a second attempt", async () => {
+    vi.mocked(fsPromises.mkdir).mockRestore();
+    vi.mocked(fsPromises.writeFile).mockRestore();
+    const fixture = setupRotationFixture();
+    try {
+      createFakeCaamExecutableWithRotation({
+        binDir: fixture.binDir,
+        logsDir: fixture.logsDir,
+        profileStdoutEvents: {
+          arthur: [
+            fakeClaudeCodeInitEvent(),
+            rateLimitResultEvent("authentication failed, please log in again"),
+          ],
+        },
+        robotNextResponses: [{ json: { success: true, data: { profile: "beth" } } }],
+      });
+
+      await withExactEnv(
+        {
+          ...blockedClaudeCodeEnvDefaults,
+          PATH: `${fixture.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "arthur",
+        },
+        async () => {
+          await expect(
+            performSessionRun({
+              sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+              runOptions: { prompt: "Review via caam, expect challenge", model: "fable" },
+              mode: "claude-code",
+              cwd: fixture.repoDir,
+              log,
+              write,
+              version: cliVersion,
+              muteStdout: true,
+            }),
+          ).rejects.toThrow(/HARD-HALT/);
+        },
+      );
+
+      expect(readJsonlLog(fixture.logsDir, "doctor-calls.jsonl")).toHaveLength(1);
+      expect(readJsonlLog(fixture.logsDir, "shallow-spawn-calls.jsonl")).toHaveLength(1);
+      expect(readJsonlLog(fixture.logsDir, "cooldown-calls.jsonl")).toHaveLength(0);
+      expect(readJsonlLog(fixture.logsDir, "robot-next-calls.jsonl")).toHaveLength(0);
+
+      const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+      expect(finalUpdate).toMatchObject({ status: "error" });
+      expect((finalUpdate as { errorMessage?: string }).errorMessage).toMatch(/HARD-HALT/);
+    } finally {
+      teardownRotationFixture(fixture);
+    }
+  });
+
+  test("caam absent: a rate-limit-shaped message in the output does not change behavior", async () => {
+    vi.mocked(fsPromises.mkdir).mockRestore();
+    vi.mocked(fsPromises.writeFile).mockRestore();
+    const fixture = setupRotationFixture();
+    try {
+      createFakeClaudeExecutable({
+        binDir: fixture.binDir,
+        argvPath: path.join(fixture.root, "claude-argv.json"),
+        stdinPath: path.join(fixture.root, "claude-stdin.txt"),
+        markerPath: path.join(fixture.root, "claude-marker.txt"),
+        stdoutEvents: [fakeClaudeCodeInitEvent(), rateLimitResultEvent("rate limit exceeded")],
+      });
+      // Deliberately no `caam` on PATH and no caam profile configured.
+
+      await withExactEnv(
+        {
+          ...blockedClaudeCodeEnvDefaults,
+          PATH: `${fixture.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        },
+        async () => {
+          await performSessionRun({
+            sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+            runOptions: { prompt: "Review without caam configured", model: "fable" },
+            mode: "claude-code",
+            cwd: fixture.repoDir,
+            log,
+            write,
+            version: cliVersion,
+            muteStdout: true,
+          });
+        },
+      );
+
+      const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+      expect(finalUpdate).toMatchObject({ status: "completed", errorMessage: undefined });
+      const adapter = readAdapterMetadata(fixture) as { rotation?: unknown };
+      expect(adapter.rotation).toBeUndefined();
+    } finally {
+      teardownRotationFixture(fixture);
+    }
+  });
+
+  test("robot next exhaustion (NO_PROFILES) stops rotation and surfaces the ORIGINAL rate-limit failure", async () => {
+    vi.mocked(fsPromises.mkdir).mockRestore();
+    vi.mocked(fsPromises.writeFile).mockRestore();
+    const fixture = setupRotationFixture();
+    try {
+      createFakeCaamExecutableWithRotation({
+        binDir: fixture.binDir,
+        logsDir: fixture.logsDir,
+        profileStdoutEvents: {
+          arthur: [fakeClaudeCodeInitEvent(), rateLimitResultEvent("429 too many requests")],
+        },
+        robotNextResponses: [
+          {
+            json: {
+              success: false,
+              error: { code: "NO_PROFILES", message: "no profiles found for claude" },
+            },
+            exitCode: 1,
+          },
+        ],
+      });
+
+      await withExactEnv(
+        {
+          ...blockedClaudeCodeEnvDefaults,
+          PATH: `${fixture.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "arthur",
+        },
+        async () => {
+          await expect(
+            performSessionRun({
+              sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+              runOptions: { prompt: "Review, rotation should exhaust", model: "fable" },
+              mode: "claude-code",
+              cwd: fixture.repoDir,
+              log,
+              write,
+              version: cliVersion,
+              muteStdout: true,
+            }),
+          ).rejects.toThrow(/rate-limit signal/);
+        },
+      );
+
+      expect(readJsonlLog(fixture.logsDir, "doctor-calls.jsonl")).toHaveLength(1);
+      expect(readJsonlLog(fixture.logsDir, "shallow-spawn-calls.jsonl")).toHaveLength(1);
+      expect(readJsonlLog(fixture.logsDir, "cooldown-calls.jsonl")).toHaveLength(1);
+      expect(readJsonlLog(fixture.logsDir, "robot-next-calls.jsonl")).toHaveLength(1);
+
+      const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+      expect((finalUpdate as { errorMessage?: string }).errorMessage).not.toMatch(/NO_PROFILES/);
+
+      const adapter = readAdapterMetadata(fixture) as {
+        rotation?: { attempts: unknown[]; rotations_used: number; exhausted: boolean };
+      };
+      expect(adapter.rotation?.attempts).toHaveLength(1);
+      expect(adapter.rotation?.rotations_used).toBe(0);
+      expect(adapter.rotation?.exhausted).toBe(true);
+    } finally {
+      teardownRotationFixture(fixture);
+    }
+  });
+
+  test("a cooldown-set failure is non-fatal: rotation still proceeds to robot next and can still succeed", async () => {
+    vi.mocked(fsPromises.mkdir).mockRestore();
+    vi.mocked(fsPromises.writeFile).mockRestore();
+    const fixture = setupRotationFixture();
+    try {
+      createFakeCaamExecutableWithRotation({
+        binDir: fixture.binDir,
+        logsDir: fixture.logsDir,
+        profileStdoutEvents: {
+          arthur: [fakeClaudeCodeInitEvent(), rateLimitResultEvent("usage limit reached")],
+        },
+        cooldownResponses: [{ exitCode: 1, stderr: "Error: cooldown db unavailable\n" }],
+        robotNextResponses: [{ json: { success: true, data: { profile: "beth" } } }],
+      });
+
+      await withExactEnv(
+        {
+          ...blockedClaudeCodeEnvDefaults,
+          PATH: `${fixture.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "arthur",
+        },
+        async () => {
+          await performSessionRun({
+            sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+            runOptions: { prompt: "Review, cooldown write fails but rotation proceeds", model: "fable" },
+            mode: "claude-code",
+            cwd: fixture.repoDir,
+            log,
+            write,
+            version: cliVersion,
+            muteStdout: true,
+          });
+        },
+      );
+
+      expect(readJsonlLog(fixture.logsDir, "cooldown-calls.jsonl")).toHaveLength(1);
+      expect(readJsonlLog(fixture.logsDir, "robot-next-calls.jsonl")).toHaveLength(1);
+      expect(readJsonlLog(fixture.logsDir, "shallow-spawn-calls.jsonl")).toHaveLength(2);
+
+      const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+      expect(finalUpdate).toMatchObject({ status: "completed" });
+    } finally {
+      teardownRotationFixture(fixture);
+    }
+  });
+
+  test("in-process already-attempted guard: robot next re-offering the just-cooled profile is treated as exhaustion", async () => {
+    vi.mocked(fsPromises.mkdir).mockRestore();
+    vi.mocked(fsPromises.writeFile).mockRestore();
+    const fixture = setupRotationFixture();
+    try {
+      createFakeCaamExecutableWithRotation({
+        binDir: fixture.binDir,
+        logsDir: fixture.logsDir,
+        profileStdoutEvents: {
+          arthur: [fakeClaudeCodeInitEvent(), rateLimitResultEvent("usage limit reached")],
+        },
+        robotNextResponses: [{ json: { success: true, data: { profile: "arthur" } } }],
+      });
+
+      await withExactEnv(
+        {
+          ...blockedClaudeCodeEnvDefaults,
+          PATH: `${fixture.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "arthur",
+        },
+        async () => {
+          await expect(
+            performSessionRun({
+              sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+              runOptions: { prompt: "Review, robot next race", model: "fable" },
+              mode: "claude-code",
+              cwd: fixture.repoDir,
+              log,
+              write,
+              version: cliVersion,
+              muteStdout: true,
+            }),
+          ).rejects.toThrow(/rate-limit signal/);
+        },
+      );
+
+      // Only the original spawn happened — the guard fired before a second
+      // spawn was attempted against the very profile that just rate-limited.
+      expect(readJsonlLog(fixture.logsDir, "shallow-spawn-calls.jsonl")).toHaveLength(1);
+      expect(readJsonlLog(fixture.logsDir, "robot-next-calls.jsonl")).toHaveLength(1);
+
+      const adapter = readAdapterMetadata(fixture) as {
+        rotation?: { attempts: unknown[]; exhausted: boolean };
+      };
+      expect(adapter.rotation?.attempts).toHaveLength(1);
+      expect(adapter.rotation?.exhausted).toBe(true);
+    } finally {
+      teardownRotationFixture(fixture);
+    }
+  });
+
+  test("retry cap: stops after maxRateLimitRotations extra attempts and surfaces the LAST rate-limit failure", async () => {
+    vi.mocked(fsPromises.mkdir).mockRestore();
+    vi.mocked(fsPromises.writeFile).mockRestore();
+    const fixture = setupRotationFixture();
+    try {
+      createFakeCaamExecutableWithRotation({
+        binDir: fixture.binDir,
+        logsDir: fixture.logsDir,
+        profileStdoutEvents: {
+          arthur: [fakeClaudeCodeInitEvent(), rateLimitResultEvent("rate limit on arthur")],
+          beth: [fakeClaudeCodeInitEvent(), rateLimitResultEvent("rate limit on beth")],
+        },
+        robotNextResponses: [{ json: { success: true, data: { profile: "beth" } } }],
+      });
+
+      await withExactEnv(
+        {
+          ...blockedClaudeCodeEnvDefaults,
+          PATH: `${fixture.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "arthur",
+          [ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS_ENV_VAR]: "1",
+        },
+        async () => {
+          await expect(
+            performSessionRun({
+              sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+              runOptions: { prompt: "Review, cap should stop rotation", model: "fable" },
+              mode: "claude-code",
+              cwd: fixture.repoDir,
+              log,
+              write,
+              version: cliVersion,
+              muteStdout: true,
+            }),
+          ).rejects.toThrow(/rate limit on beth/);
+        },
+      );
+
+      // Original (arthur) + exactly 1 rotation (beth) — the cap stops there.
+      expect(readJsonlLog(fixture.logsDir, "shallow-spawn-calls.jsonl")).toHaveLength(2);
+      expect(readJsonlLog(fixture.logsDir, "robot-next-calls.jsonl")).toHaveLength(1);
+
+      const adapter = readAdapterMetadata(fixture) as {
+        rotation?: { attempts: unknown[]; rotations_used: number; exhausted: boolean; cap: number };
+      };
+      expect(adapter.rotation?.attempts).toHaveLength(2);
+      expect(adapter.rotation?.rotations_used).toBe(1);
+      expect(adapter.rotation?.exhausted).toBe(true);
+      expect(adapter.rotation?.cap).toBe(1);
+    } finally {
+      teardownRotationFixture(fixture);
     }
   });
 });

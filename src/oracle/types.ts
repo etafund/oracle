@@ -284,6 +284,17 @@ export interface RunOracleOptions {
     resumeSessionId?: string;
     waitForLockMs?: number;
     maxInlineBytes?: number;
+    /**
+     * caam rate-limit rotation cap (caam-ratelimit-rotation-design.md §2.3,
+     * §3.3): the maximum number of EXTRA attempts (beyond the original) to
+     * try on a fresh caam profile after a rate-limit signal. Only takes
+     * effect when caam shallow-spawn is active for the original attempt
+     * (`caamProfile` resolved); a caam-absent run is unaffected regardless
+     * of this value. `0` fully disables rotation even with caam active.
+     * Defaults to 2 when unset (also settable via
+     * `ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS`).
+     */
+    maxRateLimitRotations?: number;
   };
 }
 

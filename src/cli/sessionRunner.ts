@@ -69,9 +69,16 @@ import {
 import { resolveCaamExecutable, type ResolvedCaamExecutable } from "../claude-code/caamResolver.js";
 import { runCaamShallowProfileDoctor } from "../claude-code/caamDoctor.js";
 import {
+  runCaamCooldownSet,
+  runCaamRobotNext,
+  resolveClaudeCodeMaxRateLimitRotations,
+} from "../claude-code/caamRotation.js";
+import { matchClaudeCodeRateLimitOrChallengeText } from "../claude-code/rateLimitPatterns.js";
+import {
   ClaudeCodeStreamNormalizer,
   type ClaudeCodeNormalizedEvent,
 } from "../claude-code/streamParser.js";
+import type { ResolvedClaudeExecutable } from "../claude-code/executableResolver.js";
 import { verifyClaudeCodeRun } from "../claude-code/startupVerifier.js";
 import {
   assertClaudeCodeInlineBudget,
@@ -152,6 +159,28 @@ export interface ClaudeCodeRunnerResult extends ClaudeCodeArtifactPayloads {
   caamProfileUsed?: string;
   /** `true` when this run kept `--no-session-persistence` (one-shot, default). */
   sessionPersistenceDisabled?: boolean;
+  /**
+   * caam rate-limit rotation record (caam-ratelimit-rotation-design.md
+   * §3.2), populated only when caam shallow-spawn was active for the
+   * original attempt. Absent entirely for caam-absent runs — a rate limit
+   * there surfaces exactly as it did before rotation existed.
+   */
+  rateLimitRotation?: {
+    attempts: ClaudeCodeRotationAttemptRecord[];
+    rotationsUsed: number;
+    exhausted: boolean;
+  };
+  /** Set when any attempt hit a challenge/auth signal — always a HARD-HALT. */
+  challengeDetected?: { profile?: string; reason: string };
+}
+
+export interface ClaudeCodeRotationAttemptRecord {
+  profile?: string;
+  outcome: "rate_limited" | "challenge" | "success" | "error";
+  matched_pattern?: string;
+  started_at?: string;
+  elapsed_ms?: number;
+  exit_code?: number | null;
 }
 
 export type ClaudeCodeArtifactPaths = {
@@ -1161,267 +1190,549 @@ async function runLocalClaudeCodeSession(
     input.runOptions.claudeCode?.caamProfile,
     process.env,
   );
-  const caam = caamProfileRequested
+  const initialCaam = caamProfileRequested
     ? await tryActivateCaamShallowSpawn(caamProfileRequested, command, input)
     : undefined;
-  const spawnCommand = caam?.command ?? command;
 
-  const waitForLockMs = resolveClaudeCodeWaitForLockMs(input.runOptions.claudeCode?.waitForLockMs);
-  if (waitForLockMs > 0) {
-    input.log(
-      dim(`Claude Code single-flight lock: waiting up to ${formatElapsed(waitForLockMs)}.`),
+  // caam rate-limit rotation (caam-ratelimit-rotation-design.md): gated
+  // ENTIRELY on the original attempt's caam activation having succeeded —
+  // a caam-absent run (no profile configured, or activation fell back) is
+  // untouched: the loop below still runs exactly once and a rate limit
+  // surfaces exactly as it did before this feature existed (§3.3).
+  const rotationEnabled = Boolean(initialCaam);
+  const maxRotations = rotationEnabled
+    ? resolveClaudeCodeMaxRateLimitRotations(
+        input.runOptions.claudeCode?.maxRateLimitRotations,
+        process.env,
+      )
+    : 0;
+
+  // In-process guard (design §2.2 step 5): belt-and-suspenders against
+  // `robot next` re-offering a profile whose cooldown write (best-effort)
+  // silently failed or hasn't taken effect yet.
+  const attemptedCaamProfiles = new Set<string>();
+  if (initialCaam) {
+    attemptedCaamProfiles.add(initialCaam.profile);
+  }
+
+  const rotationAttempts: ClaudeCodeRotationAttemptRecord[] = [];
+  let activeCaam = initialCaam;
+  let rotationsUsed = 0;
+  let exhausted = false;
+  let attemptOutcome: ClaudeCodeAttemptOutcome | undefined;
+
+  while (true) {
+    const spawnCommand = activeCaam?.command ?? command;
+    const waitForLockMs = resolveClaudeCodeWaitForLockMs(
+      input.runOptions.claudeCode?.waitForLockMs,
     );
-  }
-  const singleFlightLock = await acquireClaudeCodeSingleFlightLock(input.sessionId, {
-    waitForLockMs,
-    // Keying the lock on the caam profile (instead of the fixed global
-    // filename) is what lets distinct profiles run in parallel while same
-    // -profile sessions still serialize (caam-map.md §4b). No profile active
-    // -> unchanged global lock.
-    lockKey: caam?.profile,
-  });
-  input.log(
-    dim(
-      `Claude Code command: ${spawnCommand.file} ${spawnCommand.args.map(redactClaudeCodeArgForLog).join(" ")}`,
-    ),
-  );
-  for (const warning of preparedEnv.warnings) {
-    input.log(dim(`Claude Code env warning: ${warning.source} ${warning.action}.`));
-  }
-  for (const warning of ownerResult.warnings) {
-    input.log(dim(`Claude Code owner warning: ${warning}.`));
-  }
-
-  try {
-    const stdoutChunks: Buffer[] = [];
-    const stderrChunks: Buffer[] = [];
-    const normalizer = new ClaudeCodeStreamNormalizer();
-    const events: ClaudeCodeNormalizedEvent[] = [];
-    let stdoutEvents = 0;
-    let stderrEvents = 0;
-    let rawStreamBytes = 0;
-    let timedOut = false;
-    let policyViolation: ClaudeCodeReadOnlyPolicyViolation | undefined;
-    let outputFlood: { stream: "stdout" | "stderr"; totalBytes: number } | undefined;
-    let abortedBySignal: NodeJS.Signals | undefined;
-    const timeoutMs = resolveClaudeCodeTimeoutMs(input.runOptions.timeoutSeconds);
-    const maxInlineBytes = resolveClaudeCodeMaxInlineBytes(
-      input.runOptions.claudeCode?.maxInlineBytes,
-      process.env,
-    );
-
-    // TOCTOU re-check: time has passed since the initial resolution above
-    // (env prep, owner check, command build, and — notably — however long
-    // acquireClaudeCodeSingleFlightLock waited for a competing lane lock),
-    // so re-verify the already-resolved real path immediately before
-    // spawning. `executable.path` is absolute, so this repeats the full
-    // symlink/world-writable/ownership/inside-repo hardening against it
-    // without redoing the PATH search.
-    await resolveClaudeExecutable({
-      executable: executable.path,
-      repoRoot: input.cwd,
-      env: process.env,
+    if (waitForLockMs > 0) {
+      input.log(
+        dim(`Claude Code single-flight lock: waiting up to ${formatElapsed(waitForLockMs)}.`),
+      );
+    }
+    const singleFlightLock = await acquireClaudeCodeSingleFlightLock(input.sessionId, {
+      waitForLockMs,
+      // Keying the lock on the caam profile (instead of the fixed global
+      // filename) is what lets distinct profiles run in parallel while same
+      // -profile sessions still serialize (caam-map.md §4b). No profile
+      // active -> unchanged global lock.
+      lockKey: activeCaam?.profile,
     });
-    if (caam) {
-      // Same TOCTOU re-check, mirrored for the caam executable — it is
-      // about to `exec` into a repointed `$HOME`, so it gets the same
-      // "re-verify the resolved real path immediately before spawn"
-      // treatment as `claude` above.
-      await resolveCaamExecutable({
-        executable: caam.executable.path,
-        repoRoot: input.cwd,
-        env: process.env,
+    input.log(
+      dim(
+        `Claude Code command: ${spawnCommand.file} ${spawnCommand.args.map(redactClaudeCodeArgForLog).join(" ")}`,
+      ),
+    );
+    for (const warning of preparedEnv.warnings) {
+      input.log(dim(`Claude Code env warning: ${warning.source} ${warning.action}.`));
+    }
+    for (const warning of ownerResult.warnings) {
+      input.log(dim(`Claude Code owner warning: ${warning}.`));
+    }
+
+    try {
+      attemptOutcome = await runClaudeCodeChildAttempt({
+        input,
+        startedAt,
+        executable,
+        activeCaam,
+        spawnCommand,
+        claudeSessionId,
+        resumeSessionId,
+        preparedEnv,
+        ownerResult,
+        singleFlightLock,
+        waitForLockMs,
+      });
+    } finally {
+      // Released the INSTANT this attempt is done — not held for the
+      // duration of the whole retry sequence — so a competing session
+      // waiting on this exact profile is unblocked immediately, and so the
+      // caam cooldown/robot-next shell-outs below never run while holding
+      // this profile's lock (design §2.2 step 3).
+      await singleFlightLock.release().catch((error: unknown) => {
+        input.log(dim(`Claude Code lock release warning: ${formatError(error)}`));
       });
     }
 
-    const child = spawn(spawnCommand.file, spawnCommand.args, {
-      ...spawnCommand.spawnOptions,
-      cwd: input.cwd,
-      detached: process.platform !== "win32",
-      env: preparedEnv.childEnv,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const { result, signal } = attemptOutcome;
+    const attemptProfile = activeCaam?.profile;
 
-    let hardKillTimeout: NodeJS.Timeout | undefined;
-    const scheduleHardKill = () => {
-      if (hardKillTimeout) return;
-      hardKillTimeout = setTimeout(() => terminateClaudeCodeChild(child, "SIGKILL"), 5_000);
-      hardKillTimeout.unref?.();
-    };
-    const stopForPolicyViolation = (normalized: ClaudeCodeNormalizedEvent[]) => {
-      if (policyViolation) return;
-      const violation = findClaudeCodeReadOnlyPolicyViolation(normalized);
-      if (!violation) return;
-      policyViolation = violation;
-      terminateClaudeCodeChild(child, "SIGTERM");
-      scheduleHardKill();
-    };
-    const stopForOutputFlood = (stream: "stdout" | "stderr", totalBytes: number) => {
-      if (outputFlood || totalBytes <= maxInlineBytes) return;
-      outputFlood = { stream, totalBytes };
-      terminateClaudeCodeChild(child, "SIGTERM");
-      scheduleHardKill();
-    };
-    const stopForAbortSignal = (signal: NodeJS.Signals) => {
-      if (abortedBySignal) return;
-      abortedBySignal = signal;
-      terminateClaudeCodeChild(child, "SIGTERM");
-      scheduleHardKill();
-    };
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      terminateClaudeCodeChild(child, "SIGTERM");
-      scheduleHardKill();
-    }, timeoutMs);
-    timeout.unref?.();
-    const sigintHandler = () => stopForAbortSignal("SIGINT");
-    const sigtermHandler = () => stopForAbortSignal("SIGTERM");
-    process.once("SIGINT", sigintHandler);
-    process.once("SIGTERM", sigtermHandler);
-
-    child.stdout.on("data", (chunk: Buffer) => {
-      const bytes = Buffer.from(chunk);
-      stdoutChunks.push(bytes);
-      rawStreamBytes += bytes.length;
-      stopForOutputFlood("stdout", rawStreamBytes);
-      const normalized = normalizer.push("stdout", bytes);
-      stdoutEvents += normalized.length;
-      events.push(...normalized);
-      writeClaudeCodeVisibleEvents(input.write, normalized);
-      stopForPolicyViolation(normalized);
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      const bytes = Buffer.from(chunk);
-      stderrChunks.push(bytes);
-      rawStreamBytes += bytes.length;
-      stopForOutputFlood("stderr", rawStreamBytes);
-      const normalized = normalizer.push("stderr", bytes);
-      stderrEvents += normalized.length;
-      events.push(...normalized);
-      writeClaudeCodeVisibleEvents(input.write, normalized);
-      stopForPolicyViolation(normalized);
-    });
-
-    const exit = await new Promise<{ exitCode: number | null; signal: string | null }>(
-      (resolve, reject) => {
-        child.once("error", reject);
-        child.once("close", (exitCode, signal) => resolve({ exitCode, signal }));
-        child.stdin.once("error", reject);
-        child.stdin.end(input.prompt);
-      },
-    ).finally(() => {
-      process.off("SIGINT", sigintHandler);
-      process.off("SIGTERM", sigtermHandler);
-      clearTimeout(timeout);
-      if (hardKillTimeout) {
-        clearTimeout(hardKillTimeout);
-      }
-    });
-    const finalEvents = normalizer.finish();
-    if (finalEvents.length > 0) {
-      stdoutEvents += finalEvents.filter((event) => event.stream === "stdout").length;
-      events.push(...finalEvents);
-      writeClaudeCodeVisibleEvents(input.write, finalEvents);
-      policyViolation = policyViolation ?? findClaudeCodeReadOnlyPolicyViolation(finalEvents);
+    if (rotationEnabled) {
+      rotationAttempts.push({
+        profile: attemptProfile,
+        outcome: !signal
+          ? result.errorMessage
+            ? "error"
+            : "success"
+          : signal.kind === "challenge"
+            ? "challenge"
+            : "rate_limited",
+        matched_pattern: signal?.matchedPattern,
+        elapsed_ms: result.elapsedMs,
+        exit_code: result.exitCode ?? null,
+      });
     }
 
-    const verification = verifyClaudeCodeRun(events, { requestedModel: input.model });
-    const verificationError = verification.ok
-      ? undefined
-      : `Claude Code local mode stopped because startup verification failed: ${verification.failures
-          .map((failure) => failure.code)
-          .join(", ")}`;
-    const exitError =
-      exit.exitCode === 0
-        ? undefined
-        : timedOut
-          ? `Claude Code local mode timed out after ${formatElapsed(timeoutMs)}.`
-          : `Claude Code exited with code ${exit.exitCode ?? "null"}${exit.signal ? ` signal ${exit.signal}` : ""}.`;
-    const policyViolationError = policyViolation
-      ? `Claude Code local mode stopped because the visible event stream showed a read-only policy violation: ${policyViolation.reason}. Raw events were saved in ${input.artifactPaths.normalizedEventsPath}.`
-      : undefined;
-    const outputFloodError = outputFlood
-      ? `Claude Code local mode stopped because visible ${outputFlood.stream} output exceeded the inline byte limit (${outputFlood.totalBytes.toLocaleString()} bytes > ${maxInlineBytes.toLocaleString()} bytes). Raw events were saved in ${input.artifactPaths.normalizedEventsPath}.`
-      : undefined;
-    const abortError = abortedBySignal
-      ? `Claude Code local mode stopped after ${abortedBySignal}. Raw events were saved in ${input.artifactPaths.normalizedEventsPath}.`
-      : undefined;
-    const errorMessage =
-      policyViolationError ?? outputFloodError ?? abortError ?? verificationError ?? exitError;
-    const normalizedEventsNdjson = events.map((event) => JSON.stringify(event)).join("\n");
-    const finalAnswer = extractFinalTextFromEvents(events);
+    if (!signal || signal.kind === "challenge") {
+      // Success, an unrelated failure, or a challenge/auth HARD-HALT — none
+      // of these ever rotate (challenge detection already refused to run
+      // cooldown/next machinery inside `runClaudeCodeChildAttempt`).
+      break;
+    }
+    // signal.kind === "rate_limit"
+    if (!rotationEnabled || !activeCaam) {
+      // caam not active for this run: surface unchanged, no rotation.
+      break;
+    }
+    if (rotationsUsed >= maxRotations) {
+      exhausted = true;
+      break;
+    }
 
-    return {
-      stdoutRaw: Buffer.concat(stdoutChunks),
-      stderrRaw: Buffer.concat(stderrChunks),
-      normalizedEventsNdjson: normalizedEventsNdjson ? `${normalizedEventsNdjson}\n` : "",
-      finalAnswerMarkdown: finalAnswer,
-      progressMarkdown: summarizeClaudeCodeProgress(events, errorMessage),
-      finalAnswerText: finalAnswer,
-      elapsedMs: Date.now() - startedAt,
-      exitCode: exit.exitCode,
-      signal: exit.signal,
-      eventsComplete: !timedOut && !policyViolation && !outputFlood && !abortedBySignal,
-      streamsComplete: !timedOut && !policyViolation && !outputFlood && !abortedBySignal,
-      stdoutEvents,
-      stderrEvents,
-      modelRequested: verification.metadata.modelRequested,
-      modelObserved: verification.metadata.modelObserved,
-      modelResolvedFromInit: verification.metadata.modelResolvedFromInit,
-      modelUsageKeys: verification.metadata.modelUsageKeys,
-      modelUsageAuxiliaryKeys: verification.metadata.modelUsageAuxiliaryKeys,
-      modelVerificationStatus: verification.metadata.modelVerificationStatus,
-      totalCostUsdObserved: verification.metadata.totalCostUsdObserved,
-      visibleThinkingCaptured: verification.metadata.visibleThinkingCaptured,
-      localOwnerVerified: true,
-      anthropicApiKeyPresent: false,
-      anthropicApiKeyRefusalChecked: true,
-      childEnvScrubbed: true,
-      errorMessage,
-      claudeSessionId,
-      caamProfileUsed: caam?.profile,
-      sessionPersistenceDisabled: !resumeSessionId,
-      adapterMetadata: {
-        command: {
-          executable: spawnCommand.file,
-          args_redacted: spawnCommand.args.map(redactClaudeCodeArgForAdapter),
-        },
-        executable: {
-          requested: executable.requested,
-          path: executable.path,
-          owner_uid: executable.ownerUid,
-          mode: executable.mode,
-        },
-        caam: caam
-          ? {
-              active: true,
-              profile: caam.profile,
-              executable: caam.executable.path,
-            }
-          : { active: false },
-        env_warnings: preparedEnv.warnings,
-        env_scrubbed_sources: preparedEnv.scrubbedSources,
-        local_owner: ownerResult,
-        single_flight_lock: {
-          path: singleFlightLock.path,
-          session_id: singleFlightLock.metadata.session_id,
-          pid: singleFlightLock.metadata.pid,
-          created_at: singleFlightLock.metadata.created_at,
-          wait_for_lock_ms: waitForLockMs,
-        },
-        policy_violation: policyViolation ?? null,
-        output_flood: outputFlood ?? null,
-        aborted_by_signal: abortedBySignal ?? null,
-        verification,
-        timeout_ms: timeoutMs,
-        max_inline_bytes: maxInlineBytes,
-      },
-    };
-  } finally {
-    await singleFlightLock.release().catch((error: unknown) => {
-      input.log(dim(`Claude Code lock release warning: ${formatError(error)}`));
+    // Best-effort cooldown write (design §2.2 step 4) — NON-FATAL: a
+    // failure here is logged and rotation proceeds to `robot next`
+    // regardless.
+    try {
+      await runCaamCooldownSet(
+        activeCaam.executable.path,
+        "claude",
+        activeCaam.profile,
+        60,
+        `oracle session ${input.sessionId}: rate_limit pattern '${signal.matchedPattern}'`,
+        { env: process.env },
+      );
+    } catch (error) {
+      input.log(
+        dim(
+          `Claude Code caam cooldown set warning (non-fatal, rotation proceeds): ${formatError(error)}`,
+        ),
+      );
+    }
+
+    let nextProfile: string | undefined;
+    try {
+      const next = await runCaamRobotNext(activeCaam.executable.path, "claude", {
+        strategy: "smart",
+        env: process.env,
+      });
+      if (!next.success) {
+        // NO_PROFILES / ALL_BLOCKED / anything else -> exhaustion, not a
+        // crash. Surface the ORIGINAL rate-limit failure, not a
+        // caam-tooling error (design §2.2 step 6).
+        input.log(
+          dim(
+            `Claude Code caam robot next reported ${next.code}: ${next.message}. Rotation exhausted; surfacing the rate-limit failure.`,
+          ),
+        );
+        exhausted = true;
+        break;
+      }
+      if (attemptedCaamProfiles.has(next.profile)) {
+        // The in-process guard firing: `robot next` re-offered a profile
+        // already tried this run (a cooldown-write race). Treat identically
+        // to exhaustion rather than looping forever.
+        input.log(
+          dim(
+            `Claude Code caam robot next re-offered already-attempted profile "${next.profile}"; treating as rotation exhaustion.`,
+          ),
+        );
+        exhausted = true;
+        break;
+      }
+      nextProfile = next.profile;
+    } catch (error) {
+      input.log(
+        dim(
+          `Claude Code caam robot next failed: ${formatError(error)}. Rotation exhausted; surfacing the rate-limit failure.`,
+        ),
+      );
+      exhausted = true;
+      break;
+    }
+
+    // Re-run the existing doctor pre-flight against the candidate profile by
+    // simply re-invoking `tryActivateCaamShallowSpawn` unchanged (design
+    // §2.2 step 7). A doctor failure on the candidate is treated as
+    // exhaustion here (not a silent fall back to direct-`claude`, which
+    // would defeat the purpose of rotating in the first place).
+    const nextActivation = await tryActivateCaamShallowSpawn(nextProfile, command, input);
+    if (!nextActivation) {
+      input.log(
+        dim(
+          `Claude Code caam shallow-spawn doctor failed for rotated profile "${nextProfile}"; rotation exhausted.`,
+        ),
+      );
+      exhausted = true;
+      break;
+    }
+
+    attemptedCaamProfiles.add(nextProfile);
+    activeCaam = nextActivation;
+    rotationsUsed += 1;
+  }
+
+  // The loop above always runs at least once (there is no `continue`/early
+  // return that skips the attempt), so `attemptOutcome` is always defined
+  // here; the check just keeps the compiler (and any future refactor) honest.
+  if (!attemptOutcome) {
+    throw new Error("Claude Code local mode attempt loop exited without an outcome.");
+  }
+
+  const { result } = attemptOutcome;
+  return {
+    ...result,
+    rateLimitRotation: rotationEnabled
+      ? { attempts: rotationAttempts, rotationsUsed, exhausted }
+      : undefined,
+    adapterMetadata: {
+      ...result.adapterMetadata,
+      ...(rotationEnabled
+        ? {
+            rotation: {
+              attempts: rotationAttempts,
+              final_profile: activeCaam?.profile ?? null,
+              rotations_used: rotationsUsed,
+              cap: maxRotations,
+              exhausted,
+            },
+          }
+        : {}),
+    },
+  };
+}
+
+interface ClaudeCodeAttemptOutcome {
+  result: ClaudeCodeRunnerResult;
+  signal?: ClaudeCodeRateLimitOrChallengeSignal;
+}
+
+interface ClaudeCodeChildAttemptParams {
+  input: ClaudeCodeRunnerInput;
+  startedAt: number;
+  executable: ResolvedClaudeExecutable;
+  activeCaam: ClaudeCodeCaamActivation | undefined;
+  spawnCommand: ClaudeCodeCommand;
+  claudeSessionId: string;
+  resumeSessionId: string | undefined;
+  preparedEnv: ReturnType<typeof prepareClaudeCodeEnvironment>;
+  ownerResult: Awaited<ReturnType<typeof assertClaudeCodeLocalOwner>>;
+  singleFlightLock: ClaudeCodeSingleFlightLock;
+  waitForLockMs: number;
+}
+
+/**
+ * Spawns and waits on exactly ONE `claude` (or `caam shallow-spawn`-wrapped
+ * `claude`) child process, and builds the full `ClaudeCodeRunnerResult` for
+ * that single attempt — this is the body that used to be
+ * `runLocalClaudeCodeSession` itself before rate-limit rotation made it a
+ * per-attempt operation invoked from a bounded retry loop
+ * (caam-ratelimit-rotation-design.md §2.2).
+ */
+async function runClaudeCodeChildAttempt({
+  input,
+  startedAt,
+  executable,
+  activeCaam,
+  spawnCommand,
+  claudeSessionId,
+  resumeSessionId,
+  preparedEnv,
+  ownerResult,
+  singleFlightLock,
+  waitForLockMs,
+}: ClaudeCodeChildAttemptParams): Promise<ClaudeCodeAttemptOutcome> {
+  const stdoutChunks: Buffer[] = [];
+  const stderrChunks: Buffer[] = [];
+  const normalizer = new ClaudeCodeStreamNormalizer();
+  const events: ClaudeCodeNormalizedEvent[] = [];
+  let stdoutEvents = 0;
+  let stderrEvents = 0;
+  let rawStreamBytes = 0;
+  let timedOut = false;
+  let policyViolation: ClaudeCodeReadOnlyPolicyViolation | undefined;
+  let outputFlood: { stream: "stdout" | "stderr"; totalBytes: number } | undefined;
+  let abortedBySignal: NodeJS.Signals | undefined;
+  // Only ever acted on (early-terminate the child, override the terminal
+  // error message) when THIS attempt's caam profile is active — a
+  // caam-absent run still runs this detector (cheap, useful for future
+  // observability), but a rate limit there surfaces exactly as it did
+  // before this feature existed, through the unchanged generic exit-code
+  // fallback (design §3.3, §4.2 case 3).
+  let rateLimitOrChallenge: ClaudeCodeRateLimitOrChallengeSignal | undefined;
+  const timeoutMs = resolveClaudeCodeTimeoutMs(input.runOptions.timeoutSeconds);
+  const maxInlineBytes = resolveClaudeCodeMaxInlineBytes(
+    input.runOptions.claudeCode?.maxInlineBytes,
+    process.env,
+  );
+
+  // TOCTOU re-check: time has passed since the initial resolution above
+  // (env prep, owner check, command build, and — notably — however long
+  // acquireClaudeCodeSingleFlightLock waited for a competing lane lock),
+  // so re-verify the already-resolved real path immediately before
+  // spawning. `executable.path` is absolute, so this repeats the full
+  // symlink/world-writable/ownership/inside-repo hardening against it
+  // without redoing the PATH search.
+  await resolveClaudeExecutable({
+    executable: executable.path,
+    repoRoot: input.cwd,
+    env: process.env,
+  });
+  if (activeCaam) {
+    // Same TOCTOU re-check, mirrored for the caam executable — it is
+    // about to `exec` into a repointed `$HOME`, so it gets the same
+    // "re-verify the resolved real path immediately before spawn"
+    // treatment as `claude` above.
+    await resolveCaamExecutable({
+      executable: activeCaam.executable.path,
+      repoRoot: input.cwd,
+      env: process.env,
     });
   }
+
+  const child = spawn(spawnCommand.file, spawnCommand.args, {
+    ...spawnCommand.spawnOptions,
+    cwd: input.cwd,
+    detached: process.platform !== "win32",
+    env: preparedEnv.childEnv,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+
+  let hardKillTimeout: NodeJS.Timeout | undefined;
+  const scheduleHardKill = () => {
+    if (hardKillTimeout) return;
+    hardKillTimeout = setTimeout(() => terminateClaudeCodeChild(child, "SIGKILL"), 5_000);
+    hardKillTimeout.unref?.();
+  };
+  const stopForPolicyViolation = (normalized: ClaudeCodeNormalizedEvent[]) => {
+    if (policyViolation) return;
+    const violation = findClaudeCodeReadOnlyPolicyViolation(normalized);
+    if (!violation) return;
+    policyViolation = violation;
+    terminateClaudeCodeChild(child, "SIGTERM");
+    scheduleHardKill();
+  };
+  const stopForRateLimitOrChallenge = (normalized: ClaudeCodeNormalizedEvent[]) => {
+    if (rateLimitOrChallenge) return;
+    const signal = findClaudeCodeRateLimitOrChallengeSignal(normalized);
+    if (!signal) return;
+    rateLimitOrChallenge = signal;
+    if (!activeCaam) return;
+    terminateClaudeCodeChild(child, "SIGTERM");
+    scheduleHardKill();
+  };
+  const stopForOutputFlood = (stream: "stdout" | "stderr", totalBytes: number) => {
+    if (outputFlood || totalBytes <= maxInlineBytes) return;
+    outputFlood = { stream, totalBytes };
+    terminateClaudeCodeChild(child, "SIGTERM");
+    scheduleHardKill();
+  };
+  const stopForAbortSignal = (signal: NodeJS.Signals) => {
+    if (abortedBySignal) return;
+    abortedBySignal = signal;
+    terminateClaudeCodeChild(child, "SIGTERM");
+    scheduleHardKill();
+  };
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    terminateClaudeCodeChild(child, "SIGTERM");
+    scheduleHardKill();
+  }, timeoutMs);
+  timeout.unref?.();
+  const sigintHandler = () => stopForAbortSignal("SIGINT");
+  const sigtermHandler = () => stopForAbortSignal("SIGTERM");
+  process.once("SIGINT", sigintHandler);
+  process.once("SIGTERM", sigtermHandler);
+
+  child.stdout.on("data", (chunk: Buffer) => {
+    const bytes = Buffer.from(chunk);
+    stdoutChunks.push(bytes);
+    rawStreamBytes += bytes.length;
+    stopForOutputFlood("stdout", rawStreamBytes);
+    const normalized = normalizer.push("stdout", bytes);
+    stdoutEvents += normalized.length;
+    events.push(...normalized);
+    writeClaudeCodeVisibleEvents(input.write, normalized);
+    stopForPolicyViolation(normalized);
+    stopForRateLimitOrChallenge(normalized);
+  });
+  child.stderr.on("data", (chunk: Buffer) => {
+    const bytes = Buffer.from(chunk);
+    stderrChunks.push(bytes);
+    rawStreamBytes += bytes.length;
+    stopForOutputFlood("stderr", rawStreamBytes);
+    const normalized = normalizer.push("stderr", bytes);
+    stderrEvents += normalized.length;
+    events.push(...normalized);
+    writeClaudeCodeVisibleEvents(input.write, normalized);
+    stopForPolicyViolation(normalized);
+    stopForRateLimitOrChallenge(normalized);
+  });
+
+  const exit = await new Promise<{ exitCode: number | null; signal: string | null }>(
+    (resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", (exitCode, signal) => resolve({ exitCode, signal }));
+      child.stdin.once("error", reject);
+      child.stdin.end(input.prompt);
+    },
+  ).finally(() => {
+    process.off("SIGINT", sigintHandler);
+    process.off("SIGTERM", sigtermHandler);
+    clearTimeout(timeout);
+    if (hardKillTimeout) {
+      clearTimeout(hardKillTimeout);
+    }
+  });
+  const finalEvents = normalizer.finish();
+  if (finalEvents.length > 0) {
+    stdoutEvents += finalEvents.filter((event) => event.stream === "stdout").length;
+    events.push(...finalEvents);
+    writeClaudeCodeVisibleEvents(input.write, finalEvents);
+    policyViolation = policyViolation ?? findClaudeCodeReadOnlyPolicyViolation(finalEvents);
+    stopForRateLimitOrChallenge(finalEvents);
+  }
+
+  const verification = verifyClaudeCodeRun(events, { requestedModel: input.model });
+  const verificationError = verification.ok
+    ? undefined
+    : `Claude Code local mode stopped because startup verification failed: ${verification.failures
+        .map((failure) => failure.code)
+        .join(", ")}`;
+  const exitError =
+    exit.exitCode === 0
+      ? undefined
+      : timedOut
+        ? `Claude Code local mode timed out after ${formatElapsed(timeoutMs)}.`
+        : `Claude Code exited with code ${exit.exitCode ?? "null"}${exit.signal ? ` signal ${exit.signal}` : ""}.`;
+  const policyViolationError = policyViolation
+    ? `Claude Code local mode stopped because the visible event stream showed a read-only policy violation: ${policyViolation.reason}. Raw events were saved in ${input.artifactPaths.normalizedEventsPath}.`
+    : undefined;
+  const outputFloodError = outputFlood
+    ? `Claude Code local mode stopped because visible ${outputFlood.stream} output exceeded the inline byte limit (${outputFlood.totalBytes.toLocaleString()} bytes > ${maxInlineBytes.toLocaleString()} bytes). Raw events were saved in ${input.artifactPaths.normalizedEventsPath}.`
+    : undefined;
+  const abortError = abortedBySignal
+    ? `Claude Code local mode stopped after ${abortedBySignal}. Raw events were saved in ${input.artifactPaths.normalizedEventsPath}.`
+    : undefined;
+  // Rate-limit/challenge only ever changes the terminal error message when
+  // THIS attempt's caam profile is active — see `rateLimitOrChallenge`'s
+  // doc comment above.
+  const rateLimitOrChallengeError =
+    rateLimitOrChallenge && activeCaam
+      ? rateLimitOrChallenge.kind === "challenge"
+        ? `Claude Code local mode stopped because the visible event stream showed an account challenge/auth signal: ${rateLimitOrChallenge.reason}. This is a HARD-HALT — no automatic rotation was attempted. Raw events were saved in ${input.artifactPaths.normalizedEventsPath}.`
+        : `Claude Code local mode stopped because the visible event stream showed a rate-limit signal: ${rateLimitOrChallenge.reason}. Raw events were saved in ${input.artifactPaths.normalizedEventsPath}.`
+      : undefined;
+  const errorMessage =
+    policyViolationError ??
+    outputFloodError ??
+    abortError ??
+    rateLimitOrChallengeError ??
+    verificationError ??
+    exitError;
+  const normalizedEventsNdjson = events.map((event) => JSON.stringify(event)).join("\n");
+  const finalAnswer = extractFinalTextFromEvents(events);
+
+  const result: ClaudeCodeRunnerResult = {
+    stdoutRaw: Buffer.concat(stdoutChunks),
+    stderrRaw: Buffer.concat(stderrChunks),
+    normalizedEventsNdjson: normalizedEventsNdjson ? `${normalizedEventsNdjson}\n` : "",
+    finalAnswerMarkdown: finalAnswer,
+    progressMarkdown: summarizeClaudeCodeProgress(events, errorMessage),
+    finalAnswerText: finalAnswer,
+    elapsedMs: Date.now() - startedAt,
+    exitCode: exit.exitCode,
+    signal: exit.signal,
+    eventsComplete: !timedOut && !policyViolation && !outputFlood && !abortedBySignal,
+    streamsComplete: !timedOut && !policyViolation && !outputFlood && !abortedBySignal,
+    stdoutEvents,
+    stderrEvents,
+    modelRequested: verification.metadata.modelRequested,
+    modelObserved: verification.metadata.modelObserved,
+    modelResolvedFromInit: verification.metadata.modelResolvedFromInit,
+    modelUsageKeys: verification.metadata.modelUsageKeys,
+    modelUsageAuxiliaryKeys: verification.metadata.modelUsageAuxiliaryKeys,
+    modelVerificationStatus: verification.metadata.modelVerificationStatus,
+    totalCostUsdObserved: verification.metadata.totalCostUsdObserved,
+    visibleThinkingCaptured: verification.metadata.visibleThinkingCaptured,
+    localOwnerVerified: true,
+    anthropicApiKeyPresent: false,
+    anthropicApiKeyRefusalChecked: true,
+    childEnvScrubbed: true,
+    errorMessage,
+    claudeSessionId,
+    caamProfileUsed: activeCaam?.profile,
+    sessionPersistenceDisabled: !resumeSessionId,
+    challengeDetected:
+      rateLimitOrChallenge && activeCaam && rateLimitOrChallenge.kind === "challenge"
+        ? { profile: activeCaam.profile, reason: rateLimitOrChallenge.reason }
+        : undefined,
+    adapterMetadata: {
+      command: {
+        executable: spawnCommand.file,
+        args_redacted: spawnCommand.args.map(redactClaudeCodeArgForAdapter),
+      },
+      executable: {
+        requested: executable.requested,
+        path: executable.path,
+        owner_uid: executable.ownerUid,
+        mode: executable.mode,
+      },
+      caam: activeCaam
+        ? {
+            active: true,
+            profile: activeCaam.profile,
+            executable: activeCaam.executable.path,
+          }
+        : { active: false },
+      env_warnings: preparedEnv.warnings,
+      env_scrubbed_sources: preparedEnv.scrubbedSources,
+      local_owner: ownerResult,
+      single_flight_lock: {
+        path: singleFlightLock.path,
+        session_id: singleFlightLock.metadata.session_id,
+        pid: singleFlightLock.metadata.pid,
+        created_at: singleFlightLock.metadata.created_at,
+        wait_for_lock_ms: waitForLockMs,
+      },
+      policy_violation: policyViolation ?? null,
+      output_flood: outputFlood ?? null,
+      aborted_by_signal: abortedBySignal ?? null,
+      verification,
+      timeout_ms: timeoutMs,
+      max_inline_bytes: maxInlineBytes,
+    },
+  };
+
+  return {
+    result,
+    // Only surfaced to the rotation loop when THIS attempt's caam profile
+    // was active — the loop itself is a no-op (breaks immediately) for a
+    // caam-absent run regardless, but keeping this gate here too means the
+    // detector's presence never leaks into control flow for that case.
+    signal: activeCaam ? rateLimitOrChallenge : undefined,
+  };
 }
 
 async function buildClaudeCodeArtifactPaths(sessionId: string): Promise<ClaudeCodeArtifactPaths> {
@@ -1642,6 +1953,21 @@ function buildClaudeCodeSessionMetadata({
     normalized_events_path: artifactPaths.normalizedEventsPath,
     final_answer_path: artifactPaths.finalAnswerPath,
     progress_path: artifactPaths.progressPath,
+    rate_limit_rotation: result.rateLimitRotation
+      ? {
+          attempts: result.rateLimitRotation.attempts.map((attempt) => ({
+            profile: attempt.profile,
+            outcome: attempt.outcome,
+            matched_pattern: attempt.matched_pattern,
+            started_at: attempt.started_at,
+            elapsed_ms: attempt.elapsed_ms,
+            exit_code: attempt.exit_code,
+          })),
+          rotations_used: result.rateLimitRotation.rotationsUsed,
+          exhausted: result.rateLimitRotation.exhausted,
+        }
+      : undefined,
+    challenge_detected: result.challengeDetected,
   };
 }
 
@@ -1997,6 +2323,62 @@ const CLAUDE_CODE_BLOCKED_TOOL_NAMES = new Set(
     "write",
   ].map(normalizeClaudeCodePolicyToken),
 );
+
+interface ClaudeCodeRateLimitOrChallengeSignal {
+  kind: "challenge" | "rate_limit";
+  reason: string;
+  matchedPattern: string;
+  eventType?: string;
+  eventSeq?: number;
+}
+
+/**
+ * Sibling to `findClaudeCodeReadOnlyPolicyViolation` (caam-ratelimit-
+ * rotation-design.md §1.3): scans the visible event stream for a Claude
+ * -side rate-limit or challenge/auth signal, ported directly from caam's
+ * own shipped text-pattern detector rather than any assumed JSON schema —
+ * exit code is deliberately NOT a discriminator here (§1.3).
+ *
+ * Scan surface per event, in order: (a) `event.text` (the already-extracted
+ * visible text), (b) `event.rawText` (stderr chunk events), and (c) as a
+ * recall backstop, `JSON.stringify(event.json)` for stdout JSON events
+ * whose extracted `.text` was empty — a rate-limit/auth message could ride
+ * in a field `extractVisibleText` doesn't surface.
+ *
+ * Precedence, ported from caam's `penalty.go` (`isAuthError` before
+ * `isRateLimitError`): challenge/auth is checked first, within EACH
+ * candidate string, before moving to the next event. An ambiguous event
+ * that matches both never rotates — it hard-halts.
+ */
+function findClaudeCodeRateLimitOrChallengeSignal(
+  events: readonly ClaudeCodeNormalizedEvent[],
+): ClaudeCodeRateLimitOrChallengeSignal | undefined {
+  for (const event of events) {
+    const candidates: string[] = [];
+    if (event.text) {
+      candidates.push(event.text);
+    }
+    if (event.rawText) {
+      candidates.push(event.rawText);
+    }
+    if ((!event.text || !event.text.trim()) && event.json) {
+      candidates.push(JSON.stringify(event.json));
+    }
+    for (const candidate of candidates) {
+      const match = matchClaudeCodeRateLimitOrChallengeText(candidate);
+      if (match) {
+        return {
+          kind: match.kind,
+          reason: match.matchedText,
+          matchedPattern: match.pattern,
+          eventType: event.type,
+          eventSeq: event.seq,
+        };
+      }
+    }
+  }
+  return undefined;
+}
 
 function findClaudeCodeReadOnlyPolicyViolation(
   events: readonly ClaudeCodeNormalizedEvent[],
