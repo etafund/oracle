@@ -2,7 +2,7 @@
 import "dotenv/config";
 import { fileURLToPath } from "node:url";
 import { readFile as readPromptFile } from "node:fs/promises";
-import { Command, Option } from "commander";
+import { Command, InvalidArgumentError, Option } from "commander";
 import type { OptionValues } from "commander";
 // Allow `npx @steipete/oracle oracle-mcp` to resolve the MCP server even though npx runs the default binary.
 if (process.argv[2] === "oracle-mcp") {
@@ -104,7 +104,8 @@ import {
   launchDetachedSessionRunner,
 } from "../src/cli/detachedSession.js";
 import { isFableModel, resolveLanePolicy, type ResolvedOracleLane } from "../src/cli/lanePolicy.js";
-import { LaneRouteBlockError } from "../src/cli/routeBlockError.js";
+import { LaneRouteBlockError, VALID_LANES, closestLane } from "../src/cli/routeBlockError.js";
+import { nearestByEditDistance } from "../src/cli/didYouMean.js";
 
 interface CliOptions extends OptionValues {
   prompt?: string;
@@ -311,6 +312,33 @@ const isRootVerboseHelpRequest = (args: readonly string[]): boolean => {
 };
 const isRootDebugHelpRequest = (args: readonly string[]): boolean =>
   args.some((arg) => arg === "--debug-help");
+
+/**
+ * Custom `--lane` argParser (agent-ergonomics Axiom 7: intent inference).
+ * commander's `.choices()` would otherwise reject an unrecognized `--lane`
+ * value with a bare "Allowed choices are ..." message *before* the value
+ * ever reaches `resolveLanePolicy`'s well-tested `unknown_lane` ->
+ * `closestLane()` typo-correction path (`routeBlockError.ts`) — that path
+ * only fires for non-CLI callers (MCP) today. Reusing the same
+ * `closestLane()` here means a CLI typo gets the identical "did you mean
+ * the nearest reviewed lane?" treatment, with the exact corrected command,
+ * instead of a dead end.
+ */
+function parseLaneOption(value: string): string {
+  if ((VALID_LANES as readonly string[]).includes(value)) {
+    return value;
+  }
+  const allowed = `Allowed choices are ${VALID_LANES.join(", ")}.`;
+  const suggestion = closestLane(value);
+  if (!suggestion) {
+    throw new InvalidArgumentError(allowed);
+  }
+  throw new InvalidArgumentError(
+    `${allowed} Did you mean --lane ${suggestion}? ` +
+      `Try: oracle -p "<prompt>" --lane ${suggestion}   # closest match to --lane ${value}`,
+  );
+}
+
 const perfTrace = createPerfTrace({
   value: perfTraceArgs.value,
   argv: userCliArgs,
@@ -438,6 +466,7 @@ program.hook("preAction", (_thisCommand, actionCommand) => {
 });
 applyHelpStyling(program, VERSION, isTty);
 registerCliCommands(program);
+installUnknownFlagSuggestion(program);
 program.addHelpText("after", () => formatRobotCommandHelp());
 program.hook("preAction", async (thisCommand) => {
   if (thisCommand !== program) {
@@ -542,7 +571,16 @@ program
     new Option(
       "--lane <lane>",
       "Reviewed lane alias (fable-local, chatgpt-pro, gemini-deep-think).",
-    ).choices(["chatgpt-pro", "fable-local", "gemini-deep-think"]),
+    )
+      .choices([...VALID_LANES])
+      // .choices() alone gives a bare "Allowed choices are ..." message
+      // with no typo correction (agent-ergonomics Axiom 7: intent
+      // inference). Layering a custom argParser on top keeps the
+      // `.choices()` call for `--help`'s "(choices: ...)" rendering
+      // (argChoices) while replacing the parse-time error with one that
+      // also names the closest valid lane and the exact corrected
+      // command — see `parseLaneOption` below.
+      .argParser(parseLaneOption),
   )
   .addOption(
     new Option(
@@ -3502,6 +3540,110 @@ async function finalizeSession(sessionId: string) {
 }
 
 /**
+ * Enhance commander's built-in unknown-option handling (agent-ergonomics
+ * Axiom 7: intent inference) so a strict Levenshtein-1 flag typo (e.g.
+ * `--prompt-fil` for `--prompt-file`) gets the *exact* corrected
+ * command an agent should retry with, not just a bare flag name.
+ *
+ * The known-flag list is derived from `program`'s own registered
+ * *visible* options at call time via `createHelp().visibleOptions()`
+ * (the same introspection commander's own default suggestion uses) —
+ * never hardcoded — so it can't drift from `--help`, and a typo can
+ * never resolve to a non-core flag this CLI's earlier surface pass hid.
+ *
+ * Anything looser than Levenshtein-1 falls through to commander's own
+ * default `unknownOption()` unchanged (it still offers its own
+ * best-effort, transposition-aware "(Did you mean ...)" hint without the
+ * corrected-command line), so behavior for a wildly-off flag is
+ * unaffected.
+ */
+interface CommandWithUnknownOptionHook {
+  unknownOption(flag: string): void;
+}
+
+function installUnknownFlagSuggestion(cliProgram: Command): void {
+  // `unknownOption` is a real, overridable prototype method (used exactly
+  // this way by commander consumers), but it's `@private` and not part of
+  // commander's public `.d.ts` — cast narrowly to call/reassign it.
+  const withHook = cliProgram as unknown as CommandWithUnknownOptionHook;
+  const defaultUnknownOption = withHook.unknownOption.bind(cliProgram);
+  withHook.unknownOption = (flag: string): void => {
+    const suggestion = flag.startsWith("--") ? nearestKnownLongFlag(cliProgram, flag) : null;
+    if (suggestion) {
+      const goodFlag = `--${suggestion}`;
+      const corrected = rewriteFlagInArgs(routingCliArgs, flag, goodFlag);
+      cliProgram.error(
+        `error: unknown option '${flag}'\n(Did you mean ${goodFlag}?)\nTry: oracle ${corrected}`,
+        { code: "commander.unknownOption" },
+      );
+      return;
+    }
+    defaultUnknownOption(flag);
+  };
+}
+
+function nearestKnownLongFlag(cliProgram: Command, flag: string): string | null {
+  const bare = flag.split("=")[0].slice(2);
+  const known = cliProgram
+    .createHelp()
+    .visibleOptions(cliProgram)
+    .map((option) => option.long)
+    .filter((long): long is string => Boolean(long))
+    .map((long) => long.slice(2));
+  return nearestByEditDistance(bare, known, 1);
+}
+
+/** Rewrite just the mistyped flag token in the original argv, quoting values that need it. */
+function rewriteFlagInArgs(args: readonly string[], badFlag: string, goodFlag: string): string {
+  const badBare = badFlag.split("=")[0];
+  const rewritten = args.map((arg) => {
+    if (arg === badBare) return goodFlag;
+    if (arg.startsWith(`${badBare}=`)) return `${goodFlag}${arg.slice(badBare.length)}`;
+    return arg;
+  });
+  return rewritten.map(quoteArgForDisplay).join(" ");
+}
+
+function quoteArgForDisplay(value: string): string {
+  if (value.length > 0 && /^[\w./:@=,+-]+$/.test(value)) return value;
+  return `"${value.replace(/(["\\$`])/g, "\\$1")}"`;
+}
+
+/**
+ * Agent-ergonomics Axiom 7 (intent inference): a bare single-token
+ * invocation that is a Levenshtein-1 typo of a known top-level CORE
+ * command (e.g. `oracle statuss`) would otherwise fall through to the
+ * root action's catch-all `[prompt]` positional argument and *silently
+ * launch a real, potentially costly reviewed-lane run* with "statuss" as
+ * the prompt text — never what an agent typing a command name meant.
+ * Detected in `main()` before `program.parseAsync()` ever runs, so the
+ * dangerous run never starts; this only ever *suggests* the fix (Axiom
+ * 7's "never auto-run a dangerous corrected command").
+ *
+ * Scoped deliberately narrow to avoid false-positives on real one-word
+ * prompts: only a *single* bare, non-flag token with no other args at
+ * all (real prompts are near-universally multi-word or passed via
+ * `--prompt`/`-p` per every documented example) and only when it is
+ * exactly one edit away from a known *visible* top-level command name
+ * (derived live from `program.commands`, never hardcoded).
+ */
+function detectRootCommandTypo(
+  args: readonly string[],
+  cliProgram: Command,
+): { input: string; suggestion: string } | null {
+  if (args.length !== 1) return null;
+  const [only] = args;
+  if (!only || only.startsWith("-")) return null;
+  const knownCommandNames = cliProgram
+    .createHelp()
+    .visibleCommands(cliProgram)
+    .map((command) => command.name());
+  if (knownCommandNames.includes(only)) return null;
+  const suggestion = nearestByEditDistance(only, knownCommandNames, 1);
+  return suggestion ? { input: only, suggestion } : null;
+}
+
+/**
  * Derive this page's contents from commander's live option/command registry
  * (`program.options` / `program.commands`) instead of a hand-typed array, so
  * anything hidden via `hideHelp()`/`{ hidden: true }` is automatically
@@ -3614,6 +3756,20 @@ async function main(): Promise<void> {
   }
   if (isRootVerboseHelpRequest(routingCliArgs) || isRootDebugHelpRequest(routingCliArgs)) {
     printDebugHelp("oracle");
+    return;
+  }
+  const commandTypo = detectRootCommandTypo(routingCliArgs, program);
+  if (commandTypo) {
+    console.error(
+      `error: '${commandTypo.input}' is not a recognized command, and no --prompt/--lane was given — ` +
+        `it's one edit away from the '${commandTypo.suggestion}' command.`,
+    );
+    console.error(`Did you mean: oracle ${commandTypo.suggestion}`);
+    console.error(
+      `If you meant to send it as a literal prompt instead, run: oracle -p "${commandTypo.input}"`,
+    );
+    console.error("(use --help for usage)");
+    process.exitCode = 1;
     return;
   }
   const handleSigint = (): void => {

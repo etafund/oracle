@@ -1,4 +1,5 @@
 import { PromptValidationError } from "../oracle/errors.js";
+import { levenshteinDistance } from "./didYouMean.js";
 import type { LaneRouteBlock } from "./lanePolicy.js";
 
 export class LaneRouteBlockError extends PromptValidationError {
@@ -39,7 +40,13 @@ export interface LaneBlockGuidance {
   fixCommand: string;
 }
 
-const VALID_LANES = ["chatgpt-pro", "fable-local", "gemini-deep-think"] as const;
+// Exported so the CLI's own `--lane` parse-time validation
+// (`bin/oracle-cli.ts`'s `parseLaneOption`) can reuse the exact same
+// choice list + typo-correction logic instead of re-deriving it — see
+// that file for why commander's `.choices()` intercepts a bad `--lane`
+// value before it ever reaches `resolveLanePolicy`'s `unknown_lane`
+// branch below.
+export const VALID_LANES = ["chatgpt-pro", "fable-local", "gemini-deep-think"] as const;
 const GENERIC_FIX_COMMAND =
   'oracle -p "<prompt>" --lane fable-local   # or --lane chatgpt-pro / --lane gemini-deep-think';
 
@@ -198,7 +205,7 @@ function stringField(record: Record<string, unknown>, key: string): string | nul
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
-function closestLane(attempted: string | null): (typeof VALID_LANES)[number] | null {
+export function closestLane(attempted: string | null): (typeof VALID_LANES)[number] | null {
   if (!attempted) return null;
   let best: (typeof VALID_LANES)[number] | null = null;
   let bestDistance = Infinity;
@@ -214,25 +221,4 @@ function closestLane(attempted: string | null): (typeof VALID_LANES)[number] | n
   // "did you mean" and the generic fallback is more honest.
   const threshold = Math.max(3, Math.ceil((best?.length ?? 0) / 2));
   return best && bestDistance <= threshold ? best : null;
-}
-
-function levenshteinDistance(a: string, b: string): number {
-  const left = a.toLowerCase();
-  const right = b.toLowerCase();
-  const rows = left.length + 1;
-  const cols = right.length + 1;
-  const distances: number[][] = Array.from({ length: rows }, () => new Array(cols).fill(0));
-  for (let i = 0; i < rows; i += 1) distances[i][0] = i;
-  for (let j = 0; j < cols; j += 1) distances[0][j] = j;
-  for (let i = 1; i < rows; i += 1) {
-    for (let j = 1; j < cols; j += 1) {
-      const cost = left[i - 1] === right[j - 1] ? 0 : 1;
-      distances[i][j] = Math.min(
-        distances[i - 1][j] + 1,
-        distances[i][j - 1] + 1,
-        distances[i - 1][j - 1] + cost,
-      );
-    }
-  }
-  return distances[rows - 1][cols - 1];
 }

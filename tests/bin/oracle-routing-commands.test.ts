@@ -96,6 +96,65 @@ describe("bin/oracle-cli preview and visibility routing", () => {
     expect(output).toContain("Allowed choices are chatgpt-pro, fable-local, gemini-deep-think");
     expect(output).not.toContain("missing_reviewed_lane");
     expect(output).not.toContain("selector_state_unknown");
+    // Agent-ergonomics Axiom 7 (intent inference): a typo'd --lane value
+    // must also name the closest reviewed lane and the exact corrected
+    // command to retry with — not just the bare "invalid choice" message.
+    expect(output).toContain("Did you mean --lane chatgpt-pro?");
+    expect(output).toContain('Try: oracle -p "<prompt>" --lane chatgpt-pro');
+  });
+
+  test("a different typoed --lane value (fable-locl) suggests fable-local with the exact corrected command", async () => {
+    const { code, stdout, stderr } = await runOracleFailure([
+      "--lane",
+      "fable-locl",
+      "--prompt",
+      "hi",
+      "--dry-run",
+      "json",
+    ]);
+    const output = `${stdout}\n${stderr}`;
+
+    expect(code).toBe(1);
+    expect(output).toContain("error: option '--lane <lane>' argument 'fable-locl' is invalid");
+    expect(output).toContain("Allowed choices are chatgpt-pro, fable-local, gemini-deep-think");
+    expect(output).toContain("Did you mean --lane fable-local?");
+    expect(output).toContain('Try: oracle -p "<prompt>" --lane fable-local');
+  });
+
+  test("--lane with no plausible match falls back to the generic choices message (no false 'did you mean')", async () => {
+    const { code, stdout, stderr } = await runOracleFailure([
+      "--lane",
+      "banana",
+      "--prompt",
+      "hi",
+      "--dry-run",
+      "json",
+    ]);
+    const output = `${stdout}\n${stderr}`;
+
+    expect(code).toBe(1);
+    expect(output).toContain("Allowed choices are chatgpt-pro, fable-local, gemini-deep-think");
+    expect(output).not.toContain("Did you mean --lane");
+  });
+
+  test("a valid --lane invocation is unaffected by the typo-correction wiring", async () => {
+    const { stdout, stderr } = await runOracle([
+      "--lane",
+      "chatgpt-pro",
+      "--prompt",
+      "Review this migration plan",
+      "--file",
+      "AGENTS.md",
+      "--dry-run",
+      "json",
+      "--json",
+    ]);
+    const output = `${stdout}\n${stderr}`;
+
+    expect(output).not.toContain("Did you mean");
+    expect(output).not.toContain("is invalid");
+    const preview = parseLastJson(stdout);
+    expect(preview).toMatchObject({ engine: "browser", model: "gpt-5.5-pro" });
   });
 
   test("fable-local is CLI-visible even while its readiness remains hidden-alpha-only", async () => {
