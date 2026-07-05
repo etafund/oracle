@@ -113,6 +113,31 @@ describe("registerSubmittedUserMessage", () => {
     expect(logs.join("\n")).toContain("conversation-level binding");
   });
 
+  test("downgrades to guessed when the fallback bound a user turn without matching the prompt", async () => {
+    const logs: string[] = [];
+    const runtime = runtimeWithValues([
+      {
+        found: true,
+        matchedPrompt: false,
+        conversationId: "run-conv-3",
+        userMessageId: "user-msg-guess",
+        userTurnTestId: "conversation-turn-9",
+      },
+    ]);
+    const binding = await registerSubmittedUserMessage(runtime, "What is the answer?", (m) =>
+      logs.push(String(m)),
+    );
+
+    // A guessed latest-user-turn binding must NOT be recorded at full
+    // message-handle strength (bead oracle-router-kl8).
+    expect(binding.quality).toBe("guessed");
+    expect(binding.conversationId).toBe("run-conv-3");
+    // Handles are kept for diagnostics only.
+    expect(binding.userMessageId).toBe("user-msg-guess");
+    expect(binding.userTurnTestId).toBe("conversation-turn-9");
+    expect(logs.join("\n")).toContain("as a guess");
+  });
+
   test("never throws when the DOM probe fails", async () => {
     const runtime = {
       evaluate: vi.fn(async () => {
@@ -261,6 +286,38 @@ describe("evaluateCaptureBindingFacts", () => {
   test("conversation-only bindings fail when the captured node vanished", () => {
     const verdict = evaluateCaptureBindingFacts(
       { ...binding, quality: "conversation-only" },
+      CAPTURED_META,
+      { ...GOOD_FACTS, capturedNodeFound: false },
+    );
+    expect(verdict.ok).toBe(false);
+    expect(verdict.code).toBe("capture-binding-captured-node-missing");
+  });
+
+  test("guessed bindings are not validated at message-handle strength", () => {
+    // The guessed handle may point at another run's user turn: facts derived
+    // from it (missing / superseded / ordering) must not be treated as a
+    // cross-talk proof either way.
+    const verdict = evaluateCaptureBindingFacts(
+      { ...binding, quality: "guessed" },
+      CAPTURED_META,
+      { ...GOOD_FACTS, userTurnFound: false, userTurnIsLatestUserTurn: false },
+    );
+    expect(verdict.ok).toBe(true);
+  });
+
+  test("guessed bindings still fail loud on conversation change", () => {
+    const verdict = evaluateCaptureBindingFacts(
+      { ...binding, quality: "guessed" },
+      CAPTURED_META,
+      { ...GOOD_FACTS, conversationId: "other" },
+    );
+    expect(verdict.ok).toBe(false);
+    expect(verdict.code).toBe("capture-binding-conversation-changed");
+  });
+
+  test("guessed bindings fail when the captured node vanished", () => {
+    const verdict = evaluateCaptureBindingFacts(
+      { ...binding, quality: "guessed" },
       CAPTURED_META,
       { ...GOOD_FACTS, capturedNodeFound: false },
     );

@@ -29,7 +29,7 @@ import { CONVERSATION_TURN_SELECTOR } from "../constants.js";
 import { delay } from "../utils.js";
 import { BrowserAutomationError } from "../../oracle/errors.js";
 
-export type SubmittedMessageBindingQuality = "message-handle" | "conversation-only";
+export type SubmittedMessageBindingQuality = "message-handle" | "guessed" | "conversation-only";
 
 export interface SubmittedUserMessageBinding {
   /** sha256 (hex) of the exact prompt text handed to the composer. */
@@ -39,10 +39,14 @@ export interface SubmittedUserMessageBinding {
   promptPrefix: string;
   registeredAtMs: number;
   /**
-   * "message-handle" when the submitted user turn was structurally located;
-   * "conversation-only" when only conversation-level binding is available
-   * (capture validation is then correspondingly weaker but still fail-loud on
-   * conversation/target changes).
+   * "message-handle" when the submitted user turn was structurally located by
+   * matching the submitted prompt text; "guessed" when a user turn was found
+   * but did NOT match the submitted prompt (the probe fell back to the latest
+   * user turn — the handle may belong to another message, so capture
+   * validation treats it at conversation-only strength); "conversation-only"
+   * when only conversation-level binding is available. Non-"message-handle"
+   * bindings are correspondingly weaker but still fail loud on
+   * conversation/target changes.
    */
   quality: SubmittedMessageBindingQuality;
   conversationId: string | null;
@@ -353,7 +357,13 @@ export async function registerSubmittedUserMessage(
       if (value.found === true) {
         binding = {
           ...base,
-          quality: "message-handle",
+          // A turn located by matching the submitted prompt text is a proven
+          // handle. A fallback guess (latest user turn, matchedPrompt:false)
+          // must NOT be recorded at full message-handle strength: the guessed
+          // handle may belong to another run's message, and validating
+          // against it would manufacture a cross-talk proof that was never
+          // established. Keep the ids for diagnostics, downgrade the quality.
+          quality: value.matchedPrompt === true ? "message-handle" : "guessed",
           conversationId,
           userMessageId: typeof value.userMessageId === "string" ? value.userMessageId : null,
           userTurnTestId: typeof value.userTurnTestId === "string" ? value.userTurnTestId : null,
@@ -373,6 +383,10 @@ export async function registerSubmittedUserMessage(
   if (binding.quality === "conversation-only") {
     logger(
       "[browser] Submitted user message could not be structurally located; capture validation degrades to conversation-level binding.",
+    );
+  } else if (binding.quality === "guessed") {
+    logger(
+      "[browser] Submitted user message did not match any user turn; bound to the latest user turn as a guess. Capture validation degrades to conversation-level binding.",
     );
   }
   return binding;
