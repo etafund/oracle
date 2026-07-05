@@ -16,6 +16,7 @@ import {
   buildRobotSurfacePayload,
   type RobotSurfacePayload,
 } from "../robotRegistry.js";
+import { CORE_READ_COMMANDS } from "../coreReadCommands.js";
 
 export interface RobotDocsCommandOptions {
   readonly json?: boolean;
@@ -74,6 +75,72 @@ export async function runRobotDocs(
   return result;
 }
 
+/**
+ * Build the paste-ready `oracle robot-docs guide` handbook: a plain-text,
+ * < 80-line agent onboarding page that leads with the 3 reviewed lanes
+ * and the exact first-try-inevitable invocations, then the core
+ * read-only commands and the exit-code dictionary. Sourced entirely from
+ * `buildRobotSurfacePayload()` (itself sourced from `laneRegistry.ts` /
+ * `exitCodes.ts`) plus `CORE_READ_COMMANDS`, so this prose can never
+ * drift from the JSON contract `oracle capabilities --json` and
+ * `oracle robot-docs --json` describe. Deterministic — no timestamps,
+ * no ANSI color, safe to paste into a system prompt or CLAUDE.md.
+ */
+export function buildRobotDocsGuideText(): string {
+  const { payload } = buildRobotDocsEnvelope();
+  const lines: string[] = [];
+
+  lines.push("# Oracle — agent handbook");
+  lines.push("");
+  lines.push("Oracle is one-shot by default: it starts empty and needs both --prompt and --file.");
+  lines.push("");
+  lines.push("## First try (run these before anything else)");
+  lines.push("");
+  lines.push("    oracle capabilities --json   # what's configured; what to run next");
+  lines.push("    oracle doctor lanes --json   # are the 3 reviewed lanes ready");
+  lines.push("");
+  lines.push("## The 3 reviewed lanes");
+  for (const lane of payload.lanes) {
+    lines.push("");
+    lines.push(`### ${lane.lane}`);
+    lines.push(`    ${lane.command}`);
+    lines.push(`    key flags : ${lane.key_flags.join(", ")}`);
+    lines.push(`    doctor    : ${lane.doctor_command}`);
+    lines.push(`    readiness : ${lane.readiness}`);
+  }
+  lines.push("");
+  lines.push("## Core read commands (no live calls)");
+  lines.push("");
+  for (const cmd of CORE_READ_COMMANDS) {
+    lines.push(`- ${cmd.command}`);
+    lines.push(`    ${cmd.purpose}`);
+  }
+  lines.push("");
+  lines.push("## Exit codes");
+  lines.push("");
+  for (const [code, meaning] of Object.entries(payload.exit_codes)) {
+    lines.push(`- ${code}: ${meaning}`);
+  }
+  lines.push("");
+  lines.push(
+    "Full machine-readable contract: oracle capabilities --json / oracle robot-docs --json",
+  );
+
+  return `${lines.join("\n")}\n`;
+}
+
+export interface RunRobotDocsGuideIo {
+  readonly stdout?: (text: string) => void;
+}
+
+/** Run `oracle robot-docs guide` — writes the handbook text to stdout. */
+export function runRobotDocsGuide(io: RunRobotDocsGuideIo = {}): string {
+  const text = buildRobotDocsGuideText();
+  const write = io.stdout ?? ((chunk: string) => process.stdout.write(chunk));
+  write(text);
+  return text;
+}
+
 function formatHuman(result: RobotDocsCommandResult): string {
   const { payload } = result;
   const lines: string[] = [];
@@ -97,10 +164,11 @@ function formatHuman(result: RobotDocsCommandResult): string {
 }
 
 export function registerRobotDocsCommand(program: Command): Command {
-  return program
-    .command("robot-docs", { hidden: true })
+  const robotDocsCommand = program
+    .command("robot-docs")
     .description(
-      "Emit the Oracle CLI command registry as a robot_surface.v1 envelope (no live calls).",
+      "Emit the Oracle CLI command registry as a robot_surface.v1 envelope (no live calls). " +
+        "Agent-ergonomics primitive: run `oracle robot-docs guide` for a paste-ready handbook.",
     )
     .option("--json", "Print machine-readable JSON envelope (default).", true)
     .option("--no-json", "Print a short human summary instead of JSON.")
@@ -114,6 +182,24 @@ export function registerRobotDocsCommand(program: Command): Command {
         process.exitCode = 1;
       }
     });
+
+  robotDocsCommand
+    .command("guide")
+    .description(
+      "Print a paste-ready, < 80-line agent handbook leading with the 3 reviewed lanes and " +
+        "the first-try-inevitable invocations (plain text, no live calls).",
+    )
+    .action(() => {
+      try {
+        runRobotDocsGuide();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        process.stderr.write(`oracle robot-docs guide failed: ${message}\n`);
+        process.exitCode = 1;
+      }
+    });
+
+  return robotDocsCommand;
 }
 
 /** Ensure callers can introspect what the envelope error contract demands. */

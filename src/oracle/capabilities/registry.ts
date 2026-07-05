@@ -23,6 +23,9 @@ import {
   BROWSER_EVIDENCE_SCHEMA_VERSION,
   REMOTE_BROWSER_ENDPOINT_SCHEMA_VERSION,
 } from "../v18/index.js";
+import { AGENT_LANE_POLICY_VERSION, LANE_TEMPLATES } from "../../cli/laneRegistry.js";
+import { ORACLE_EXIT_CODE_DICTIONARY } from "../../cli/exitCodes.js";
+import { CORE_READ_COMMANDS } from "../../cli/coreReadCommands.js";
 
 export const ORACLE_CAPABILITIES_SCHEMA_VERSION = "oracle_capabilities.v1" as const;
 
@@ -51,6 +54,26 @@ export interface CapabilityEntry {
   readonly notes: Record<string, unknown>;
 }
 
+/** The core one-shot run action every agent eventually needs, regardless of lane. */
+export interface CapabilityRunAction {
+  readonly command: string;
+  readonly description: string;
+  /** Flags every invocation must pass; Oracle refuses to run without them. */
+  readonly required_flags: readonly string[];
+  /** Flags an agent commonly reaches for beyond the required pair. */
+  readonly key_flags: readonly string[];
+}
+
+/** One of the 3 reviewed lanes, summarized for agent self-doc consumption. */
+export interface CapabilityLaneSummary {
+  readonly lane: string;
+  readonly command: string;
+  readonly doctor_command: string;
+  readonly readiness: string;
+  /** The flag(s) on top of `--lane <id>` that select this exact route. */
+  readonly key_flags: readonly string[];
+}
+
 export interface CapabilityReport {
   readonly [key: string]: unknown;
   readonly schema_version: typeof ORACLE_CAPABILITIES_SCHEMA_VERSION;
@@ -66,6 +89,15 @@ export interface CapabilityReport {
     readonly blocked: number;
     readonly unsupported: number;
   };
+  /** The core run action — sourced once here, reused by `oracle robot-docs`. */
+  readonly run_action: CapabilityRunAction;
+  /** The 3 reviewed lanes, sourced from `laneRegistry.ts` (single source of truth). */
+  readonly lanes: readonly CapabilityLaneSummary[];
+  readonly lanes_policy_version: typeof AGENT_LANE_POLICY_VERSION;
+  /** Process exit-code dictionary; see `src/cli/exitCodes.ts` for the full contract. */
+  readonly exit_codes: typeof ORACLE_EXIT_CODE_DICTIONARY;
+  /** Core read-only commands beyond `capabilities` itself. */
+  readonly read_commands: typeof CORE_READ_COMMANDS;
 }
 
 export interface BuildCapabilityReportInput {
@@ -298,6 +330,44 @@ function deepseekAdapterCapability(): CapabilityEntry {
 }
 
 /**
+ * The core one-shot run action — the thing every agent eventually runs
+ * regardless of lane. Static (no env/clock dependency); a single literal
+ * so `oracle capabilities --json` and `oracle robot-docs` can never
+ * describe the required flags differently. Exported so `robotRegistry.ts`
+ * reuses this literal instead of hand-copying it.
+ */
+export const CORE_RUN_ACTION: CapabilityRunAction = Object.freeze({
+  command: 'oracle --lane <chatgpt-pro|gemini-deep-think|fable-local> --prompt "..." --file <path>',
+  description:
+    "One-shot run against a reviewed lane. --prompt and --file are both required — Oracle starts empty and cannot see a project without --file.",
+  required_flags: Object.freeze(["--prompt", "--file"]),
+  key_flags: Object.freeze([
+    "--lane",
+    "--dry-run",
+    "--slug",
+    "--render",
+    "--copy-markdown",
+    "--followup",
+  ]),
+}) as CapabilityRunAction;
+
+/**
+ * Summarize the 3 reviewed lanes from `laneRegistry.ts`'s `LANE_TEMPLATES`
+ * — the same registry `oracle doctor lanes --json` reads — so this
+ * contract can't drift from the runtime lane policy. Exported for reuse
+ * by `robotRegistry.ts`.
+ */
+export function buildLaneSummaries(): readonly CapabilityLaneSummary[] {
+  return LANE_TEMPLATES.map((entry) => ({
+    lane: entry.lane,
+    command: entry.command,
+    doctor_command: entry.doctorCommand,
+    readiness: entry.readiness,
+    key_flags: entry.keyFlags,
+  }));
+}
+
+/**
  * Build a `CapabilityReport` from the supplied env + clock. Pure — no
  * filesystem reads, no network calls, no `process.env` access. Pass an
  * empty `env` object for fully deterministic CI/doc snapshots.
@@ -342,6 +412,11 @@ export function buildCapabilityReport(input: BuildCapabilityReportInput): Capabi
     ci: detectCi(input.env),
     capabilities,
     counts,
+    run_action: CORE_RUN_ACTION,
+    lanes: buildLaneSummaries(),
+    lanes_policy_version: AGENT_LANE_POLICY_VERSION,
+    exit_codes: ORACLE_EXIT_CODE_DICTIONARY,
+    read_commands: CORE_READ_COMMANDS,
     // Reference: env var names callers can hand off for credentials.
     // Listed here for the benefit of robot callers; never the values.
     ...({

@@ -290,8 +290,8 @@ Long reasoning runs are exactly where naive capture goes wrong. The fork adds:
 All read-only, no provider calls, JSON-first:
 
 - **`oracle doctor`** (aggregate) and **`oracle doctor chatgpt|gemini`** — preflight whether the protected route and the highest reasoning controls are available and logged-in, without submitting a prompt.
-- **`oracle capabilities`** — a static matrix of what's usable right now vs. needs configuration vs. unsupported.
-- **`oracle robot-docs`** — emits the full command registry (purpose, whether a command makes paid/live calls, required env, output schema) so an agent can discover the surface without parsing `--help`.
+- **`oracle capabilities`** — a static matrix of what's usable right now vs. needs configuration vs. unsupported, plus the stable, documented agent contract: the core run action, the 3 reviewed lanes (with their key flags), the process exit-code dictionary, and the core read commands.
+- **`oracle robot-docs`** — emits the same contract as the full `robot_surface.v1` command registry (purpose, whether a command makes paid/live calls, required env, output schema); **`oracle robot-docs guide`** prints a paste-ready, plain-text agent handbook (< 80 lines) that leads with the 3 lanes and the first-try-inevitable invocations — no live calls either way.
 - **`oracle preview`** and **`oracle visibility-status`** — estimate what a run would do and roll up readiness, again with zero provider calls.
 - **Structured errors** — even top-level crashes/usage errors are emitted as a JSON envelope in `--json` mode (no raw stack traces for an agent to parse).
 
@@ -326,12 +326,18 @@ Core — visible in default `--help`, needed for the 3 reviewed lanes:
 | `oracle doctor gemini --deep-think [--json]`                     | Gemini Deep Think route readiness         | No                 |
 | `--gemini-deep-think`, `--evidence redacted` (on the main run)  | Protected Gemini Deep Think browser route | Yes (browser)      |
 
+Agent self-doc primitives — also visible in default `--help` (Axioms 8/9/10: these are how an agent discovers the run action, the 3 lanes, the exit-code dictionary, and the core read commands without parsing `--help` prose):
+
+| Command / flag                | What it does                                                                     | Calls a provider? |
+| ------------------------------ | --------------------------------------------------------------------------------- | ------------------ |
+| `oracle capabilities [--json]` | Stable JSON contract: run action, 3 lanes + key flags, exit codes, read commands | No                 |
+| `oracle robot-docs [--json]`   | The same contract as a `robot_surface.v1` command registry                       | No                 |
+| `oracle robot-docs guide`      | Paste-ready, < 80-line agent handbook (plain text, leads with the 3 lanes)       | No                 |
+
 Advanced & compatibility — hidden from default `--help` (still fully runnable; run `oracle --help --verbose` to list them from your installed build):
 
 | Command / flag                                                       | What it does                              | Calls a provider?  |
 | -------------------------------------------------------------------- | ----------------------------------------- | ------------------ |
-| `oracle capabilities [--json]`                                       | Static capability matrix                  | No                 |
-| `oracle robot-docs [--json]`                                         | Machine-readable command registry         | No                 |
 | `oracle preview` / `oracle visibility-status`                        | Estimate / roll-up before a run           | No                 |
 | `oracle run --chatgpt-pro --extended-reasoning [--dry-run] [--json]` | Plan a protected route (no submit)        | No                 |
 | `oracle browser leases plan\|status\|acquire\|release\|recover`      | Single-flight profile locks               | No                 |

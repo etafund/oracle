@@ -29,7 +29,15 @@ import {
   ROBOT_SURFACE_SCHEMA_VERSION,
   V18_BUNDLE_VERSION,
 } from "../oracle/v18/index.js";
-import { ORACLE_CAPABILITIES_SCHEMA_VERSION } from "../oracle/capabilities/registry.js";
+import {
+  CORE_RUN_ACTION,
+  buildLaneSummaries,
+  ORACLE_CAPABILITIES_SCHEMA_VERSION,
+  type CapabilityLaneSummary,
+  type CapabilityRunAction,
+} from "../oracle/capabilities/registry.js";
+import { AGENT_LANE_POLICY_VERSION } from "./laneRegistry.js";
+import { ORACLE_EXIT_CODE_DICTIONARY } from "./exitCodes.js";
 
 export const ORACLE_ROBOT_TOOL_NAME = "oracle" as const;
 
@@ -306,6 +314,22 @@ export function listRobotCommands(): readonly RobotCommandEntry[] {
   return ROBOT_COMMANDS;
 }
 
+/**
+ * A reviewed lane, as advertised inside `robot-docs`. Deliberately a
+ * SEPARATE array from `commands` (`ROBOT_COMMANDS`/`RobotCommandEntry`),
+ * which is asserted elsewhere (`tests/cli/robotDocs.test.ts`, "no entry
+ * currently exposes paid_calls=true") to be gating-only — every lane
+ * entry here is an honest, real, paid/live call, so it must never be
+ * folded into that array.
+ */
+export interface RobotLaneEntry extends CapabilityLaneSummary {
+  readonly paid_calls: true;
+}
+
+function buildRobotLanes(): readonly RobotLaneEntry[] {
+  return buildLaneSummaries().map((lane) => ({ ...lane, paid_calls: true as const }));
+}
+
 export interface RobotSurfacePayload {
   readonly schema_version: typeof ROBOT_SURFACE_SCHEMA_VERSION;
   readonly bundle_version: typeof V18_BUNDLE_VERSION;
@@ -315,6 +339,13 @@ export interface RobotSurfacePayload {
   readonly robot_recovery_fields: readonly string[];
   readonly first_try_principle: string;
   readonly notes: string;
+  /** The core one-shot run action — same literal `oracle capabilities --json` reports. */
+  readonly run_action: CapabilityRunAction;
+  /** The 3 reviewed lanes an agent should try first, sourced from `laneRegistry.ts`. */
+  readonly lanes: readonly RobotLaneEntry[];
+  readonly lanes_policy_version: typeof AGENT_LANE_POLICY_VERSION;
+  /** Process exit-code dictionary; see `src/cli/exitCodes.ts`. */
+  readonly exit_codes: typeof ORACLE_EXIT_CODE_DICTIONARY;
   readonly commands: readonly Record<string, unknown>[];
 }
 
@@ -352,6 +383,10 @@ export function buildRobotSurfacePayload(): RobotSurfacePayload {
       "The first command a coding agent guesses should work or redirect with a precise next command.",
     notes:
       "Oracle does not own the DeepSeek official API adapter for this workflow; APR does. Oracle continues to own browser routes and evidence.",
+    run_action: CORE_RUN_ACTION,
+    lanes: buildRobotLanes(),
+    lanes_policy_version: AGENT_LANE_POLICY_VERSION,
+    exit_codes: ORACLE_EXIT_CODE_DICTIONARY,
     commands,
   };
 }

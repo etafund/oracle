@@ -10,7 +10,12 @@ import {
   listRobotCommands,
   type RobotCommandEntry,
 } from "@src/cli/robotRegistry.ts";
-import { buildRobotDocsEnvelope, runRobotDocs } from "@src/cli/commands/robotDocs.ts";
+import {
+  buildRobotDocsEnvelope,
+  buildRobotDocsGuideText,
+  runRobotDocs,
+  runRobotDocsGuide,
+} from "@src/cli/commands/robotDocs.ts";
 import {
   JSON_ENVELOPE_SCHEMA_VERSION,
   ROBOT_SURFACE_SCHEMA_VERSION,
@@ -18,6 +23,9 @@ import {
   jsonEnvelopeSchema,
   robotSurfaceSchema,
 } from "@src/oracle/v18/index.ts";
+import { AGENT_LANE_POLICY_VERSION } from "@src/cli/laneRegistry.ts";
+import { ORACLE_EXIT_CODE_DICTIONARY } from "@src/cli/exitCodes.ts";
+import { CORE_READ_COMMANDS } from "@src/cli/coreReadCommands.ts";
 
 // Bead acceptance: these commands MUST be present in robot-docs output.
 const REQUIRED_COMMAND_NAMES = [
@@ -203,5 +211,108 @@ describe("robot-docs does not leak secrets", () => {
     for (const pattern of [/sk-[a-z0-9-]{6,}/i, /Bearer\s+\w/i, /token=/i, /password=/i]) {
       expect(text).not.toMatch(pattern);
     }
+  });
+});
+
+// ─── agent-ergonomics Stage 1: robot-docs leads with the 3 lanes ───────────
+
+describe("RobotSurfacePayload — schema-pin regression test (agent-ergonomics Stage 1)", () => {
+  const EXPECTED_TOP_LEVEL_KEYS = [
+    "bundle_version",
+    "commands",
+    "error_fields_required",
+    "exit_codes",
+    "first_try_principle",
+    "json_envelope_required",
+    "lanes",
+    "lanes_policy_version",
+    "notes",
+    "robot_recovery_fields",
+    "run_action",
+    "schema_version",
+    "tool",
+  ].sort();
+
+  test("top-level key set matches the pinned contract exactly", () => {
+    const payload = buildRobotSurfacePayload();
+    expect(Object.keys(payload).sort()).toEqual(EXPECTED_TOP_LEVEL_KEYS);
+  });
+
+  test("lanes carries exactly the 3 reviewed lanes and is marked paid_calls=true (never in `commands`)", () => {
+    const payload = buildRobotSurfacePayload();
+    expect(payload.lanes.map((lane) => lane.lane)).toEqual([
+      "chatgpt-pro",
+      "gemini-deep-think",
+      "fable-local",
+    ]);
+    expect(payload.lanes_policy_version).toBe(AGENT_LANE_POLICY_VERSION);
+    for (const lane of payload.lanes) {
+      expect(lane.paid_calls).toBe(true);
+    }
+    // The "no entry currently exposes paid_calls=true" invariant above is
+    // scoped to ROBOT_COMMANDS/`commands` on purpose — lanes are a
+    // separate, honestly-paid array and must never be folded in.
+    for (const cmd of payload.commands) {
+      expect(cmd.paid_calls).toBe(false);
+    }
+  });
+
+  test("run_action matches the shared CORE_RUN_ACTION literal capabilities --json also reports", () => {
+    const payload = buildRobotSurfacePayload();
+    expect(payload.run_action.required_flags).toEqual(["--prompt", "--file"]);
+    expect(payload.run_action.command).toContain("--lane");
+  });
+
+  test("exit_codes matches the shared ORACLE_EXIT_CODE_DICTIONARY exactly", () => {
+    const payload = buildRobotSurfacePayload();
+    expect(payload.exit_codes).toEqual(ORACLE_EXIT_CODE_DICTIONARY);
+  });
+});
+
+describe("buildRobotDocsGuideText — paste-ready agent handbook", () => {
+  test("leads with the 3 reviewed lanes and the first-try-inevitable invocations", () => {
+    const text = buildRobotDocsGuideText();
+    const firstTryIndex = text.indexOf("First try");
+    const lanesIndex = text.indexOf("3 reviewed lanes");
+    expect(firstTryIndex).toBeGreaterThanOrEqual(0);
+    expect(lanesIndex).toBeGreaterThan(firstTryIndex);
+    expect(text).toContain("oracle capabilities --json");
+    expect(text).toContain("oracle doctor lanes --json");
+    for (const lane of ["chatgpt-pro", "gemini-deep-think", "fable-local"]) {
+      expect(text).toContain(lane);
+    }
+  });
+
+  test("mentions every core read command and the exit-code dictionary", () => {
+    const text = buildRobotDocsGuideText();
+    for (const cmd of CORE_READ_COMMANDS) {
+      expect(text).toContain(cmd.command);
+    }
+    for (const code of Object.keys(ORACLE_EXIT_CODE_DICTIONARY)) {
+      expect(text).toContain(`- ${code}:`);
+    }
+  });
+
+  test("stays under 80 lines (Polish-Bar item 4: paste-ready handbook)", () => {
+    const text = buildRobotDocsGuideText();
+    const lineCount = text.split("\n").length;
+    expect(lineCount).toBeLessThan(80);
+  });
+
+  test("is plain text: no ANSI escape codes", () => {
+    const text = buildRobotDocsGuideText();
+    const hasAnsiEscape = [...text].some((ch) => ch.charCodeAt(0) === 0x1b);
+    expect(hasAnsiEscape).toBe(false);
+  });
+
+  test("is deterministic: two builds are byte-identical", () => {
+    expect(buildRobotDocsGuideText()).toBe(buildRobotDocsGuideText());
+  });
+
+  test("runRobotDocsGuide writes the same text to stdout and returns it", () => {
+    const chunks: string[] = [];
+    const returned = runRobotDocsGuide({ stdout: (text) => chunks.push(text) });
+    expect(chunks.join("")).toBe(returned);
+    expect(returned).toBe(buildRobotDocsGuideText());
   });
 });

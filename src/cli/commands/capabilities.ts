@@ -124,9 +124,11 @@ function formatHuman(result: CapabilitiesCommandResult): string {
 
 export function registerCapabilitiesCommand(program: Command): Command {
   return program
-    .command("capabilities", { hidden: true })
+    .command("capabilities")
     .description(
-      "Print Oracle's capability surface as json_envelope.v1 without any live provider calls.",
+      "Print Oracle's capability surface as json_envelope.v1 without any live provider calls. " +
+        "Agent-ergonomics primitive: run this first — it documents the run action, the 3 " +
+        "reviewed lanes, the exit-code dictionary, and the core read commands.",
     )
     .option("--json", "Print machine-readable JSON envelope (default).", true)
     .option("--no-json", "Print a short human summary instead of JSON.")

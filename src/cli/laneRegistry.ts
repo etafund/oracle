@@ -30,6 +30,15 @@ export interface LaneTemplate {
   normalizedEngineOptions: Record<string, unknown>;
   refusedPatterns: string[];
   runtimeAssertions: string[];
+  /**
+   * The flag(s) that distinguish this lane from a bare `--lane <id>` run —
+   * i.e. what an agent needs to add on top of `--lane` to hit this exact
+   * reviewed route. Consumed by `oracle capabilities --json` and
+   * `oracle robot-docs` so the self-doc surfaces never hand-copy lane
+   * flags out of sync with this registry (the single source of truth for
+   * lane behavior).
+   */
+  keyFlags: readonly string[];
 }
 
 export const LANE_TEMPLATES: readonly LaneTemplate[] = [
@@ -58,6 +67,7 @@ export const LANE_TEMPLATES: readonly LaneTemplate[] = [
       "chatgpt_pro_selector_state_verified",
       "extended_thinking_selected_before_submit",
     ],
+    keyFlags: ["--lane chatgpt-pro", "--browser-thinking-time extended"],
   },
   {
     lane: "gemini-deep-think",
@@ -84,6 +94,7 @@ export const LANE_TEMPLATES: readonly LaneTemplate[] = [
       "gemini_deep_think_selector_state_verified",
       "deep_think_selected_before_submit",
     ],
+    keyFlags: ["--lane gemini-deep-think", "--gemini-deep-think"],
   },
   {
     lane: "fable-local",
@@ -116,6 +127,7 @@ export const LANE_TEMPLATES: readonly LaneTemplate[] = [
       "no_mcp_servers",
       "fable_model_verified_when_visible",
     ],
+    keyFlags: ["--lane fable-local"],
   },
 ] as const;
 

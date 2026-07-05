@@ -14,6 +14,9 @@ import {
   V18_BUNDLE_VERSION,
   jsonEnvelopeSchema,
 } from "@src/oracle/v18/index.ts";
+import { AGENT_LANE_POLICY_VERSION } from "@src/cli/laneRegistry.ts";
+import { ORACLE_EXIT_CODE_DICTIONARY } from "@src/cli/exitCodes.ts";
+import { CORE_READ_COMMANDS } from "@src/cli/coreReadCommands.ts";
 
 const FROZEN_TIME = new Date("2026-05-13T00:00:00.000Z");
 const EMPTY_ENV: Record<string, string | undefined> = Object.freeze({});
@@ -301,5 +304,91 @@ describe("runCapabilities — CLI surface", () => {
       { stdout: (text) => captureB.push(text) },
     );
     expect(captureA.join("")).toBe(captureB.join(""));
+  });
+});
+
+// ─── agent-ergonomics Stage 1: schema-pin regression test ──────────────────
+//
+// `oracle capabilities --json` is a STABLE, documented contract (Axiom 9 —
+// self_documentation) — the axiom is that its shape stays stable across
+// patches. This test pins the top-level key set of `CapabilityReport` so
+// any future addition/removal/rename is a conscious, reviewed diff to this
+// test rather than a silent contract change an agent caller would never
+// notice until it broke.
+describe("CapabilityReport — schema-pin regression test (agent-ergonomics Stage 1)", () => {
+  const EXPECTED_TOP_LEVEL_KEYS = [
+    "bundle_version",
+    "ci",
+    "counts",
+    "capabilities",
+    "env_var_names",
+    "exit_codes",
+    "generated_at",
+    "lanes",
+    "lanes_policy_version",
+    "read_commands",
+    "run_action",
+    "schema_version",
+    "tty",
+  ].sort();
+
+  test("top-level key set matches the pinned contract exactly", () => {
+    const report = buildCapabilityReport({ env: EMPTY_ENV, now: FROZEN_TIME });
+    expect(Object.keys(report).sort()).toEqual(EXPECTED_TOP_LEVEL_KEYS);
+  });
+
+  test("run_action names the core one-shot invocation and its required flags", () => {
+    const report = buildCapabilityReport({ env: EMPTY_ENV, now: FROZEN_TIME });
+    expect(report.run_action.command).toContain("--lane");
+    expect(report.run_action.required_flags).toEqual(["--prompt", "--file"]);
+    expect(report.run_action.key_flags).toContain("--lane");
+  });
+
+  test("lanes advertises exactly the 3 reviewed lanes, sourced from laneRegistry.ts", () => {
+    const report = buildCapabilityReport({ env: EMPTY_ENV, now: FROZEN_TIME });
+    expect(report.lanes.map((lane) => lane.lane)).toEqual([
+      "chatgpt-pro",
+      "gemini-deep-think",
+      "fable-local",
+    ]);
+    expect(report.lanes_policy_version).toBe(AGENT_LANE_POLICY_VERSION);
+    for (const lane of report.lanes) {
+      expect(lane.command).toMatch(/^oracle --lane /);
+      expect(lane.doctor_command).toMatch(/^oracle doctor /);
+      expect(Array.isArray(lane.key_flags)).toBe(true);
+      expect(lane.key_flags.length).toBeGreaterThan(0);
+    }
+  });
+
+  test("chatgpt-pro and gemini-deep-think key_flags name their distinguishing flag", () => {
+    const report = buildCapabilityReport({ env: EMPTY_ENV, now: FROZEN_TIME });
+    const chatgpt = report.lanes.find((lane) => lane.lane === "chatgpt-pro");
+    const gemini = report.lanes.find((lane) => lane.lane === "gemini-deep-think");
+    expect(chatgpt?.key_flags).toContain("--browser-thinking-time extended");
+    expect(gemini?.key_flags).toContain("--gemini-deep-think");
+  });
+
+  test("exit_codes matches the shared ORACLE_EXIT_CODE_DICTIONARY exactly", () => {
+    const report = buildCapabilityReport({ env: EMPTY_ENV, now: FROZEN_TIME });
+    expect(report.exit_codes).toEqual(ORACLE_EXIT_CODE_DICTIONARY);
+    expect(Object.keys(report.exit_codes).sort()).toEqual(["0", "1", "130", "2"].sort());
+  });
+
+  test("read_commands matches the shared CORE_READ_COMMANDS list and includes self-doc commands", () => {
+    const report = buildCapabilityReport({ env: EMPTY_ENV, now: FROZEN_TIME });
+    expect(report.read_commands).toEqual(CORE_READ_COMMANDS);
+    const names = report.read_commands.map((cmd) => cmd.name);
+    expect(names).toContain("capabilities");
+    expect(names).toContain("robot-docs");
+    expect(names).toContain("doctor-lanes");
+    expect(names).toContain("session");
+    expect(names).toContain("status");
+  });
+
+  test("the pinned contract still round-trips through the json_envelope.v1 wrapper", () => {
+    const { envelope } = buildCapabilitiesEnvelope({ env: EMPTY_ENV, now: FROZEN_TIME });
+    expect(() => jsonEnvelopeSchema.parse(envelope)).not.toThrow();
+    const data = envelope.data as Record<string, unknown>;
+    expect(Object.keys(data).sort()).toEqual(EXPECTED_TOP_LEVEL_KEYS);
   });
 });
