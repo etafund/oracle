@@ -927,7 +927,11 @@ async function runLocalClaudeCodeSession(
     transport: "stdio",
   });
   const executable = await resolveClaudeExecutable({
-    executable: "claude",
+    // `claudeCode.executable` is an explicit, still-hardened override (also
+    // settable via the ORACLE_CLAUDE_CODE_EXECUTABLE env var, read inside
+    // resolveClaudeExecutable itself); default is the bare `claude` PATH
+    // lookup.
+    executable: input.runOptions.claudeCode?.executable,
     repoRoot: input.cwd,
     env: process.env,
   });
@@ -972,6 +976,19 @@ async function runLocalClaudeCodeSession(
     const maxInlineBytes = resolveClaudeCodeMaxInlineBytes(
       input.runOptions.claudeCode?.maxInlineBytes,
     );
+
+    // TOCTOU re-check: time has passed since the initial resolution above
+    // (env prep, owner check, command build, and — notably — however long
+    // acquireClaudeCodeSingleFlightLock waited for a competing lane lock),
+    // so re-verify the already-resolved real path immediately before
+    // spawning. `executable.path` is absolute, so this repeats the full
+    // symlink/world-writable/ownership/inside-repo hardening against it
+    // without redoing the PATH search.
+    await resolveClaudeExecutable({
+      executable: executable.path,
+      repoRoot: input.cwd,
+      env: process.env,
+    });
 
     const child = spawn(command.file, command.args, {
       ...command.spawnOptions,

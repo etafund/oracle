@@ -4,7 +4,10 @@ import type { Stats } from "node:fs";
 import { describe, expect, test } from "vitest";
 
 import { resolveClaudeExecutable } from "../../src/claude-code/executableResolver.js";
-import { assertClaudeCodeLocalOwner } from "../../src/claude-code/localOwnerGuard.js";
+import {
+  assertClaudeCodeLocalOwner,
+  assertNoSymlinkOrWorldWritableComponents,
+} from "../../src/claude-code/localOwnerGuard.js";
 import type { LocalOwnerFsModule } from "../../src/claude-code/localOwnerGuard.js";
 
 type FakeEntryType = "file" | "dir" | "symlink";
@@ -154,6 +157,68 @@ describe("Claude Code local owner guard", () => {
   });
 });
 
+describe("assertNoSymlinkOrWorldWritableComponents — allowTrailingSymlink", () => {
+  test("default (strict) behavior is unchanged: rejects a trailing symlink", async () => {
+    const fsModule = safeFs().add("/safe/bin/claude", {
+      type: "symlink",
+      mode: 0o777,
+      uid: 1000,
+      realpath: "/safe/bin/claude-real",
+    });
+    await expect(
+      assertNoSymlinkOrWorldWritableComponents(
+        "/safe/bin/claude",
+        fsModule,
+        "claude_executable",
+      ),
+    ).rejects.toHaveProperty("reason", "claude_executable_unsafe_symlink");
+  });
+
+  test("allowTrailingSymlink permits a symlinked final segment but still checks parents", async () => {
+    const fsModule = safeFs().add("/safe/bin/claude", {
+      type: "symlink",
+      mode: 0o777,
+      uid: 1000,
+      realpath: "/safe/bin/claude-real",
+    });
+    await expect(
+      assertNoSymlinkOrWorldWritableComponents("/safe/bin/claude", fsModule, "claude_executable", {
+        allowTrailingSymlink: true,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  test("allowTrailingSymlink still rejects a world-writable PARENT directory", async () => {
+    const fsModule = safeFs()
+      .add("/safe/bin", { type: "dir", mode: 0o777, uid: 1000 })
+      .add("/safe/bin/claude", {
+        type: "symlink",
+        mode: 0o777,
+        uid: 1000,
+        realpath: "/safe/bin/claude-real",
+      });
+    await expect(
+      assertNoSymlinkOrWorldWritableComponents("/safe/bin/claude", fsModule, "claude_executable", {
+        allowTrailingSymlink: true,
+      }),
+    ).rejects.toHaveProperty("reason", "claude_executable_world_writable_component");
+  });
+
+  test("allowTrailingSymlink still rejects a symlinked non-final segment", async () => {
+    const fsModule = safeFs()
+      .add("/safe/link-bin", { type: "symlink", mode: 0o777, uid: 1000, realpath: "/safe/bin" })
+      .add("/safe/link-bin/claude", { type: "file", mode: 0o755, uid: 1000 });
+    await expect(
+      assertNoSymlinkOrWorldWritableComponents(
+        "/safe/link-bin/claude",
+        fsModule,
+        "claude_executable",
+        { allowTrailingSymlink: true },
+      ),
+    ).rejects.toHaveProperty("reason", "claude_executable_unsafe_symlink");
+  });
+});
+
 describe("Claude Code executable resolver", () => {
   test("resolves a safe absolute executable", async () => {
     await expect(
@@ -178,7 +243,7 @@ describe("Claude Code executable resolver", () => {
     ).resolves.toMatchObject({ path: "/safe/bin/claude" });
   });
 
-  test("refuses relative, repo-local, and symlinked executables", async () => {
+  test("refuses relative and repo-local executables", async () => {
     await expect(
       resolveClaudeExecutable({ executable: "bin/claude", fsModule: safeFs() }),
     ).rejects.toHaveProperty("reason", "relative_path");
@@ -191,22 +256,190 @@ describe("Claude Code executable resolver", () => {
         fsModule: safeFs(),
       }),
     ).rejects.toHaveProperty("reason", "inside_reviewed_repo");
+  });
+});
 
-    const symlinked = safeFs()
+describe("Claude Code executable resolver — native-installer symlink layout", () => {
+  // Anthropic's own native installer puts `claude` at e.g.
+  // ~/.local/bin/claude -> ~/.local/share/claude/versions/<version>, a
+  // legitimate version-manager symlink so the auto-updater can repoint the
+  // active version without touching PATH. Rejecting this layout outright
+  // made oracle unusable with the officially recommended install method
+  // (claude-provider-map.md finding #4). These tests fail on the OLD
+  // behavior, which rejected every symlinked `claude`, full stop.
+
+  function nativeInstallerFs(): FakeFs {
+    return safeFs()
       .add("/safe/bin/claude", {
         type: "symlink",
         mode: 0o777,
         uid: 1000,
-        realpath: "/safe/bin/claude-real",
+        realpath: "/safe/versions/2.1.201",
       })
-      .add("/safe/bin/claude-real", { type: "file", mode: 0o755, uid: 1000 });
+      .add("/safe/versions", { type: "dir", mode: 0o755, uid: 1000 })
+      .add("/safe/versions/2.1.201", { type: "file", mode: 0o755, uid: 1000 });
+  }
+
+  test("resolves and passes for a native-installer-style trailing symlink", async () => {
     await expect(
       resolveClaudeExecutable({
         executable: "/safe/bin/claude",
         repoRoot: "/repo",
         uid: 1000,
-        fsModule: symlinked,
+        fsModule: nativeInstallerFs(),
+      }),
+    ).resolves.toMatchObject({ path: "/safe/versions/2.1.201", ownerUid: 1000 });
+  });
+
+  test("still refuses when a PARENT directory (not just the leaf) is a symlink", async () => {
+    // The relaxation only applies to the final path segment; a symlinked
+    // parent directory is exactly the "attacker swapped a path component"
+    // vector the guard exists to stop, so it must still be rejected.
+    const parentSymlinked = safeFs()
+      .add("/safe/link-bin", {
+        type: "symlink",
+        mode: 0o777,
+        uid: 1000,
+        realpath: "/safe/bin",
+      })
+      .add("/safe/link-bin/claude", { type: "file", mode: 0o755, uid: 1000 });
+    await expect(
+      resolveClaudeExecutable({
+        executable: "/safe/link-bin/claude",
+        repoRoot: "/repo",
+        uid: 1000,
+        fsModule: parentSymlinked,
       }),
     ).rejects.toHaveProperty("reason", "claude_executable_unsafe_symlink");
+  });
+
+  test("still refuses a world-writable resolved target reached through a trailing symlink", async () => {
+    const worldWritableTarget = safeFs()
+      .add("/safe/bin/claude", {
+        type: "symlink",
+        mode: 0o777,
+        uid: 1000,
+        realpath: "/safe/versions/2.1.201",
+      })
+      .add("/safe/versions", { type: "dir", mode: 0o777, uid: 1000 })
+      .add("/safe/versions/2.1.201", { type: "file", mode: 0o755, uid: 1000 });
+    await expect(
+      resolveClaudeExecutable({
+        executable: "/safe/bin/claude",
+        repoRoot: "/repo",
+        uid: 1000,
+        fsModule: worldWritableTarget,
+      }),
+    ).rejects.toHaveProperty("reason", "claude_executable_world_writable_component");
+  });
+
+  test("still refuses a foreign-owned resolved target reached through a trailing symlink", async () => {
+    const foreignOwnedTarget = safeFs()
+      .add("/safe/bin/claude", {
+        type: "symlink",
+        mode: 0o777,
+        uid: 1000,
+        realpath: "/safe/versions/2.1.201",
+      })
+      .add("/safe/versions", { type: "dir", mode: 0o755, uid: 1000 })
+      .add("/safe/versions/2.1.201", { type: "file", mode: 0o755, uid: 4242 });
+    await expect(
+      resolveClaudeExecutable({
+        executable: "/safe/bin/claude",
+        repoRoot: "/repo",
+        uid: 1000,
+        fsModule: foreignOwnedTarget,
+      }),
+    ).rejects.toHaveProperty("reason", "not_owned_by_current_user_or_root");
+  });
+
+  test("still refuses a native-installer symlink pointing inside the reviewed repo", async () => {
+    const insideRepo = safeFs()
+      .add("/safe/bin/claude", {
+        type: "symlink",
+        mode: 0o777,
+        uid: 1000,
+        realpath: "/repo/claude",
+      })
+      .add("/repo/claude", { type: "file", mode: 0o755, uid: 1000 });
+    await expect(
+      resolveClaudeExecutable({
+        executable: "/safe/bin/claude",
+        repoRoot: "/repo",
+        uid: 1000,
+        fsModule: insideRepo,
+      }),
+    ).rejects.toHaveProperty("reason", "inside_reviewed_repo");
+  });
+
+  test("honors ORACLE_CLAUDE_CODE_EXECUTABLE as an explicit, still-hardened override", async () => {
+    await expect(
+      resolveClaudeExecutable({
+        repoRoot: "/repo",
+        uid: 1000,
+        env: { ORACLE_CLAUDE_CODE_EXECUTABLE: "/safe/bin/claude" },
+        fsModule: nativeInstallerFs(),
+      }),
+    ).resolves.toMatchObject({ path: "/safe/versions/2.1.201" });
+
+    // The explicit `executable` option still wins over the env var.
+    await expect(
+      resolveClaudeExecutable({
+        executable: "/safe/bin/claude",
+        repoRoot: "/repo",
+        uid: 1000,
+        env: { ORACLE_CLAUDE_CODE_EXECUTABLE: "/does/not/exist" },
+        fsModule: nativeInstallerFs(),
+      }),
+    ).resolves.toMatchObject({ path: "/safe/versions/2.1.201" });
+
+    // The override is still fully hardened — a world-writable resolved
+    // target reached via the override path still fails.
+    const worldWritableOverride = safeFs()
+      .add("/safe/bin/claude", {
+        type: "symlink",
+        mode: 0o777,
+        uid: 1000,
+        realpath: "/safe/versions/2.1.201",
+      })
+      .add("/safe/versions", { type: "dir", mode: 0o777, uid: 1000 })
+      .add("/safe/versions/2.1.201", { type: "file", mode: 0o755, uid: 1000 });
+    await expect(
+      resolveClaudeExecutable({
+        repoRoot: "/repo",
+        uid: 1000,
+        env: { ORACLE_CLAUDE_CODE_EXECUTABLE: "/safe/bin/claude" },
+        fsModule: worldWritableOverride,
+      }),
+    ).rejects.toHaveProperty("reason", "claude_executable_world_writable_component");
+  });
+
+  test("re-resolving the already-resolved real path (TOCTOU re-check) catches a swapped target", async () => {
+    // Mirrors sessionRunner.ts's re-check immediately before spawn: after
+    // the first resolution, re-run resolveClaudeExecutable against the
+    // returned absolute `path`. If an attacker swaps the target in
+    // between (simulated here by mutating the fake fs), the re-check must
+    // fail even though the first resolution passed.
+    const fsModule = nativeInstallerFs();
+    const first = await resolveClaudeExecutable({
+      executable: "/safe/bin/claude",
+      repoRoot: "/repo",
+      uid: 1000,
+      fsModule,
+    });
+    expect(first.path).toBe("/safe/versions/2.1.201");
+
+    // Attacker (or a race) makes the resolved binary world-writable before
+    // spawn.
+    fsModule.add("/safe/versions/2.1.201", { type: "file", mode: 0o777, uid: 1000 });
+
+    await expect(
+      resolveClaudeExecutable({
+        executable: first.path,
+        repoRoot: "/repo",
+        uid: 1000,
+        fsModule,
+      }),
+    ).rejects.toHaveProperty("reason", "claude_executable_world_writable_component");
   });
 });

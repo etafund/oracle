@@ -47,6 +47,81 @@ describe("runDryRunSummary", () => {
     }
   });
 
+  test("surfaces a failing claude-code executable preflight check", async () => {
+    const originalKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "";
+    try {
+      const log = vi.fn();
+      const claudeCodePreflightImpl = vi.fn(async () => ({
+        ok: false,
+        checks: [
+          {
+            code: "claude_executable_resolved",
+            status: "fail" as const,
+            message: "Claude Code local mode requires the `claude` command on PATH.",
+            details: { reason: "not_found" },
+          },
+          {
+            code: "local_owner_verified",
+            status: "pass" as const,
+            message: "Oracle home directory passes local-owner hardening.",
+          },
+        ],
+      }));
+      await runDryRunSummary(
+        {
+          engine: "claude-code",
+          runOptions: { prompt: "Review", model: "fable", file: [] },
+          cwd: "/repo",
+          version: "1.2.3",
+          log,
+        },
+        { claudeCodePreflightImpl },
+      );
+
+      expect(claudeCodePreflightImpl).toHaveBeenCalledTimes(1);
+      const joined = log.mock.calls.flat().join("\n");
+      expect(joined).toContain("Claude executable/local-owner preflight: fail");
+      expect(joined).toContain("claude_executable_resolved: fail");
+      expect(joined).toContain("Claude Code local mode requires the `claude` command on PATH");
+      expect(joined).toContain("local_owner_verified: pass");
+    } finally {
+      if (originalKey === undefined) {
+        delete process.env.ANTHROPIC_API_KEY;
+      } else {
+        process.env.ANTHROPIC_API_KEY = originalKey;
+      }
+    }
+  });
+
+  test("surfaces a passing claude-code executable preflight check", async () => {
+    const log = vi.fn();
+    const claudeCodePreflightImpl = vi.fn(async () => ({
+      ok: true,
+      checks: [
+        {
+          code: "claude_executable_resolved",
+          status: "pass" as const,
+          message: "Resolved `claude` executable to /home/user/.local/share/claude/versions/1.0.0.",
+        },
+      ],
+    }));
+    await runDryRunSummary(
+      {
+        engine: "claude-code",
+        runOptions: { prompt: "Review", model: "fable", file: [] },
+        cwd: "/repo",
+        version: "1.2.3",
+        log,
+      },
+      { claudeCodePreflightImpl },
+    );
+
+    const joined = log.mock.calls.flat().join("\n");
+    expect(joined).toContain("Claude executable/local-owner preflight: pass");
+    expect(joined).toContain("claude_executable_resolved: pass");
+  });
+
   test("prints API token summary and file stats", async () => {
     const log = vi.fn();
     await runDryRunSummary(

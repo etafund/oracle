@@ -117,10 +117,32 @@ async function verifyOwnerPath(
   return real;
 }
 
+export interface AssertNoSymlinkOptions {
+  /**
+   * When true, the FINAL path segment is permitted to be a symlink (and its
+   * own mode bits are ignored — symlink permission bits are not meaningful
+   * on Linux/macOS, `lstat` always reports them as `lrwxrwxrwx`). Every
+   * parent segment is still required to be a real directory that is
+   * neither a symlink nor world-writable, so an attacker still cannot swap
+   * a path component to redirect the final symlink.
+   *
+   * This exists to accommodate Anthropic's native-installer layout for the
+   * `claude` executable (`~/.local/bin/claude` -> a version-manager
+   * symlink under `~/.local/share/claude/versions/<version>`), while still
+   * rejecting a symlink anywhere else in the chain. Callers that set this
+   * MUST separately re-run the check (with default, strict options)
+   * against the fully `realpath`-resolved target — see
+   * `executableResolver.ts`'s `verifyExecutable`, which does exactly that
+   * as its second call.
+   */
+  allowTrailingSymlink?: boolean;
+}
+
 export async function assertNoSymlinkOrWorldWritableComponents(
   absolutePath: string,
   fsModule: LocalOwnerFsModule = fs,
   label = "path",
+  options: AssertNoSymlinkOptions = {},
 ): Promise<void> {
   const parsed = path.parse(path.resolve(absolutePath));
   const segments = path
@@ -130,10 +152,17 @@ export async function assertNoSymlinkOrWorldWritableComponents(
     .filter(Boolean);
   let current = parsed.root;
 
-  for (const segment of segments) {
-    current = path.join(current, segment);
+  for (let index = 0; index < segments.length; index += 1) {
+    current = path.join(current, segments[index]);
+    const isFinalSegment = index === segments.length - 1;
     const stat = await fsModule.lstat(current);
     if (stat.isSymbolicLink()) {
+      if (isFinalSegment && options.allowTrailingSymlink) {
+        // Trailing symlink explicitly permitted (native-installer layout);
+        // its own mode bits are meaningless, so skip the world-writable
+        // check below too — the resolved real path gets the full check.
+        continue;
+      }
       throw new ClaudeCodeLocalOwnerError(`${label}_unsafe_symlink`);
     }
     if ((stat.mode & 0o002) !== 0) {

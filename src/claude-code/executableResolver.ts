@@ -37,11 +37,23 @@ export class ClaudeCodeExecutableError extends Error {
 
 const X_OK = 1;
 
+/**
+ * Explicit override for the resolved `claude` executable path. Takes
+ * precedence over the default `"claude"` PATH lookup but is still routed
+ * through the same `verifyExecutable` hardening (symlink-chain, world
+ * -writable, ownership, inside-repo checks) — this is an override of
+ * *which* path is resolved, never an escape hatch from the safety checks
+ * themselves.
+ */
+export const ORACLE_CLAUDE_CODE_EXECUTABLE_ENV_VAR = "ORACLE_CLAUDE_CODE_EXECUTABLE";
+
 export async function resolveClaudeExecutable(
   options: ResolveClaudeExecutableOptions = {},
 ): Promise<ResolvedClaudeExecutable> {
   const fsLike = options.fsModule ?? fs;
-  const requested = options.executable?.trim() || "claude";
+  const env = options.env ?? process.env;
+  const requested =
+    options.executable?.trim() || env[ORACLE_CLAUDE_CODE_EXECUTABLE_ENV_VAR]?.trim() || "claude";
   if (!requested) {
     throw new ClaudeCodeExecutableError("empty_executable");
   }
@@ -49,7 +61,7 @@ export async function resolveClaudeExecutable(
   const candidates = path.isAbsolute(requested)
     ? [requested]
     : isBareCommand(requested)
-      ? pathCandidates(requested, options.env ?? process.env)
+      ? pathCandidates(requested, env)
       : failRelativePath();
 
   let lastNotFound: unknown;
@@ -105,7 +117,30 @@ async function verifyExecutable(
     throw new ClaudeCodeExecutableError("not_executable");
   }
 
-  await assertNoSymlinkOrWorldWritableComponents(candidate, options.fsModule, "claude_executable");
+  // First pass: walk the requested (possibly-symlinked) candidate path.
+  // Every PARENT directory must still be a real, non-world-writable
+  // directory (an attacker with write access to a parent dir could swap
+  // the symlink target, so that protection stays in force). The final
+  // segment is allowed to be a symlink — this is Anthropic's own
+  // native-installer layout (e.g. `~/.local/bin/claude` -> a
+  // version-manager symlink under `~/.local/share/claude/versions/<v>`),
+  // and rejecting it outright makes oracle unusable with the officially
+  // recommended install method.
+  await assertNoSymlinkOrWorldWritableComponents(candidate, options.fsModule, "claude_executable", {
+    allowTrailingSymlink: true,
+  });
+
+  // Second pass (TOCTOU mitigation + the actual hardening surface): fully
+  // resolve the symlink and re-run the SAME check, this time with no
+  // exceptions, against the real target. A fully `realpath`-resolved path
+  // should never itself contain a symlink component, so this call remains
+  // a strict "no symlink anywhere, nothing world-writable" gate — it is
+  // this resolved path (`real`), not the original candidate, that ends up
+  // owning process spawn, ownership, and inside-repo decisions below.
+  // Callers that need to defend against a symlink swap occurring between
+  // this resolution and the eventual `spawn()` (e.g. while waiting on a
+  // lock) MUST re-run `resolveClaudeExecutable` against `real` immediately
+  // before spawning — see `sessionRunner.ts`.
   const real = await options.fsModule.realpath(candidate);
   await assertNoSymlinkOrWorldWritableComponents(real, options.fsModule, "claude_executable");
 

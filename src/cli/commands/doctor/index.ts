@@ -13,6 +13,10 @@ import {
 } from "../../../oracle/v18/contracts.js";
 import { EVIDENCE_LAYOUT } from "../../../oracle/v18/evidence.js";
 import { PROVIDER_DOCS_SNAPSHOT_SCHEMA_VERSION } from "../../../oracle/v18/provider_docs.js";
+import {
+  runClaudeCodePreflight,
+  type ClaudeCodePreflightResult,
+} from "../../../claude-code/preflight.js";
 
 export interface DoctorCommandDeps {
   aggregate?: Partial<AggregateDoctorOptions>;
@@ -139,7 +143,7 @@ export function registerDoctorCommand(program: Command, deps: DoctorCommandDeps 
     .description("Print the reviewed Oracle lane policy without launching browsers or models.")
     .option("--json", "Print structured JSON.", false)
     .action(async function (this: Command) {
-      runLaneDoctor(this.optsWithGlobals() as LaneDoctorOptions);
+      await runLaneDoctor(this.optsWithGlobals() as LaneDoctorOptions);
     });
 
   registerChatGptDoctorCommand(doctorCommand, deps.chatgpt);
@@ -147,7 +151,29 @@ export function registerDoctorCommand(program: Command, deps: DoctorCommandDeps 
   return doctorCommand;
 }
 
-export function runLaneDoctor(options: LaneDoctorOptions = {}): void {
+export interface RunLaneDoctorDeps {
+  /** Injectable for tests; defaults to the real `runClaudeCodePreflight`. */
+  claudeCodePreflight?: (
+    ...args: Parameters<typeof runClaudeCodePreflight>
+  ) => Promise<ClaudeCodePreflightResult>;
+}
+
+export async function runLaneDoctor(
+  options: LaneDoctorOptions = {},
+  deps: RunLaneDoctorDeps = {},
+): Promise<void> {
+  const preflightImpl = deps.claudeCodePreflight ?? runClaudeCodePreflight;
+  // Preflight is real, side-effect-free (no spawn, no prompt) verification
+  // of the claude-code lane's executable resolution + local-owner
+  // hardening + env guard — the same checks a live `fable-local` run makes,
+  // surfaced here so a broken `claude` path is reported before a real run
+  // instead of only at runtime. `fable-local` is hidden-alpha-only and
+  // plenty of Oracle installs never touch it, so a failing check here
+  // does not flip this command's overall `ok`/exit code — it is reported
+  // per-lane, the same way `blocked_reason`/`readiness` already are for
+  // lanes that are simply not enabled.
+  const claudeCodePreflight = await preflightImpl();
+
   const lanes = LANE_TEMPLATES.map((entry) => ({
     lane: entry.lane,
     canonical_id: entry.canonicalId,
@@ -162,6 +188,7 @@ export function runLaneDoctor(options: LaneDoctorOptions = {}): void {
     normalized_engine_options: entry.normalizedEngineOptions,
     refused_patterns: [...entry.refusedPatterns],
     runtime_assertions: [...entry.runtimeAssertions],
+    claude_code_preflight: entry.engine === "claude-code" ? claudeCodePreflight : null,
   }));
   const envelope = {
     schema_version: "json_envelope.v1" as const,
@@ -187,9 +214,14 @@ export function runLaneDoctor(options: LaneDoctorOptions = {}): void {
     fix_command: null,
     retry_safe: true,
     errors: [],
-    warnings: lanes
-      .filter((entry) => !entry.enabled_for_cli)
-      .map((entry) => `${entry.lane}:${entry.blocked_reason ?? entry.readiness}`),
+    warnings: [
+      ...lanes
+        .filter((entry) => !entry.enabled_for_cli)
+        .map((entry) => `${entry.lane}:${entry.blocked_reason ?? entry.readiness}`),
+      ...claudeCodePreflight.checks
+        .filter((check) => check.status === "fail")
+        .map((check) => `fable-local:${check.code}:${check.message}`),
+    ],
     commands: {
       capabilities: "oracle capabilities --json",
       remote_doctor: "oracle remote doctor --json",
@@ -208,6 +240,9 @@ export function runLaneDoctor(options: LaneDoctorOptions = {}): void {
         const reason = entry.blocked_reason ? ` (${entry.blocked_reason})` : "";
         return `- ${entry.lane}: ${state}${reason} -> ${entry.command}`;
       }),
+      ...claudeCodePreflight.checks.map(
+        (check) => `- fable-local preflight ${check.code}: ${check.status} — ${check.message}`,
+      ),
       "Next: oracle capabilities --json",
     ].join("\n"),
   );

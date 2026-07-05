@@ -205,14 +205,28 @@ describe("aggregate doctor", () => {
     expect(JSON.parse(output.join("\n"))).toMatchObject({ schema_version: "json_envelope.v1" });
   });
 
-  test("lane doctor emits the reviewed lane policy as JSON", () => {
+  test("lane doctor emits the reviewed lane policy as JSON", async () => {
     const output: string[] = [];
     const originalLog = console.log;
     console.log = (message?: unknown) => {
       output.push(String(message ?? ""));
     };
     try {
-      runLaneDoctor({ json: true });
+      await runLaneDoctor(
+        { json: true },
+        {
+          claudeCodePreflight: async () => ({
+            ok: true,
+            checks: [
+              {
+                code: "anthropic_api_key_absent",
+                status: "pass",
+                message: "No blocked Anthropic API/provider environment variables present.",
+              },
+            ],
+          }),
+        },
+      );
     } finally {
       console.log = originalLog;
     }
@@ -229,12 +243,58 @@ describe("aggregate doctor", () => {
           lane: "chatgpt-pro",
           doctor_command:
             "oracle doctor chatgpt --pro --extended-reasoning --remote-browser preferred --json",
+          claude_code_preflight: null,
         }),
         expect.objectContaining({
           lane: "gemini-deep-think",
           doctor_command: "oracle doctor gemini --deep-think --remote-browser preferred --json",
+          claude_code_preflight: null,
+        }),
+        expect.objectContaining({
+          lane: "fable-local",
+          claude_code_preflight: expect.objectContaining({ ok: true }),
         }),
       ]),
+    );
+  });
+
+  test("lane doctor surfaces a failing claude-code preflight check without failing the command", async () => {
+    const output: string[] = [];
+    const originalLog = console.log;
+    console.log = (message?: unknown) => {
+      output.push(String(message ?? ""));
+    };
+    try {
+      await runLaneDoctor(
+        { json: true },
+        {
+          claudeCodePreflight: async () => ({
+            ok: false,
+            checks: [
+              {
+                code: "claude_executable_resolved",
+                status: "fail",
+                message: "Claude Code local mode requires the `claude` command on PATH.",
+                details: { reason: "not_found" },
+              },
+            ],
+          }),
+        },
+      );
+    } finally {
+      console.log = originalLog;
+    }
+    const parsed = JSON.parse(output.join("\n"));
+    expect(parsed.ok).toBe(true);
+    const fableLane = parsed.data.lanes.find(
+      (entry: { lane: string }) => entry.lane === "fable-local",
+    );
+    expect(fableLane.claude_code_preflight).toMatchObject({
+      ok: false,
+      checks: [expect.objectContaining({ code: "claude_executable_resolved", status: "fail" })],
+    });
+    expect(parsed.warnings).toEqual(
+      expect.arrayContaining([expect.stringContaining("claude_executable_resolved")]),
     );
   });
 });

@@ -139,6 +139,7 @@ interface CliOptions extends OptionValues {
   browser?: boolean;
   timeout?: number | "auto";
   waitForLock?: number;
+  claudeCodeExecutable?: string;
   background?: boolean;
   httpTimeout?: number;
   zombieTimeout?: number;
@@ -615,6 +616,12 @@ program
     )
       .argParser((value) => parseDurationOption(value, "Lock wait"))
       .default(undefined),
+  )
+  .addOption(
+    new Option(
+      "--claude-code-executable <path>",
+      "For --lane fable-local, override the resolved `claude` executable path (also settable via ORACLE_CLAUDE_CODE_EXECUTABLE). Still hardened: rejected if world-writable, foreign-owned, or inside the reviewed repo.",
+    ).default(undefined),
   )
   .addOption(
     new Option(
@@ -1545,6 +1552,7 @@ function buildRunOptions(
           noChrome: true,
           noSessionPersistence: true,
           waitForLockMs: options.waitForLock,
+          executable: options.claudeCodeExecutable,
         }
       : undefined);
 

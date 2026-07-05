@@ -25,10 +25,12 @@ import {
   redactedClaudeCodeCommand,
 } from "../claude-code/command.js";
 import { findBlockedClaudeCodeEnvironmentSources } from "../claude-code/envGuard.js";
+import { runClaudeCodePreflight, type ClaudeCodePreflightResult } from "../claude-code/preflight.js";
 
 interface DryRunDeps {
   readFilesImpl?: typeof readFiles;
   assembleBrowserPromptImpl?: typeof assembleBrowserPrompt;
+  claudeCodePreflightImpl?: typeof runClaudeCodePreflight;
 }
 
 export const DRY_RUN_TIMESTAMP = "1970-01-01T00:00:00.000Z";
@@ -98,7 +100,7 @@ async function runClaudeCodeDryRun(
   const model = runOptions.model ?? "fable";
   const headerLine = `[dry-run] Oracle (${version}) would run Claude Code local mode (${model}) with ~${estimatedInputTokens.toLocaleString()} tokens and ${files.length} files.`;
   log(styleLine(headerLine, "cyan"));
-  logClaudeCodeDryRunPlan({ runOptions, log });
+  await logClaudeCodeDryRunPlan({ runOptions, log, deps });
   if (files.length === 0) {
     log(styleLine("[dry-run] No files matched the provided --file patterns.", "dim"));
     return;
@@ -361,19 +363,29 @@ function logDryRunPlan({
   }
 }
 
-function logClaudeCodeDryRunPlan({
+async function logClaudeCodeDryRunPlan({
   runOptions,
   log,
+  deps,
 }: {
   runOptions: RunOracleOptions;
   log: (message: string) => void;
-}): void {
+  deps: DryRunDeps;
+}): Promise<void> {
   const promptEvidence = createPromptEvidence(runOptions.prompt ?? "");
   const blockedSources = findClaudeCodeBlockingEnv(process.env);
   const envStatus =
     blockedSources.length > 0
       ? `blocked (${blockedSources.join(", ")})`
       : "clear (no known Claude API/provider auth env present)";
+  // Same side-effect-free resolution + local-owner + env checks a live
+  // `fable-local` run makes (executableResolver.ts / localOwnerGuard.ts),
+  // surfaced here so a broken `claude` executable is visible before a real
+  // run — never spawns `claude`, never sends the prompt.
+  const preflightImpl = deps.claudeCodePreflightImpl ?? runClaudeCodePreflight;
+  const preflight: ClaudeCodePreflightResult = await preflightImpl({
+    executable: runOptions.claudeCode?.executable,
+  });
   const lines = [
     `[dry-run] Generated at: ${DRY_RUN_TIMESTAMP}.`,
     `[dry-run] Route: claude-code/local; model=${runOptions.model ?? "fable"}; access_path=claude_code_subscription_cli.`,
@@ -381,6 +393,10 @@ function logClaudeCodeDryRunPlan({
     `[dry-run] Env block status: ${envStatus}.`,
     `[dry-run] Command shape: ${formatClaudeCodeCommandShape(runOptions.model ?? "fable")}.`,
     '[dry-run] Read-only policy: permissionMode=plan; toolMode=none; --tools ""; MCP blocked; slash commands disabled; Chrome disabled; session persistence disabled.',
+    `[dry-run] Claude executable/local-owner preflight: ${preflight.ok ? "pass" : "fail"}.`,
+    ...preflight.checks.map(
+      (check) => `[dry-run]   ${check.code}: ${check.status} — ${check.message}`,
+    ),
     "[dry-run] Artifact path plan: not created in dry-run; live runs write ~/.oracle/sessions/<session-id>/artifacts/claude-code-stdout.raw, claude-code-stderr.raw, claude-code-events.normalized.ndjson, claude-code-final.md, claude-code-progress.md, and claude-code-adapter.json.",
     `[dry-run] Prompt hash plan: prompt_sha256=${promptEvidence.prompt_sha256}; prompt_manifest_sha256=${promptEvidence.prompt_manifest_sha256}; prompt_bytes=${promptEvidence.prompt_bytes}.`,
     '[dry-run] Recovery command plan: no session is created; live runs print "oracle session <id>" for reattach.',
