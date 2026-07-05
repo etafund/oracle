@@ -124,7 +124,7 @@ function formatHuman(result: CapabilitiesCommandResult): string {
 
 export function registerCapabilitiesCommand(program: Command): Command {
   return program
-    .command("capabilities")
+    .command("capabilities", { hidden: true })
     .description(
       "Print Oracle's capability surface as json_envelope.v1 without any live provider calls.",
     )

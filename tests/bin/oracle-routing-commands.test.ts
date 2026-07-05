@@ -8,12 +8,19 @@ const execFileAsync = promisify(execFile);
 const CLI_ENTRYPOINT = path.join(process.cwd(), "bin", "oracle-cli.ts");
 
 describe("bin/oracle-cli preview and visibility routing", () => {
-  test("oracle --help lists preview and visibility-status", async () => {
+  test("oracle --help hides preview and visibility-status by default (still discoverable via --help --verbose)", async () => {
     const { stdout, stderr } = await runOracle(["--help"]);
     const output = `${stdout}\n${stderr}`;
+    const commandsSection = extractCommandsSection(output);
 
-    expect(output).toContain("preview");
-    expect(output).toContain("visibility-status");
+    expect(commandsSection).not.toMatch(/^\s*preview\b/m);
+    expect(commandsSection).not.toMatch(/^\s*visibility-status\b/m);
+
+    const verbose = await runOracle(["--help", "--verbose"]);
+    const verboseOutput = `${verbose.stdout}\n${verbose.stderr}`;
+
+    expect(verboseOutput).toMatch(/^\s*preview\b/m);
+    expect(verboseOutput).toMatch(/^\s*visibility-status\b/m);
   });
 
   test("oracle --help shows one examples section with lane aliases", async () => {
@@ -128,6 +135,11 @@ function parseLastJson(stdout: string): Record<string, unknown> {
   const start = marker >= 0 ? marker + "Preview JSON\n".length : -1;
   expect(start).toBeGreaterThanOrEqual(0);
   return JSON.parse(stdout.slice(start).trim()) as Record<string, unknown>;
+}
+
+function extractCommandsSection(output: string): string {
+  const match = output.match(/Commands:\n([\s\S]*?)\n\n/);
+  return match ? match[1] : "";
 }
 
 async function runOracle(args: string[]): Promise<{ stdout: string; stderr: string }> {

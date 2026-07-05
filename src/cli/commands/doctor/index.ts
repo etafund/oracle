@@ -1,4 +1,4 @@
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import { AGENT_LANE_POLICY_VERSION, LANE_TEMPLATES } from "../../laneRegistry.js";
 import {
   runAggregateDoctor,
@@ -110,15 +110,56 @@ export function registerDoctorCommand(program: Command, deps: DoctorCommandDeps 
     .command("doctor")
     .description("Run Oracle preflight diagnostics without submitting prompts.")
     .option("--json", "Print structured JSON.", false)
-    .option("--providers", "Inspect compatibility API provider keys and route choices.", false)
-    .option("--models <models>", "Comma-separated compatibility API model list to inspect.")
-    .option("-m, --model <model>", "Single compatibility API model to inspect.")
-    .option("--provider <provider>", "Compatibility API provider override (auto, openai, azure).")
-    .option("--no-azure", "Disable Azure OpenAI routing for this compatibility inspection.")
-    .option("--azure-endpoint <url>", "Compatibility Azure OpenAI Endpoint.")
-    .option("--azure-deployment <name>", "Compatibility Azure OpenAI Deployment Name.")
-    .option("--azure-api-version <version>", "Compatibility Azure OpenAI API Version.")
-    .option("--base-url <url>", "Override compatibility OpenAI-compatible base URL.")
+    .addOption(
+      new Option(
+        "--providers",
+        "Inspect compatibility API provider keys and route choices.",
+      )
+        .default(false)
+        .hideHelp(),
+    )
+    .addOption(
+      new Option(
+        "--models <models>",
+        "Comma-separated compatibility API model list to inspect.",
+      ).hideHelp(),
+    )
+    .addOption(
+      new Option("-m, --model <model>", "Single compatibility API model to inspect.").hideHelp(),
+    )
+    .addOption(
+      new Option(
+        "--provider <provider>",
+        "Compatibility API provider override (auto, openai, azure).",
+      ).hideHelp(),
+    )
+    .addOption(
+      new Option(
+        "--no-azure",
+        "Disable Azure OpenAI routing for this compatibility inspection.",
+      ).hideHelp(),
+    )
+    .addOption(
+      new Option("--azure-endpoint <url>", "Compatibility Azure OpenAI Endpoint.").hideHelp(),
+    )
+    .addOption(
+      new Option(
+        "--azure-deployment <name>",
+        "Compatibility Azure OpenAI Deployment Name.",
+      ).hideHelp(),
+    )
+    .addOption(
+      new Option(
+        "--azure-api-version <version>",
+        "Compatibility Azure OpenAI API Version.",
+      ).hideHelp(),
+    )
+    .addOption(
+      new Option(
+        "--base-url <url>",
+        "Override compatibility OpenAI-compatible base URL.",
+      ).hideHelp(),
+    )
     .action(async function (
       this: Command,
       _options: AggregateDoctorOptions & { providers?: boolean },

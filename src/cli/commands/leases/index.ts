@@ -82,7 +82,9 @@ export function registerBrowserLeasesCommand(
   program: Command,
   deps: BrowserLeaseStoreOptions = {},
 ): Command {
-  const browser = program.command("browser").description("Browser automation utilities.");
+  const browser = program
+    .command("browser", { hidden: true })
+    .description("Browser automation utilities.");
   const leases = browser
     .command("leases")
     .description("Plan, inspect, acquire, release, and recover browser provider leases.");

@@ -57,6 +57,8 @@ Homebrew: `brew install steipete/tap/oracle`
 
 Requires Node 24+. Or use `npx -y @steipete/oracle …` (or pnpx).
 
+This is the whole first-try surface — the 3 reviewed lanes, plus the shared session commands every lane uses:
+
 ```bash
 # Copy the bundle and paste into ChatGPT
 npx -y @steipete/oracle --render --copy -p "Review the TS data layer for schema drift" --file "src/**/*.ts,*/*.test.ts"
@@ -75,6 +77,20 @@ npx -y @steipete/oracle --lane fable-local \
 npx -y @steipete/oracle --engine browser --provider gemini --gemini-deep-think \
   -p "Cross-check the data layer assumptions" --file "src/**/*.ts"
 
+# Sessions (list and replay) — works the same for every lane above
+npx -y @steipete/oracle status --hours 72
+npx -y @steipete/oracle session <id> --render
+npx -y @steipete/oracle restart <id>
+```
+
+For reviewed browser lanes, prefer explicit `--engine browser` or the protected Gemini flags instead of relying on API-key auto-pick. On Linux pass `--browser-chrome-path/--browser-cookie-path` if detection fails; on Windows prefer `--browser-manual-login` or inline cookies if decryption is blocked.
+
+Everything below this point is compatibility/advanced surface — still fully supported and runnable, just not the first-try path. The CLI itself hides these same commands/flags from default `--help`; run `oracle --help --verbose` to list them from your installed build.
+
+<details>
+<summary>Compatibility &amp; advanced usage (OpenAI/Azure follow-ups, dry-run/perf-trace, project sources, image generation, bridge/remote diagnostics, TUI)</summary>
+
+```bash
 # Follow up from an existing OpenAI/Azure session id
 npx -y @steipete/oracle --engine api --model gpt-5.2-pro --followup release-readiness-audit --followup-model gpt-5.2-pro -p "Re-evaluate with this new context" --file "src/**/*.ts"
 
@@ -113,11 +129,6 @@ npx -y @steipete/oracle --engine browser --model gpt-5.5-pro \
 npx -y @steipete/oracle --engine browser --model gemini-3.1-pro \
   --prompt "a cute robot holding a banana" --generate-image out.jpg --aspect 1:1
 
-# Sessions (list and replay)
-npx -y @steipete/oracle status --hours 72
-npx -y @steipete/oracle session <id> --render
-npx -y @steipete/oracle restart <id>
-
 # Diagnose the remote browser endpoint (no auth tokens on argv)
 npx -y @steipete/oracle remote doctor --json
 npx -y @steipete/oracle remote status --json
@@ -127,7 +138,7 @@ npx -y @steipete/oracle remote attach --host remote.host:9473 --token-env ORACLE
 npx -y @steipete/oracle tui
 ```
 
-For reviewed browser lanes, prefer explicit `--engine browser` or the protected Gemini flags instead of relying on API-key auto-pick. On Linux pass `--browser-chrome-path/--browser-cookie-path` if detection fails; on Windows prefer `--browser-manual-login` or inline cookies if decryption is blocked.
+</details>
 
 ## Integration
 
@@ -306,11 +317,19 @@ The fork carries a contracts-first spec bundle (under `PLAN/`) plus several test
 
 ### New commands & key flags (quick reference)
 
+Core — visible in default `--help`, needed for the 3 reviewed lanes:
+
+| Command / flag                                                 | What it does                              | Calls a provider? |
+| ---------------------------------------------------------------| ------------------------------------------ | ------------------ |
+| `oracle doctor [--json]`                                        | Aggregate preflight diagnostics           | No                 |
+| `oracle doctor chatgpt --pro --extended-reasoning [--json]`      | ChatGPT Pro route readiness               | No                 |
+| `oracle doctor gemini --deep-think [--json]`                     | Gemini Deep Think route readiness         | No                 |
+| `--gemini-deep-think`, `--evidence redacted` (on the main run)  | Protected Gemini Deep Think browser route | Yes (browser)      |
+
+Advanced & compatibility — hidden from default `--help` (still fully runnable; run `oracle --help --verbose` to list them from your installed build):
+
 | Command / flag                                                       | What it does                              | Calls a provider?  |
 | -------------------------------------------------------------------- | ----------------------------------------- | ------------------ |
-| `oracle doctor [--json]`                                             | Aggregate preflight diagnostics           | No                 |
-| `oracle doctor chatgpt --pro --extended-reasoning [--json]`          | ChatGPT Pro route readiness               | No                 |
-| `oracle doctor gemini --deep-think [--json]`                         | Gemini Deep Think route readiness         | No                 |
 | `oracle capabilities [--json]`                                       | Static capability matrix                  | No                 |
 | `oracle robot-docs [--json]`                                         | Machine-readable command registry         | No                 |
 | `oracle preview` / `oracle visibility-status`                        | Estimate / roll-up before a run           | No                 |
@@ -320,7 +339,6 @@ The fork carries a contracts-first spec bundle (under `PLAN/`) plus several test
 | `oracle evidence ledger show\|verify\|export <session>`              | Hash-chained audit ledger                 | No                 |
 | `oracle remote doctor\|status\|attach`                               | Diagnose remote `serve` endpoint          | Network probe only |
 | `oracle follow-up <parentSessionId> [prompt]`                        | Continue a saved ChatGPT thread           | Yes (browser)      |
-| `--gemini-deep-think`, `--evidence redacted` (on the main run)       | Protected Gemini Deep Think browser route | Yes (browser)      |
 
 ### What this fork does NOT change
 
@@ -422,28 +440,26 @@ Browser automation can open or control Chrome, so dry-runs and live runs print a
 
 ## Flags you’ll actually use
 
+Visible in default `--help` — the flags the 3 reviewed lanes and everyday session management need:
+
 | Flag                                                                           | Purpose                                                                                                                                                                                                                                                           |
 | ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `-p, --prompt <text>`                                                          | Required prompt.                                                                                                                                                                                                                                                  |
 | `-f, --file <paths...>`                                                        | Attach files/dirs (globs + `!` excludes).                                                                                                                                                                                                                         |
 | `-e, --engine <api\|browser\|claude-code>`                                     | Choose the engine. Reviewed lanes use browser for ChatGPT/Gemini and `claude-code` through `--lane fable-local`.                                                                                                                                                  |
 | `--lane fable-local`                                                           | Run the Fable xHigh local lane. It is local-only and refuses remote/browser/API fan-out.                                                                                                                                                                          |
-| `-m, --model <name>`                                                           | For reviewed lanes, use `gpt-5.5-pro` with extended browser thinking, `fable` via `--lane fable-local`, or Gemini through `--provider gemini --gemini-deep-think`. Older API/browser aliases remain compatibility paths.                                          |
-| `--models <list>`                                                              | Compatibility-only API fan-out. Not part of the reviewed lane surface.                                                                                                                                                                                            |
 | `--followup <sessionId\|responseId>`                                           | Continue a saved ChatGPT browser conversation or an OpenAI/Azure Responses API run from a stored Oracle session or `resp_...` response id.                                                                                                                        |
 | `--followup-model <model>`                                                     | For multi-model OpenAI/Azure parent sessions, choose which model response to continue from.                                                                                                                                                                       |
-| `--base-url <url>`                                                             | Point API runs at LiteLLM/Azure/OpenRouter/etc.                                                                                                                                                                                                                   |
 | `--chatgpt-url <url>`                                                          | Target a ChatGPT workspace/folder or Temporary Chat URL (browser).                                                                                                                                                                                                |
 | `--browser-model-strategy <select\|current\|ignore>`                           | Control ChatGPT model selection in browser mode (current keeps the active model; ignore skips the picker).                                                                                                                                                        |
 | `--browser-manual-login`                                                       | Skip cookie copy; reuse a persistent automation profile and wait for manual ChatGPT login.                                                                                                                                                                        |
 | `--browser-attach-running`                                                     | Reuse your current local browser session through local `DevToolsActivePort` discovery; Oracle opens a dedicated tab instead of launching Chrome (defaults to `127.0.0.1:9222`, or combine with `--remote-chrome <host:port>` to hint a different local endpoint). |
 | `--browser-tab <ref>`                                                          | Reuse an existing ChatGPT tab by `current`, target id, URL, or title substring instead of opening a new tab.                                                                                                                                                      |
-| `--browser-thinking-time <light\|standard\|extended\|heavy>`                   | Set ChatGPT thinking-time intensity (browser; Thinking/Pro models only).                                                                                                                                                                                          |
+| `--browser-thinking-time <light\|standard\|extended\|heavy>`                   | Set ChatGPT thinking-time intensity (browser; Thinking/Pro models only). Flagship ChatGPT Pro Extended Reasoning flag.                                                                                                                                            |
 | `--browser-research deep`                                                      | Activate ChatGPT Deep Research for broad web research and cited reports (browser only).                                                                                                                                                                           |
 | `--browser-follow-up <prompt>`                                                 | Browser-only multi-turn consult: submit an additional prompt in the same ChatGPT conversation after the initial answer. Repeat for challenge/revision/final-decision passes. Not supported with Deep Research mode.                                               |
 | `--browser-archive <auto\|always\|never>`                                      | Archive completed ChatGPT browser conversations after local artifacts are saved. `auto` archives successful one-shot chats only, and skips project, Deep Research, multi-turn, failed, and incomplete sessions.                                                   |
 | `--browser-attachments <auto\|never\|always>`                                  | Control browser file delivery: `auto` pastes small text files inline and uploads larger or raw files, `never` requires inline-compatible text files, and `always` uploads files as ChatGPT attachments.                                                           |
-| `--browser-bundle-files`, `--browser-bundle-format <auto\|text\|zip>`          | Bundle browser uploads into one attachment. `auto` uses a text bundle for text-only inputs and a byte-preserving ZIP when bundled inputs include raw files; `text` writes a Markdown-style text bundle; `zip` archives the original file bytes.                   |
 | `--browser-port <port>`                                                        | Pin the Chrome DevTools port (WSL/Windows firewall helper).                                                                                                                                                                                                       |
 | `--browser-inline-cookies[(-file)] <payload \| path>`                          | Supply cookies without Chrome/Keychain (browser).                                                                                                                                                                                                                 |
 | `--browser-timeout`, `--browser-input-timeout`, `--browser-attachment-timeout` | Control overall/browser input/attachment readiness timeouts (supports h/m/s/ms).                                                                                                                                                                                  |
@@ -455,23 +471,37 @@ Browser automation can open or control Chrome, so dry-runs and live runs print a
 | `--render`, `--copy`                                                           | Print and/or copy the assembled markdown bundle.                                                                                                                                                                                                                  |
 | `--wait`                                                                       | Block for background API runs (e.g., GPT‑5.1 Pro) instead of detaching.                                                                                                                                                                                           |
 | `--timeout <seconds\|duration\|auto>`                                          | Overall API deadline (auto = 60m for pro, 120s otherwise; durations like `10m` derive HTTP/stale-session timeouts unless overridden).                                                                                                                             |
-| `--background`, `--no-background`                                              | Force Responses API background mode (create + retrieve) for API runs.                                                                                                                                                                                             |
-| `--http-timeout <ms\|s\|m\|h>`                                                 | Override the HTTP client timeout; if omitted, explicit `--timeout` values are reused for transport.                                                                                                                                                               |
 | `--zombie-timeout <ms\|s\|m\|h>`                                               | Override stale-session cutoff used by `oracle status`.                                                                                                                                                                                                            |
 | `--zombie-last-activity`                                                       | Use last log activity to detect stale sessions.                                                                                                                                                                                                                   |
 | `--write-output <path>`                                                        | Save only the final answer (multi-model adds `.<model>` and writes `<stem>.oracle.json`). Browser sessions also save transcripts and generated artifacts under `~/.oracle/sessions/<id>/artifacts/`.                                                              |
 | `--allow-partial`, `--partial <fail\|ok>`                                      | Multi-model failure policy. Default `fail` exits 1 after printing a structured partial summary; `ok` exits 0 when at least one model succeeds.                                                                                                                    |
-| `--preflight`                                                                  | Check redacted provider readiness for requested API model(s), then exit without creating a session.                                                                                                                                                               |
 | `--perf-trace`, `--perf-trace-path <path>`                                     | Write startup/first-output timing trace JSON; also accepts `--perf-trace=/tmp/oracle.json`, `ORACLE_PERF_TRACE=1`, or `ORACLE_PERF_TRACE=/tmp/oracle.json`.                                                                                                       |
 | `--files-report`                                                               | Print per-file token usage.                                                                                                                                                                                                                                       |
 | `--dry-run [summary\|json\|full]`                                              | Preview without sending.                                                                                                                                                                                                                                          |
-| `--remote-host`, `--remote-token`                                              | Use a remote `oracle serve` host (browser). Prefer `ORACLE_REMOTE_TOKEN` or `browser.remoteToken` over putting tokens on argv.                                                                                                                                    |
-| `--remote-chrome <host:port>`                                                  | Attach to an existing remote Chrome session (browser), or when combined with `--browser-attach-running` use this host:port as the local attach hint.                                                                                                              |
-| `--youtube <url>`                                                              | YouTube video URL to analyze (Gemini browser mode).                                                                                                                                                                                                               |
-| `--generate-image <file>`                                                      | Generate image and save to file (Gemini browser mode; ChatGPT browser mode saves downloadable image artifacts when present). Extra ChatGPT images save as numbered siblings.                                                                                      |
-| `--edit-image <file>`                                                          | Edit existing image with `--output` (Gemini browser mode). For ChatGPT browser mode, attach source images with `--file` and use `--generate-image` for the output path.                                                                                           |
-| `--provider openai\|azure\|auto`, `--no-azure`, `--route`                      | Choose or inspect API provider routing; `openai` / `--no-azure` ignores Azure env/config for the run.                                                                                                                                                             |
-| `--azure-endpoint`, `--azure-deployment`, `--azure-api-version`                | Target Azure OpenAI endpoints (picks Azure client automatically).                                                                                                                                                                                                 |
+
+Hidden by default (still fully supported — run `oracle --help --verbose` to list them from your installed build):
+
+| Flag                                                                  | Purpose                                                                                                                                                                                                           |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-m, --model <name>`                                                   | For reviewed lanes, use `gpt-5.5-pro` with extended browser thinking, `fable` via `--lane fable-local`, or Gemini through `--provider gemini --gemini-deep-think`. Older API/browser aliases remain compatibility paths. |
+| `--models <list>`                                                      | Compatibility-only API fan-out. Not part of the reviewed lane surface.                                                                                                                                            |
+| `--base-url <url>`                                                     | Point API runs at LiteLLM/Azure/OpenRouter/etc.                                                                                                                                                                    |
+| `--browser-bundle-files`, `--browser-bundle-format <auto\|text\|zip>` | Bundle browser uploads into one attachment. `auto` uses a text bundle for text-only inputs and a byte-preserving ZIP when bundled inputs include raw files; `text` writes a Markdown-style text bundle; `zip` archives the original file bytes. |
+| `--background`, `--no-background`                                     | Force Responses API background mode (create + retrieve) for API runs.                                                                                                                                             |
+| `--http-timeout <ms\|s\|m\|h>`                                        | Override the HTTP client timeout; if omitted, explicit `--timeout` values are reused for transport.                                                                                                               |
+| `--preflight`                                                         | Check redacted provider readiness for requested API model(s), then exit without creating a session.                                                                                                               |
+| `--remote-host`, `--remote-token`                                     | Use a remote `oracle serve` host (browser). Prefer `ORACLE_REMOTE_TOKEN` or `browser.remoteToken` over putting tokens on argv.                                                                                    |
+| `--remote-chrome <host:port>`                                         | Attach to an existing remote Chrome session (browser), or when combined with `--browser-attach-running` use this host:port as the local attach hint.                                                             |
+| `--youtube <url>`                                                     | YouTube video URL to analyze (Gemini browser mode).                                                                                                                                                               |
+| `--generate-image <file>`                                             | Generate image and save to file (Gemini browser mode; ChatGPT browser mode saves downloadable image artifacts when present). Extra ChatGPT images save as numbered siblings.                                     |
+| `--edit-image <file>`                                                 | Edit existing image with `--output` (Gemini browser mode). For ChatGPT browser mode, attach source images with `--file` and use `--generate-image` for the output path.                                          |
+| `--provider openai\|azure\|auto`, `--no-azure`, `--route`             | Choose or inspect API provider routing; `openai` / `--no-azure` ignores Azure env/config for the run.                                                                                                             |
+| `--azure-endpoint`, `--azure-deployment`, `--azure-api-version`       | Target Azure OpenAI endpoints (picks Azure client automatically).                                                                                                                                                 |
+| `--copy-profile <dir>`                                                | Copy a signed-in Chrome user-data dir to a throwaway profile and run browser mode against it (login-free; auto-cleanup).                                                                                          |
+| `--remote-browser <mode>`                                             | Controls whether remote browser infrastructure is used. Modes: preferred (default), required, off.                                                                                                               |
+| `--gemini-show-thoughts`                                              | Display Gemini thinking process (Gemini web/cookie mode only).                                                                                                                                                    |
+| `--aspect <ratio>`                                                    | Aspect ratio for image generation: 16:9, 1:1, 4:3, 3:4 (Gemini web/cookie mode only).                                                                                                                              |
+| `--output <file>`                                                     | Output file path for image operations.                                                                                                                                                                            |
 
 ## Configuration
 

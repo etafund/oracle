@@ -16,7 +16,7 @@ export interface StatusVisibilityCommandIo {
 
 export function registerStatusVisibilityCommand(program: Command): Command {
   return program
-    .command("visibility-status")
+    .command("visibility-status", { hidden: true })
     .description("Print runtime budget, waiver, and premortem visibility status.")
     .requiredOption("--profile <profile>", "APR/profile name, for example balanced or audit.")
     .requiredOption("--slot <slot>", "Provider slot to inspect.")

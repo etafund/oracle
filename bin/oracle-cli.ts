@@ -542,10 +542,13 @@ program
       "Reviewed lane alias (fable-local, chatgpt-pro, gemini-deep-think).",
     ),
   )
-  .option(
-    "-m, --model <model>",
-    "Model to target. Prefer --lane for reviewed routes; legacy API/browser model aliases remain available.",
-    normalizeModelOption,
+  .addOption(
+    new Option(
+      "-m, --model <model>",
+      "Model to target. Prefer --lane for reviewed routes; legacy API/browser model aliases remain available.",
+    )
+      .argParser(normalizeModelOption)
+      .hideHelp(),
   )
   .addOption(
     new Option(
@@ -553,7 +556,8 @@ program
       "Compatibility-only comma-separated API model fan-out. Not part of the reviewed lane surface.",
     )
       .argParser(collectModelList)
-      .default([]),
+      .default([])
+      .hideHelp(),
   )
   .addOption(
     new Option(
@@ -565,7 +569,9 @@ program
     new Option(
       "--provider <provider>",
       "Provider selection. Accepts API routing (auto, openai, azure) and protected browser routes (gemini-deep-think).",
-    ).default("auto"),
+    )
+      .default("auto")
+      .hideHelp(),
   )
   .addOption(
     new Option("--gemini-deep-think", "Use the protected Gemini Deep Think browser route.").default(
@@ -634,15 +640,20 @@ program
     new Option(
       "--background",
       "Use Responses API background mode (create + retrieve) for API runs.",
-    ).default(undefined),
+    )
+      .default(undefined)
+      .hideHelp(),
   )
   .addOption(
-    new Option("--no-background", "Disable Responses API background mode.").default(undefined),
+    new Option("--no-background", "Disable Responses API background mode.")
+      .default(undefined)
+      .hideHelp(),
   )
   .addOption(
     new Option("--http-timeout <ms|s|m|h>", "HTTP client timeout for API requests (default 20m).")
       .argParser((value) => parseDurationOption(value, "HTTP timeout"))
-      .default(undefined),
+      .default(undefined)
+      .hideHelp(),
   )
   .addOption(
     new Option(
@@ -672,8 +683,17 @@ program
       .preset("summary")
       .default(false),
   )
-  .option("--route", "Print API provider route plan and exit.", false)
-  .option("--preflight", "Check API provider readiness for the requested model(s) and exit.", false)
+  .addOption(
+    new Option("--route", "Print API provider route plan and exit.").default(false).hideHelp(),
+  )
+  .addOption(
+    new Option(
+      "--preflight",
+      "Check API provider readiness for the requested model(s) and exit.",
+    )
+      .default(false)
+      .hideHelp(),
+  )
   .addOption(
     new Option(
       "--perf-trace",
@@ -731,17 +751,30 @@ program
       .argParser(parseIntOption)
       .hideHelp(),
   )
-  .option(
-    "--base-url <url>",
-    "Override the OpenAI-compatible base URL for API runs (e.g. LiteLLM proxy endpoint).",
+  .addOption(
+    new Option(
+      "--base-url <url>",
+      "Override the OpenAI-compatible base URL for API runs (e.g. LiteLLM proxy endpoint).",
+    ).hideHelp(),
   )
-  .option("--no-azure", "Disable Azure OpenAI routing for this run (same as --provider openai).")
-  .option(
-    "--azure-endpoint <url>",
-    "Azure OpenAI Endpoint (e.g. https://resource.openai.azure.com/).",
+  .addOption(
+    new Option(
+      "--no-azure",
+      "Disable Azure OpenAI routing for this run (same as --provider openai).",
+    ).hideHelp(),
   )
-  .option("--azure-deployment <name>", "Azure OpenAI Deployment Name.")
-  .option("--azure-api-version <version>", "Azure OpenAI API Version.")
+  .addOption(
+    new Option(
+      "--azure-endpoint <url>",
+      "Azure OpenAI Endpoint (e.g. https://resource.openai.azure.com/).",
+    ).hideHelp(),
+  )
+  .addOption(
+    new Option("--azure-deployment <name>", "Azure OpenAI Deployment Name.").hideHelp(),
+  )
+  .addOption(
+    new Option("--azure-api-version <version>", "Azure OpenAI API Version.").hideHelp(),
+  )
   .addOption(
     new Option("--browser", "(deprecated) Use --engine browser instead.").default(false).hideHelp(),
   )
@@ -899,7 +932,7 @@ program
     new Option(
       "--copy-profile <dir>",
       'Copy a signed-in Chrome user-data dir to a throwaway profile and run browser mode against it (login-free; auto-cleanup). e.g. "$HOME/Library/Application Support/Google/Chrome".',
-    ),
+    ).hideHelp(),
   )
   .addOption(new Option("--browser-headless", "Launch Chrome in headless mode.").hideHelp())
   .addOption(
@@ -921,9 +954,7 @@ program
     new Option(
       "--browser-thinking-time <level>",
       "Thinking time intensity for Thinking/Pro models: light, standard, extended, heavy, or ChatGPT UI aliases.",
-    )
-      .argParser(parseThinkingTimeOption)
-      .hideHelp(),
+    ).argParser(parseThinkingTimeOption),
   )
   .addOption(
     new Option(
@@ -963,7 +994,7 @@ program
     new Option(
       "--remote-chrome <host:port>",
       "Connect to remote Chrome DevTools Protocol, or when combined with --browser-attach-running use this host:port as the local attach hint.",
-    ),
+    ).hideHelp(),
   )
   .option(
     "--browser-tab <ref>",
@@ -973,16 +1004,21 @@ program
     new Option(
       "--remote-browser <mode>",
       "Controls whether remote browser infrastructure is used. Modes: preferred (default), required, off.",
-    ).choices(["preferred", "required", "off"]),
+    )
+      .choices(["preferred", "required", "off"])
+      .hideHelp(),
   )
   .addOption(
     new Option(
       "--remote-host <host:port>",
       "Delegate browser runs to a remote `oracle serve` instance.",
-    ),
+    ).hideHelp(),
   )
   .addOption(
-    new Option("--remote-token <token>", "Access token for the remote `oracle serve` instance."),
+    new Option(
+      "--remote-token <token>",
+      "Access token for the remote `oracle serve` instance.",
+    ).hideHelp(),
   )
   .addOption(
     new Option(
@@ -994,7 +1030,9 @@ program
     new Option(
       "--browser-bundle-files",
       "Bundle all attachments into a single archive before uploading.",
-    ).default(false),
+    )
+      .default(false)
+      .hideHelp(),
   )
   .addOption(
     new Option(
@@ -1002,38 +1040,41 @@ program
       "Bundle format for browser uploads when files are bundled: auto (default), text, or zip.",
     )
       .choices(["auto", "text", "zip"])
-      .default("auto"),
+      .default("auto")
+      .hideHelp(),
   )
   .addOption(
     new Option(
       "--youtube <url>",
       "YouTube video URL to analyze (Gemini web/cookie mode only; uses your signed-in Chrome cookies for gemini.google.com).",
-    ),
+    ).hideHelp(),
   )
   .addOption(
     new Option(
       "--generate-image <file>",
       "Generate image and save to file (Gemini browser mode; ChatGPT browser mode saves downloadable image artifacts when present).",
-    ),
+    ).hideHelp(),
   )
   .addOption(
     new Option(
       "--edit-image <file>",
       "Edit existing image (Gemini browser mode; for ChatGPT attach source images with --file and use --generate-image for output).",
-    ),
+    ).hideHelp(),
   )
-  .addOption(new Option("--output <file>", "Output file path for image operations."))
+  .addOption(new Option("--output <file>", "Output file path for image operations.").hideHelp())
   .addOption(
     new Option(
       "--aspect <ratio>",
       "Aspect ratio for image generation: 16:9, 1:1, 4:3, 3:4 (Gemini web/cookie mode only).",
-    ),
+    ).hideHelp(),
   )
   .addOption(
     new Option(
       "--gemini-show-thoughts",
       "Display Gemini thinking process (Gemini web/cookie mode only).",
-    ).default(false),
+    )
+      .default(false)
+      .hideHelp(),
   )
   .option(
     "--retain-hours <hours>",
@@ -1057,7 +1098,7 @@ program
   .showHelpAfterError("(use --help for usage)");
 
 program
-  .command("serve")
+  .command("serve", { hidden: true })
   .description("Run Oracle browser automation as a remote service for other machines.")
   .option("--host <address>", "Interface to bind (default 0.0.0.0).")
   .option("--port <number>", "Port to listen on (default random).", parseIntOption)
@@ -1112,7 +1153,7 @@ if (!program.commands.some((command) => command.name() === "evidence")) {
 }
 
 const projectSourcesCommand = program
-  .command("project-sources")
+  .command("project-sources", { hidden: true })
   .description("Manage ChatGPT Project Sources as explicit shared project context.");
 
 function addProjectSourcesCommonOptions(command: Command): Command {
@@ -1181,7 +1222,7 @@ addProjectSourcesCommonOptions(
 });
 
 const bridgeCommand = program
-  .command("bridge")
+  .command("bridge", { hidden: true })
   .description("Bridge a Windows-hosted ChatGPT session to Linux clients.");
 
 bridgeCommand
@@ -1240,7 +1281,7 @@ bridgeCommand
   });
 
 const remoteCommand = program
-  .command("remote")
+  .command("remote", { hidden: true })
   .description("Diagnose Oracle's remote browser endpoint (doctor/status/attach).");
 
 remoteCommand
@@ -1310,7 +1351,7 @@ bridgeCommand
   });
 
 program
-  .command("tui")
+  .command("tui", { hidden: true })
   .description("Launch the interactive terminal UI for humans (no automation).")
   .action(async () => {
     const { launchTui } = await import("../src/cli/tui/index.js");
@@ -1326,7 +1367,9 @@ program
 // composed into our doctor command in a follow-up rather than registered as a
 // duplicate root command.
 
-const docsCommand = program.command("docs").description("Documentation maintenance utilities.");
+const docsCommand = program
+  .command("docs", { hidden: true })
+  .description("Documentation maintenance utilities.");
 
 docsCommand
   .command("check")
@@ -1488,7 +1531,7 @@ program
   });
 
 program
-  .command("follow-up <parentSessionId> [prompt]")
+  .command("follow-up <parentSessionId> [prompt]", { hidden: true })
   .description("Continue a stored browser session as a new child session.")
   .option("-p, --prompt <text>", "Follow-up prompt to send to the saved ChatGPT conversation.")
   .option("-s, --slug <words>", "Custom child session slug (3-5 words).")
@@ -3418,6 +3461,13 @@ async function finalizeSession(sessionId: string) {
   }
 }
 
+/**
+ * Derive this page's contents from commander's live option/command registry
+ * (`program.options` / `program.commands`) instead of a hand-typed array, so
+ * anything hidden via `hideHelp()`/`{ hidden: true }` is automatically
+ * discoverable here and can never silently drift out of sync (see the
+ * `--browser-thinking-time` mis-hide bug this replaced).
+ */
 function printDebugHelp(cliName: string): void {
   console.log(
     chalk.bold(
@@ -3426,70 +3476,44 @@ function printDebugHelp(cliName: string): void {
   );
   console.log(
     chalk.dim(
-      "Primary help stays lane-first; this page lists compatibility and browser-debug overrides.",
+      "Primary help stays lane-first; this page lists compatibility, browser-debug, and hidden-command overrides.",
     ),
   );
   console.log("");
+
+  const hiddenOptions = program.options.filter((option) => option.hidden);
+  const isBrowserOption = (option: Option): boolean => option.flags.includes("--browser");
+  const browserOptions = hiddenOptions.filter(isBrowserOption);
+  const otherOptions = hiddenOptions.filter((option) => !isBrowserOption(option));
+
   console.log(chalk.bold("Advanced Options"));
-  printDebugOptionGroup([
-    ["--search <on|off>", "Enable or disable the server-side search tool (default on)."],
-    ["--max-input <tokens>", "Override the input token budget."],
-    ["--max-output <tokens>", "Override the max output tokens (model default otherwise)."],
-  ]);
+  printDebugOptionGroup(otherOptions.map(optionToDebugEntry));
   console.log("");
   console.log(chalk.bold("Browser Options"));
-  printDebugOptionGroup([
-    ["--chatgpt-url <url>", "Override the ChatGPT web URL (workspace/folder targets)."],
-    ["--browser-chrome-profile <name>", "Reuse cookies from a specific Chrome profile."],
-    ["--browser-chrome-path <path>", "Point to a custom Chrome/Chromium binary."],
-    ["--browser-cookie-path <path>", "Use a specific Chrome/Chromium cookie store file."],
-    [
-      "--browser-attach-running",
-      "Attach to your current Chrome session through its local remote debugging toggle.",
-    ],
-    ["--browser-url <url>", "Alias for --chatgpt-url."],
-    ["--browser-timeout <ms|s|m>", "Cap total wait time for the assistant response."],
-    ["--browser-input-timeout <ms|s|m>", "Cap how long we wait for the composer textarea."],
-    [
-      "--browser-recheck-delay <ms|s|m|h>",
-      "After timeout, wait then revisit the conversation to retry capture.",
-    ],
-    ["--browser-recheck-timeout <ms|s|m|h>", "Time budget for the delayed recheck attempt."],
-    [
-      "--browser-reuse-wait <ms|s|m|h>",
-      "Wait for a shared Chrome profile before launching (parallel runs).",
-    ],
-    [
-      "--browser-profile-lock-timeout <ms|s|m|h>",
-      "Wait for the manual-login profile lock before sending.",
-    ],
-    [
-      "--browser-auto-reattach-delay <ms|s|m|h>",
-      "Delay before periodic auto-reattach attempts after a timeout.",
-    ],
-    [
-      "--browser-auto-reattach-interval <ms|s|m|h>",
-      "Interval between auto-reattach attempts (0 disables).",
-    ],
-    ["--browser-auto-reattach-timeout <ms|s|m|h>", "Time budget for each auto-reattach attempt."],
-    [
-      "--browser-cookie-wait <ms|s|m>",
-      "Wait before retrying cookie sync when Chrome cookies are empty or locked.",
-    ],
-    ["--browser-no-cookie-sync", "Skip copying cookies from your main profile."],
-    [
-      "--browser-manual-login",
-      "Skip cookie copy; reuse a persistent automation profile and log in manually.",
-    ],
-    ["--browser-headless", "Launch Chrome in headless mode."],
-    ["--browser-hide-window", "Hide the Chrome window (macOS headful only)."],
-    ["--browser-keep-browser", "Leave Chrome running after completion."],
-  ]);
+  printDebugOptionGroup(browserOptions.map(optionToDebugEntry));
+  console.log("");
+
+  const help = program.createHelp();
+  const visibleCommands = new Set(help.visibleCommands(program));
+  const hiddenCommands = program.commands.filter((command) => !visibleCommands.has(command));
+  console.log(chalk.bold("Hidden commands (fully runnable, just not in default --help)"));
+  printDebugOptionGroup(
+    hiddenCommands.map((command) => [command.name(), command.description() || "(no description)"]),
+  );
+
   console.log("");
   console.log(chalk.dim(`Tip: run \`${cliName} --help\` to see the primary option set.`));
 }
 
+function optionToDebugEntry(option: Option): [string, string] {
+  return [option.flags, option.description || "(no description)"];
+}
+
 function printDebugOptionGroup(entries: Array<[string, string]>): void {
+  if (entries.length === 0) {
+    console.log(chalk.dim("  (none)"));
+    return;
+  }
   const flagWidth = Math.max(...entries.map(([flag]) => flag.length));
   entries.forEach(([flag, description]) => {
     const label = chalk.cyan(flag.padEnd(flagWidth + 2));

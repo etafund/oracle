@@ -98,7 +98,7 @@ function formatHuman(result: RobotDocsCommandResult): string {
 
 export function registerRobotDocsCommand(program: Command): Command {
   return program
-    .command("robot-docs")
+    .command("robot-docs", { hidden: true })
     .description(
       "Emit the Oracle CLI command registry as a robot_surface.v1 envelope (no live calls).",
     )

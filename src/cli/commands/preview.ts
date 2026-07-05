@@ -309,7 +309,7 @@ function formatHuman(result: PreviewResult): string {
 
 export function registerPreviewCommand(program: Command): Command {
   return program
-    .command("preview")
+    .command("preview", { hidden: true })
     .description(
       "Preview what a live oracle run would do (no provider calls). Reads slot list + budget from --slots and --budget files or stdin.",
     )

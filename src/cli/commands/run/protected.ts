@@ -65,7 +65,7 @@ export function registerProtectedRunCommand(
   deps: ProtectedRunCommandDeps = {},
 ): Command {
   const run = program
-    .command("run")
+    .command("run", { hidden: true })
     .description("Plan protected browser provider runs without submitting prompts.");
   addChatGptProRunFlags(run);
   addGeminiDeepThinkRunFlags(run);

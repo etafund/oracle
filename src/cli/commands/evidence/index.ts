@@ -109,7 +109,7 @@ export function registerEvidenceCommand(
   deps: EvidenceCommandOptions = {},
 ): Command {
   const evidenceCommand = program
-    .command("evidence")
+    .command("evidence", { hidden: true })
     .description("Inspect and verify redacted Oracle evidence artifacts.");
 
   evidenceCommand

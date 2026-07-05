@@ -99,7 +99,10 @@ describe("CLI performance traces", () => {
         { timeout: CLI_TIMEOUT },
       );
 
-      expect(stdout).toContain("Oracle CLI");
+      // "robot-docs" (formerly a stand-in for "did --help print anything sane")
+      // is now hidden from default --help per the agent-ergonomics surface pass;
+      // assert against the always-visible usage line instead.
+      expect(stdout).toContain("Usage: oracle");
       const trace = JSON.parse(await readFile(tracePath, "utf8")) as {
         totalMs: number;
         events: Array<{ name: string; ms: number }>;
