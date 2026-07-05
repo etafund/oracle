@@ -78,7 +78,7 @@ function renderHelpFooter(program: Command, colors: HelpColors): string {
     `${colors.bullet("•")} Spell out the project + platform + version requirements (repo name, target OS/toolchain versions, API dependencies) so Oracle doesn’t guess defaults.`,
     `${colors.bullet("•")} When comparing multiple repos/files, spell out each repo + path + role (e.g., “Project A SettingsView → apps/project-a/Sources/SettingsView.swift; Project B SettingsView → ../project-b/mac/...”) so the model knows exactly which file is which.`,
     `${colors.bullet("•")} Best results: 6–30 sentences plus key source files; very short prompts often yield generic answers.`,
-    `${colors.bullet("•")} Oracle is one-shot by default. Continue saved API or ChatGPT browser sessions with ${colors.accent("--followup <sessionId|responseId>")}; use repeated ${colors.accent("--browser-follow-up")} for planned same-run ChatGPT turns.`,
+    `${colors.bullet("•")} Oracle is one-shot by default. Continue saved API, ChatGPT browser, or Fable (Claude Code) sessions with ${colors.accent("--followup <sessionId|responseId>")}; use repeated ${colors.accent("--browser-follow-up")} for planned same-run ChatGPT turns.`,
     `${colors.bullet("•")} Run ${colors.accent("--files-report")} to inspect token spend before a browser/model run.`,
     `${colors.bullet("•")} Long runs can outlive the foreground CLI. If the CLI times out, do not re-run — reattach with ${colors.accent("oracle session <slug>")} to resume/inspect the existing run.`,
     `${colors.bullet("•")} Set a memorable 3–5 word slug via ${colors.accent('--slug "<words>"')} to keep session IDs tidy.`,

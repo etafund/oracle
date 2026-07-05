@@ -199,6 +199,23 @@ export interface ClaudeCodeSessionMetadata {
   model_usage_auxiliary_keys?: string[];
   model_verification_status: ClaudeCodeModelVerificationStatus;
   total_cost_usd_observed?: number | null;
+  /**
+   * Multi-turn resume primitive (claude-provider-map.md finding #2): the
+   * stable UUID this run used (or minted) for `--session-id`. Stored on
+   * EVERY claude-code run — including one-shot runs, which mint one but
+   * never pass it to `claude` — so a later `--followup <thisSessionId>`
+   * always has a value to resume from.
+   */
+  claude_session_id?: string;
+  /**
+   * caam shallow-spawn profile actually used for this run (caam-map.md
+   * §4), or absent when the run used the real, unprofiled `$HOME`. A
+   * `--followup` resume MUST use this exact same value (undefined counts
+   * as its own value, "no profile") or it is refused before it ever spawns
+   * — resuming under a different `$HOME` would attach to the wrong
+   * on-disk Claude Code identity.
+   */
+  caam_profile?: string;
   subscription_billing_uncertain: true;
   credit_billing_warning_emitted: boolean;
   read_only: ClaudeCodeReadOnlyPolicy;
@@ -363,6 +380,7 @@ export interface StoredRunOptions {
   lane?: string;
   claudeCode?: {
     executable?: string;
+    caamProfile?: string;
     model?: string;
     readOnly: true;
     inlineEvents: true;
@@ -374,7 +392,11 @@ export interface StoredRunOptions {
     disableSlashCommands: true;
     strictMcpConfig: true;
     noChrome: true;
-    noSessionPersistence: true;
+    /** See the matching field on `RunOracleOptions.claudeCode` (`oracle/types.ts`). */
+    noSessionPersistence: boolean;
+    /** See the matching field on `RunOracleOptions.claudeCode` (`oracle/types.ts`). */
+    resumeSessionId?: string;
+    waitForLockMs?: number;
     maxInlineBytes?: number;
   };
 }

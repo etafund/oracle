@@ -98,3 +98,83 @@ export async function resolveBrowserFollowupReference(
     },
   };
 }
+
+export interface ClaudeCodeFollowupResolution {
+  sessionId: string;
+  /** The stable UUID to pass to the real CLI as `--session-id` (claude-provider-map.md finding #2). */
+  resumeSessionId: string;
+  /** caam shallow-spawn profile the parent run actually used, if any (caam-map.md §4). */
+  caamProfile?: string;
+  model?: string;
+}
+
+/**
+ * Resolve a Claude Code (Fable lane) follow-up reference the same way
+ * `resolveBrowserFollowupReference` resolves a browser one: read the
+ * referenced session, confirm it is actually a `claude-code` session, and
+ * hand back what a resumed run needs. Returns `null` (never throws) when
+ * the referenced session plainly isn't a claude-code session — callers must
+ * then fall through to the existing OpenAI Responses API follow-up path,
+ * exactly as `resolveBrowserFollowupReference` does for non-browser
+ * sessions.
+ */
+export async function resolveClaudeCodeFollowupReference(
+  value: string,
+  store: FollowupSessionReader,
+): Promise<ClaudeCodeFollowupResolution | null> {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.startsWith("resp_")) {
+    return null;
+  }
+
+  const metadata = await store.readSession(trimmed);
+  if (!metadata) {
+    return null;
+  }
+  const mode = metadata.mode ?? metadata.options?.mode;
+  const hasClaudeCodeMetadata = Boolean(metadata.claudeCode);
+  if (mode !== "claude-code" && !hasClaudeCodeMetadata) {
+    return null;
+  }
+
+  const resumeSessionId = metadata.claudeCode?.claude_session_id?.trim();
+  if (!resumeSessionId) {
+    throw new Error(
+      `Session ${trimmed} is a Claude Code (Fable) session but has no resumable session id recorded (it may predate --followup support for this lane). Start a new session instead of using --followup.`,
+    );
+  }
+  const storedModel = metadata.options?.model ?? metadata.model;
+  return {
+    sessionId: metadata.id,
+    resumeSessionId,
+    caamProfile: metadata.claudeCode?.caam_profile ?? undefined,
+    model: typeof storedModel === "string" ? storedModel : undefined,
+  };
+}
+
+/**
+ * Fail-closed gate for caam-map.md's "same profile or refuse" requirement:
+ * a resumed Claude Code session must use the exact same caam shallow-spawn
+ * profile (hence the same `$HOME`) as its parent, or refuse before ever
+ * spawning. `undefined` is its own valid value here ("no profile" / the
+ * real, unprofiled `$HOME`) — it only matches another `undefined`, never a
+ * named profile.
+ */
+export function assertClaudeCodeFollowupProfileMatches({
+  parentSessionId,
+  parentProfile,
+  childProfile,
+}: {
+  parentSessionId: string;
+  parentProfile?: string;
+  childProfile?: string;
+}): void {
+  if ((parentProfile ?? undefined) === (childProfile ?? undefined)) {
+    return;
+  }
+  throw new Error(
+    `--followup ${parentSessionId} ran under caam profile ${JSON.stringify(parentProfile ?? null)}; resuming a Claude Code session must use the SAME caam profile (same $HOME), but this run resolved to ${JSON.stringify(
+      childProfile ?? null,
+    )}. Set ORACLE_CLAUDE_CODE_CAAM_PROFILE to match (or leave it unset to match "no profile") and retry.`,
+  );
+}

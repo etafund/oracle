@@ -3,6 +3,8 @@ import type { SessionMetadata } from "../../src/sessionStore.js";
 import {
   resolveBrowserFollowupReference,
   resolveBrowserResumeConversationUrl,
+  resolveClaudeCodeFollowupReference,
+  assertClaudeCodeFollowupProfileMatches,
 } from "../../src/cli/followup.js";
 
 const baseMetadata: SessionMetadata = {
@@ -172,5 +174,131 @@ describe("browser follow-up resolution", () => {
       };
       expect(resolveBrowserResumeConversationUrl(metadata)).toBeNull();
     }
+  });
+});
+
+describe("Claude Code (Fable lane) follow-up resolution — claude-provider-map.md finding #2", () => {
+  const claudeCodeMetadata = (
+    overrides: Partial<NonNullable<SessionMetadata["claudeCode"]>> = {},
+  ): SessionMetadata => ({
+    ...baseMetadata,
+    id: "fable-parent",
+    mode: "claude-code",
+    model: "fable",
+    claudeCode: {
+      schema_version: "claude_code_session.v1",
+      access_path: "claude_code_subscription_cli",
+      provider_family: "claude",
+      model_usage_keys: [],
+      model_verification_status: "requested_only",
+      subscription_billing_uncertain: true,
+      credit_billing_warning_emitted: false,
+      read_only: {
+        readOnly: true,
+        permissionMode: "plan",
+        toolMode: "none",
+        allowedTools: [],
+        blockedTools: ["*"],
+        mcpToolsBlocked: true,
+        slashCommandsDisabled: true,
+        safeMode: true,
+        chromeDisabled: true,
+        sessionPersistenceDisabled: true,
+      },
+      transcript_fidelity: "visible_cli_stream",
+      hidden_reasoning_captured: false,
+      visible_thinking_captured: "unknown",
+      claude_session_id: "5b1a2c3d-4e5f-6789-abcd-ef0123456789",
+      ...overrides,
+    },
+  });
+
+  test("resolves a resumable claude-code session to its stored --session-id and profile", async () => {
+    const metadata = claudeCodeMetadata({ caam_profile: "arthur" });
+    const store = { readSession: vi.fn(async () => metadata) };
+
+    await expect(resolveClaudeCodeFollowupReference("fable-parent", store)).resolves.toEqual({
+      sessionId: "fable-parent",
+      resumeSessionId: "5b1a2c3d-4e5f-6789-abcd-ef0123456789",
+      caamProfile: "arthur",
+      model: "fable",
+    });
+  });
+
+  test("resolves undefined caamProfile when the parent ran with no profile (direct claude)", async () => {
+    const metadata = claudeCodeMetadata();
+    const store = { readSession: vi.fn(async () => metadata) };
+
+    const resolved = await resolveClaudeCodeFollowupReference("fable-parent", store);
+    expect(resolved?.caamProfile).toBeUndefined();
+  });
+
+  test("leaves stored browser/API sessions on their existing follow-up path (returns null)", async () => {
+    const metadata: SessionMetadata = { ...baseMetadata, id: "api-slug", mode: "api" };
+    const store = { readSession: vi.fn(async () => metadata) };
+
+    await expect(resolveClaudeCodeFollowupReference("api-slug", store)).resolves.toBeNull();
+  });
+
+  test("returns null for a resp_-prefixed value or an unknown session id", async () => {
+    const store = { readSession: vi.fn(async () => null) };
+    await expect(resolveClaudeCodeFollowupReference("resp_abc123", store)).resolves.toBeNull();
+    await expect(resolveClaudeCodeFollowupReference("no-such-session", store)).resolves.toBeNull();
+  });
+
+  test("errors clearly on a claude-code session that predates resume support (no stored session id)", async () => {
+    const metadata = claudeCodeMetadata({ claude_session_id: undefined });
+    const store = { readSession: vi.fn(async () => metadata) };
+
+    await expect(resolveClaudeCodeFollowupReference("fable-parent", store)).rejects.toThrow(
+      /no resumable session id recorded/,
+    );
+  });
+
+  test("assertClaudeCodeFollowupProfileMatches: same profile (including both undefined) passes", () => {
+    expect(() =>
+      assertClaudeCodeFollowupProfileMatches({
+        parentSessionId: "fable-parent",
+        parentProfile: "arthur",
+        childProfile: "arthur",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertClaudeCodeFollowupProfileMatches({
+        parentSessionId: "fable-parent",
+        parentProfile: undefined,
+        childProfile: undefined,
+      }),
+    ).not.toThrow();
+  });
+
+  test("assertClaudeCodeFollowupProfileMatches: resuming across a different caam profile is refused", () => {
+    expect(() =>
+      assertClaudeCodeFollowupProfileMatches({
+        parentSessionId: "fable-parent",
+        parentProfile: "arthur",
+        childProfile: "bob",
+      }),
+    ).toThrow(/SAME caam profile/);
+  });
+
+  test("assertClaudeCodeFollowupProfileMatches: refuses when parent had no profile but child requests one", () => {
+    expect(() =>
+      assertClaudeCodeFollowupProfileMatches({
+        parentSessionId: "fable-parent",
+        parentProfile: undefined,
+        childProfile: "bob",
+      }),
+    ).toThrow(/SAME caam profile/);
+  });
+
+  test("assertClaudeCodeFollowupProfileMatches: refuses when parent had a profile but child requests none", () => {
+    expect(() =>
+      assertClaudeCodeFollowupProfileMatches({
+        parentSessionId: "fable-parent",
+        parentProfile: "arthur",
+        childProfile: undefined,
+      }),
+    ).toThrow(/SAME caam profile/);
   });
 });

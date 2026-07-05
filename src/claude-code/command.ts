@@ -10,6 +10,17 @@ export interface BuildClaudeCodeCommandOptions {
   model?: "fable" | "claude-fable-5" | string;
   effort?: ClaudeCodeEffort;
   systemPrompt?: string;
+  /**
+   * Multi-turn resume primitive (claude-provider-map.md finding #2). When
+   * set, oracle's own `--followup <sessionId>` surface attaches this run to
+   * a prior Claude Code conversation via the real CLI's own
+   * `--session-id <uuid>` flag INSTEAD of `--no-session-persistence` — this
+   * is the only sanctioned resume path. Raw `--resume`/`--continue`/
+   * `--fork-session` stay on `DANGEROUS_OR_OUT_OF_SCOPE_FLAGS` below and are
+   * never emitted, no matter what this option is set to. Must be a bare
+   * UUID (validated below) since it is embedded directly into argv.
+   */
+  resumeSessionId?: string;
 }
 
 export interface ClaudeCodeCommand {
@@ -28,6 +39,12 @@ const RAW_PASS_THROUGH_KEYS = new Set([
   "passThroughArgs",
   "shell",
 ]);
+
+// RFC 4122 UUID shape — `--session-id` is documented by the real `claude`
+// CLI as "must be a valid UUID"; validating it here (rather than trusting
+// whatever produced it) means a corrupted/tampered stored session id can
+// never smuggle an unexpected argv value through this builder.
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const DANGEROUS_OR_OUT_OF_SCOPE_FLAGS = new Set([
   "--bare",
@@ -60,6 +77,13 @@ export function buildClaudeCodeCommand(
   const model = options.model?.trim() || "fable";
   const effort = options.effort ?? "xhigh";
   const systemPrompt = options.systemPrompt ?? DEFAULT_CLAUDE_CODE_SYSTEM_PROMPT;
+  const resumeSessionId = options.resumeSessionId?.trim();
+  if (resumeSessionId && !UUID_PATTERN.test(resumeSessionId)) {
+    throw new ClaudeCodeCommandError(
+      "invalid_resume_session_id",
+      `Claude Code resume session id ${JSON.stringify(resumeSessionId)} is not a valid UUID.`,
+    );
+  }
 
   const args = [
     "-p",
@@ -84,7 +108,13 @@ export function buildClaudeCodeCommand(
     "--disallowedTools",
     "mcp__*",
     "--no-chrome",
-    "--no-session-persistence",
+    // One-shot runs (no resume requested) keep today's exact behavior: no
+    // persistence, nothing on disk to resume later. A resumed run instead
+    // attaches to the prior conversation via `--session-id <uuid>` and
+    // deliberately leaves persistence enabled so a further `--followup` can
+    // keep the chain going. `--resume`/`--continue`/`--fork-session` are
+    // never emitted here — see DANGEROUS_OR_OUT_OF_SCOPE_FLAGS.
+    ...(resumeSessionId ? ["--session-id", resumeSessionId] : ["--no-session-persistence"]),
     "--tools",
     "",
   ];

@@ -93,7 +93,12 @@ import {
   createPerfTrace,
   isTraceValueFlag,
 } from "../src/cli/perfTrace.js";
-import { resolveBrowserFollowupReference } from "../src/cli/followup.js";
+import {
+  resolveBrowserFollowupReference,
+  resolveClaudeCodeFollowupReference,
+  assertClaudeCodeFollowupProfileMatches,
+} from "../src/cli/followup.js";
+import { resolveClaudeCodeCaamProfile } from "../src/claude-code/caamCommand.js";
 import {
   launchDetachedSessionFinalizer,
   launchDetachedSessionRunner,
@@ -230,6 +235,8 @@ type ResolvedCliOptions = Omit<CliOptions, "model"> & {
   followupSessionId?: string;
   followupModel?: string;
   browserResumeConversationUrl?: string;
+  /** Claude Code (Fable lane) resume primitive resolved from `--followup` (claude-provider-map.md finding #2). */
+  claudeCodeResumeSessionId?: string;
 };
 
 interface RestartCommandOptions {
@@ -1550,7 +1557,13 @@ function buildRunOptions(
           disableSlashCommands: true,
           strictMcpConfig: true,
           noChrome: true,
-          noSessionPersistence: true,
+          // A resumed run (`--followup` resolved to a Claude Code session,
+          // claude-provider-map.md finding #2) keeps persistence on so the
+          // resumed conversation — and any further follow-up — has
+          // something to attach to; a one-shot run keeps today's exact
+          // `--no-session-persistence` behavior.
+          noSessionPersistence: !options.claudeCodeResumeSessionId,
+          resumeSessionId: options.claudeCodeResumeSessionId,
           waitForLockMs: options.waitForLock,
           executable: options.claudeCodeExecutable,
         }
@@ -1837,15 +1850,23 @@ function assertFollowupSupported({
   baseUrl?: string;
   azureEndpoint?: string;
 }): void {
-  if (engine !== "api") {
-    throw new Error("--followup requires --engine api.");
+  // Claude Code (Fable lane) follow-ups are handled entirely by
+  // `resolveClaudeCodeFollowupReference` before this function is ever
+  // reached (mirrors how a resolved browser follow-up short-circuits this
+  // check too) — this just needs to stop hard-refusing the engine so that
+  // path is reachable at all (claude-provider-map.md finding #2, gap a).
+  // The OpenAI-Responses-API-specific checks below stay scoped to
+  // `engine === "api"`; they say nothing about the claude-code lane's own
+  // resume mechanism.
+  if (engine !== "api" && engine !== "claude-code") {
+    throw new Error("--followup requires --engine api or --engine claude-code.");
   }
-  if (model.startsWith("gemini") || model.startsWith("claude")) {
+  if (engine === "api" && (model.startsWith("gemini") || model.startsWith("claude"))) {
     throw new Error(
       `--followup is only supported for OpenAI Responses API runs. Model ${model} uses a provider client without previous_response_id support.`,
     );
   }
-  if (baseUrl && !azureEndpoint) {
+  if (engine === "api" && baseUrl && !azureEndpoint) {
     throw new Error(
       "--followup is only supported for the default OpenAI Responses API or Azure OpenAI Responses. Custom --base-url providers are not supported.",
     );
@@ -2567,16 +2588,42 @@ async function runRootCommand(options: CliOptions): Promise<void> {
       resolvedOptions.followupSessionId = browserFollowup.sessionId;
       resolvedOptions.browserResumeConversationUrl = browserFollowup.resumeConversationUrl;
     } else {
-      assertFollowupSupported({
-        engine,
-        model: resolvedModel,
-        baseUrl: resolvedBaseUrl,
-        azureEndpoint: resolvedOptions.azure?.endpoint,
-      });
-      const followup = await resolveFollowupReference(options.followup, options.followupModel);
-      resolvedOptions.previousResponseId = followup.responseId;
-      resolvedOptions.followupSessionId = followup.sessionId;
-      resolvedOptions.followupModel = options.followupModel;
+      const claudeCodeFollowup = await resolveClaudeCodeFollowupReference(
+        options.followup,
+        sessionStore,
+      );
+      if (claudeCodeFollowup) {
+        // caam-map.md "same profile or refuse": compute the profile THIS
+        // run would actually use the exact same way `sessionRunner.ts` will
+        // (`resolveClaudeCodeCaamProfile`, config-key-then-env), and refuse
+        // before anything is spawned if it differs from what the parent
+        // session actually ran under — a resumed session must attach to
+        // the SAME `$HOME`/credential identity as its parent.
+        const childCaamProfile = resolveClaudeCodeCaamProfile(undefined, process.env);
+        assertClaudeCodeFollowupProfileMatches({
+          parentSessionId: claudeCodeFollowup.sessionId,
+          parentProfile: claudeCodeFollowup.caamProfile,
+          childProfile: childCaamProfile,
+        });
+        engine = "claude-code";
+        if (claudeCodeFollowup.model) {
+          resolvedOptions.model = claudeCodeFollowup.model as ModelName;
+          resolvedOptions.effectiveModelId = claudeCodeFollowup.model;
+        }
+        resolvedOptions.followupSessionId = claudeCodeFollowup.sessionId;
+        resolvedOptions.claudeCodeResumeSessionId = claudeCodeFollowup.resumeSessionId;
+      } else {
+        assertFollowupSupported({
+          engine,
+          model: resolvedModel,
+          baseUrl: resolvedBaseUrl,
+          azureEndpoint: resolvedOptions.azure?.endpoint,
+        });
+        const followup = await resolveFollowupReference(options.followup, options.followupModel);
+        resolvedOptions.previousResponseId = followup.responseId;
+        resolvedOptions.followupSessionId = followup.sessionId;
+        resolvedOptions.followupModel = options.followupModel;
+      }
     }
   }
   const activeModel = resolvedOptions.model;

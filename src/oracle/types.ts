@@ -266,7 +266,22 @@ export interface RunOracleOptions {
     disableSlashCommands: true;
     strictMcpConfig: true;
     noChrome: true;
-    noSessionPersistence: true;
+    /**
+     * `true` for a one-shot run (default — matches today's exact behavior:
+     * `--no-session-persistence`, nothing left to resume). Set to `false`
+     * only when `resumeSessionId` is populated for a `--followup` resume,
+     * so the underlying `claude` process is allowed to persist under that
+     * session id (claude-provider-map.md finding #2).
+     */
+    noSessionPersistence: boolean;
+    /**
+     * Multi-turn resume primitive: a stable per-oracle-session UUID passed
+     * to the real CLI as `--session-id <uuid>` instead of
+     * `--no-session-persistence`. Populated only by oracle's own
+     * `--followup <sessionId>` resolution (never a raw `--resume`/
+     * `--continue`/`--fork-session` passthrough).
+     */
+    resumeSessionId?: string;
     waitForLockMs?: number;
     maxInlineBytes?: number;
   };

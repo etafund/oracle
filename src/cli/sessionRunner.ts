@@ -147,6 +147,12 @@ export interface ClaudeCodeRunnerResult extends ClaudeCodeArtifactPayloads {
   anthropicApiKeyRefusalChecked?: boolean;
   childEnvScrubbed?: boolean;
   errorMessage?: string;
+  /** The `--session-id` UUID this run used or minted (claude-provider-map.md finding #2). */
+  claudeSessionId?: string;
+  /** caam shallow-spawn profile actually used this run, if any (caam-map.md §4). */
+  caamProfileUsed?: string;
+  /** `true` when this run kept `--no-session-persistence` (one-shot, default). */
+  sessionPersistenceDisabled?: boolean;
 }
 
 export type ClaudeCodeArtifactPaths = {
@@ -957,9 +963,21 @@ async function runLocalClaudeCodeSession(
     repoRoot: input.cwd,
     env: process.env,
   });
+  // Multi-turn resume primitive (claude-provider-map.md finding #2): set
+  // only when oracle's own `--followup <sessionId>` resolution populated
+  // it (bin/oracle-cli.ts) — never from a raw `--resume`/`--continue`
+  // passthrough, which stay blocked in `command.ts`. One-shot runs (the
+  // default) leave this undefined and keep today's exact
+  // `--no-session-persistence` behavior.
+  const resumeSessionId = input.runOptions.claudeCode?.resumeSessionId?.trim() || undefined;
+  // Stored on EVERY run (one-shot included) so a *later* `--followup`
+  // targeting this session always has a session id to resume from, even
+  // though a one-shot run never passes it to `claude` itself.
+  const claudeSessionId = resumeSessionId ?? randomUUID();
   const command = buildClaudeCodeCommand({
     executable: executable.path,
     model: input.model,
+    resumeSessionId,
   });
 
   // Opt-in `caam shallow-spawn` integration (caam-map.md §4). Activates ONLY
@@ -1188,6 +1206,9 @@ async function runLocalClaudeCodeSession(
       anthropicApiKeyRefusalChecked: true,
       childEnvScrubbed: true,
       errorMessage,
+      claudeSessionId,
+      caamProfileUsed: caam?.profile,
+      sessionPersistenceDisabled: !resumeSessionId,
       adapterMetadata: {
         command: {
           executable: spawnCommand.file,
@@ -1411,6 +1432,8 @@ function buildClaudeCodeSessionMetadata({
     model_usage_auxiliary_keys: result.modelUsageAuxiliaryKeys ?? [],
     model_verification_status: result.modelVerificationStatus ?? "requested_only",
     total_cost_usd_observed: result.totalCostUsdObserved ?? null,
+    claude_session_id: result.claudeSessionId,
+    caam_profile: result.caamProfileUsed,
     subscription_billing_uncertain: true,
     credit_billing_warning_emitted: result.creditBillingWarningEmitted ?? false,
     read_only: {
@@ -1423,7 +1446,7 @@ function buildClaudeCodeSessionMetadata({
       slashCommandsDisabled: true,
       safeMode: true,
       chromeDisabled: true,
-      sessionPersistenceDisabled: true,
+      sessionPersistenceDisabled: result.sessionPersistenceDisabled ?? true,
     },
     local_owner_verified: result.localOwnerVerified,
     anthropic_api_key_present: result.anthropicApiKeyPresent,
