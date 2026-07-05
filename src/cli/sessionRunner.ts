@@ -21,6 +21,7 @@ import {
   asOracleUserError,
   extractTextOutput,
   classifyProviderFailure,
+  BrowserAutomationError,
 } from "../oracle.js";
 import {
   ensureSessionArtifacts,
@@ -50,6 +51,7 @@ import { readFiles } from "../oracle/files.js";
 import { cwd as getCwd } from "node:process";
 import { resumeBrowserSession } from "../browser/reattach.js";
 import { hasRecoverableChatGptConversation } from "../browser/reattachability.js";
+import { resolveRecoveryUrl } from "../browser/recoverConversation.js";
 import { estimateTokenCount } from "../browser/utils.js";
 import type { BrowserLogger } from "../browser/types.js";
 import { formatElapsed } from "../oracle/format.js";
@@ -64,10 +66,7 @@ import {
   resolveClaudeCodeCaamProfile,
   validateCaamProfileName,
 } from "../claude-code/caamCommand.js";
-import {
-  resolveCaamExecutable,
-  type ResolvedCaamExecutable,
-} from "../claude-code/caamResolver.js";
+import { resolveCaamExecutable, type ResolvedCaamExecutable } from "../claude-code/caamResolver.js";
 import { runCaamShallowProfileDoctor } from "../claude-code/caamDoctor.js";
 import {
   ClaudeCodeStreamNormalizer,
@@ -322,6 +321,18 @@ export async function performSessionRun({
           status: "running",
           startedAt: new Date().toISOString(),
         });
+      }
+      if (
+        await recoverSubmittedBrowserSessionBeforeFreshRun({
+          sessionMeta,
+          browserConfig,
+          runOptions,
+          modelForStatus,
+          notificationSettings,
+          log,
+        })
+      ) {
+        return;
       }
       const runnerDeps = {
         ...browserDeps,
@@ -924,6 +935,167 @@ export async function performSessionRun({
       });
     }
     throw error;
+  }
+}
+
+function extractChatGptConversationId(url: string | null | undefined): string | undefined {
+  if (!url) {
+    return undefined;
+  }
+  const match = url.match(/\/c\/([^/?#]+)/);
+  return match?.[1];
+}
+
+function buildSubmittedRecoveryRuntime(
+  sessionMeta: SessionMetadata,
+): BrowserRuntimeMetadata | null {
+  const runtime = sessionMeta.browser?.runtime;
+  if (runtime?.promptSubmitted !== true) {
+    return null;
+  }
+  const recoveryUrl = resolveRecoveryUrl(sessionMeta);
+  if (!recoveryUrl) {
+    return runtime;
+  }
+  return {
+    ...runtime,
+    // A saved conversation URL is stronger recovery evidence than a stale CDP
+    // target id from a previous process. Re-resolve by URL/conversation first.
+    chromeTargetId: undefined,
+    tabUrl: recoveryUrl,
+    conversationId: extractChatGptConversationId(recoveryUrl) ?? runtime.conversationId,
+  };
+}
+
+async function recoverSubmittedBrowserSessionBeforeFreshRun({
+  sessionMeta,
+  browserConfig,
+  runOptions,
+  modelForStatus,
+  notificationSettings,
+  log,
+}: {
+  sessionMeta: SessionMetadata;
+  browserConfig: BrowserSessionConfig;
+  runOptions: RunOracleOptions;
+  modelForStatus?: string;
+  notificationSettings: NotificationSettings;
+  log: (message?: string) => void;
+}): Promise<boolean> {
+  const runtime = buildSubmittedRecoveryRuntime(sessionMeta);
+  if (!runtime) {
+    return false;
+  }
+
+  const nextAction = `oracle session ${sessionMeta.id} --render`;
+  const canAttemptRecovery =
+    hasRecoverableChatGptConversation(runtime) ||
+    Boolean(runtime.chromePort || runtime.chromeBrowserWSEndpoint || runtime.chromeProfileRoot);
+  if (!canAttemptRecovery) {
+    throw new BrowserAutomationError(
+      `Stored browser session ${sessionMeta.id} already submitted a prompt; refusing to start a fresh browser run. Reattach with \`${nextAction}\` or inspect with \`oracle session ${sessionMeta.id} --harvest\`.`,
+      {
+        stage: "submitted-session-recovery",
+        runtime,
+        retryable: false,
+        nextAction,
+      },
+    );
+  }
+
+  log(
+    dim(
+      `Stored browser session ${sessionMeta.id} already submitted a prompt; attempting reattach instead of submitting again.`,
+    ),
+  );
+  const logger: BrowserLogger = ((message?: string) => {
+    if (message) {
+      log(dim(message));
+    }
+  }) as BrowserLogger;
+  logger.verbose = true;
+
+  try {
+    const result = await resumeBrowserSession(runtime, browserConfig, logger, {
+      promptPreview: sessionMeta.promptPreview,
+    });
+    const answerText = result.answerMarkdown || result.answerText || "";
+    const outputTokens = estimateTokenCount(answerText);
+    const artifacts = await ensureSessionArtifacts({
+      sessionId: sessionMeta.id,
+      prompt: runOptions.prompt,
+      answerMarkdown: answerText,
+      conversationUrl: runtime.tabUrl,
+      browserConfig,
+      existingArtifacts: sessionMeta.artifacts,
+      logger,
+    });
+    const logWriter = sessionStore.createLogWriter(sessionMeta.id);
+    logWriter.logLine(
+      "[submitted-session-recovery] captured assistant response without resubmitting",
+    );
+    logWriter.logLine("Answer:");
+    logWriter.logLine(answerText);
+    logWriter.stream.end();
+    const usage = {
+      inputTokens: 0,
+      outputTokens,
+      reasoningTokens: 0,
+      totalTokens: outputTokens,
+    };
+    if (modelForStatus) {
+      await sessionStore.updateModelRun(sessionMeta.id, modelForStatus, {
+        status: "completed",
+        completedAt: new Date().toISOString(),
+        usage,
+      });
+    }
+    await sessionStore.updateSession(sessionMeta.id, {
+      status: "completed",
+      completedAt: new Date().toISOString(),
+      usage,
+      errorMessage: undefined,
+      browser: {
+        config: browserConfig,
+        runtime,
+        harvest: sessionMeta.browser?.harvest,
+        archive: sessionMeta.browser?.archive,
+        modelSelection: sessionMeta.browser?.modelSelection,
+        warnings: sessionMeta.browser?.warnings,
+      },
+      artifacts: mergeArtifacts(sessionMeta.artifacts, artifacts),
+      response: { status: "completed" },
+      error: undefined,
+      transport: undefined,
+    });
+    await writeAssistantOutput(runOptions.writeOutputPath, answerText, log);
+    await sendSessionNotification(
+      {
+        sessionId: sessionMeta.id,
+        sessionName: sessionMeta.options?.slug ?? sessionMeta.id,
+        mode: sessionMeta.mode ?? "browser",
+        model: sessionMeta.model ?? runOptions.model,
+        usage,
+        characters: answerText.length,
+      },
+      notificationSettings,
+      log,
+      answerText.slice(0, 140),
+    );
+    log(kleur.green("Submitted-session recovery succeeded; session marked completed."));
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new BrowserAutomationError(
+      `Stored browser session ${sessionMeta.id} already submitted a prompt; reattach failed (${message}). Refusing to start a fresh browser run. Next action: ${nextAction}`,
+      {
+        stage: "submitted-session-recovery",
+        runtime,
+        retryable: false,
+        nextAction,
+      },
+      error,
+    );
   }
 }
 
@@ -2028,19 +2200,16 @@ function writeClaudeCodeVisibleEvents(
 }
 
 function extractFinalTextFromEvents(events: ClaudeCodeNormalizedEvent[]): string {
-  const resultText = [...events]
-    .reverse()
-    .map((event) => event.json)
-    .find((json): json is { result: string } =>
-      Boolean(
-        json &&
-        typeof json === "object" &&
-        "result" in json &&
-        typeof (json as { result?: unknown }).result === "string",
-      ),
-    )?.result;
-  if (resultText) {
-    return resultText;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const json = events[index]?.json;
+    if (
+      json &&
+      typeof json === "object" &&
+      "result" in json &&
+      typeof (json as { result?: unknown }).result === "string"
+    ) {
+      return (json as { result: string }).result;
+    }
   }
   return events
     .filter((event) => event.stream === "stdout" && event.text)

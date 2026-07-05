@@ -2256,6 +2256,84 @@ describe("performSessionRun", () => {
     );
   });
 
+  test("recovers submitted browser sessions by saved conversation URL instead of resubmitting", async () => {
+    vi.mocked(resumeBrowserSession).mockResolvedValue({
+      answerText: "Recovered answer",
+      answerMarkdown: "## Recovered answer",
+    });
+    vi.mocked(ensureSessionArtifacts).mockResolvedValue([
+      { kind: "transcript", path: "/tmp/recovered-transcript.md" },
+    ]);
+    const submittedSessionMeta: SessionMetadata = {
+      ...baseSessionMeta,
+      status: "running",
+      mode: "browser",
+      model: "gpt-5.5-pro",
+      promptPreview: "Expensive submitted prompt",
+      browser: {
+        config: { manualLogin: true },
+        runtime: {
+          chromePort: 9222,
+          chromeHost: "127.0.0.1",
+          chromeTargetId: "stale-target-id",
+          tabUrl: "https://chatgpt.com/",
+          promptSubmitted: true,
+        },
+        harvest: {
+          targetId: "stale-target-id",
+          url: "https://chatgpt.com/c/saved-conversation",
+          conversationId: "saved-conversation",
+          state: "completed",
+        },
+      },
+    };
+
+    await performSessionRun({
+      sessionMeta: submittedSessionMeta,
+      runOptions: baseRunOptions,
+      mode: "browser",
+      browserConfig: { manualLogin: true },
+      cwd: "/tmp",
+      log,
+      write,
+      version: cliVersion,
+    });
+
+    expect(vi.mocked(runBrowserSessionExecution)).not.toHaveBeenCalled();
+    expect(vi.mocked(resumeBrowserSession)).toHaveBeenCalledTimes(1);
+    const recoveryRuntime = vi.mocked(resumeBrowserSession).mock.calls[0]?.[0];
+    expect(recoveryRuntime).toMatchObject({
+      chromePort: 9222,
+      chromeHost: "127.0.0.1",
+      tabUrl: "https://chatgpt.com/c/saved-conversation",
+      conversationId: "saved-conversation",
+      promptSubmitted: true,
+    });
+    expect(recoveryRuntime?.chromeTargetId).toBeUndefined();
+    expect(vi.mocked(ensureSessionArtifacts)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: submittedSessionMeta.id,
+        prompt: baseRunOptions.prompt,
+        answerMarkdown: "## Recovered answer",
+        conversationUrl: "https://chatgpt.com/c/saved-conversation",
+      }),
+    );
+    const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    expect(finalUpdate).toMatchObject({
+      status: "completed",
+      response: { status: "completed" },
+      browser: {
+        runtime: expect.objectContaining({
+          tabUrl: "https://chatgpt.com/c/saved-conversation",
+          promptSubmitted: true,
+        }),
+      },
+      artifacts: [{ kind: "transcript", path: "/tmp/recovered-transcript.md" }],
+    });
+    const logLines = log.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(logLines).toContain("attempting reattach instead of submitting again");
+  });
+
   test("writes browser answers to disk when writeOutputPath provided", async () => {
     vi.mocked(runBrowserSessionExecution).mockResolvedValue({
       usage: { inputTokens: 10, outputTokens: 5, reasoningTokens: 0, totalTokens: 15 },
@@ -3065,7 +3143,9 @@ describe("claude-code caam shallow-spawn integration (caam-map.md §4)", () => {
       //   caam shallow-spawn arthur --base <oracleHome>/claude-code-shallow-homes -- <claude> <inner argv...>
       // where the inner argv is byte-for-byte buildClaudeCodeCommand()'s
       // own output — untouched by the caam wrapper (caam-map.md §4a).
-      const shallowSpawnArgv = JSON.parse(fs.readFileSync(shallowSpawnArgvPath, "utf8")) as string[];
+      const shallowSpawnArgv = JSON.parse(
+        fs.readFileSync(shallowSpawnArgvPath, "utf8"),
+      ) as string[];
       const expectedInner = buildClaudeCodeCommand({ executable: claudePath, model: "fable" });
       expect(shallowSpawnArgv).toEqual([
         "shallow-spawn",

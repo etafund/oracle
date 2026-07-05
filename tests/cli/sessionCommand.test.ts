@@ -28,6 +28,12 @@ function createCommandWithOptions(options: StatusOptions): Command {
   if (options.browserTab !== undefined) {
     command.setOptionValueWithSource("browserTab", options.browserTab, "cli");
   }
+  if (options.artifacts !== undefined) {
+    command.setOptionValueWithSource("artifacts", options.artifacts, "cli");
+  }
+  if (options.json !== undefined) {
+    command.setOptionValueWithSource("json", options.json, "cli");
+  }
   return command;
 }
 
@@ -40,6 +46,7 @@ function createDeps() {
     usesDefaultStatusFilters: vi.fn(),
     deleteSessionsOlderThan: vi.fn(),
     getSessionPaths: vi.fn(),
+    buildSessionArtifactIndex: vi.fn(),
   };
 }
 
@@ -128,6 +135,106 @@ describe("handleSessionCommand", () => {
     await handleSessionCommand(undefined, command, createDeps());
 
     expect(errorSpy).toHaveBeenCalledWith("The --path flag requires a session ID.");
+    expect(process.exitCode).toBe(1);
+  });
+
+  test("prints a human artifact index when --artifacts is provided with an id", async () => {
+    const command = createCommandWithOptions({
+      hours: 24,
+      limit: 10,
+      all: false,
+      artifacts: true,
+    } as StatusOptions);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const deps = createDeps();
+    deps.getSessionPaths.mockResolvedValue({
+      dir: "/tmp/.oracle/sessions/abc",
+      metadata: "/tmp/.oracle/sessions/abc/meta.json",
+      request: "/tmp/.oracle/sessions/abc/request.json",
+      log: "/tmp/.oracle/sessions/abc/output.log",
+    });
+    deps.buildSessionArtifactIndex.mockResolvedValue({
+      schema_version: "session_artifact_index.v1",
+      sessionId: "abc",
+      sessionDir: "/tmp/.oracle/sessions/abc",
+      displaySessionDir: "sessions/abc",
+      metadataStatus: "loaded",
+      warnings: [],
+      entries: [
+        {
+          category: "transcript",
+          kind: "transcript",
+          label: "Transcript",
+          path: "/tmp/.oracle/sessions/abc/artifacts/transcript.md",
+          displayPath: "artifacts/transcript.md",
+          exists: true,
+          source: "metadata",
+          sizeBytes: 12,
+        },
+      ],
+    });
+
+    await handleSessionCommand("abc", command, deps);
+
+    expect(deps.getSessionPaths).toHaveBeenCalledWith("abc");
+    expect(deps.buildSessionArtifactIndex).toHaveBeenCalledWith({
+      sessionDir: "/tmp/.oracle/sessions/abc",
+      cwd: process.cwd(),
+    });
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining("artifacts/transcript.md [transcript/transcript] ok 12b"),
+    );
+    expect(deps.attachSession).not.toHaveBeenCalled();
+  });
+
+  test("prints artifact index JSON when --artifacts --json is provided", async () => {
+    const command = createCommandWithOptions({
+      hours: 24,
+      limit: 10,
+      all: false,
+      artifacts: true,
+      json: true,
+    } as StatusOptions);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const deps = createDeps();
+    deps.getSessionPaths.mockResolvedValue({
+      dir: "/tmp/.oracle/sessions/abc",
+      metadata: "/tmp/.oracle/sessions/abc/meta.json",
+      request: "/tmp/.oracle/sessions/abc/request.json",
+      log: "/tmp/.oracle/sessions/abc/output.log",
+    });
+    deps.buildSessionArtifactIndex.mockResolvedValue({
+      schema_version: "session_artifact_index.v1",
+      sessionId: "abc",
+      sessionDir: "/tmp/.oracle/sessions/abc",
+      displaySessionDir: "sessions/abc",
+      metadataStatus: "missing",
+      warnings: ["metadata missing"],
+      entries: [],
+    });
+
+    await handleSessionCommand("abc", command, deps);
+
+    const parsed = JSON.parse(String(logSpy.mock.calls[0]?.[0]));
+    expect(parsed).toMatchObject({
+      schema_version: "session_artifact_index.v1",
+      sessionId: "abc",
+      metadataStatus: "missing",
+    });
+  });
+
+  test("errors when --artifacts is provided without an id", async () => {
+    const command = createCommandWithOptions({
+      hours: 24,
+      limit: 10,
+      all: false,
+      artifacts: true,
+    } as StatusOptions);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await handleSessionCommand(undefined, command, createDeps());
+
+    expect(errorSpy).toHaveBeenCalledWith("The --artifacts flag requires a session ID.");
     expect(process.exitCode).toBe(1);
   });
 

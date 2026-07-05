@@ -36,6 +36,8 @@ import {
   type CapabilityLaneSummary,
   type CapabilityRunAction,
 } from "../oracle/capabilities/registry.js";
+import { REMOTE_FLEET_SLOTS_SCHEMA_VERSION } from "../remote/types.js";
+import { SESSION_ARTIFACT_INDEX_SCHEMA_VERSION } from "../sessionArtifacts.js";
 import { AGENT_LANE_POLICY_VERSION } from "./laneRegistry.js";
 import { ORACLE_EXIT_CODE_DICTIONARY } from "./exitCodes.js";
 
@@ -251,6 +253,19 @@ export const ROBOT_COMMANDS: readonly RobotCommandEntry[] = Object.freeze([
     touches_chrome: false,
   }),
   entry({
+    name: "session-artifacts",
+    command: "oracle session <sessionId> --artifacts --json",
+    purpose:
+      "List transcripts, reports, generated/downloaded files, diagnostics, perf traces, and Claude Code artifacts for a stored session.",
+    paid_calls: false,
+    dry_run: true,
+    required_env: ["ORACLE_HOME_DIR"],
+    output_schema_version: SESSION_ARTIFACT_INDEX_SCHEMA_VERSION,
+    recovery_fields: ROBOT_RECOVERY_FIELDS,
+    touches_network: false,
+    touches_chrome: false,
+  }),
+  entry({
     name: "remote-doctor",
     command: "oracle remote doctor --json",
     purpose: "Probe the configured remote Oracle endpoint (TCP + /health).",
@@ -258,6 +273,19 @@ export const ROBOT_COMMANDS: readonly RobotCommandEntry[] = Object.freeze([
     dry_run: false,
     required_env: ORACLE_REMOTE_ENVS,
     output_schema_version: REMOTE_BROWSER_ENDPOINT_SCHEMA_VERSION,
+    recovery_fields: ROBOT_RECOVERY_FIELDS,
+    touches_network: true,
+    touches_chrome: false,
+  }),
+  entry({
+    name: "remote-slots",
+    command: "oracle remote slots --json",
+    purpose:
+      "Show read-only per-lane remote browser slot state from GET /ready + GET /health; never posts /runs.",
+    paid_calls: false,
+    dry_run: true,
+    required_env: ORACLE_REMOTE_ENVS,
+    output_schema_version: REMOTE_FLEET_SLOTS_SCHEMA_VERSION,
     recovery_fields: ROBOT_RECOVERY_FIELDS,
     touches_network: true,
     touches_chrome: false,

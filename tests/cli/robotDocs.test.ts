@@ -39,7 +39,9 @@ const REQUIRED_COMMAND_NAMES = [
   "browser-leases-recover",
   "evidence-show",
   "evidence-verify",
+  "session-artifacts",
   "remote-doctor",
+  "remote-slots",
   "remote-status",
   "remote-attach",
 ] as const;

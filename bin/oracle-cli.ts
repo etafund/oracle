@@ -540,7 +540,7 @@ program
     new Option(
       "--lane <lane>",
       "Reviewed lane alias (fable-local, chatgpt-pro, gemini-deep-think).",
-    ),
+    ).choices(["chatgpt-pro", "fable-local", "gemini-deep-think"]),
   )
   .addOption(
     new Option(
@@ -687,10 +687,7 @@ program
     new Option("--route", "Print API provider route plan and exit.").default(false).hideHelp(),
   )
   .addOption(
-    new Option(
-      "--preflight",
-      "Check API provider readiness for the requested model(s) and exit.",
-    )
+    new Option("--preflight", "Check API provider readiness for the requested model(s) and exit.")
       .default(false)
       .hideHelp(),
   )
@@ -769,12 +766,8 @@ program
       "Azure OpenAI Endpoint (e.g. https://resource.openai.azure.com/).",
     ).hideHelp(),
   )
-  .addOption(
-    new Option("--azure-deployment <name>", "Azure OpenAI Deployment Name.").hideHelp(),
-  )
-  .addOption(
-    new Option("--azure-api-version <version>", "Azure OpenAI API Version.").hideHelp(),
-  )
+  .addOption(new Option("--azure-deployment <name>", "Azure OpenAI Deployment Name.").hideHelp())
+  .addOption(new Option("--azure-api-version <version>", "Azure OpenAI API Version.").hideHelp())
   .addOption(
     new Option("--browser", "(deprecated) Use --engine browser instead.").default(false).hideHelp(),
   )
@@ -1320,6 +1313,38 @@ remoteCommand
     await runRemoteAttach(commandOptions as Parameters<typeof runRemoteAttach>[0]);
   });
 
+remoteCommand
+  .command("slots")
+  .description("Show read-only per-lane remote browser slot state.")
+  .option("--json", "Emit a remote_fleet_slots.v1 JSON report.", false)
+  .option("--host <host:port>", "Probe one direct worker; repeatable.", collectTextValues, [])
+  .option("--hosts <list>", "Comma-separated lane inventory, e.g. acct1-9473=host:9473,...")
+  .option("--timeout <ms>", "Probe timeout per endpoint.", parseIntOption)
+  .option("--require-healthy", "Exit nonzero when no lane is healthy.", false)
+  .action(async function (this: Command) {
+    const commandOptions = this.optsWithGlobals();
+    const { runRemoteSlots } = await import("../src/cli/remote/slots.js");
+    await runRemoteSlots(commandOptions as Parameters<typeof runRemoteSlots>[0]);
+  });
+
+const configCommand = program
+  .command("config", { hidden: true })
+  .description("Inspect Oracle configuration.");
+
+configCommand
+  .command("explain")
+  .description("Print the effective Oracle config with source annotations and secret redaction.")
+  .option("--json", "Emit oracle_config_explain.v1 JSON.", false)
+  .option("--no-project", "Ignore project .oracle/config.json files.")
+  .action(async function (this: Command) {
+    const commandOptions = this.optsWithGlobals();
+    const { runConfigExplain } = await import("../src/cli/configExplain.js");
+    await runConfigExplain({
+      json: commandOptions.json === true,
+      includeProject: commandOptions.project !== false,
+    });
+  });
+
 bridgeCommand
   .command("codex-config")
   .description("Print a Codex CLI MCP server config snippet for oracle-mcp.")
@@ -1410,6 +1435,7 @@ program
   .option("--render-markdown", "Alias for --render.", false)
   .option("--model <name>", "Filter sessions/output for a specific model.", "")
   .option("--path", "Print the stored session paths instead of attaching.", false)
+  .option("--artifacts", "List artifacts associated with the stored session.", false)
   .option(
     "--harvest",
     "Re-read the bound browser tab and print/save the latest assistant output.",

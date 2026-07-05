@@ -312,7 +312,7 @@ function deepMerge(base: unknown, override: unknown): unknown {
   return result;
 }
 
-function sanitizeProjectConfig(config: UserConfig): UserConfig {
+export function sanitizeProjectConfig(config: UserConfig): UserConfig {
   const sanitized: UserConfig = {};
 
   if (config.engine !== undefined) sanitized.engine = config.engine;

@@ -3,11 +3,17 @@ import { listLaneTemplates, resolveLanePolicy } from "../../src/cli/lanePolicy.j
 
 describe("lane policy", () => {
   it("declares the three reviewed lane templates", () => {
-    expect(listLaneTemplates().map((entry) => entry.lane)).toEqual([
+    const templates = listLaneTemplates();
+
+    expect(templates.map((entry) => entry.lane)).toEqual([
       "chatgpt-pro",
       "gemini-deep-think",
       "fable-local",
     ]);
+    expect(templates.find((entry) => entry.lane === "fable-local")).toMatchObject({
+      readiness: "hidden-alpha-only",
+      enabledForCli: true,
+    });
   });
 
   it("resolves --lane fable-local to local Claude Code", () => {

@@ -202,3 +202,146 @@ export interface RemoteBrowserEndpointV1 {
   activeRun?: RemoteActiveRunInfo | null;
   error?: string;
 }
+
+export const REMOTE_FLEET_SLOTS_SCHEMA_VERSION = "remote_fleet_slots.v1" as const;
+
+export type RemoteFleetSlotStatus =
+  | "healthy"
+  | "busy"
+  | "disconnected"
+  | "completed-but-not-finalized"
+  | "wedged"
+  | "substrate-broken"
+  | "unreachable"
+  | "auth_failed"
+  | "missing_token"
+  | "not_configured"
+  | "legacy"
+  | "unknown";
+
+export type RemoteSlotInventorySource =
+  | "configured-remote"
+  | "explicit-hosts"
+  | "env-hosts"
+  | "none";
+
+export type RemoteSlotNextActionCode =
+  | "ready"
+  | "wait"
+  | "watch_abort"
+  | "wait_finalize"
+  | "drain_and_inspect"
+  | "start_chrome"
+  | "repair_chrome_owner"
+  | "manual_quarantine_clear"
+  | "fix_lease_registry"
+  | "check_service_network"
+  | "fix_token"
+  | "set_token"
+  | "upgrade_worker"
+  | "configure_lane_inventory"
+  | "inspect";
+
+export interface RemoteFleetSlotsV1 {
+  _schema: typeof REMOTE_FLEET_SLOTS_SCHEMA_VERSION;
+  generated_at: string;
+  no_plaintext_secrets: true;
+  inventory: {
+    source: RemoteSlotInventorySource;
+    complete: boolean;
+    configured_endpoint_id: string | null;
+    configured_host_hash: string | null;
+    notes: string[];
+  };
+  summary: {
+    total: number;
+    healthy: number;
+    busy: number;
+    disconnected: number;
+    completed_but_not_finalized: number;
+    wedged: number;
+    substrate_broken: number;
+    unreachable: number;
+    auth_failed: number;
+    missing_token: number;
+    not_configured: number;
+    legacy: number;
+    unknown: number;
+    read_only: true;
+  };
+  lanes: RemoteFleetSlotLaneV1[];
+  problems: RemoteFleetSlotsProblem[];
+}
+
+export interface RemoteFleetSlotsProblem {
+  code: string;
+  message: string;
+}
+
+export interface RemoteFleetSlotLaneV1 {
+  lane_id: string | null;
+  account_id: string | null;
+  endpoint_id: string;
+  host_hash: string | null;
+  port: number | null;
+  status: RemoteFleetSlotStatus;
+  readiness_state: RemoteRunReadinessState | null;
+  ok: boolean;
+  http_status: number | null;
+  version: string | null;
+  build: OracleBuildInfo | null;
+  observed_at: string;
+  reason: string | null;
+  probe: {
+    primary_endpoint: "/ready" | "/health" | "/status" | null;
+    fallback_endpoint: "/health" | "/status" | null;
+    read_only: true;
+    timed_out: boolean;
+    error: string | null;
+  };
+  run: {
+    run_id: string | null;
+    session_id: string | null;
+    session_id_hash: string | null;
+    session_id_redacted: boolean;
+    phase: RemoteActiveRunPhase | null;
+    age_seconds: number | null;
+    started_at: string | null;
+    client_connected: boolean | null;
+    completed_at: string | null;
+    completed_age_seconds: number | null;
+    prompt_chars: number | null;
+    desired_model: string | null;
+  };
+  progress: {
+    last_progress_age_seconds: number | null;
+    source: "ready.lastProgressAgeSeconds" | null;
+  };
+  lease: {
+    active_count: number | null;
+    registry_readable: boolean | null;
+    ttl_seconds: number | null;
+    ttl_source: string | null;
+  };
+  substrate: {
+    attach_only: boolean | null;
+    chrome_reachable: boolean | null;
+    chrome_owner_ok: boolean | null;
+    cleanup_tainted: boolean | null;
+    quarantined: boolean | null;
+    manifest_present: boolean | null;
+    manifest_match: boolean | null;
+    manifest_mismatches: string[];
+  };
+  compatibility: {
+    ready_supported: boolean;
+    health_supported: boolean;
+    status_supported: boolean | null;
+    rich_progress_available: boolean;
+    lease_ttl_available: boolean;
+  };
+  next_action: {
+    code: RemoteSlotNextActionCode;
+    message: string;
+  };
+}

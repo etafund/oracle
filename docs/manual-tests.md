@@ -82,8 +82,10 @@ Checks:
    `pnpm exec tsx bin/oracle-cli.ts doctor lanes --json`
    `pnpm exec tsx bin/oracle-cli.ts remote status --json`
    `pnpm exec tsx bin/oracle-cli.ts remote doctor --json`
+   `pnpm exec tsx bin/oracle-cli.ts remote slots --json`
    - The JSON must parse without an intro banner.
    - `remote doctor` should report `status:"healthy"` before live browser smokes.
+   - `remote slots` should report `_schema:"remote_fleet_slots.v1"` and must not POST to `/runs`; if probing the router without explicit lane inventory, expect `inventory.complete:false`.
 2. Router and upstream health:
    `curl -fsS http://127.0.0.1:9470/status`
    `curl -fsS http://box1.example:9473/status`

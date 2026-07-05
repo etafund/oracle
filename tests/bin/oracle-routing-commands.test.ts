@@ -80,6 +80,31 @@ describe("bin/oracle-cli preview and visibility routing", () => {
     });
   });
 
+  test("typoed --lane fails during option parsing before backend routing", async () => {
+    const { code, stdout, stderr } = await runOracleFailure([
+      "--lane",
+      "chatgpt-pr0",
+      "--prompt",
+      "Review this migration plan",
+      "--dry-run",
+      "json",
+    ]);
+    const output = `${stdout}\n${stderr}`;
+
+    expect(code).toBe(1);
+    expect(output).toContain("error: option '--lane <lane>' argument 'chatgpt-pr0' is invalid");
+    expect(output).toContain("Allowed choices are chatgpt-pro, fable-local, gemini-deep-think");
+    expect(output).not.toContain("missing_reviewed_lane");
+    expect(output).not.toContain("selector_state_unknown");
+  });
+
+  test("fable-local is CLI-visible even while its readiness remains hidden-alpha-only", async () => {
+    const { stdout, stderr } = await runOracle(["--help"]);
+    const output = `${stdout}\n${stderr}`;
+
+    expect(output).toContain("--lane fable-local");
+  });
+
   test.each([
     ["preview", ["preview", "--help"]],
     ["status", ["status", "--help"]],
@@ -152,4 +177,28 @@ async function runOracle(args: string[]): Promise<{ stdout: string; stderr: stri
     },
     timeout: 30_000,
   });
+}
+
+interface ExecFailure extends Error {
+  stdout?: string | Buffer;
+  stderr?: string | Buffer;
+  code?: number | string | null;
+}
+
+async function runOracleFailure(
+  args: string[],
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  try {
+    const { stdout, stderr } = await runOracle(args);
+    return { code: 0, stdout, stderr };
+  } catch (error) {
+    const failure = error as ExecFailure;
+    const parsedCode =
+      typeof failure.code === "number" ? failure.code : Number.parseInt(String(failure.code), 10);
+    return {
+      code: Number.isFinite(parsedCode) ? parsedCode : 1,
+      stdout: String(failure.stdout ?? ""),
+      stderr: String(failure.stderr ?? ""),
+    };
+  }
 }

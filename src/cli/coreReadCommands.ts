@@ -1,9 +1,9 @@
 // The CORE read-only commands an agent needs alongside the 3 reviewed
 // lanes — a narrower, hand-picked subset of the broader
 // `src/cli/robotRegistry.ts` (`ROBOT_COMMANDS`) registry, which also
-// carries non-core diagnostic surfaces (browser leases, evidence,
-// remote-*) that this Stage-1 self-doc pass intentionally does not
-// promote. Both `oracle capabilities --json` (`src/oracle/capabilities/
+// carries deeper diagnostic/control surfaces (browser lease acquire/release,
+// evidence verification, remote attach) that this compact self-doc pass
+// intentionally does not promote. Both `oracle capabilities --json` (`src/oracle/capabilities/
 // registry.ts`) and `oracle robot-docs` (`src/cli/robotRegistry.ts`)
 // import this single list so "the core read commands" can't drift
 // between the two agent self-doc surfaces.
@@ -57,6 +57,16 @@ export const CORE_READ_COMMANDS: readonly CoreReadCommand[] = Object.freeze([
     name: "session",
     command: "oracle session <sessionId>",
     purpose: "Attach to a running/completed session and stream its saved transcript.",
+  }),
+  coreReadCommand({
+    name: "session-artifacts",
+    command: "oracle session <sessionId> --artifacts --json",
+    purpose: "List a session's transcripts, reports, downloads, diagnostics, and raw artifacts.",
+  }),
+  coreReadCommand({
+    name: "remote-slots",
+    command: "oracle remote slots --json",
+    purpose: "Read-only remote slot state from /ready + /health; never posts /runs.",
   }),
   coreReadCommand({
     name: "status",

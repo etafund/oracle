@@ -13,6 +13,11 @@ import {
   type BrowserHarvestOptions,
   type BrowserLiveTailOptions,
 } from "./browserTabs.js";
+import {
+  buildSessionArtifactIndex,
+  type BuildSessionArtifactIndexOptions,
+  type SessionArtifactIndex,
+} from "../sessionArtifacts.js";
 import { sessionStore } from "../sessionStore.js";
 
 export interface StatusOptions extends OptionValues {
@@ -34,6 +39,8 @@ export interface StatusOptions extends OptionValues {
   browserTab?: string;
   browserTabRef?: string;
   browserTabs?: boolean;
+  artifacts?: boolean;
+  json?: boolean;
 }
 
 interface SessionCommandDependencies {
@@ -55,6 +62,9 @@ interface SessionCommandDependencies {
   getSessionPaths: (
     sessionId: string,
   ) => Promise<{ dir: string; metadata: string; log: string; request: string }>;
+  buildSessionArtifactIndex: (
+    options: BuildSessionArtifactIndexOptions,
+  ) => Promise<SessionArtifactIndex>;
 }
 
 const defaultDependencies: SessionCommandDependencies = {
@@ -65,6 +75,7 @@ const defaultDependencies: SessionCommandDependencies = {
   usesDefaultStatusFilters,
   deleteSessionsOlderThan: (options) => sessionStore.deleteOlderThan(options),
   getSessionPaths: (sessionId) => sessionStore.getPaths(sessionId),
+  buildSessionArtifactIndex,
 };
 
 const SESSION_OPTION_KEYS = new Set([
@@ -81,6 +92,7 @@ const SESSION_OPTION_KEYS = new Set([
   "live",
   "writeOutput",
   "browserTab",
+  "artifacts",
 ]);
 
 export async function handleSessionCommand(
@@ -112,6 +124,7 @@ export async function handleSessionCommand(
   const renderExplicit = renderSource === "cli" || renderMarkdownSource === "cli";
   const autoRender = !renderExplicit && process.stdout.isTTY;
   const pathRequested = Boolean(sessionOptions.path);
+  const artifactsRequested = Boolean(sessionOptions.artifacts);
   const clearRequested = Boolean(sessionOptions.clear || sessionOptions.clean);
   if (clearRequested) {
     if (sessionId) {
@@ -150,6 +163,29 @@ export async function handleSessionCommand(
       console.log(`${label("Metadata:")} ${value(paths.metadata)}`);
       console.log(`${label("Request:")} ${value(paths.request)}`);
       console.log(`${label("Log:")} ${value(paths.log)}`);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+    return;
+  }
+  if (artifactsRequested) {
+    if (!sessionId) {
+      console.error("The --artifacts flag requires a session ID.");
+      process.exitCode = 1;
+      return;
+    }
+    try {
+      const paths = await deps.getSessionPaths(sessionId);
+      const index = await deps.buildSessionArtifactIndex({
+        sessionDir: paths.dir,
+        cwd: process.cwd(),
+      });
+      if (sessionOptions.json || allOptions.json) {
+        console.log(JSON.stringify(index, null, 2));
+      } else {
+        console.log(formatSessionArtifactIndex(index));
+      }
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error));
       process.exitCode = 1;
@@ -225,6 +261,37 @@ export function formatSessionCleanupMessage(
   const remainingLabel = `${result.remaining} ${result.remaining === 1 ? "session" : "sessions"} remain`;
   const hint = 'Run "oracle session --clear --all" to delete everything.';
   return `Deleted ${deletedLabel} (${scope}). ${remainingLabel}.\n${hint}`;
+}
+
+export function formatSessionArtifactIndex(index: SessionArtifactIndex): string {
+  const lines: string[] = [];
+  lines.push(`🧿 oracle session artifacts ${index.sessionId}`);
+  lines.push(`session_dir: ${index.displaySessionDir}`);
+  lines.push(`metadata: ${index.metadataStatus}`);
+  if (index.warnings.length > 0) {
+    lines.push("");
+    lines.push("Warnings:");
+    for (const warning of index.warnings) {
+      lines.push(`  - ${warning}`);
+    }
+  }
+  lines.push("");
+  lines.push("Artifacts:");
+  if (index.entries.length === 0) {
+    lines.push("  (none)");
+  } else {
+    for (const entry of index.entries) {
+      const status = entry.exists ? "ok" : "missing";
+      const size = entry.sizeBytes === undefined ? "" : ` ${entry.sizeBytes}b`;
+      lines.push(`  - ${entry.displayPath} [${entry.category}/${entry.kind}] ${status}${size}`);
+      if (entry.warnings?.length) {
+        for (const warning of entry.warnings) {
+          lines.push(`      warning: ${warning}`);
+        }
+      }
+    }
+  }
+  return lines.join("\n");
 }
 
 function listIgnoredFlags(command: Command): string[] {
