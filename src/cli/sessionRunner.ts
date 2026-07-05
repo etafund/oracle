@@ -2052,8 +2052,9 @@ interface ClaudeCodeCaamActivation {
 }
 
 /**
- * caam-map.md §4: resolve `caam`, run its read-only `shallow-profile doctor`
- * pre-flight, and build the `caam shallow-spawn` outer command. Any failure
+ * caam-map.md §4: resolve `caam`, run its read-only pre-flight
+ * (`caam shallow-spawn <profile> --print-env`, see caamDoctor.ts), and build
+ * the `caam shallow-spawn` outer command. Any failure
  * along this path is caught and logged as a graceful-fallback warning —
  * per the opt-in + graceful-fallback contract, a caam misconfiguration must
  * never break the claude-code lane for callers who didn't ask for it;
@@ -2067,7 +2068,7 @@ async function tryActivateCaamShallowSpawn(
 ): Promise<ClaudeCodeCaamActivation | undefined> {
   try {
     // Validate the profile name up front — before it is passed as an argv
-    // value to `caam shallow-profile doctor` AND before it is embedded in
+    // value to the `caam shallow-spawn --print-env` pre-flight AND before it is embedded in
     // the per-profile lock filename below — so a malformed profile name
     // never reaches an external process or a `path.join`.
     const validatedProfile = validateCaamProfileName(profile);
