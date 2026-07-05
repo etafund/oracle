@@ -926,13 +926,208 @@ describe("waitForAssistantResponse", () => {
 
       const runtime = { evaluate } as unknown as ChromeClient["Runtime"];
       const promise = waitForAssistantResponse(runtime, 30_000, logger);
-      await vi.advanceTimersByTimeAsync(2_000);
+      // The compact candidate is confirmed by the watchdog before returning
+      // (short answers need ~8s of stability), so advance past that window.
+      await vi.advanceTimersByTimeAsync(20_000);
       const result = await promise;
       expect(result.text).toBe("Answer");
 
       const callsAtReturn = evaluate.mock.calls.length;
       await vi.advanceTimersByTimeAsync(5_000);
       expect(evaluate.mock.calls.length).toBe(callsAtReturn);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Regression (fetaos incident 2026-07-05): at the thinking→answer transition
+  // the stop button and finished-action controls can BOTH be hidden while a
+  // thinking indicator is still live. The post-race guard used to return the
+  // stale mid-thinking preamble untouched from that state; it must instead
+  // hand the candidate to the watchdog and return the real answer.
+  test("re-polls a mid-thinking capture when both completion signals are hidden", async () => {
+    vi.useFakeTimers();
+    try {
+      const teaser = {
+        text: "The emerging recommendation is to keep candidates as an audit trail, but move the real gate to read/influence: risk-tiered, embedded in packet review, and distinct for prose-shaping versus factual trust.",
+        messageId: "mid",
+        turnId: "tid",
+      };
+      const full = {
+        text: `${teaser.text} ${"The full architecture assessment then continues with the detailed candidate-gate analysis, alternative designs, failure modes, and the specific rollout recommendation the prompt demanded. ".repeat(3)}`,
+        messageId: "mid",
+        turnId: "tid",
+      };
+      let snapshotCalls = 0;
+      let thinkingCalls = 0;
+      const evaluate = vi
+        .fn()
+        .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
+          if (params?.awaitPromise) {
+            return { result: { type: "object", value: teaser } };
+          }
+          const expression = String(params?.expression ?? "");
+          if (expression.includes("extractAssistantTurn")) {
+            snapshotCalls += 1;
+            if (snapshotCalls === 1) {
+              await new Promise((resolve) => setTimeout(resolve, 50));
+            }
+            return { result: { value: snapshotCalls <= 6 ? teaser : full } };
+          }
+          if (expression.includes("isThinkingGateActive")) {
+            thinkingCalls += 1;
+            return { result: { value: thinkingCalls <= 3 } };
+          }
+          if (expression.includes("Find the LAST assistant turn")) {
+            return { result: { value: snapshotCalls > 6 } };
+          }
+          return { result: { value: false } };
+        });
+
+      const promise = waitForAssistantResponse(
+        { evaluate } as unknown as ChromeClient["Runtime"],
+        120_000,
+        logger,
+      );
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      await expect(promise).resolves.toMatchObject({ text: full.text.trim() });
+      expect(logger).toHaveBeenCalledWith(
+        "Thinking indicator still active after capture; re-polling for completion",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Regression (review finding): the recovery poll used to start with a fresh
+  // elapsed baseline, re-opening the bare compact fast path minutes into a
+  // run. A compact fragment surfacing only after a long silent thinking phase
+  // must NOT be accepted through the recovery door.
+  test("recovery path keeps the compact elapsed gate when evaluation yields nothing", async () => {
+    vi.useFakeTimers();
+    try {
+      const fragment = { text: "1) Verdict", messageId: null, turnId: null };
+      const startedAt = Date.now();
+      const evaluate = vi
+        .fn()
+        .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
+          if (params?.awaitPromise) {
+            // The in-page observer finds nothing extractable for 70s (silent
+            // thinking), then gives up without a payload.
+            await new Promise((resolve) => setTimeout(resolve, 70_000));
+            return { result: { value: null } };
+          }
+          const expression = String(params?.expression ?? "");
+          if (expression.includes("extractAssistantTurn")) {
+            // Nothing extractable until the fragment renders at ~70s.
+            return {
+              result: { value: Date.now() - startedAt >= 70_000 ? fragment : null },
+            };
+          }
+          return { result: { value: false } };
+        });
+
+      const promise = waitForAssistantResponse(
+        { evaluate } as unknown as ChromeClient["Runtime"],
+        100_000,
+        logger,
+      );
+      const outcome = promise.then(
+        (value) => ({ ok: true as const, value }),
+        (error) => ({ ok: false as const, error }),
+      );
+      await vi.advanceTimersByTimeAsync(110_000);
+
+      // Without the elapsed baseline, recovery would bare-accept the 10-char
+      // fragment ~8s after it appears. With it, the run must fail loud.
+      const settled = await outcome;
+      expect(settled.ok).toBe(false);
+      if (!settled.ok) {
+        expect(String(settled.error)).toMatch(/Unable to capture assistant response/);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("returns a calm-page short capture after the bounded confirmation budget", async () => {
+    vi.useFakeTimers();
+    try {
+      const teaser = {
+        text: "A short but stable answer that never grows and whose completion controls never render because the layout has no conversation-turn wrappers.",
+        messageId: "mid",
+        turnId: "tid",
+      };
+      const evaluate = vi
+        .fn()
+        .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
+          if (params?.awaitPromise) {
+            return { result: { type: "object", value: teaser } };
+          }
+          const expression = String(params?.expression ?? "");
+          if (expression.includes("extractAssistantTurn")) {
+            return { result: { value: teaser } };
+          }
+          return { result: { value: false } };
+        });
+
+      const promise = waitForAssistantResponse(
+        { evaluate } as unknown as ChromeClient["Runtime"],
+        1_200_000,
+        logger,
+      );
+      // The calm-page confirmation budget is capped at 90s; without the cap
+      // this would not resolve until the full 20-minute response timeout.
+      await vi.advanceTimersByTimeAsync(100_000);
+
+      await expect(promise).resolves.toMatchObject({ text: teaser.text });
+      expect(logger).toHaveBeenCalledWith(
+        "Short answer could not be re-confirmed by the watchdog; returning original capture",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("prefers a longer late snapshot when the calm-page budget elapses mid-stream", async () => {
+    vi.useFakeTimers();
+    try {
+      const teaser = {
+        text: "This preamble-sized capture stayed stable during the confirmation poll while the layout offered no completion controls at all.",
+        messageId: "mid",
+        turnId: "tid",
+      };
+      const full = {
+        text: `${teaser.text} ${"But the answer kept streaming after the budget elapsed, and the final read must prefer the longer text over the stale capture. ".repeat(4)}`,
+        messageId: "mid",
+        turnId: "tid",
+      };
+      const startedAt = Date.now();
+      const evaluate = vi
+        .fn()
+        .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
+          if (params?.awaitPromise) {
+            return { result: { type: "object", value: teaser } };
+          }
+          const expression = String(params?.expression ?? "");
+          if (expression.includes("extractAssistantTurn")) {
+            return { result: { value: Date.now() - startedAt < 90_000 ? teaser : full } };
+          }
+          return { result: { value: false } };
+        });
+
+      const promise = waitForAssistantResponse(
+        { evaluate } as unknown as ChromeClient["Runtime"],
+        1_200_000,
+        logger,
+      );
+      await vi.advanceTimersByTimeAsync(100_000);
+
+      await expect(promise).resolves.toMatchObject({ text: full.text.trim() });
+      expect(logger).toHaveBeenCalledWith(
+        "Watchdog budget elapsed; returning the longer late snapshot",
+      );
     } finally {
       vi.useRealTimers();
     }

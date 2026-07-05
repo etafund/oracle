@@ -19,6 +19,18 @@ import { buildClickDispatcher } from "./domEvents.js";
 const ASSISTANT_POLL_TIMEOUT_ERROR = "assistant-response-watchdog-timeout";
 const PREAMBLE_SIZED_ANSWER_CHARS = 500;
 const PREAMBLE_COMPLETION_STABLE_MS = 60_000;
+// Consecutive accepting samples (~3.2s at the 400ms poll cadence) required
+// before a non-compact answer is returned. At the thinking→answer transition
+// the finished-action controls can flicker visible for a single sample while
+// the thinking indicator is mid-teardown; one coincidental sample must never
+// be enough to archive a stale preamble as the final answer (fetaos incident
+// 2026-07-05: 203-char teaser accepted after a >60s Pro Extended pause).
+const NONCOMPACT_ACCEPT_CONFIRM_SAMPLES = 8;
+// After this much elapsed wait, a compact (<40 char) answer on bare
+// stop-button absence is almost always a paused thinking stream (e.g. the
+// literal section heading "1) Verdict"), not a real one-liner. Past this
+// point compact answers also need finished-action controls.
+const COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS = 60_000;
 const THINKING_STATUS_LABELS = [
   "thinking",
   "pro thinking",
@@ -77,6 +89,115 @@ function buildActiveThinkingStatusPredicateJs(fnName: string): string {
   };`;
 }
 
+// Substring keywords that mark a LIVE thinking/reasoning status for the
+// acceptance gate. Deliberately broader than THINKING_STATUS_LABELS (exact
+// placeholder matches): a keyword missed here silently converts a thinking
+// pause into a truncated capture, whereas a false positive only delays
+// acceptance until the indicator disappears. Includes the localized stems the
+// thinkingStatus.ts logging monitor already knew about — the acceptance gate
+// never got them, so a localized UI disabled the only truncation guard.
+const THINKING_GATE_KEYWORDS = [
+  "thinking",
+  "reasoning",
+  "finalizing",
+  "analyzing",
+  "researching",
+  "working on it",
+  "planning",
+  "searching",
+  "deliberating",
+  "thought for",
+  // localized stems (mirrors thinkingStatus.ts looksLikeThinking hints)
+  "myslen",
+  "mysl",
+  "rozumow",
+  "denkt nach",
+  "nachdenken",
+  "raisonn",
+  "pensando",
+  "razonando",
+];
+
+// Structural "still generating" markers that do not depend on label text.
+// ChatGPT applies result-streaming / data-is-streaming to the markdown block
+// while tokens render; loading-shimmer is the animated status chip. Any of
+// these visible means the turn is not final, whatever the label says.
+const THINKING_GATE_STRUCTURAL_SELECTORS = [
+  "span.loading-shimmer",
+  ".result-streaming",
+  '[data-is-streaming="true"]',
+];
+
+const THINKING_GATE_LABEL_SELECTORS = [
+  '[data-testid*="thinking"]',
+  '[data-testid*="reasoning"]',
+  '[role="status"]',
+  '[aria-live="polite"]',
+];
+
+/**
+ * Emit the single shared "is ChatGPT still generating?" DOM predicate used to
+ * GATE answer acceptance. Both the Node-side isThinkingActive() probe and the
+ * in-page observer embed this exact source, so the two acceptance loops can
+ * no longer drift apart (they had independently-maintained copies before).
+ */
+function buildThinkingGatePredicateJs(fnName: string): string {
+  const keywordsLiteral = JSON.stringify(THINKING_GATE_KEYWORDS);
+  const structuralLiteral = JSON.stringify(THINKING_GATE_STRUCTURAL_SELECTORS);
+  const labelSelectorsLiteral = JSON.stringify(THINKING_GATE_LABEL_SELECTORS);
+  return `const ${fnName} = () => {
+    const KEYWORDS = ${keywordsLiteral};
+    const STRUCTURAL_SELECTORS = ${structuralLiteral};
+    const LABEL_SELECTORS = ${labelSelectorsLiteral};
+    const normalize = (value) =>
+      String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+    const isVisible = (node) => {
+      if (!(node instanceof HTMLElement)) return false;
+      const rect = node.getBoundingClientRect();
+      if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+      const style = window.getComputedStyle(node);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+      if (style.opacity !== '' && Number(style.opacity) === 0) return false;
+      return true;
+    };
+    const isComposerAdjacent = (node) =>
+      Boolean(node.closest?.('[contenteditable="true"], textarea, [data-testid*="composer"], [id*="composer"]'));
+    const looksLikeThinking = (node) => {
+      const label = normalize([
+        node.textContent,
+        node.getAttribute?.('aria-label'),
+        node.getAttribute?.('title'),
+        node.getAttribute?.('data-testid'),
+      ].filter(Boolean).join(' '));
+      if (!label) return false;
+      return KEYWORDS.some((keyword) => label.includes(keyword));
+    };
+    // Structural markers are themselves proof of active generation; accept on
+    // visibility alone (they carry no meaningful text).
+    for (const selector of STRUCTURAL_SELECTORS) {
+      const nodes = Array.from(document.querySelectorAll(selector));
+      for (const node of nodes) {
+        if (!(node instanceof HTMLElement)) continue;
+        if (isVisible(node) && !isComposerAdjacent(node)) return true;
+      }
+    }
+    for (const selector of LABEL_SELECTORS) {
+      const nodes = Array.from(document.querySelectorAll(selector));
+      for (const node of nodes) {
+        if (!(node instanceof HTMLElement)) continue;
+        if (isVisible(node) && !isComposerAdjacent(node) && looksLikeThinking(node)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };`;
+}
+
+export function buildThinkingGatePredicateJsForTest(fnName: string): string {
+  return buildThinkingGatePredicateJs(fnName);
+}
+
 export function matchesThinkingStatusLabelForTest(text: string): boolean {
   return matchesThinkingStatusLabel(text.toLowerCase().replace(/\s+/g, " ").trim());
 }
@@ -109,6 +230,14 @@ type AssistantCompletionState = {
   completionStableTarget: number;
   stableMs: number;
   minStableMs: number;
+  /**
+   * Milliseconds since this wait began. A compact answer minutes into a run is
+   * almost always a paused thinking stream, not a real one-liner; past
+   * COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS compact answers require finished-action
+   * controls instead of bare stop-button absence. Optional so existing callers
+   * and tests keep the historical fast-path behavior (0 = no gating).
+   */
+  elapsedMs?: number;
 };
 
 function shouldAcceptStableAssistantSnapshot({
@@ -121,6 +250,7 @@ function shouldAcceptStableAssistantSnapshot({
   completionStableTarget,
   stableMs,
   minStableMs,
+  elapsedMs = 0,
 }: AssistantCompletionState): boolean {
   const ultraShortAnswer = currentLength === 1;
   const shortAnswer = currentLength > 0 && currentLength < 16;
@@ -166,7 +296,16 @@ function shouldAcceptStableAssistantSnapshot({
   // unreliable (the Pro thinking gate hides it mid-turn), so never treat it as
   // final without finished-action controls.
   if (compactAnswer) {
-    return !ultraShortAnswer && stableEnough;
+    if (ultraShortAnswer || !stableEnough) {
+      return false;
+    }
+    // A compact answer minutes into the wait is almost always a paused
+    // thinking stream ("1) Verdict"), not a real one-liner: past this point
+    // only finished-action controls (handled above) prove it final.
+    if (elapsedMs >= COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS) {
+      return false;
+    }
+    return true;
   }
   return false;
 }
@@ -263,6 +402,7 @@ export async function waitForAssistantResponse(
           logger,
           minTurnIndex,
           expectedConversationId,
+          Date.now() - start,
         );
         if (recovered) {
           return recovered;
@@ -290,6 +430,7 @@ export async function waitForAssistantResponse(
         logger,
         minTurnIndex,
         expectedConversationId,
+        Date.now() - start,
       );
       if (recovered) {
         return recovered;
@@ -325,36 +466,120 @@ export async function waitForAssistantResponse(
   const elapsedMs = Date.now() - start;
   const remainingMs = Math.max(0, timeoutMs - elapsedMs);
   if (remainingMs > 0) {
-    const [stopVisible, completionVisible] = await Promise.all([
+    const [stopVisible, completionVisible, thinkingActive] = await Promise.all([
       isStopButtonVisible(Runtime),
       isCompletionVisible(Runtime),
+      isThinkingActive(Runtime),
     ]);
     // Completion controls can appear briefly while Pro is still replacing its thinking UI.
     // Confirm every capture from that transition with the stability-based watchdog; a
     // partial first paragraph can be arbitrarily long.
     const candidateText = String(candidate?.text ?? "").trim();
     const ultraShortAnswer = candidateText.length === 1;
-    if (stopVisible || completionVisible || ultraShortAnswer) {
+    // At the thinking→answer transition there is a third state where BOTH the
+    // stop button and the finished-action controls are hidden. Returning the
+    // candidate untouched from that window is how a stale mid-thinking
+    // preamble becomes the archived answer, so preamble-sized candidates and
+    // live-thinking captures must also be confirmed by the watchdog.
+    const preambleSizedCandidate = candidateText.length < PREAMBLE_SIZED_ANSWER_CHARS;
+    if (stopVisible || completionVisible || thinkingActive || preambleSizedCandidate) {
       logger(
         stopVisible
           ? "Assistant still generating; waiting for completion"
-          : ultraShortAnswer
-            ? "Captured one-character assistant response; re-polling for completion"
-            : candidateText.length < MIN_TRUSTWORTHY_ANSWER_CHARS
-            ? "Captured suspiciously short answer at completion; re-polling for completion"
-            : "Completion controls surfaced; confirming stable assistant response",
+          : thinkingActive
+            ? "Thinking indicator still active after capture; re-polling for completion"
+            : ultraShortAnswer
+              ? "Captured one-character assistant response; re-polling for completion"
+              : candidateText.length < MIN_TRUSTWORTHY_ANSWER_CHARS
+                ? "Captured suspiciously short answer at completion; re-polling for completion"
+                : preambleSizedCandidate && !completionVisible
+                  ? "Captured preamble-sized answer without completion controls; re-polling for completion"
+                  : "Completion controls surfaced; confirming stable assistant response",
       );
+      // A calm page (no stop button, no completion controls, no thinking
+      // indicator) with a short candidate gets a bounded confirmation budget:
+      // some layouts (project view / markdown fallback) never render
+      // finished-action controls, and burning the entire response timeout
+      // there would stall legitimate short answers. Visible generation UI
+      // keeps the full budget because the page has told us it is not done.
+      const calmShortCandidate = !stopVisible && !completionVisible && !thinkingActive;
+      const confirmBudgetMs = calmShortCandidate ? Math.min(remainingMs, 90_000) : remainingMs;
       const completed = await pollAssistantCompletion(
         Runtime,
-        remainingMs,
+        confirmBudgetMs,
         minTurnIndex,
         expectedConversationId,
+        undefined,
+        elapsedMs,
       );
       if (completed && String(completed.text ?? "").trim().length >= candidateText.length) {
         return completed;
       }
-      await logDomFailure(Runtime, logger, "assistant-response-unconfirmed-completion");
-      throw new Error("Assistant response did not reach stable completion");
+      // Fail loud for the historical triggers: visible generation UI or a
+      // one-character fragment means the page never reached a trustworthy
+      // stable state. A silent teaser here is strictly worse than an error the
+      // caller can retry.
+      if (stopVisible || completionVisible || thinkingActive || ultraShortAnswer) {
+        await logDomFailure(Runtime, logger, "assistant-response-unconfirmed-completion");
+        throw new Error("Assistant response did not reach stable completion");
+      }
+      // Preamble-sized candidate on a calm page that the watchdog could not
+      // confirm within its budget. The initial calm classification is a single
+      // sample and can be wrong (indicator-teardown gap), so re-sample before
+      // trusting anything: if generation is visibly active again, spend the
+      // remaining real budget confirming and fail loud rather than archive a
+      // mid-stream partial.
+      const [stopNow, completionNow, thinkingNow] = await Promise.all([
+        isStopButtonVisible(Runtime),
+        isCompletionVisible(Runtime),
+        isThinkingActive(Runtime),
+      ]);
+      const lastResortRead = async () =>
+        normalizeAssistantSnapshot(
+          await readAssistantSnapshot(Runtime, minTurnIndex, expectedConversationId).catch(
+            () => null,
+          ),
+        );
+      const firstRead = await lastResortRead();
+      await delay(1500);
+      const secondRead = await lastResortRead();
+      const stillStreaming =
+        (firstRead?.text ?? "") !== (secondRead?.text ?? "") ||
+        stopNow ||
+        thinkingNow;
+      if (stillStreaming || completionNow) {
+        const remainingBudgetMs = Math.max(0, timeoutMs - (Date.now() - start));
+        if (stillStreaming && remainingBudgetMs > 0) {
+          logger("Calm classification was stale; generation resumed — extending confirmation");
+          const lateCompleted = await pollAssistantCompletion(
+            Runtime,
+            remainingBudgetMs,
+            minTurnIndex,
+            expectedConversationId,
+            undefined,
+            Date.now() - start,
+          );
+          if (
+            lateCompleted &&
+            String(lateCompleted.text ?? "").trim().length >= candidateText.length
+          ) {
+            return lateCompleted;
+          }
+          await logDomFailure(Runtime, logger, "assistant-response-unconfirmed-completion");
+          throw new Error("Assistant response did not reach stable completion");
+        }
+      }
+      // Genuinely calm and stable across both reads: prefer any strictly
+      // longer snapshot the page produced since capture, then keep the legacy
+      // behavior (return the capture) so genuinely short answers whose
+      // completion controls never render are not broken.
+      if (secondRead && secondRead.text.trim().length > candidateText.length) {
+        logger("Watchdog budget elapsed; returning the longer late snapshot");
+        return secondRead;
+      }
+      logger(
+        "Short answer could not be re-confirmed by the watchdog; returning original capture",
+      );
     }
   }
 
@@ -441,12 +666,21 @@ export function buildCompletionVisibleExpressionForTest(): string {
   return buildCompletionVisibleExpression();
 }
 
+export function buildResponseObserverExpressionForTest(
+  timeoutMs = 60_000,
+  minTurnIndex?: number,
+  expectedConversationId?: string,
+): string {
+  return buildResponseObserverExpression(timeoutMs, minTurnIndex, expectedConversationId);
+}
+
 async function recoverAssistantResponse(
   Runtime: ChromeClient["Runtime"],
   timeoutMs: number,
   logger: BrowserLogger,
   minTurnIndex?: number,
   expectedConversationId?: string,
+  elapsedBaselineMs = 0,
 ): Promise<{
   text: string;
   html?: string;
@@ -456,11 +690,16 @@ async function recoverAssistantResponse(
   if (recoveryTimeoutMs === 0) {
     return null;
   }
+  // Thread the true elapsed-since-wait-start baseline through: recovery often
+  // starts minutes into a run, and a zero baseline would re-open the bare
+  // compact fast path that COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS exists to close.
   const recovered = await pollAssistantCompletion(
     Runtime,
     recoveryTimeoutMs,
     minTurnIndex,
     expectedConversationId,
+    undefined,
+    elapsedBaselineMs,
   );
   if (recovered) {
     logger("Recovered assistant response via polling fallback");
@@ -573,13 +812,59 @@ async function refreshAssistantSnapshot(
   const currentLength = cleanAssistantText(current.text).trim().length;
   const latestLength = best.text.length;
   const hasBetterId = !current.meta?.messageId && Boolean(best.meta.messageId);
-  const isLonger = latestLength > currentLength;
   const hasDifferentText = best.text.trim() !== current.text.trim();
-  if (isLonger || hasBetterId || hasDifferentText) {
-    logger("Refreshed assistant response via latest snapshot");
-    return best;
+  if (!shouldReplaceAssistantSnapshot({ currentLength, latestLength, hasBetterId, hasDifferentText })) {
+    // The re-read may still carry the message/turn ids the candidate lacks
+    // (e.g. the candidate came from the markdown fallback): keep the longer
+    // candidate text but adopt the ids so exact-turn copy targeting works.
+    if (hasBetterId) {
+      logger("Adopted message ids from latest snapshot without replacing text");
+      return {
+        ...current,
+        meta: {
+          ...current.meta,
+          messageId: best.meta.messageId,
+          turnId: current.meta?.turnId ?? best.meta.turnId,
+        },
+      };
+    }
+    return null;
   }
-  return null;
+  logger("Refreshed assistant response via latest snapshot");
+  return best;
+}
+
+/**
+ * Decide whether a re-read snapshot may replace the already-parsed candidate.
+ * A turn re-render, virtualization, or an extractor pivot to a fallback node
+ * can produce a snapshot with strictly SHORTER text than the candidate;
+ * replacing on "different text" alone shrank good captures to a one-line
+ * teaser right before the unguarded return. Never trade text away.
+ */
+function shouldReplaceAssistantSnapshot({
+  currentLength,
+  latestLength,
+  hasBetterId,
+  hasDifferentText,
+}: {
+  currentLength: number;
+  latestLength: number;
+  hasBetterId: boolean;
+  hasDifferentText: boolean;
+}): boolean {
+  if (latestLength < currentLength) {
+    return false;
+  }
+  return latestLength > currentLength || hasBetterId || hasDifferentText;
+}
+
+export function shouldReplaceAssistantSnapshotForTest(state: {
+  currentLength: number;
+  latestLength: number;
+  hasBetterId: boolean;
+  hasDifferentText: boolean;
+}): boolean {
+  return shouldReplaceAssistantSnapshot(state);
 }
 
 async function terminateRuntimeExecution(Runtime: ChromeClient["Runtime"]): Promise<void> {
@@ -599,15 +884,25 @@ async function pollAssistantCompletion(
   minTurnIndex?: number,
   expectedConversationId?: string,
   abortSignal?: AbortSignal,
+  elapsedBaselineMs = 0,
 ): Promise<{
   text: string;
   html?: string;
   meta: { turnId?: string | null; messageId?: string | null };
 } | null> {
-  const watchdogDeadline = Date.now() + timeoutMs;
+  const pollStartedAt = Date.now();
+  const watchdogDeadline = pollStartedAt + timeoutMs;
   let previousLength = 0;
   let stableCycles = 0;
   let lastChangeAt = Date.now();
+  // Consecutive samples for which the acceptance predicate held. A single
+  // 400ms sample can coincide with a finished-action flicker during a
+  // thinking pause; non-compact answers must hold acceptance across
+  // NONCOMPACT_ACCEPT_CONFIRM_SAMPLES samples (~3.2s) so the real answer
+  // streaming in right after the transition resets the decision.
+  let acceptStreak = 0;
+  // Sticky: a thinking indicator observed at any point during this poll.
+  let sawThinking = false;
   while (Date.now() < watchdogDeadline) {
     // Check abort signal to stop polling when another path won the race
     if (abortSignal?.aborted) {
@@ -632,6 +927,17 @@ async function pollAssistantCompletion(
       if (isGeneratedImageAssistantAnswer(normalized)) {
         return normalized;
       }
+      if (thinkingActive) {
+        // A live thinking indicator IS activity: the answer is not final and
+        // the current text is mid-stream. Without this reset, a >60s thinking
+        // pause pre-satisfies every idle window and acceptance collapses to a
+        // one-sample race at the thinking→answer transition (the 42-token
+        // teaser incident).
+        sawThinking = true;
+        stableCycles = 0;
+        lastChangeAt = Date.now();
+        acceptStreak = 0;
+      }
       const shortAnswer = currentLength > 0 && currentLength < 16;
       const mediumAnswer = currentLength >= 16 && currentLength < 40;
       const longAnswer = currentLength >= 40 && currentLength < 500;
@@ -642,24 +948,38 @@ async function pollAssistantCompletion(
       const requiredStableCycles = shortAnswer ? 12 : mediumAnswer ? 8 : longAnswer ? 8 : 10;
       const stableMs = Date.now() - lastChangeAt;
       const minStableMs = shortAnswer ? 8000 : mediumAnswer ? 1200 : longAnswer ? 2000 : 3000;
-      if (
-        shouldAcceptStableAssistantSnapshot({
-          stopVisible,
-          completionVisible,
-          thinkingActive,
-          currentLength,
-          stableCycles,
-          requiredStableCycles,
-          completionStableTarget,
-          stableMs,
-          minStableMs,
-        })
-      ) {
-        return normalized;
+      const elapsedMs = elapsedBaselineMs + (Date.now() - pollStartedAt);
+      const accepted = shouldAcceptStableAssistantSnapshot({
+        stopVisible,
+        completionVisible,
+        thinkingActive,
+        currentLength,
+        stableCycles,
+        requiredStableCycles,
+        completionStableTarget,
+        stableMs,
+        minStableMs,
+        elapsedMs,
+      });
+      if (accepted) {
+        acceptStreak += 1;
+        const compactAnswer = currentLength > 0 && currentLength < 40;
+        // The multi-sample confirmation guards against finished-controls
+        // flickers during thinking pauses. Only waits in thinking territory
+        // (indicator seen, or long-elapsed — covering detection misses) pay
+        // the extra ~3.2s; ordinary fast captures return on first acceptance.
+        const requireStreak =
+          sawThinking || elapsedMs >= COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS;
+        if (compactAnswer || !requireStreak || acceptStreak >= NONCOMPACT_ACCEPT_CONFIRM_SAMPLES) {
+          return normalized;
+        }
+      } else {
+        acceptStreak = 0;
       }
     } else {
       previousLength = 0;
       stableCycles = 0;
+      acceptStreak = 0;
     }
     await delay(400);
   }
@@ -685,63 +1005,16 @@ async function isStopButtonVisible(Runtime: ChromeClient["Runtime"]): Promise<bo
  * preamble may already be on screen. Relying on stop-button absence alone then
  * accepts the preamble as the final answer (truncation). A visible thinking /
  * reasoning indicator is an authoritative "still generating" signal, so callers
- * keep waiting while it is present. Mirrors the visibility-scoped detection in
- * thinkingStatus.ts but is intentionally lightweight for the hot poll loop.
+ * keep waiting while it is present. Evaluates the SAME shared gate predicate
+ * the in-page observer embeds (buildThinkingGatePredicateJs) so the two
+ * acceptance loops cannot drift apart again.
  */
 async function isThinkingActive(Runtime: ChromeClient["Runtime"]): Promise<boolean> {
   try {
     const { result } = await Runtime.evaluate({
       expression: `(() => {
-        const selectors = [
-          'span.loading-shimmer',
-          '[data-testid*="thinking"]',
-          '[data-testid*="reasoning"]',
-          '[role="status"]',
-          '[aria-live="polite"]',
-        ];
-        const normalize = (value) =>
-          String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
-        const isVisible = (node) => {
-          if (!(node instanceof HTMLElement)) return false;
-          const rect = node.getBoundingClientRect();
-          if (!rect || rect.width <= 0 || rect.height <= 0) return false;
-          const style = window.getComputedStyle(node);
-          if (style.display === 'none' || style.visibility === 'hidden') return false;
-          if (style.opacity !== '' && Number(style.opacity) === 0) return false;
-          return true;
-        };
-        const looksLikeThinking = (node) => {
-          const label = normalize([
-            node.textContent,
-            node.getAttribute?.('aria-label'),
-            node.getAttribute?.('data-testid'),
-          ].filter(Boolean).join(' '));
-          return (
-            label.includes('thinking') ||
-            label.includes('reasoning') ||
-            label.includes('finalizing answer') ||
-            label.includes('working on it')
-          );
-        };
-        const isComposerAdjacent = (node) =>
-          Boolean(node.closest?.('[contenteditable="true"], textarea, [data-testid*="composer"], [id*="composer"]'));
-        for (const selector of selectors) {
-          const nodes = Array.from(document.querySelectorAll(selector));
-          for (const node of nodes) {
-            if (!(node instanceof HTMLElement)) continue;
-            // loading-shimmer is itself an active-generation marker (it has no
-            // text), so accept it on visibility alone; other nodes must read as
-            // a thinking/reasoning status and not belong to the composer.
-            if (selector === 'span.loading-shimmer') {
-              if (isVisible(node) && !isComposerAdjacent(node)) return true;
-              continue;
-            }
-            if (isVisible(node) && !isComposerAdjacent(node) && looksLikeThinking(node)) {
-              return true;
-            }
-          }
-        }
-        return false;
+        ${buildThinkingGatePredicateJs("isThinkingGateActive")}
+        return isThinkingGateActive();
       })()`,
       returnByValue: true,
     });
@@ -911,6 +1184,14 @@ function buildResponseObserverExpression(
     const FINISHED_SELECTOR = '${FINISHED_ACTIONS_SELECTOR}';
     const PREAMBLE_SIZED_ANSWER_CHARS = ${PREAMBLE_SIZED_ANSWER_CHARS};
     const PREAMBLE_COMPLETION_STABLE_MS = ${PREAMBLE_COMPLETION_STABLE_MS};
+    const NONCOMPACT_ACCEPT_CONFIRM_SAMPLES = ${NONCOMPACT_ACCEPT_CONFIRM_SAMPLES};
+    const COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS = ${COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS};
+    // Anchor for every elapsed-time gate in this expression. waitForSettle can
+    // start minutes into the wait (captureViaObserver resolves only when the
+    // FIRST extractable text appears — for thinking models that is when the
+    // answer body starts streaming), so measuring elapsed from settle entry
+    // would reset the compact grace window exactly when the incident occurs.
+    const waitStartedAt = Date.now();
     const CONVERSATION_SELECTOR = ${conversationLiteral};
     const ASSISTANT_SELECTOR = ${assistantLiteral};
     const EXPECTED_CONVERSATION_ID = ${expectedConversationLiteral};
@@ -1078,53 +1359,9 @@ function buildResponseObserverExpression(
     // authoritative "still generating" signal: during a Pro thinking pause the
     // stop button disappears while a short streamed preamble is visible, so
     // breaking on bare stop-button absence would capture that preamble as the
-    // final answer. While this returns true we must keep waiting.
-    const isThinkingIndicatorActive = () => {
-      const indicatorSelectors = [
-        'span.loading-shimmer',
-        '[data-testid*="thinking"]',
-        '[data-testid*="reasoning"]',
-        '[role="status"]',
-        '[aria-live="polite"]',
-      ];
-      const norm = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
-      const visible = (node) => {
-        if (!(node instanceof HTMLElement)) return false;
-        const rect = node.getBoundingClientRect();
-        if (!rect || rect.width <= 0 || rect.height <= 0) return false;
-        const style = window.getComputedStyle(node);
-        if (style.display === 'none' || style.visibility === 'hidden') return false;
-        if (style.opacity !== '' && Number(style.opacity) === 0) return false;
-        return true;
-      };
-      const composerAdjacent = (node) =>
-        Boolean(node.closest && node.closest('[contenteditable="true"], textarea, [data-testid*="composer"], [id*="composer"]'));
-      const thinkingLabel = (node) => {
-        const label = norm([
-          node.textContent,
-          node.getAttribute && node.getAttribute('aria-label'),
-          node.getAttribute && node.getAttribute('data-testid'),
-        ].filter(Boolean).join(' '));
-        return (
-          label.includes('thinking') ||
-          label.includes('reasoning') ||
-          label.includes('finalizing answer') ||
-          label.includes('working on it')
-        );
-      };
-      for (const selector of indicatorSelectors) {
-        const nodes = Array.from(document.querySelectorAll(selector));
-        for (const node of nodes) {
-          if (!(node instanceof HTMLElement)) continue;
-          if (selector === 'span.loading-shimmer') {
-            if (visible(node) && !composerAdjacent(node)) return true;
-            continue;
-          }
-          if (visible(node) && !composerAdjacent(node) && thinkingLabel(node)) return true;
-        }
-      }
-      return false;
-    };
+    // final answer. While this returns true we must keep waiting. This is the
+    // SAME shared gate predicate the Node-side isThinkingActive() evaluates.
+    ${buildThinkingGatePredicateJs("isThinkingIndicatorActive")}
 
     const waitForSettle = async (snapshot) => {
       if (String(snapshot?.html ?? '').includes('/backend-api/estuary/content?id=file_')) {
@@ -1154,9 +1391,18 @@ function buildResponseObserverExpression(
       let lastLength = snapshot?.text?.length ?? 0;
       let stableCycles = 0;
       let lastChangeAt = Date.now();
-      const overallDeadline = Date.now() + ${timeoutMs};
+      // Overall budget is anchored at expression start, NOT settle entry:
+      // waitForSettle can begin minutes into the wait, and re-anchoring here
+      // would let the loop overshoot the caller's timeout contract by up to 2x.
+      const overallDeadline = waitStartedAt + ${timeoutMs};
       let deadline = Math.min(overallDeadline, Date.now() + settleWindowForLength(lastLength));
       let completionAccepted = false;
+      // Consecutive qualifying samples before a non-compact answer is trusted:
+      // finished-action controls can flicker visible for a single sample at the
+      // thinking→answer transition while the thinking indicator is mid-teardown.
+      let acceptStreak = 0;
+      // Sticky: a thinking indicator observed at any point in this settle wait.
+      let sawThinking = false;
       while (Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, settleIntervalMs));
         const refreshedRaw = extractFromTurns();
@@ -1203,29 +1449,72 @@ function buildResponseObserverExpression(
         const idleMs = Date.now() - lastChangeAt;
 
         // Never accept while a Pro thinking / reasoning indicator is active.
+        // A live indicator IS activity: reset the idle clock (otherwise a
+        // >60s thinking pause pre-satisfies every idle window and acceptance
+        // collapses to a one-sample race at the thinking→answer transition)
+        // and keep the settle window alive so the loop cannot lapse into the
+        // post-loop fallbacks mid-thinking.
         if (thinkingActive) {
+          sawThinking = true;
+          stableCycles = 0;
+          lastChangeAt = Date.now();
+          acceptStreak = 0;
+          deadline = Math.min(
+            overallDeadline,
+            Math.max(deadline, Date.now() + settleWindowForLength(lastLength)),
+          );
           continue;
         }
+        // Acceptance must hold across consecutive samples when this wait is in
+        // thinking territory (indicator seen, or the wait already outlasted the
+        // compact grace window — which covers indicator-detection misses): a
+        // one-sample finished-controls flicker at the thinking→answer
+        // transition must never archive a stale fragment. Ordinary fast
+        // captures keep their single-sample latency.
+        const confirmSamples =
+          sawThinking || Date.now() - waitStartedAt >= COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS
+            ? NONCOMPACT_ACCEPT_CONFIRM_SAMPLES
+            : 1;
         // Finished-action controls can appear on Pro preambles before the final
         // answer expands. Compact exact answers keep their fast path; preamble-
         // sized answers need a long idle window before controls are trusted.
         if (finishedVisible) {
           if (compactAnswer) {
-            completionAccepted = true;
-            break;
+            acceptStreak += 1;
+            if (acceptStreak >= Math.min(confirmSamples, 3)) {
+              completionAccepted = true;
+              break;
+            }
+          } else if (
+            !stopVisible &&
+            (!preambleSizedAnswer || idleMs >= PREAMBLE_COMPLETION_STABLE_MS)
+          ) {
+            acceptStreak += 1;
+            if (acceptStreak >= confirmSamples) {
+              completionAccepted = true;
+              break;
+            }
+          } else {
+            acceptStreak = 0;
           }
-          if (!stopVisible && (!preambleSizedAnswer || idleMs >= PREAMBLE_COMPLETION_STABLE_MS)) {
-            completionAccepted = true;
-            break;
-          }
-          deadline = Math.max(deadline, Math.min(overallDeadline, Date.now() + settleIntervalMs));
+          deadline = Math.max(deadline, Math.min(overallDeadline, Date.now() + settleIntervalMs * 2));
           continue;
         }
+        acceptStreak = 0;
         if (!stopVisible && stableCycles >= stableTarget) {
           // Compact answers may never render a copy button promptly; accept them
-          // on stop-button absence + stability. Substantial answers must instead
+          // on stop-button absence + stability — but only early in the wait. A
+          // compact fragment after COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS (measured
+          // from the START of the whole wait, not settle entry) is a paused
+          // thinking stream ("1) Verdict"), so keep waiting for the
+          // finished-action controls instead. Substantial answers must always
           // wait for finished controls to avoid capturing a mid-stream preamble.
-          if (compactAnswer && !size.ultraShortAnswer) {
+          if (
+            compactAnswer &&
+            !size.ultraShortAnswer &&
+            !sawThinking &&
+            Date.now() - waitStartedAt < COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS
+          ) {
             break;
           }
           deadline = Math.max(deadline, Math.min(overallDeadline, Date.now() + settleIntervalMs));
@@ -1234,7 +1523,17 @@ function buildResponseObserverExpression(
       const finalLength = latest?.text?.length ?? snapshot?.text?.length ?? 0;
       const finalSize = classifyLength(finalLength);
       const finalCompact = finalSize.shortAnswer || finalSize.mediumAnswer;
-      if (finalCompact && !finalSize.ultraShortAnswer) {
+      // Post-loop compact fallback: only trustworthy when the wait ended
+      // quickly or completion controls confirmed the turn. A compact fragment
+      // that has been pending for over a minute (since WAIT start) belongs to
+      // the Node-side watchdog (returning null hands the race to it), not to
+      // this fast path.
+      if (
+        finalCompact &&
+        !finalSize.ultraShortAnswer &&
+        (completionAccepted ||
+          (!sawThinking && Date.now() - waitStartedAt < COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS))
+      ) {
         return latest ?? snapshot;
       }
       if (completionAccepted && isLastAssistantTurnFinished()) {

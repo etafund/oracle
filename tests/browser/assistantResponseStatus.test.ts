@@ -6,6 +6,7 @@ import {
   isAnswerNowPlaceholderTextForTest,
   matchesThinkingStatusLabelForTest,
   shouldAcceptStableAssistantSnapshotForTest,
+  shouldReplaceAssistantSnapshotForTest,
 } from "../../src/browser/actions/assistantResponse.js";
 
 function evaluatePredicate(text: string, generating: boolean): boolean {
@@ -237,6 +238,93 @@ describe("assistant thinking-status capture", () => {
         completionStableTarget: 12,
         stableMs: 30_000,
         minStableMs: 8000,
+      }),
+    ).toBe(false);
+  });
+
+  // Regression: lr-plan-gap-r2b/r2c returned the literal section heading
+  // "1) Verdict" (10 chars) for a 333k-char structured-review prompt. The
+  // stream had paused mid-thinking with the stop button hidden, and the bare
+  // compact fast path accepted the fragment. Minutes into a run, a compact
+  // answer needs finished-action controls, not just stability.
+  test("rejects a bare compact answer once the wait is in thinking-model territory", () => {
+    const state = {
+      stopVisible: false,
+      completionVisible: false,
+      thinkingActive: false,
+      currentLength: 10,
+      stableCycles: 30,
+      requiredStableCycles: 12,
+      completionStableTarget: 12,
+      stableMs: 30_000,
+      minStableMs: 8000,
+    };
+    expect(shouldAcceptStableAssistantSnapshotForTest({ ...state, elapsedMs: 30_000 })).toBe(true);
+    expect(shouldAcceptStableAssistantSnapshotForTest({ ...state, elapsedMs: 120_000 })).toBe(
+      false,
+    );
+  });
+
+  test("still accepts a long-elapsed compact answer once finished controls render", () => {
+    expect(
+      shouldAcceptStableAssistantSnapshotForTest({
+        stopVisible: false,
+        completionVisible: true,
+        thinkingActive: false,
+        currentLength: 10,
+        stableCycles: 30,
+        requiredStableCycles: 12,
+        completionStableTarget: 12,
+        stableMs: 30_000,
+        minStableMs: 8000,
+        elapsedMs: 240_000,
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("shouldReplaceAssistantSnapshot", () => {
+  // Regression: a turn re-render / extractor pivot can produce a strictly
+  // shorter snapshot than the parsed candidate; replacing on "different text"
+  // alone shrank good captures to a one-line teaser right before the
+  // post-race return.
+  test("never replaces the candidate with a shorter snapshot", () => {
+    expect(
+      shouldReplaceAssistantSnapshotForTest({
+        currentLength: 900,
+        latestLength: 203,
+        hasBetterId: true,
+        hasDifferentText: true,
+      }),
+    ).toBe(false);
+  });
+
+  test("replaces the candidate when the snapshot grew", () => {
+    expect(
+      shouldReplaceAssistantSnapshotForTest({
+        currentLength: 203,
+        latestLength: 900,
+        hasBetterId: false,
+        hasDifferentText: true,
+      }),
+    ).toBe(true);
+  });
+
+  test("replaces an equal-length candidate only for better ids or corrected text", () => {
+    expect(
+      shouldReplaceAssistantSnapshotForTest({
+        currentLength: 100,
+        latestLength: 100,
+        hasBetterId: true,
+        hasDifferentText: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldReplaceAssistantSnapshotForTest({
+        currentLength: 100,
+        latestLength: 100,
+        hasBetterId: false,
+        hasDifferentText: false,
       }),
     ).toBe(false);
   });

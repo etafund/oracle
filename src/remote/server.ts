@@ -1036,7 +1036,13 @@ export async function createRemoteServer(
           ...(uploadIntegrity ? { uploadIntegrity } : {}),
         });
         logger(
-          `[serve] Run ${runId} completed in ${Date.now() - runStartedAt}ms${
+          // answerChars/answerTokens are logged so truncated captures are
+          // forensically visible server-side: the answer itself travels only
+          // inside the done event, and a confidently-wrong short capture
+          // otherwise leaves no on-disk evidence at all.
+          `[serve] Run ${runId} completed in ${Date.now() - runStartedAt}ms (answer ${
+            result.answerChars ?? "?"
+          } chars, ~${result.answerTokens ?? "?"} tokens)${
             artifactDescriptors.length > 0
               ? `; ${artifactDescriptors.length} artifact(s) ready for bridge transfer`
               : ""
