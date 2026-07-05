@@ -1497,6 +1497,11 @@ program
     "--no-recover",
     "Do not relaunch Chrome to reopen the saved conversation URL when --harvest/--live finds no live tab.",
   )
+  .option(
+    "--json",
+    "Emit oracle_session_list.v1 JSON when listing sessions (no session ID given), or the session artifact index JSON with --artifacts.",
+    false,
+  )
   .addOption(new Option("--clean", "Deprecated alias for --clear.").default(false).hideHelp())
   .action(async (sessionId, _options: StatusOptions, cmd: Command) => {
     const { handleSessionCommand } = await import("../src/cli/sessionCommand.js");
@@ -1519,6 +1524,11 @@ program
   .option(
     "--browser-tabs",
     "List live ChatGPT browser tabs and known Oracle session linkage.",
+    false,
+  )
+  .option(
+    "--json",
+    "Emit oracle_session_list.v1 JSON when listing sessions (no session ID given).",
     false,
   )
   .addOption(new Option("--clean", "Deprecated alias for --clear.").default(false).hideHelp())
@@ -1571,6 +1581,19 @@ program
       );
       const { attachSession } = await import("../src/cli/sessionDisplay.js");
       await attachSession(sessionId, { renderMarkdown, renderPrompt: !statusOptions.hidePrompt });
+      return;
+    }
+    const jsonRequested = Boolean(
+      statusOptions.json || (command.optsWithGlobals?.() as StatusOptions | undefined)?.json,
+    );
+    if (jsonRequested) {
+      const { runSessionListJson } = await import("../src/cli/sessionListJson.js");
+      await runSessionListJson({
+        hours: statusOptions.all ? Infinity : statusOptions.hours,
+        includeAll: statusOptions.all,
+        limit: statusOptions.limit,
+        modelFilter: statusOptions.model,
+      });
       return;
     }
     const showExamples = usesDefaultStatusFilters(command);

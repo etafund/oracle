@@ -19,6 +19,11 @@ import {
   type SessionArtifactIndex,
 } from "../sessionArtifacts.js";
 import { sessionStore } from "../sessionStore.js";
+import {
+  runSessionListJson,
+  type BuildSessionListOptions,
+  type SessionListEnvelopeResult,
+} from "./sessionListJson.js";
 
 export interface StatusOptions extends OptionValues {
   hours: number;
@@ -65,6 +70,7 @@ interface SessionCommandDependencies {
   buildSessionArtifactIndex: (
     options: BuildSessionArtifactIndexOptions,
   ) => Promise<SessionArtifactIndex>;
+  runSessionListJson: (options?: BuildSessionListOptions) => Promise<SessionListEnvelopeResult>;
 }
 
 const defaultDependencies: SessionCommandDependencies = {
@@ -76,6 +82,7 @@ const defaultDependencies: SessionCommandDependencies = {
   deleteSessionsOlderThan: (options) => sessionStore.deleteOlderThan(options),
   getSessionPaths: (sessionId) => sessionStore.getPaths(sessionId),
   buildSessionArtifactIndex,
+  runSessionListJson: (options) => runSessionListJson(options),
 };
 
 const SESSION_OPTION_KEYS = new Set([
@@ -93,6 +100,7 @@ const SESSION_OPTION_KEYS = new Set([
   "writeOutput",
   "browserTab",
   "artifacts",
+  "json",
 ]);
 
 export async function handleSessionCommand(
@@ -237,6 +245,16 @@ export async function handleSessionCommand(
     return;
   }
   if (!sessionId) {
+    const jsonRequested = Boolean(sessionOptions.json || allOptions.json);
+    if (jsonRequested) {
+      await deps.runSessionListJson({
+        hours: sessionOptions.all ? Infinity : sessionOptions.hours,
+        includeAll: sessionOptions.all,
+        limit: sessionOptions.limit,
+        modelFilter: sessionOptions.model,
+      });
+      return;
+    }
     const showExamples = deps.usesDefaultStatusFilters(command);
     await deps.showStatus({
       hours: sessionOptions.all ? Infinity : sessionOptions.hours,

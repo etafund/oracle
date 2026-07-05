@@ -47,6 +47,7 @@ function createDeps() {
     deleteSessionsOlderThan: vi.fn(),
     getSessionPaths: vi.fn(),
     buildSessionArtifactIndex: vi.fn(),
+    runSessionListJson: vi.fn(),
   };
 }
 
@@ -67,6 +68,24 @@ describe("handleSessionCommand", () => {
       limit: 5,
       showExamples: true,
     });
+  });
+
+  test("emits the session list JSON when --json is provided with no id", async () => {
+    const command = createCommandWithOptions({
+      hours: 12,
+      limit: 5,
+      all: false,
+      json: true,
+    } as StatusOptions);
+    const deps = createDeps();
+    await handleSessionCommand(undefined, command, deps);
+    expect(deps.runSessionListJson).toHaveBeenCalledWith({
+      hours: 12,
+      includeAll: false,
+      limit: 5,
+      modelFilter: undefined,
+    });
+    expect(deps.showStatus).not.toHaveBeenCalled();
   });
 
   test("attaches when id provided", async () => {
