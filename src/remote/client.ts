@@ -39,6 +39,44 @@ interface RemoteExecutorOptions {
    * `http.request` un-mocked at the call site).
    */
   requestFn?: typeof http.request;
+  /**
+   * Stream-inactivity deadline for the `/runs` NDJSON response: if no bytes
+   * at all arrive for this long, the run is aborted with a typed,
+   * non-retryable error instead of hanging forever on a silently-wedged
+   * worker. Reset on every received chunk — this is an INACTIVITY deadline,
+   * not a cap on total run duration, so a legitimate long Pro wait that
+   * keeps emitting progress (heartbeat "still thinking" log lines,
+   * artifact-progress events, ...) never trips it. Defaults to
+   * `DEFAULT_STREAM_IDLE_TIMEOUT_MS` (or the `ORACLE_REMOTE_STREAM_IDLE_MS`
+   * env override), which mirrors the server's own no-progress notion
+   * (`wedgeAfterMs` / `ORACLE_SERVE_WEDGE_AFTER_MS`, see
+   * src/remote/server.ts) so client and worker agree on what "wedged" means.
+   */
+  streamIdleTimeoutMs?: number;
+  /**
+   * Hard ceiling on a single buffered NDJSON line. The response stream is
+   * newline-delimited; without a cap, a worker (or a corrupted/adversarial
+   * intermediary) that never emits a newline would grow the line buffer
+   * without bound. Defaults to `MAX_NDJSON_LINE_BYTES`, comfortably above
+   * the largest legitimate single event (a `done` event carrying the full
+   * answer text/markdown/html) while still bounded.
+   */
+  maxLineBytes?: number;
+}
+
+/**
+ * Default stream-inactivity deadline (see `RemoteExecutorOptions.streamIdleTimeoutMs`).
+ * Mirrors the server's default `wedgeAfterMs` (src/remote/server.ts) so the
+ * client's notion of "the worker went silent" agrees with the worker's own.
+ */
+export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
+
+/** Default per-line NDJSON buffer cap (see `RemoteExecutorOptions.maxLineBytes`). */
+export const MAX_NDJSON_LINE_BYTES = 32 * 1024 * 1024;
+
+function resolveDefaultStreamIdleTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number.parseInt(env.ORACLE_REMOTE_STREAM_IDLE_MS ?? "", 10);
+  return Number.isSafeInteger(raw) && raw > 0 ? raw : DEFAULT_STREAM_IDLE_TIMEOUT_MS;
 }
 
 /**
@@ -81,6 +119,8 @@ export function createRemoteBrowserExecutor({
   host,
   token,
   requestFn = http.request,
+  streamIdleTimeoutMs = resolveDefaultStreamIdleTimeoutMs(),
+  maxLineBytes = MAX_NDJSON_LINE_BYTES,
 }: RemoteExecutorOptions) {
   // Return a drop-in replacement for runBrowserMode so the browser session runner can stay unchanged.
   return async function remoteBrowserExecutor(
@@ -135,10 +175,22 @@ export function createRemoteBrowserExecutor({
       // stream that ends without one (crash, truncation, proxy cut) must
       // never be treated as a completed run.
       let doneObserved = false;
+      // Stream-inactivity watchdog for the /runs response (see
+      // `streamIdleTimeoutMs` doc): armed once the 200 response begins, reset
+      // on every chunk, cleared once the stream ends or the run settles.
+      let idleTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const clearIdleTimer = () => {
+        if (idleTimer) {
+          clearTimeout(idleTimer);
+          idleTimer = null;
+        }
+      };
 
       const fail = (error: Error) => {
         if (settled) return;
         settled = true;
+        clearIdleTimer();
         reject(error);
       };
 
@@ -170,7 +222,28 @@ export function createRemoteBrowserExecutor({
           }
           res.setEncoding("utf8");
           let buffer = "";
+          // Arm the inactivity watchdog as soon as the 200 response begins —
+          // a worker that accepts the connection, sends headers, and then
+          // never emits a single byte must not pin the caller forever.
+          const armIdleTimer = () => {
+            clearIdleTimer();
+            idleTimer = setTimeout(() => {
+              if (settled) return;
+              const idleError = new RemoteRunFailedError(
+                `Remote run stream received no data for over ${streamIdleTimeoutMs}ms; aborting rather ` +
+                  "than waiting indefinitely on a possibly-wedged worker. This is an inactivity deadline " +
+                  "(reset on every received byte), not a cap on total run duration, so a normal slow-but-active " +
+                  "Pro run is unaffected.",
+                { errorClass: "transport_interrupted_after_submit", retryable: false },
+              );
+              fail(idleError);
+              req.destroy();
+              res.destroy();
+            }, streamIdleTimeoutMs);
+          };
+          armIdleTimer();
           res.on("data", (chunk: string) => {
+            armIdleTimer();
             buffer += chunk;
             let newlineIndex = buffer.indexOf("\n");
             while (newlineIndex !== -1) {
@@ -208,8 +281,25 @@ export function createRemoteBrowserExecutor({
               }
               newlineIndex = buffer.indexOf("\n");
             }
+            // Cap the trailing (not-yet-newline-terminated) partial line: a
+            // worker that never emits a newline would otherwise grow `buffer`
+            // without bound. Checked AFTER draining complete lines above, so
+            // a burst of many small legitimate lines in one chunk never trips
+            // this — only a single line actually exceeding the cap does.
+            if (buffer.length > maxLineBytes) {
+              fail(
+                new RemoteRunFailedError(
+                  `Remote run stream line exceeded the ${maxLineBytes}-byte NDJSON line cap without a ` +
+                    "terminating newline; refusing to buffer further to avoid unbounded memory growth.",
+                  { errorClass: "transport_interrupted_after_submit", retryable: false },
+                ),
+              );
+              req.destroy();
+              res.destroy();
+            }
           });
           res.on("end", () => {
+            clearIdleTimer();
             void (async () => {
               await Promise.allSettled(transferPromises);
               if (settled) return;
