@@ -34,12 +34,32 @@ import { mkdir, mkdtemp, readdir, rm, stat, utimes, writeFile } from "node:fs/pr
 const raceHooks = vi.hoisted(() => ({
   beforeStealRename: null as (() => Promise<void>) | null,
   beforeGiveBackRename: null as (() => Promise<void>) | null,
+  beforeIdentityPinOpen: null as (() => Promise<void>) | null,
 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...actual,
+    open: async (filePath: unknown, flags?: unknown, mode?: unknown) => {
+      // Fires on the identity-pinning open(dirPath, "r") call inside
+      // openDirIdentityHandle — used to inject a directory swap at that
+      // exact point, one step earlier than the beforeStealRename hook below.
+      if (
+        raceHooks.beforeIdentityPinOpen &&
+        typeof filePath === "string" &&
+        flags === "r"
+      ) {
+        const hook = raceHooks.beforeIdentityPinOpen;
+        raceHooks.beforeIdentityPinOpen = null;
+        await hook();
+      }
+      return actual.open(
+        filePath as string,
+        flags as string | number | undefined,
+        mode as string | number | undefined,
+      );
+    },
     rename: async (oldPath: unknown, newPath: unknown) => {
       if (
         raceHooks.beforeStealRename &&
@@ -124,6 +144,60 @@ describe("tab-lease registry: lock-steal self-ownership (1fy)", () => {
       expect(stolen).toBe(false);
       const restored = await stat(lockDir).catch(() => null);
       expect(restored).not.toBeNull();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("[regression 1fy item 3] steal must pin identity BEFORE the liveness/age read, not only right before the rename", async () => {
+    const dir = await makeProfileDir();
+    const lockDir = path.join(dir, LOCK_DIRNAME);
+    try {
+      // Same ownerless, aged-out lock setup as the sibling test above, but
+      // the race is injected ONE STEP EARLIER: at the identity-pinning
+      // open(dirPath, "r") call itself (inside openDirIdentityHandle),
+      // rather than at the reclaim rename. A fresh, legitimate acquirer
+      // swaps in — deletes the judged-dead directory and mkdir's its own —
+      // at the exact moment the steal path opens its identity-pinning
+      // handle, before that handle's (dev, ino) is captured.
+      //
+      // Pre-fix behavior: openDirIdentityHandle() was only called AFTER the
+      // owner-liveness/age verdict had already been formed from the OLD
+      // (correctly dead) directory's data. The swap-then-open sequence here
+      // instead latches the identity pin onto the FRESH directory. The
+      // reclaim rename then renames that same fresh directory into the
+      // tombstone, so the post-rename identity trivially matches the pin
+      // (both are the fresh dir), and the fresh owner's not-yet-written
+      // owner.json (null) matches the judged-dead lock's owner content
+      // (also null) — wrongly accepted as proof of "same lock". The steal
+      // proceeds and destroys the fresh owner's brand-new lock directory
+      // while its callback is still running.
+      //
+      // Fixed behavior: the identity handle is pinned FIRST, before any
+      // liveness/age data is read, and that same handle is reused straight
+      // through to the tombstone comparison. The swap now lands between the
+      // pin and the liveness/age read instead of between the verdict and
+      // the pin: the subsequent age read sees the FRESH directory (just
+      // mkdir'd, age ~0ms) — far under the steal-age threshold — so the
+      // verdict naturally comes back "do not steal" and the fresh directory
+      // is never renamed or removed.
+      await mkdir(lockDir, { recursive: true });
+      await backdate(lockDir, OWNERLESS_STEAL_AGE_MS + 5_000);
+
+      raceHooks.beforeIdentityPinOpen = async () => {
+        await rm(lockDir, { recursive: true, force: true });
+        await mkdir(lockDir, { recursive: true });
+      };
+
+      const stolen = await stealRegistryLockFromDeadOwnerForTest(lockDir);
+
+      expect(stolen).toBe(false);
+      // The fresh owner's directory must be exactly what the swap created:
+      // still present, never renamed away into a tombstone and destroyed.
+      const survivor = await stat(lockDir).catch(() => null);
+      expect(survivor).not.toBeNull();
+      const entries = await readdir(dir);
+      expect(entries.some((name) => name.includes(".stale-"))).toBe(false);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

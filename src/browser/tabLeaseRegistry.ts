@@ -507,6 +507,28 @@ async function stealRegistryLockFromDeadOwner(
   logger?: BrowserLogger,
 ): Promise<boolean> {
   const ownerPath = path.join(lockDir, REGISTRY_LOCK_OWNER_FILENAME);
+  // Open a handle on the lock directory (and pin its identity) BEFORE doing
+  // any owner-liveness/age read below, and reuse this SAME handle all the way
+  // through to the tombstone comparison — never re-opened later. Holding the
+  // descriptor open prevents the filesystem from recycling this exact
+  // (dev, ino) for anything else until we close it, which is what makes the
+  // eventual identity comparison against the tombstone a real proof of
+  // "this is the directory we judged", not a coincidence.
+  //
+  // Pinning here (rather than only right before the reclaim rename, after
+  // the liveness verdict below has already been formed) closes the window a
+  // fresh legitimate acquirer could otherwise win: if the swap (delete the
+  // judged directory, mkdir its own) happens between this pin and the
+  // liveness/age read just below, that read is necessarily performed
+  // against the FRESH directory (its owner.json, its mtime) — which reads
+  // as either live-owned or too young to steal, so the verdict naturally
+  // comes back "do not steal". If the swap instead happens AFTER the
+  // verdict is formed, the identity pinned here (from the directory that
+  // was actually judged) will differ from whatever ends up renamed into the
+  // tombstone, and the same-lock check below catches it. Two absent owner
+  // files are NOT proof it is the same lock; only a provably-unrecycled
+  // identity match, captured before the judgment was even made, is.
+  const preStealHandle = await openDirIdentityHandle(lockDir);
   let ownerRaw: string | null = null;
   let owner: RegistryLockOwner | null = null;
   try {
@@ -525,6 +547,7 @@ async function stealRegistryLockFromDeadOwner(
   if (owner) {
     if (isLockOwnerAlive(owner)) {
       // Live owner: never steal, no matter how long the lock has been held.
+      if (preStealHandle) await preStealHandle.close().catch(() => undefined);
       return false;
     }
   } else {
@@ -533,23 +556,15 @@ async function stealRegistryLockFromDeadOwner(
     // so an in-flight acquisition is never raced.
     const ageMs = await lockDirAgeMs(lockDir);
     if (ageMs === null || ageMs < OWNERLESS_LOCK_STEAL_AGE_MS) {
+      if (preStealHandle) await preStealHandle.close().catch(() => undefined);
       return false;
     }
   }
-  // Open a handle on the lock directory (and pin its identity) immediately
-  // before the reclaim rename. Holding the descriptor open prevents the
-  // filesystem from recycling this exact (dev, ino) for anything else until
-  // we close it below, so comparing identity against what actually landed in
-  // the tombstone (not just owner-file content) reliably detects a fresh
-  // acquirer that slipped in between the liveness read above and the rename
-  // below — including the case where NEITHER side has a (yet-unwritten)
-  // owner file. Two absent owner files are NOT proof it is the same lock;
-  // only a provably-unrecycled identity match is.
-  const preStealHandle = await openDirIdentityHandle(lockDir);
   // Atomic reclamation: rename the lock directory to a tombstone (exactly one
-  // stealer wins the rename), verify the tombstone still holds the same dead
-  // owner we judged, then remove it. If a fresh owner slipped in between the
-  // liveness check and the rename, give the lock back.
+  // stealer wins the rename), verify the tombstone still holds the identity
+  // pinned above (and the same dead owner we judged), then remove it. If a
+  // fresh owner slipped in at any point between the pin and the rename, give
+  // the lock back.
   const tomb = `${lockDir}.stale-${randomUUID().slice(0, 8)}`;
   try {
     await rename(lockDir, tomb);
