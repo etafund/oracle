@@ -12,72 +12,139 @@ type ExecFileCallback = (
   stderr: string,
 ) => void;
 
-function fakeExecFile(
-  handler: (file: string, args: readonly string[]) => { stdout: string; stderr?: string; error?: Error },
-): typeof execFile {
-  return ((file: string, args: readonly string[], _options: unknown, callback: ExecFileCallback) => {
-    const result = handler(file, args);
-    if (result.error) {
-      callback(result.error, result.stdout, result.stderr ?? "");
-    } else {
-      callback(null, result.stdout, result.stderr ?? "");
-    }
-    return {} as ReturnType<typeof execFile>;
-  }) as unknown as typeof execFile;
+interface FakeResponse {
+  stdout?: string;
+  stderr?: string;
+  /** Exit code for a "the process ran but failed" outcome (mutually exclusive with `spawnError`). */
+  exitCode?: number;
+  /** A spawn-level failure (e.g. ENOENT) — the process never ran at all. */
+  spawnError?: Error & { code?: string };
 }
 
-describe("caam shallow-profile doctor pre-flight (caam-map.md §4c)", () => {
-  test("invokes `caam shallow-profile doctor <profile> --json` and passes on a healthy profile", async () => {
-    let capturedArgs: readonly string[] | undefined;
-    const execFileImpl = fakeExecFile((file, args) => {
-      capturedArgs = args;
-      expect(file).toBe("/opt/caam");
-      return { stdout: JSON.stringify({ healthy: true, profile: "arthur" }) };
-    });
+/**
+ * Fake `execFile` that serves canned responses in call order and records
+ * every invocation's argv, so tests can assert both what got called and
+ * (for the CLI-drift path) that a second, different call happened.
+ */
+function fakeExecFileSequence(responses: FakeResponse[]): { impl: typeof execFile; calls: string[][] } {
+  const calls: string[][] = [];
+  let callIndex = 0;
+  const impl = ((file: string, args: readonly string[], _options: unknown, callback: ExecFileCallback) => {
+    calls.push([file, ...args]);
+    const response = responses[callIndex] ?? responses[responses.length - 1];
+    callIndex += 1;
+    if (response.spawnError) {
+      callback(response.spawnError, response.stdout ?? "", response.stderr ?? "");
+      return {} as ReturnType<typeof execFile>;
+    }
+    if (response.exitCode && response.exitCode !== 0) {
+      const error = Object.assign(new Error(`Command failed with exit code ${response.exitCode}`), {
+        code: response.exitCode,
+      });
+      callback(error, response.stdout ?? "", response.stderr ?? "");
+      return {} as ReturnType<typeof execFile>;
+    }
+    callback(null, response.stdout ?? "", response.stderr ?? "");
+    return {} as ReturnType<typeof execFile>;
+  }) as unknown as typeof execFile;
+  return { impl, calls };
+}
 
-    const result = await runCaamShallowProfileDoctor("/opt/caam", "arthur", { execFileImpl });
+const UNKNOWN_JSON_FLAG_STDERR =
+  'Error: unknown flag: --json\nUsage:\n  caam shallow-spawn <name> -- <cmd> [args...] [flags]\n';
 
-    expect(capturedArgs).toEqual(["shallow-profile", "doctor", "arthur", "--json"]);
+describe("caam shallow-spawn --print-env pre-flight (caam-map.md §4c)", () => {
+  test("modern caam: invokes `shallow-spawn <profile> --print-env --json` and passes on a healthy profile", async () => {
+    const { impl, calls } = fakeExecFileSequence([
+      {
+        stdout: JSON.stringify({ success: true, home: "/orch-homes/arthur", shallow_profile: "arthur" }),
+      },
+    ]);
+
+    const result = await runCaamShallowProfileDoctor("/opt/caam", "arthur", { execFileImpl: impl });
+
+    expect(calls).toEqual([["/opt/caam", "shallow-spawn", "arthur", "--print-env", "--json"]]);
     expect(result.healthy).toBe(true);
   });
 
-  test("fails closed with a clear error when the profile is reported unhealthy", async () => {
-    const execFileImpl = fakeExecFile(() => ({
-      stdout: JSON.stringify({ healthy: false, reason: "credentials_missing" }),
-    }));
+  test("modern caam: fails closed with a clear error when the JSON verdict reports the profile unhealthy", async () => {
+    const { impl } = fakeExecFileSequence([
+      {
+        exitCode: 1,
+        stdout: JSON.stringify({
+          success: false,
+          error: 'shallow profile "broken-profile" does not exist (try `caam shallow-profile create broken-profile`)',
+        }),
+      },
+    ]);
 
     await expect(
-      runCaamShallowProfileDoctor("/opt/caam", "broken-profile", { execFileImpl }),
+      runCaamShallowProfileDoctor("/opt/caam", "broken-profile", { execFileImpl: impl }),
     ).rejects.toThrow(CaamShallowProfileDoctorError);
     await expect(
-      runCaamShallowProfileDoctor("/opt/caam", "broken-profile", { execFileImpl }),
+      runCaamShallowProfileDoctor("/opt/caam", "broken-profile", { execFileImpl: impl }),
     ).rejects.toThrow(/unhealthy/);
   });
 
-  test("fails closed when the doctor command itself fails to run", async () => {
-    const execFileImpl = fakeExecFile(() => ({
-      stdout: "",
-      error: Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
-    }));
+  test("CLI drift: degrades to plain-text `--print-env` when `--json` is an unknown flag, and passes on a healthy profile", async () => {
+    const { impl, calls } = fakeExecFileSequence([
+      { exitCode: 1, stdout: "", stderr: UNKNOWN_JSON_FLAG_STDERR },
+      { stdout: "HOME=/orch-homes/arthur\nSHALLOW_PROFILE=arthur\n" },
+    ]);
+
+    const result = await runCaamShallowProfileDoctor("/opt/caam", "arthur", { execFileImpl: impl });
+
+    expect(calls).toEqual([
+      ["/opt/caam", "shallow-spawn", "arthur", "--print-env", "--json"],
+      ["/opt/caam", "shallow-spawn", "arthur", "--print-env"],
+    ]);
+    expect(result.healthy).toBe(true);
+  });
+
+  test("CLI drift: degrades to plain-text `--print-env` and fails closed when the profile is unhealthy there too", async () => {
+    const { impl, calls } = fakeExecFileSequence([
+      { exitCode: 1, stdout: "", stderr: UNKNOWN_JSON_FLAG_STDERR },
+      {
+        exitCode: 1,
+        stdout: "",
+        stderr: 'Error: shallow profile "broken-profile" does not exist (try `caam shallow-profile create broken-profile`)\n',
+      },
+    ]);
 
     await expect(
-      runCaamShallowProfileDoctor("/opt/caam", "arthur", { execFileImpl }),
+      runCaamShallowProfileDoctor("/opt/caam", "broken-profile", { execFileImpl: impl }),
     ).rejects.toThrow(CaamShallowProfileDoctorError);
+    expect(calls).toHaveLength(2);
   });
 
-  test("fails closed when the doctor output is not valid JSON", async () => {
-    const execFileImpl = fakeExecFile(() => ({ stdout: "not json" }));
+  test("fails closed when the command itself fails to run (binary missing / ENOENT) — no retry", async () => {
+    const { impl, calls } = fakeExecFileSequence([
+      { spawnError: Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" }) },
+    ]);
 
     await expect(
-      runCaamShallowProfileDoctor("/opt/caam", "arthur", { execFileImpl }),
-    ).rejects.toThrow(/did not return valid JSON/);
+      runCaamShallowProfileDoctor("/opt/caam", "arthur", { execFileImpl: impl }),
+    ).rejects.toThrow(CaamShallowProfileDoctorError);
+    // A spawn-level failure can't be fixed by retrying with different flags.
+    expect(calls).toHaveLength(1);
   });
 
-  test("accepts an `ok` boolean as an alternate healthy-signal shape", async () => {
-    const execFileImpl = fakeExecFile(() => ({ stdout: JSON.stringify({ ok: true }) }));
+  test("fails closed (inconclusive, not assumed healthy) when `--json` exits 0 without the documented JSON shape", async () => {
+    const { impl } = fakeExecFileSequence([{ stdout: "not json" }]);
 
     await expect(
-      runCaamShallowProfileDoctor("/opt/caam", "arthur", { execFileImpl }),
-    ).resolves.toMatchObject({ healthy: true });
+      runCaamShallowProfileDoctor("/opt/caam", "arthur", { execFileImpl: impl }),
+    ).rejects.toThrow(/did not return the expected/);
+  });
+
+  test("fails closed when `--json` fails non-zero for a reason other than an unknown flag (no silent retry-as-healthy)", async () => {
+    const { impl, calls } = fakeExecFileSequence([
+      { exitCode: 1, stdout: "", stderr: "Error: something else entirely went wrong\n" },
+    ]);
+
+    await expect(
+      runCaamShallowProfileDoctor("/opt/caam", "arthur", { execFileImpl: impl }),
+    ).rejects.toThrow(CaamShallowProfileDoctorError);
+    expect(calls).toHaveLength(1);
   });
 });
