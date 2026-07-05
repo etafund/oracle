@@ -51,7 +51,7 @@ function resolveCliEntrypoint(): string {
 function assertPromptOnly(files: string[] | undefined): void {
   if (files && files.length > 0) {
     throw new Error(
-      "Browser follow-up is prompt-only in v1. Start a new `oracle consult` run to attach files.",
+      'Browser follow-up is prompt-only in v1. To attach files, start a new run instead: oracle --lane <lane> --prompt "..." --file <path>',
     );
   }
 }

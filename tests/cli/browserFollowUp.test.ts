@@ -185,6 +185,19 @@ describe("browser follow-up sessions", () => {
           cliEntrypoint: "/tmp/oracle-cli.js",
         }),
       ).rejects.toThrow(/prompt-only/i);
+
+      // The teach message must point at the real invocation surface, not the
+      // phantom `oracle consult` command (PF2, core-lane-parity-plan).
+      const promptOnlyError = await startBrowserFollowUpSession(apiParent.id, {
+        prompt: "next",
+        files: ["a.ts"],
+        cliEntrypoint: "/tmp/oracle-cli.js",
+      }).then(
+        () => null,
+        (error: unknown) => error as Error,
+      );
+      expect(promptOnlyError?.message).toContain("oracle --lane <lane> --prompt");
+      expect(promptOnlyError?.message).not.toContain("oracle consult");
     });
   });
 

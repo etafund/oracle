@@ -3256,7 +3256,7 @@ async function runFollowUpCommand(
   if (options.file && options.file.length > 0) {
     console.error(
       chalk.red(
-        "Browser follow-up is prompt-only in v1. Start a new `oracle consult` run to attach files.",
+        'Browser follow-up is prompt-only in v1. To attach files, start a new run instead: oracle --lane <lane> --prompt "..." --file <path>',
       ),
     );
     process.exitCode = 1;
