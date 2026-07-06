@@ -648,6 +648,13 @@ function buildChromeFlags(headless: boolean, debugBindAddress?: string | null): 
   const flags = [
     "--disable-background-networking",
     "--disable-background-timer-throttling",
+    // Secondary hardening: reduces CPU/timer throttling for occluded/hidden
+    // windows on Chrome instances we launch/reuse. This is not itself the
+    // fix for dropped Send clicks (that requires per-target focus emulation,
+    // see enableFocusEmulation in index.ts) but it helps background-tab
+    // timer fairness generally and costs nothing.
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
     "--disable-breakpad",
     "--disable-client-side-phishing-detection",
     "--disable-default-apps",

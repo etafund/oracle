@@ -229,6 +229,33 @@ describe("formatBrowserTurnTranscript", () => {
   });
 });
 
+describe("enableFocusEmulation", () => {
+  test("enables CDP focus emulation and logs the given label", async () => {
+    const setFocusEmulationEnabled = vi.fn().mockResolvedValue(undefined);
+    const client = { Emulation: { setFocusEmulationEnabled } };
+    const logger = vi.fn();
+
+    await __test__.enableFocusEmulation(client as never, logger, "local tab");
+
+    expect(setFocusEmulationEnabled).toHaveBeenCalledWith({ enabled: true });
+    expect(logger).toHaveBeenCalledWith("[browser] Focus emulation enabled for local tab");
+  });
+
+  test("logs a diagnostic instead of throwing when the CDP call is unavailable", async () => {
+    const setFocusEmulationEnabled = vi.fn().mockRejectedValue(new Error("not supported"));
+    const client = { Emulation: { setFocusEmulationEnabled } };
+    const logger = vi.fn();
+
+    await expect(
+      __test__.enableFocusEmulation(client as never, logger, "remote target"),
+    ).resolves.toBeUndefined();
+
+    expect(logger).toHaveBeenCalledWith(
+      "[browser] Focus emulation unavailable: not supported",
+    );
+  });
+});
+
 describe("ChatGPT UI warning detection", () => {
   test("classifies request-speed warnings as rate limits", () => {
     expect(

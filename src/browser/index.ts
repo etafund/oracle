@@ -490,6 +490,27 @@ function hasBrowserErrorCode(error: unknown, code: string): boolean {
   );
 }
 
+// Chrome throttles rendering/input for tabs it considers backgrounded or
+// occluded, which makes ChatGPT drop synthetic Send clicks. This affects any
+// attached tab that isn't the OS-focused foreground window, not just remote
+// targets: a shared/manual-login Chrome window running other tabs (c>=2), or
+// a window hidden via --browser-hide-window, exhibit the same condition
+// locally. Emulating focus makes the page behave like a real foreground tab
+// regardless of how we attached to it.
+async function enableFocusEmulation(
+  client: ChromeClient,
+  logger: BrowserLogger,
+  label: string,
+): Promise<void> {
+  try {
+    await client.Emulation.setFocusEmulationEnabled({ enabled: true });
+    logger(`[browser] Focus emulation enabled for ${label}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger(`[browser] Focus emulation unavailable: ${message}`);
+  }
+}
+
 async function saveOptionalArtifact<T>(
   operation: () => Promise<T | null>,
   logger: BrowserLogger,
@@ -1338,6 +1359,11 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         logger(
           `Attached to existing ChatGPT tab ${attached.targetId}${attached.tab.url ? ` (${attached.tab.url})` : ""}`,
         );
+        // Reattached tabs may share a Chrome window with other tabs (manual
+        // login, c>=2 concurrency) and can be occluded/backgrounded even
+        // though the run considers them "local". Neutralize that like the
+        // remote path does, so Send clicks aren't dropped.
+        await enableFocusEmulation(client, logger, "local tab");
       } else {
         const strictTabIsolation = Boolean(manualLogin && reusedChrome);
         const devtoolsRetries = manualLogin ? 6 : 0;
@@ -1349,6 +1375,10 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         client = connection.client;
         isolatedTargetId = connection.targetId ?? null;
         ownsTarget = true;
+        // Same rationale as the reattach branch above: a freshly opened tab
+        // in a shared/manual-login Chrome window (or one about to be hidden
+        // via --browser-hide-window below) can still be occluded.
+        await enableFocusEmulation(client, logger, "local tab");
       }
       if (tabLease && isolatedTargetId) {
         await tabLease.update({
@@ -3204,13 +3234,7 @@ async function runRemoteBrowserMode(
     // Remote targets typically live in background or occluded windows where
     // ChatGPT drops synthetic send clicks (rendering/focus throttling). Emulate
     // focus so the page behaves like a foreground tab, matching local mode.
-    try {
-      await client.Emulation.setFocusEmulationEnabled({ enabled: true });
-      logger("[browser] Focus emulation enabled for remote target");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      logger(`[browser] Focus emulation unavailable: ${message}`);
-    }
+    await enableFocusEmulation(client, logger, "remote target");
     const scheduleConversationHint = (label: string, timeoutMs?: number): void => {
       if (conversationHintInFlight) {
         return;
@@ -4140,6 +4164,7 @@ export const __test__ = {
   collectChatGptUiWarnings,
   createAssistantTimeoutError,
   detachKeptChromeProcess,
+  enableFocusEmulation,
   formatManualLoginSetupCommand,
   isAssistantResponseTimeoutError,
   isManualLoginProfileInitialized,
