@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
+import { quarantineInvalidEvidenceArtifact } from "../../../src/browser/evidence-quarantine.js";
 import { drainArtifactIndexLocksForTest } from "../../../src/oracle/v18/artifact_index_lock.js";
 import {
   ARTIFACT_INDEX_SCHEMA_VERSION,
@@ -146,6 +147,44 @@ describe("writeEvidence concurrent artifact-index updates", () => {
       expect(entry!.kind).toBe("browser_evidence");
       expect(entry!.path).toBe(`${id}.json`);
       const raw = await readFile(quarantineFilePath(sessionId, id, homeDir), "utf8");
+      expect(entry!.sha256).toBe(sha256OfBytes(raw.trimEnd()));
+    }
+  });
+});
+
+describe("quarantineInvalidEvidenceArtifact concurrent artifact-index updates", () => {
+  testNonWindows("retains every quarantined artifact entry from concurrent callers", async () => {
+    const sessionId = "sess-invalid-evidence-concurrent";
+    const ids = Array.from({ length: 32 }, (_, index) => `invalid-evidence-${index}`);
+
+    await Promise.all(
+      ids.map((id) =>
+        quarantineInvalidEvidenceArtifact({
+          sessionId,
+          evidenceId: id,
+          payload: { evidence_id: id, reason: "schema violation" },
+          validationError: new Error(`invalid browser evidence: ${id}`),
+          homeDir,
+          runId: "run-concurrent-invalid",
+        }),
+      ),
+    );
+
+    const index = await readArtifactIndex(quarantineIndexPath(sessionId, homeDir));
+    expect(index?.schema_version).toBe(ARTIFACT_INDEX_SCHEMA_VERSION);
+    expect(index?.run_id).toBe("run-concurrent-invalid");
+    expect(index?.bundle_version).toBe(V18_BUNDLE_VERSION);
+    expect(index?.artifacts).toHaveLength(ids.length);
+
+    const byId = new Map(index!.artifacts.map((entry) => [entry.artifact_id, entry]));
+    for (const id of ids) {
+      const entry = byId.get(`${id}.invalid`);
+      expect(entry).toBeDefined();
+      expect(entry!.kind).toBe("invalid_browser_evidence");
+      const raw = await readFile(
+        quarantineFilePath(sessionId, `${id}.invalid`, homeDir),
+        "utf8",
+      );
       expect(entry!.sha256).toBe(sha256OfBytes(raw.trimEnd()));
     }
   });

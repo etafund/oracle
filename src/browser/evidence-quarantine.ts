@@ -7,14 +7,13 @@ import {
   type ArtifactIndex,
   type ArtifactIndexEntry,
 } from "../oracle/v18/contracts.js";
+import { serializeArtifactIndexUpdate } from "../oracle/v18/artifact_index_lock.js";
 import {
   canonicalJSON,
   quarantineFilePath,
   quarantineIndexPath,
-  readArtifactIndex,
   redactEvidencePayload,
   sha256OfBytes,
-  writeArtifactIndex,
 } from "../oracle/v18/evidence.js";
 import { getOracleHomeDir } from "../oracleHome.js";
 
@@ -109,12 +108,17 @@ export async function quarantineInvalidEvidenceArtifact(
     path: path.relative(path.dirname(indexPath), filePath) || path.basename(filePath),
     sha256,
   };
-  const existing = (await readArtifactIndex(indexPath)) ?? emptyQuarantineIndex(options.runId);
-  const updated = upsertEntry(existing, entry);
-  if (options.runId && !updated.run_id) {
-    (updated as Record<string, unknown>).run_id = options.runId;
-  }
-  await writeArtifactIndex(indexPath, updated);
+  // Route the read-modify-write through the serialized per-path lock so
+  // concurrent quarantines for the same session never clobber each
+  // other's index upserts (same race writeEvidence was fixed for —
+  // see src/oracle/v18/artifact_index_lock.ts).
+  await serializeArtifactIndexUpdate(indexPath, (current) => {
+    const updated = upsertEntry(current ?? emptyQuarantineIndex(options.runId), entry);
+    if (options.runId && !updated.run_id) {
+      return { ...updated, run_id: options.runId };
+    }
+    return updated;
+  });
 
   return {
     artifactId,
