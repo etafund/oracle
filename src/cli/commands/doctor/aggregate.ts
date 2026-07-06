@@ -339,16 +339,18 @@ function defaultLanePolicyCheck(): AggregateDoctorCheck {
 
 async function defaultRemoteBridgeDoctor(): Promise<AggregateDoctorCheck> {
   const previousExitCode = process.exitCode;
-  const originalLog = console.log;
   let output = "";
   try {
-    console.log = (message?: unknown) => {
-      output += `${String(message ?? "")}\n`;
-    };
     const { runBridgeDoctor } = await import("../../bridge/doctor.js");
-    await runBridgeDoctor({ json: true });
+    await runBridgeDoctor(
+      { json: true },
+      {
+        stdout: (text) => {
+          output += `${text}\n`;
+        },
+      },
+    );
   } finally {
-    console.log = originalLog;
     process.exitCode = previousExitCode;
   }
 

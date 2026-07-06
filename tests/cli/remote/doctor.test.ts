@@ -132,4 +132,93 @@ describe("runBridgeDoctor --json", () => {
     expect(jsonOutput.error).toBe("HTTP 401 (Unauthorized)");
     expect(process.exitCode).toBe(1);
   });
+
+  it("writes JSON to injected io.stdout instead of console.log", async () => {
+    let captured = "";
+    await runBridgeDoctor({ json: true }, { stdout: (text) => (captured += text) });
+
+    expect(logSpy).not.toHaveBeenCalled();
+    const jsonOutput = JSON.parse(captured);
+    expect(jsonOutput.status).toBe("healthy");
+    expect(process.exitCode).toBe(0);
+  });
+});
+
+describe("aggregate doctor bridge check concurrency", () => {
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let originalExitCode: typeof process.exitCode;
+
+  beforeEach(() => {
+    logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    originalExitCode = process.exitCode;
+    process.exitCode = undefined;
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+    process.exitCode = originalExitCode;
+  });
+
+  it("does not swallow sibling console.log output while the default bridge doctor runs", async () => {
+    // Regression: defaultRemoteBridgeDoctor used to monkeypatch the global
+    // console.log while awaiting runBridgeDoctor inside Promise.all. A sibling
+    // check logging during that window had its output silently captured into
+    // the bridge doctor's JSON buffer, corrupting the JSON.parse and turning a
+    // healthy bridge result into remote_bridge_doctor_error.
+    const { runAggregateDoctor } = await import(
+      "../../../src/cli/commands/doctor/aggregate.js"
+    );
+
+    // Keep the bridge doctor in-flight long enough for the sibling to log.
+    checkRemoteHealth.mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return {
+        ok: true,
+        version: "1.2.3",
+        uptimeSeconds: 100,
+        authProfileIdHash: "auth-hash-123",
+        providerLocks: ["chatgpt", "gemini"],
+      };
+    });
+
+    const providerEnvelope = (provider: "chatgpt" | "gemini") => ({
+      schema_version: "provider_doctor.v1" as const,
+      provider,
+      ok: true,
+      status: "ready" as const,
+      requested: {},
+      checks: [],
+      blockers: [],
+      warnings: [],
+      next_command: null,
+      fix_command: null,
+    });
+
+    const result = await runAggregateDoctor(
+      {
+        json: true,
+        chatgptDoctor: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          console.log("sibling-check-log-line");
+          return providerEnvelope("chatgpt");
+        },
+        geminiDoctor: async () => providerEnvelope("gemini"),
+        sessionStorageCheck: async () => ({
+          component: "session_storage",
+          status: "pass" as const,
+          code: "session_storage_pass",
+          message: "ok",
+          retry_safe: true,
+        }),
+      },
+      { stdout: () => {} },
+    );
+
+    // The sibling's output must reach the real console.log...
+    expect(logSpy).toHaveBeenCalledWith("sibling-check-log-line");
+    // ...and must not corrupt the bridge doctor's captured JSON.
+    expect(result.data.remote_bridge.status).toBe("pass");
+    expect(result.data.remote_bridge.code).toBe("remote_bridge_healthy");
+  });
 });

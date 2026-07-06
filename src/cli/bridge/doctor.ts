@@ -18,6 +18,10 @@ export interface BridgeDoctorCliOptions {
   json?: boolean;
 }
 
+export interface BridgeDoctorIo {
+  stdout?: (text: string) => void;
+}
+
 type ResolveRemoteServiceConfigInput = Parameters<typeof resolveRemoteServiceConfig>[0];
 type ResolvedRemoteServiceConfig = ReturnType<typeof resolveRemoteServiceConfig>;
 
@@ -56,7 +60,11 @@ function resolveRemoteServiceConfigForDoctor(
   }
 }
 
-export async function runBridgeDoctor(options: BridgeDoctorCliOptions): Promise<void> {
+export async function runBridgeDoctor(
+  options: BridgeDoctorCliOptions,
+  io: BridgeDoctorIo = {},
+): Promise<void> {
+  const writer = io.stdout ?? ((text: string) => console.log(text));
   const {
     config: userConfig,
     path: configPath,
@@ -76,7 +84,7 @@ export async function runBridgeDoctor(options: BridgeDoctorCliOptions): Promise<
   if (options.json) {
     const { report } = await buildRemoteEndpointReport({ resolved: resolvedRemote });
     const annotated = annotateClientVersion(report);
-    console.log(JSON.stringify(annotated, null, 2));
+    writer(JSON.stringify(annotated, null, 2));
     process.exitCode = isHealthyReport(report) ? 0 : 1;
     return;
   }
@@ -221,7 +229,7 @@ export async function runBridgeDoctor(options: BridgeDoctorCliOptions): Promise<
     }
   }
 
-  console.log(lines.join("\n"));
+  writer(lines.join("\n"));
 
   process.exitCode = fail.length ? 1 : 0;
 }
