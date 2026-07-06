@@ -580,6 +580,10 @@ export function createGeminiWebExecutor(
             : 120_000;
 
         const timeoutMs = Math.min(configTimeout ?? defaultTimeoutMs, 600_000);
+        // Session identity for stream-ownership/cross-talk guards: threaded
+        // into every StreamGenerate parse so typed capture errors carry the
+        // run they belong to (oracle-svt cross-talk class).
+        const httpSessionId = runOptions.sessionId ?? `gemini-web-http-${randomUUID()}`;
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), timeoutMs);
         // Caller-gone abort (BrowserRunOptions.signal): merge the caller's
@@ -605,6 +609,7 @@ export function createGeminiWebExecutor(
               cookieMap: cookieResult.cookieMap,
               chatMetadata: null,
               signal: controller.signal,
+              sessionId: httpSessionId,
             });
             const editPrompt = `Use image generation tool to ${prompt}`;
             const out = await runGeminiWebWithFallback({
@@ -614,6 +619,11 @@ export function createGeminiWebExecutor(
               cookieMap: cookieResult.cookieMap,
               chatMetadata: intro.metadata,
               signal: controller.signal,
+              sessionId: httpSessionId,
+              // Gemini mints a fresh rcid per turn; if this continuation turn
+              // echoes the intro turn's candidate id we captured stale content
+              // (cross-talk/replay) and the parse guard fails retry-safe.
+              previousResponseCandidateId: intro.responseCandidateId ?? null,
             });
             response = {
               text: out.text ?? null,
@@ -644,6 +654,7 @@ export function createGeminiWebExecutor(
               cookieMap: cookieResult.cookieMap,
               chatMetadata: null,
               signal: controller.signal,
+              sessionId: httpSessionId,
             });
             response = {
               text: out.text ?? null,
@@ -672,6 +683,7 @@ export function createGeminiWebExecutor(
               cookieMap: cookieResult.cookieMap,
               chatMetadata: null,
               signal: controller.signal,
+              sessionId: httpSessionId,
             });
             response = {
               text: out.text ?? null,

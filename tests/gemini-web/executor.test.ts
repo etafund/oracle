@@ -253,6 +253,7 @@ describe("gemini-web executor", () => {
         metadata: { chat: "meta" },
         images: [],
         effectiveModel: "gemini-3.1-pro",
+        responseCandidateId: "rcid-intro",
       })
       .mockResolvedValueOnce({
         rawResponseText: "",
@@ -281,8 +282,17 @@ describe("gemini-web executor", () => {
     );
     expect(runGeminiWebWithFallback).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ chatMetadata: { chat: "meta" } }),
+      expect.objectContaining({
+        chatMetadata: { chat: "meta" },
+        // Continuation turns must carry the intro turn's observed rcid so the
+        // stream-ownership guard can reject stale/cross-talk captures.
+        previousResponseCandidateId: "rcid-intro",
+        sessionId: expect.stringMatching(/^gemini-web-http-/),
+      }),
     );
+    const firstCall = runGeminiWebWithFallback.mock.calls[0]?.[0] as { sessionId?: string };
+    const secondCall = runGeminiWebWithFallback.mock.calls[1]?.[0] as { sessionId?: string };
+    expect(firstCall.sessionId).toBe(secondCall.sessionId);
     expect(saveFirstGeminiImageFromOutput).toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),

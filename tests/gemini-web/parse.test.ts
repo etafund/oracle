@@ -174,6 +174,40 @@ describe("gemini-web parseGeminiStreamGenerateResponse", () => {
     }
   });
 
+  it("fails stale candidate echoes when the response reuses the previous turn's rcid", () => {
+    const raw = makeRawResponseWithBody(makeBodyWithText("rcid-turn-1", "stale turn-1 answer"));
+
+    expect(() =>
+      parseGeminiStreamGenerateResponseStrict(raw, {
+        previousResponseCandidateId: "rcid-turn-1",
+        currentSessionId: "session-2",
+      }),
+    ).toThrow(GeminiStreamCaptureError);
+    try {
+      parseGeminiStreamGenerateResponseStrict(raw, {
+        previousResponseCandidateId: "rcid-turn-1",
+        currentSessionId: "session-2",
+      });
+    } catch (error) {
+      expect((error as GeminiStreamCaptureError).code).toBe("output_capture_unverified");
+      expect((error as GeminiStreamCaptureError).retry_safe).toBe(true);
+      expect((error as GeminiStreamCaptureError).details.observed_response_candidate_id).toBe(
+        "rcid-turn-1",
+      );
+    }
+  });
+
+  it("accepts continuation responses that carry a fresh rcid", () => {
+    const raw = makeRawResponseWithBody(makeBodyWithText("rcid-turn-2", "turn-2 answer"));
+
+    const parsed = parseGeminiStreamGenerateResponseStrict(raw, {
+      previousResponseCandidateId: "rcid-turn-1",
+      currentSessionId: "session-2",
+    });
+    expect(parsed.text).toBe("turn-2 answer");
+    expect(parsed.capture.observed_response_candidate_id).toBe("rcid-turn-2");
+  });
+
   it("extracts model-unavailable error code 1052 from response json", () => {
     const responseJson: unknown[] = [];
     // errorCode path: [0,5,2,0,1,0]

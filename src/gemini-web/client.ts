@@ -9,7 +9,7 @@ import {
   downloadGeminiImageWithCookies,
   isTrustedGeminiImageDownloadUrl,
 } from "./image_download_cookie.js";
-import { GeminiStreamCaptureError } from "./streamSafeguards.js";
+import { GeminiStreamCaptureError, sha256OfGeminiText } from "./streamSafeguards.js";
 import {
   buildGeminiWebModelHeader,
   FALLBACK_GEMINI_WEB_MODEL,
@@ -25,6 +25,20 @@ export interface GeminiWebRunInput {
   cookieMap: Record<string, string>;
   chatMetadata?: unknown;
   signal?: AbortSignal;
+  /**
+   * Candidate id (rcid) this response is required to carry. When set, a
+   * response carrying a different candidate id fails with a retry-safe
+   * GeminiStreamCaptureError instead of being returned as this turn's answer.
+   */
+  expectedResponseCandidateId?: string | null;
+  /**
+   * The previous turn's observed response-candidate id. Gemini mints a fresh
+   * rcid per turn, so a continuation response that echoes this id is stale
+   * captured content (replay / cross-talk) and fails retry-safe.
+   */
+  previousResponseCandidateId?: string | null;
+  /** Session identity threaded into capture summaries and typed capture errors. */
+  sessionId?: string | null;
 }
 
 export interface GeminiWebCandidateImage {
@@ -42,6 +56,8 @@ export interface GeminiWebRunOutput {
   images: GeminiWebCandidateImage[];
   errorCode?: number;
   errorMessage?: string;
+  /** Observed response-candidate id (rcid) of this turn, for continuation guards. */
+  responseCandidateId?: string | null;
 }
 
 const USER_AGENT =
@@ -188,15 +204,11 @@ function buildGeminiFReqPayload(
   return JSON.stringify([null, JSON.stringify(innerList)]);
 }
 
-export function parseGeminiStreamGenerateResponse(rawText: string): {
-  metadata: unknown;
-  text: string;
-  thoughts: string | null;
-  images: GeminiWebCandidateImage[];
-  errorCode?: number;
-} {
-  return parseGeminiStreamGenerateResponseHardened(rawText);
-}
+// Re-export the hardened parser with its full signature intact. A previous
+// same-named local wrapper narrowed the signature to `(rawText: string)`,
+// silently dropping GeminiStreamParseOptions and making the stream-ownership
+// guard unreachable from the production HTTP path.
+export { parseGeminiStreamGenerateResponse } from "./parse.js";
 
 export function isGeminiModelUnavailable(errorCode: number | undefined): boolean {
   return errorCode === 1052;
@@ -248,7 +260,12 @@ export async function runGeminiWebOnce(input: GeminiWebRunInput): Promise<Gemini
   }
 
   try {
-    const parsed = parseGeminiStreamGenerateResponse(rawResponseText);
+    const parsed = parseGeminiStreamGenerateResponseHardened(rawResponseText, {
+      expectedResponseCandidateId: input.expectedResponseCandidateId ?? null,
+      previousResponseCandidateId: input.previousResponseCandidateId ?? null,
+      currentPromptSha256: sha256OfGeminiText(input.prompt),
+      currentSessionId: input.sessionId ?? null,
+    });
     return {
       rawResponseText,
       text: parsed.text ?? "",
@@ -256,6 +273,7 @@ export async function runGeminiWebOnce(input: GeminiWebRunInput): Promise<Gemini
       metadata: parsed.metadata,
       images: parsed.images,
       errorCode: parsed.errorCode,
+      responseCandidateId: parsed.capture.observed_response_candidate_id,
     };
   } catch (error) {
     if (error instanceof GeminiStreamCaptureError) {

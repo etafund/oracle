@@ -43,6 +43,13 @@ export class GeminiStreamCaptureError extends Error {
 
 export interface GeminiStreamOwnershipInput {
   readonly expectedResponseCandidateId?: string | null;
+  /**
+   * The previous turn's observed response-candidate id (rcid). Gemini mints a
+   * fresh rcid for every turn, so a continuation response that still carries
+   * the previous turn's rcid is stale captured content (replay / cross-talk),
+   * not this turn's answer.
+   */
+  readonly previousResponseCandidateId?: string | null;
   readonly observedResponseCandidateId?: string | null;
   readonly currentPromptSha256?: `sha256:${string}` | string | null;
   readonly currentSessionId?: string | null;
@@ -115,21 +122,39 @@ export function buildGeminiStreamCaptureSummary(
 
 export function assertGeminiStreamOwnership(input: GeminiStreamOwnershipInput): void {
   const expected = normalizeIdentifier(input.expectedResponseCandidateId);
+  const previous = normalizeIdentifier(input.previousResponseCandidateId);
   const observed = normalizeIdentifier(input.observedResponseCandidateId);
-  if (!expected || !observed || expected === observed) {
+  if (!observed) {
     return;
   }
-  throw new GeminiStreamCaptureError({
-    code: "output_capture_unverified",
-    message: `Gemini stream candidate ownership mismatch: expected ${expected}, observed ${observed}.`,
-    retry_safe: true,
-    capture_method: input.captureMethod ?? "stream_generate_latest_non_empty_candidate",
-    confidence: "low",
-    current_prompt_sha256: normalizeSha256(input.currentPromptSha256),
-    current_session_id: input.currentSessionId ?? null,
-    expected_response_candidate_id: expected,
-    observed_response_candidate_id: observed,
-  });
+  if (expected && expected !== observed) {
+    throw new GeminiStreamCaptureError({
+      code: "output_capture_unverified",
+      message: `Gemini stream candidate ownership mismatch: expected ${expected}, observed ${observed}.`,
+      retry_safe: true,
+      capture_method: input.captureMethod ?? "stream_generate_latest_non_empty_candidate",
+      confidence: "low",
+      current_prompt_sha256: normalizeSha256(input.currentPromptSha256),
+      current_session_id: input.currentSessionId ?? null,
+      expected_response_candidate_id: expected,
+      observed_response_candidate_id: observed,
+    });
+  }
+  if (previous && previous === observed) {
+    throw new GeminiStreamCaptureError({
+      code: "output_capture_unverified",
+      message:
+        `Gemini stream returned stale candidate ${observed}: the response echoes the previous ` +
+        "turn's candidate id instead of a fresh one for this turn.",
+      retry_safe: true,
+      capture_method: input.captureMethod ?? "stream_generate_latest_non_empty_candidate",
+      confidence: "low",
+      current_prompt_sha256: normalizeSha256(input.currentPromptSha256),
+      current_session_id: input.currentSessionId ?? null,
+      expected_response_candidate_id: expected,
+      observed_response_candidate_id: observed,
+    });
+  }
 }
 
 export function assertGeminiStreamNonEmpty(

@@ -15,6 +15,8 @@ export interface GeminiWebCandidateImage {
 
 export interface GeminiStreamParseOptions {
   readonly expectedResponseCandidateId?: string | null;
+  /** Previous turn's observed rcid; a response echoing it is stale content. */
+  readonly previousResponseCandidateId?: string | null;
   readonly currentPromptSha256?: `sha256:${string}` | string | null;
   readonly currentSessionId?: string | null;
 }
@@ -117,6 +119,7 @@ export function parseGeminiStreamGenerateResponse(
 
   assertGeminiStreamOwnership({
     expectedResponseCandidateId: options.expectedResponseCandidateId,
+    previousResponseCandidateId: options.previousResponseCandidateId,
     observedResponseCandidateId,
     currentPromptSha256: options.currentPromptSha256,
     currentSessionId: options.currentSessionId,
