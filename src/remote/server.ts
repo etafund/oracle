@@ -627,6 +627,10 @@ export async function createRemoteServer(
     // Populated as soon as a /runs request mints its identity so even the
     // outermost failure handler can attribute the wreckage to a run id.
     let requestRunId: string | null = null;
+    // Flipped only after the /runs bearer check passes. The outermost failure
+    // handler consults it so pre-auth exceptions never leak lane/account
+    // identity headers to unauthenticated callers.
+    let requestAuthorized = false;
     // Single-flight ownership: only the /runs request that actually flipped
     // `admitting`/`busy` may reset them from the outermost failure handler.
     // A throwing read-path handler (/status, /health, /ready, artifacts) must
@@ -756,17 +760,23 @@ export async function createRemoteServer(
         if (res.destroyed || res.writableEnded) {
           return;
         }
+        // Identity headers (lane/account) and the run id are correlation data
+        // for AUTHENTICATED peers. An unauthorized refusal happens before the
+        // bearer check passed, so it must match /health and /ready's minimal
+        // {error:"unauthorized"} shape: fleet identity must never be
+        // enumerable by unauthenticated probes.
+        const revealIdentity = code !== "unauthorized";
         if (!res.headersSent) {
           // `Connection: close` so a peer mid-upload does not keep streaming
           // into a connection whose request we already refused.
           res.writeHead(status, {
             "Content-Type": "application/json",
             Connection: "close",
-            ...identityHeaders(runId),
+            ...(revealIdentity ? identityHeaders(runId) : {}),
             ...extraHeaders,
           });
         }
-        res.end(JSON.stringify({ error: code, runId, ...extra }));
+        res.end(JSON.stringify(revealIdentity ? { error: code, runId, ...extra } : { error: code }));
       };
 
       if (!isAuthorizedBearer(req.headers.authorization, authToken)) {
@@ -778,6 +788,7 @@ export async function createRemoteServer(
         refuseRun(401, "unauthorized");
         return;
       }
+      requestAuthorized = true;
       if (admitting || busy) {
         if (verbose) {
           logger(
@@ -1281,9 +1292,12 @@ export async function createRemoteServer(
         `[serve] Unhandled request failure${requestRunId ? ` for run ${requestRunId}` : ""} from ${formatSocket(req)}: ${message}`,
       );
       if (!res.headersSent) {
+        // Identity headers only after the bearer check passed: requestRunId
+        // is minted pre-auth, so an exception thrown before authorization
+        // must not leak lane/account identity to an unauthenticated caller.
         res.writeHead(500, {
           "Content-Type": "application/json",
-          ...(requestRunId ? identityHeaders(requestRunId) : {}),
+          ...(requestRunId && requestAuthorized ? identityHeaders(requestRunId) : {}),
         });
       }
       res.end(

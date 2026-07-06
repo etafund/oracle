@@ -8,7 +8,10 @@ import type { BrowserRunResult } from "../../src/browserMode.js";
 // - a run id is minted at request arrival, before any side effect, so every
 //   outcome (accepted, unauthorized, busy, invalid body) is attributable;
 // - X-Oracle-Run-Id / X-Oracle-Lane-Id / X-Oracle-Account-Id response headers
-//   are present on accepted runs AND refusals;
+//   are present on accepted runs AND authenticated refusals (busy, invalid
+//   body, quarantine) — but NEVER on unauthorized refusals, which must match
+//   /health and /ready's minimal {error:"unauthorized"} shape so fleet
+//   identity cannot be enumerated by unauthenticated probes;
 // - every NDJSON event of a run carries the same run id as the response header.
 
 const CAN_LISTEN_LOCALHOST =
@@ -103,23 +106,34 @@ describe("remote server run identity", () => {
   );
 
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
-    "unauthorized refusals still carry a run id and default lane/account identity",
+    "unauthorized refusals never leak run/lane/account identity (headers or body)",
     async () => {
+      // Regression: POST /runs with a bad token used to return the 401 WITH
+      // X-Oracle-Account-Id / X-Oracle-Lane-Id headers and a runId body field,
+      // letting unauthenticated callers enumerate fleet identity that /health
+      // and /ready deliberately withhold on their own 401s.
       const server = await createRemoteServer(
-        { host: "127.0.0.1", port: 0, token: "secret", logger: () => {} },
+        {
+          host: "127.0.0.1",
+          port: 0,
+          token: "secret",
+          logger: () => {},
+          laneId: "acct7-9700",
+          accountId: "acct7",
+        },
         { runBrowser: async () => MINIMAL_RESULT },
       );
 
       try {
-        const response = await postRun(server.port, JSON.stringify(validPayload()), "wrong-token");
-        expect(response.statusCode).toBe(401);
-        const runId = String(response.headers["x-oracle-run-id"]);
-        expect(runId).toMatch(UUID_RE);
-        expect(response.headers["x-oracle-account-id"]).toBe("acct1");
-        expect(response.headers["x-oracle-lane-id"]).toBe(`acct1-${server.port}`);
-        const body = JSON.parse(response.body) as Record<string, unknown>;
-        expect(body.error).toBe("unauthorized");
-        expect(body.runId).toBe(runId);
+        for (const token of ["wrong-token", ""]) {
+          const response = await postRun(server.port, JSON.stringify(validPayload()), token);
+          expect(response.statusCode).toBe(401);
+          expect(response.headers["x-oracle-run-id"]).toBeUndefined();
+          expect(response.headers["x-oracle-lane-id"]).toBeUndefined();
+          expect(response.headers["x-oracle-account-id"]).toBeUndefined();
+          // Same minimal shape as /health and /ready's 401.
+          expect(JSON.parse(response.body)).toEqual({ error: "unauthorized" });
+        }
       } finally {
         await server.close();
       }
