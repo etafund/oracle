@@ -628,13 +628,25 @@ export async function createRemoteServer(
           // Fail-closed liveness: an attach-only worker without an
           // attachable, owned Chrome must not advertise itself as ready.
           const probe = await probeAttachTargetCached();
+          // /status stays unauthenticated so external liveness probes keep
+          // working without a token, but the probe DIAGNOSTICS
+          // (chromeReachable + reason, e.g. "cdp-unreachable: ...",
+          // "attach-target-owner-mismatch") describe substrate/ownership
+          // state that /ready deliberately gates behind the bearer token.
+          // Unauthenticated callers only get the bare ok boolean; the
+          // detailed fields require the same token as /health and /ready.
+          const authorized = isAuthorizedBearer(req.headers.authorization, authToken);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(
             JSON.stringify({
               ok: probe.ok,
               attachOnly: true,
-              chromeReachable: probe.ok,
-              ...(probe.reason ? { reason: probe.reason } : {}),
+              ...(authorized
+                ? {
+                    chromeReachable: probe.ok,
+                    ...(probe.reason ? { reason: probe.reason } : {}),
+                  }
+                : {}),
             }),
           );
           return;

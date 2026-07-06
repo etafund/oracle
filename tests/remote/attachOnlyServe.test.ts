@@ -234,10 +234,56 @@ describe("attach-only serve: fail-closed startup", () => {
         await new Promise((resolve) => setTimeout(resolve, 750));
         expect(launchMock).not.toHaveBeenCalled();
 
-        const response = await fetch(`http://127.0.0.1:${port}/status`);
+        const response = await fetch(`http://127.0.0.1:${port}/status`, {
+          headers: { authorization: "Bearer secret" },
+        });
         const body = (await response.json()) as { ok?: boolean; reason?: string };
         expect(body.ok).toBe(false);
         expect(String(body.reason)).toContain("cdp-unreachable");
+      } finally {
+        await rm(profileDir, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
+
+  maybeTest(
+    "unauthenticated /status stays a bare liveness boolean: no probe reason or chromeReachable leak",
+    async () => {
+      const profileDir = await mkdtemp(path.join(os.tmpdir(), "oracle-attach-only-"));
+      try {
+        const handle = await startServe(profileDir);
+        const port = await waitForListenPort(handle);
+
+        // Regression: /status used to echo the raw attach-probe diagnostics
+        // (reason like "cdp-unreachable: ..." / "attach-target-owner-mismatch"
+        // plus chromeReachable) to ANY caller, while /health and /ready gate
+        // the same substrate/ownership state behind the bearer token. An
+        // unauthenticated caller must only see the bare ok boolean.
+        const unauthenticated = await fetch(`http://127.0.0.1:${port}/status`);
+        expect(unauthenticated.status).toBe(200);
+        const bareBody = (await unauthenticated.json()) as Record<string, unknown>;
+        expect(bareBody.ok).toBe(false);
+        expect(bareBody.attachOnly).toBe(true);
+        expect(bareBody).not.toHaveProperty("reason");
+        expect(bareBody).not.toHaveProperty("chromeReachable");
+
+        // A wrong token is treated the same as no token: no diagnostics.
+        const badToken = await fetch(`http://127.0.0.1:${port}/status`, {
+          headers: { authorization: "Bearer wrong-token" },
+        });
+        expect(badToken.status).toBe(200);
+        const badTokenBody = (await badToken.json()) as Record<string, unknown>;
+        expect(badTokenBody).not.toHaveProperty("reason");
+        expect(badTokenBody).not.toHaveProperty("chromeReachable");
+
+        // The fleet token still unlocks the diagnostics on the same endpoint.
+        const authorized = await fetch(`http://127.0.0.1:${port}/status`, {
+          headers: { authorization: "Bearer secret" },
+        });
+        const authorizedBody = (await authorized.json()) as Record<string, unknown>;
+        expect(authorizedBody.reason).toBe("no-attach-target-recorded");
+        expect(authorizedBody.chromeReachable).toBe(false);
       } finally {
         await rm(profileDir, { recursive: true, force: true });
       }
@@ -253,7 +299,9 @@ describe("attach-only serve: fail-closed startup", () => {
         const handle = await startServe(profileDir);
         const port = await waitForListenPort(handle);
 
-        const response = await fetch(`http://127.0.0.1:${port}/status`);
+        const response = await fetch(`http://127.0.0.1:${port}/status`, {
+          headers: { authorization: "Bearer secret" },
+        });
         const body = (await response.json()) as { ok?: boolean; reason?: string };
         // Fail-closed readiness: with neither a live DevTools endpoint nor an
         // owned browser, the service must not advertise itself as ready.
@@ -311,7 +359,9 @@ describe("attach-only serve: fail-closed admission", () => {
         const handle = await startServe(profileDir);
         const port = await waitForListenPort(handle);
 
-        const response = await fetch(`http://127.0.0.1:${port}/status`);
+        const response = await fetch(`http://127.0.0.1:${port}/status`, {
+          headers: { authorization: "Bearer secret" },
+        });
         const body = (await response.json()) as { ok?: boolean; chromeReachable?: boolean };
         expect(body.ok).toBe(true);
         expect(body.chromeReachable).toBe(true);
