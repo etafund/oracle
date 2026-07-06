@@ -218,6 +218,54 @@ describe("remote server admission limits", () => {
   );
 
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "/health reports the admitting window as unavailable, matching /ready and the /runs 409 gate",
+    async () => {
+      let runs = 0;
+      const server = await createRemoteServer(
+        { host: "127.0.0.1", port: 0, token: "secret", logger: () => {} },
+        {
+          runBrowser: async () => {
+            runs += 1;
+            return MINIMAL_RESULT;
+          },
+        },
+      );
+
+      try {
+        const body = validPayload();
+        // A run stalls mid-upload: auth passed, admitting held, busy not yet
+        // flipped. A POST /runs sent right now would be refused 409, so
+        // /health must NOT advertise idle-ready (the race this regression
+        // test pins: /health used to read only `busy` and report 200
+        // idle-ready during the admit window).
+        const stalled = openRunRequest(server.port, "secret", Buffer.byteLength(body));
+        stalled.req.write(body.slice(0, 10));
+        await delay(50);
+
+        const health = await getJson(server.port, "/health", "secret");
+        expect(health.statusCode).toBe(409);
+        expect(health.json?.ok).toBe(false);
+        expect(health.json?.busy).toBe(true);
+        expect(health.json?.state).toBe("admitting");
+
+        // The stalled run completes; /health returns to idle-ready.
+        stalled.req.write(body.slice(10));
+        stalled.req.end();
+        const result = await stalled.response;
+        expect(result.statusCode).toBe(200);
+        expect(runs).toBe(1);
+
+        const idle = await getJson(server.port, "/health", "secret");
+        expect(idle.statusCode).toBe(200);
+        expect(idle.json?.busy).toBe(false);
+        expect(idle.json?.state).toBe("idle-ready");
+      } finally {
+        await server.close();
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
     "a client disconnect during body read releases the admission slot",
     async () => {
       let runs = 0;

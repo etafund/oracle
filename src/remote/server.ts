@@ -684,10 +684,11 @@ export async function createRemoteServer(
         const health = buildHealthResponse({
           startedAt,
           busy,
+          admitting,
           activeRun,
           effectiveConfig: effectiveRunConfig,
         });
-        res.writeHead(busy ? 409 : 200, { "Content-Type": "application/json" });
+        res.writeHead(health.ok ? 200 : 409, { "Content-Type": "application/json" });
         res.end(JSON.stringify(health));
         return;
       }
@@ -1369,11 +1370,18 @@ export async function createRemoteServer(
 function buildHealthResponse({
   startedAt,
   busy,
+  admitting,
   activeRun,
   effectiveConfig,
 }: {
   startedAt: number;
   busy: boolean;
+  // The admit window (request body being read/validated, `busy` not yet
+  // flipped) is NOT idle: a concurrent POST /runs is refused 409 during it,
+  // and /ready reports 409 state:"admitting" for the same reason. /health
+  // must agree, or a load-balancer gating on /health routes a run straight
+  // into a "busy" refusal.
+  admitting: boolean;
   activeRun: ActiveRunState | null;
   effectiveConfig: {
     timeoutMs: number | null | undefined;
@@ -1396,20 +1404,25 @@ function buildHealthResponse({
   };
   error?: string;
 } {
+  // Match the single-flight gate at POST /runs (`admitting || busy`): a run
+  // sent while either flag is up is refused 409 "busy", so /health reports
+  // unavailable for both. `busy` keeps that meaning for callers that only
+  // read the boolean; `state` distinguishes the two phases.
+  const unavailable = busy || admitting;
   return {
-    ok: !busy,
+    ok: !unavailable,
     version: getCliVersion(),
     build: getOracleBuildInfo(),
     uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
-    busy,
-    state: busy ? classifyActiveRunReadinessState(activeRun) : "idle-ready",
+    busy: unavailable,
+    state: busy ? classifyActiveRunReadinessState(activeRun) : admitting ? "admitting" : "idle-ready",
     capabilities: ARTIFACT_CAPABILITIES,
     // Integration point for the dedicated /ready endpoint: it should surface
     // these exact field names (timeoutMs, profileLockTimeoutMs,
     // maxConcurrentTabs) so fleet tooling reads one shape everywhere.
     effectiveConfig,
     ...(activeRun ? { activeRun: serializeActiveRun(activeRun) } : {}),
-    ...(busy ? { error: "busy" } : {}),
+    ...(unavailable ? { error: "busy" } : {}),
   };
 }
 
