@@ -2619,18 +2619,19 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     });
     let cleanupProfileLock: ProfileRunLock | null = null;
     let terminatedRecordedChrome = false;
-    let otherActiveBrowserTabLeases: boolean | null = null;
     const hasOtherActiveLeases = async () => {
       if (!manualLogin || !tabLease) {
         return false;
       }
-      if (otherActiveBrowserTabLeases === null) {
-        otherActiveBrowserTabLeases = await hasOtherActiveBrowserTabLeases(
-          userDataDir,
-          tabLease.id,
-        );
-      }
-      return otherActiveBrowserTabLeases;
+      // Always re-read the registry: this gate is called both before and
+      // after cleanupProfileLock is acquired, and a lease landscape that was
+      // empty at the first call can gain a concurrent worker's lease by the
+      // second. Memoizing across that boundary would let a stale "no other
+      // leases" result survive into the Chrome-termination decision and
+      // SIGTERM a Chrome another lane just started using. The registry read
+      // itself is already lock-protected internally, so there's no
+      // correctness reason to cache it here.
+      return await hasOtherActiveBrowserTabLeases(userDataDir, tabLease.id);
     };
     if (
       runStatus === "complete" &&
