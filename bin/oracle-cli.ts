@@ -1781,47 +1781,56 @@ function hasExplicitAzureOption(optionUsesDefault: (name: string) => boolean): b
   );
 }
 
-function collectLaneBrowserConflictFlags(
+// Browser-only options that do not carry a browser-only name prefix but must
+// still count as lane browser conflicts (they force a browser/protected route).
+const LANE_BROWSER_CONFLICT_EXTRA_FLAGS: ReadonlySet<string> = new Set([
+  "copyProfile",
+  "geminiDeepThink",
+  "deepThink",
+  "geminiDeepThinkFallback",
+  "evidence",
+  "youtube",
+  "generateImage",
+  "editImage",
+]);
+
+// Option keys that match a browser-only prefix below but are NOT browser-only
+// flags. Empty today; add here if a future prefixed option is engine-neutral.
+const LANE_BROWSER_CONFLICT_EXEMPT_FLAGS: ReadonlySet<string> = new Set([]);
+
+// Any option whose camelCase key starts with one of these prefixes is treated
+// as browser-only for lane conflict detection.
+const LANE_BROWSER_CONFLICT_FLAG_PREFIXES = ["browser", "chatgpt", "remote"] as const;
+
+export function isLaneBrowserConflictFlagName(name: string): boolean {
+  if (LANE_BROWSER_CONFLICT_EXEMPT_FLAGS.has(name)) {
+    return false;
+  }
+  if (LANE_BROWSER_CONFLICT_EXTRA_FLAGS.has(name)) {
+    return true;
+  }
+  return LANE_BROWSER_CONFLICT_FLAG_PREFIXES.some((prefix) => name.startsWith(prefix));
+}
+
+export function collectLaneBrowserConflictFlags(
   options: CliOptions,
   optionUsesDefault: (name: string) => boolean,
 ): string[] {
-  const flagNames = [
-    "browser",
-    "browserChromeProfile",
-    "browserChromePath",
-    "browserCookiePath",
-    "browserAttachRunning",
-    "chatgptUrl",
-    "browserUrl",
-    "browserTimeout",
-    "browserInputTimeout",
-    "browserAttachmentTimeout",
-    "browserModelStrategy",
-    "browserResearch",
-    "browserAttachments",
-    "browserInlineFiles",
-    "browserBundleFiles",
-    "browserBundleFormat",
-    "browserHeadless",
-    "browserHideWindow",
-    "browserKeepBrowser",
-    "browserTab",
-    "browserManualLogin",
-    "copyProfile",
-    "geminiDeepThink",
-    "deepThink",
-    "geminiDeepThinkFallback",
-    "evidence",
-    "youtube",
-    "generateImage",
-    "editImage",
-    "remoteChrome",
-    "remoteHost",
-    "remoteBrowser",
-  ] as const;
-  return flagNames.filter((name) => {
-    const value = options[name];
+  // Derive the conflict list from the runtime option keys instead of a
+  // hand-maintained array so newly added browser-only flags (historically
+  // --browser-follow-up, --browser-thinking-time, --remote-token, ...) cannot
+  // silently bypass lane conflict detection for lanes that refuse browser
+  // flags (e.g. fable-local's `--browser-*` refusedPatterns).
+  return Object.keys(options).filter((name) => {
+    if (!isLaneBrowserConflictFlagName(name)) {
+      return false;
+    }
+    const value = (options as Record<string, unknown>)[name];
     if (value === undefined || value === false || value === null) {
+      return false;
+    }
+    // Repeatable options (e.g. --browser-follow-up) default to [].
+    if (Array.isArray(value) && value.length === 0) {
       return false;
     }
     return !optionUsesDefault(name) || value === true;
