@@ -123,12 +123,19 @@ function resolveUserConfigPath(): string {
   return path.join(getOracleHomeDir(), "config.json");
 }
 
+export interface LoadedConfigFile {
+  path: string;
+  config: UserConfig;
+}
+
 export interface LoadConfigResult {
   config: UserConfig;
   /** The user config path; `loaded` refers to this path only. */
   path: string;
   /** All config files that were actually loaded, including project configs. */
   paths: string[];
+  /** The parsed contents of each loaded config file, in load order. */
+  loadedConfigs: LoadedConfigFile[];
   loaded: boolean;
 }
 
@@ -215,6 +222,7 @@ export async function loadUserConfig(
     config: merged,
     path: userConfigPath,
     paths: loadedPaths,
+    loadedConfigs: loadedConfigs.map((entry) => ({ path: entry.path, config: entry.config })),
     loaded: userConfig.loaded,
   };
 }

@@ -1,6 +1,3 @@
-import fs from "node:fs/promises";
-import JSON5 from "json5";
-
 import {
   DEFAULT_USER_CONFIG,
   loadUserConfig,
@@ -72,11 +69,6 @@ export interface ConfigExplainCommandIo {
 
 type JsonObject = Record<string, unknown>;
 
-interface ParsedLoadedConfig {
-  readonly path: string;
-  readonly config: UserConfig;
-}
-
 const SECRET_ASSIGNMENT_PATTERN =
   /\b([A-Za-z0-9_.-]*(?:authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|token|secret|cookie)[A-Za-z0-9_.-]*)=([^;&\s]+)/gi;
 const BEARER_PATTERN = /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi;
@@ -95,7 +87,9 @@ export async function buildConfigExplainReport(
   const env = options.env ?? process.env;
   const now = options.now ?? new Date();
   const loaded = await loadUserConfig({ cwd, includeProject, env });
-  const parsedConfigs = await readLoadedConfigs(loaded.paths);
+  // Reuse the configs already parsed by loadUserConfig instead of re-reading
+  // the files, which could throw if a file was edited or removed in between.
+  const parsedConfigs = loaded.loadedConfigs;
   const userPath = loaded.path;
   const sourceByPath = new Map<string, ConfigExplainSource>();
 
@@ -197,17 +191,6 @@ export function formatConfigExplainHuman(report: ConfigExplainReport): string {
 
   lines.push("");
   return `${lines.join("\n")}\n`;
-}
-
-async function readLoadedConfigs(paths: readonly string[]): Promise<ParsedLoadedConfig[]> {
-  const parsed: ParsedLoadedConfig[] = [];
-  for (const configPath of paths) {
-    const raw = await fs.readFile(configPath, "utf8");
-    const value = JSON5.parse(raw);
-    if (!isRecord(value)) continue;
-    parsed.push({ path: configPath, config: value as UserConfig });
-  }
-  return parsed;
 }
 
 function annotateSource(

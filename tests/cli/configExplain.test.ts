@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -286,6 +286,45 @@ describe("config explain helper", () => {
 
     expect(humanOutput.join("")).toContain("🧿 oracle config explain");
     expect(humanOutput.join("")).toContain('engine: "browser" (default)');
+  });
+
+  test("does not fail when a config file disappears after the loader read it", async () => {
+    const userConfigPath = path.join(tempDir, "config.json");
+    await fs.writeFile(userConfigPath, '{ model: "gpt-5.5", engine: "api" }', "utf8");
+
+    // Simulate an editor autosave/delete racing `oracle config explain`: the
+    // moment the config loader finishes reading the file, remove it so any
+    // redundant second read would throw ENOENT (regression: configExplain
+    // used to re-read loaded.paths without error handling).
+    const realReadFile = fs.readFile.bind(fs);
+    const readFileSpy = vi
+      .spyOn(fs, "readFile")
+      .mockImplementation(async (...args: Parameters<typeof fs.readFile>) => {
+        const result = await realReadFile(...args);
+        if (args[0] === userConfigPath) {
+          await fs.rm(userConfigPath, { force: true });
+        }
+        return result;
+      });
+
+    try {
+      const report = await buildConfigExplainReport({
+        cwd: tempDir,
+        includeProject: false,
+        env: {} as NodeJS.ProcessEnv,
+        now: NOW,
+      });
+
+      expect(report.user_config_loaded).toBe(true);
+      expect(report.files).toEqual([{ kind: "user", path: userConfigPath, loaded: true }]);
+      expect(report.effective_config).toMatchObject({ model: "gpt-5.5", engine: "api" });
+      expect(entry(report.entries, "model")).toMatchObject({
+        value: "gpt-5.5",
+        source: { kind: "user", path: userConfigPath },
+      });
+    } finally {
+      readFileSpy.mockRestore();
+    }
   });
 });
 
