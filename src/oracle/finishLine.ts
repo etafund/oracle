@@ -4,16 +4,23 @@ export function formatElapsedCompact(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) {
     return "unknown";
   }
-  if (ms < 60_000) {
-    return `${(ms / 1000).toFixed(1)}s`;
+  let effectiveMs = ms;
+  if (effectiveMs < 60_000) {
+    const secondsLabel = (effectiveMs / 1000).toFixed(1);
+    // toFixed rounds up, so ms in [59950, 60000) would otherwise render as
+    // the nonsensical "60.0s" — roll those over into the minute format.
+    if (secondsLabel !== "60.0") {
+      return `${secondsLabel}s`;
+    }
+    effectiveMs = 60_000;
   }
-  if (ms < 60 * 60_000) {
-    const minutes = Math.floor(ms / 60_000);
-    const seconds = Math.floor((ms % 60_000) / 1000);
+  if (effectiveMs < 60 * 60_000) {
+    const minutes = Math.floor(effectiveMs / 60_000);
+    const seconds = Math.floor((effectiveMs % 60_000) / 1000);
     return `${minutes}m${seconds.toString().padStart(2, "0")}s`;
   }
-  const hours = Math.floor(ms / (60 * 60_000));
-  const minutes = Math.floor((ms % (60 * 60_000)) / 60_000);
+  const hours = Math.floor(effectiveMs / (60 * 60_000));
+  const minutes = Math.floor((effectiveMs % (60 * 60_000)) / 60_000);
   return `${hours}h${minutes.toString().padStart(2, "0")}m`;
 }
 
