@@ -35,14 +35,15 @@ echo "[browser-smoke] reattach flow after controller loss"
 slug="browser-reattach-smoke"
 meta="$HOME/.oracle/sessions/$slug/meta.json"
 logfile="$(mktemp -t oracle-browser-reattach)"
+rm -rf "$HOME/.oracle/sessions/$slug"
 
-# Start a browser run in the background and wait for runtime hints to appear.
+# Start a browser run in the background and wait until the prompt is submitted.
 "${CMD[@]}" --model "$PRO_MODEL" --prompt "Return exactly 'reattach-ok'." --slug "$slug" --browser-keep-browser --heartbeat 0 --timeout 900 --force >"$logfile" 2>&1 &
 runner_pid=$!
 
 runtime_ready=0
 for _ in {1..40}; do
-  if [ -f "$meta" ] && node -e "const fs=require('fs');const p=process.argv[1];const j=JSON.parse(fs.readFileSync(p,'utf8'));if(j.browser?.runtime?.chromePort){process.exit(0);}process.exit(1);" "$meta"; then
+  if [ -f "$meta" ] && node -e "const fs=require('fs');const p=process.argv[1];const j=JSON.parse(fs.readFileSync(p,'utf8'));if(j.browser?.runtime?.chromePort && j.browser?.runtime?.promptSubmitted === true){process.exit(0);}process.exit(1);" "$meta"; then
     runtime_ready=1
     break
   fi
@@ -56,12 +57,20 @@ if [ "$runtime_ready" -ne 1 ]; then
   exit 1
 fi
 
-# Give ChatGPT time to finish after we have a runtime hint.
-sleep 30
-
 # Simulate controller loss.
-kill "$runner_pid" 2>/dev/null || true
+if ! kill -0 "$runner_pid" 2>/dev/null; then
+  echo "[browser-smoke] reattach: controller finished before simulated loss"
+  cat "$logfile"
+  exit 1
+fi
+kill "$runner_pid"
 wait "$runner_pid" 2>/dev/null || true
+
+if node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.exit(j.status === 'completed' ? 0 : 1);" "$meta"; then
+  echo "[browser-smoke] reattach: session completed before controller loss"
+  cat "$logfile"
+  exit 1
+fi
 
 reattach_log="$(mktemp -t oracle-browser-reattach-log)"
 if ! node "$ROOT/dist/bin/oracle-cli.js" session "$slug" --render-plain >"$reattach_log" 2>&1; then
@@ -72,6 +81,11 @@ fi
 
 if ! grep -q "reattach-ok" "$reattach_log"; then
   echo "[browser-smoke] reattach: expected response not found"
+  cat "$reattach_log"
+  exit 1
+fi
+if ! grep -q "Reattach succeeded; session marked completed." "$reattach_log"; then
+  echo "[browser-smoke] reattach: command rendered without exercising live reattach"
   cat "$reattach_log"
   exit 1
 fi

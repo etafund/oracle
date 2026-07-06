@@ -69,6 +69,12 @@ export async function resumeBrowserSession(
     deps.recoverSession ??
     (async (runtimeMeta, configMeta) =>
       resumeBrowserSessionViaNewChrome(runtimeMeta, configMeta, logger, deps));
+  let closeAttachedConnection: (() => Promise<void>) | null = null;
+  const closeAttached = async (): Promise<void> => {
+    const close = closeAttachedConnection;
+    closeAttachedConnection = null;
+    await close?.().catch(() => undefined);
+  };
 
   if (!runtime.chromePort && !runtime.chromeBrowserWSEndpoint) {
     logger("No running Chrome detected; reopening browser to locate the session.");
@@ -98,8 +104,10 @@ export async function resumeBrowserSession(
             targetId: target?.targetId ?? target?.id,
             closeTargetOnDispose: false,
           })
-        : ({
-            client: (await (deps.connect ?? ((options?: unknown) => CDP(options as CDP.Options)))(
+        : await (async () => {
+            const client = (await (
+              deps.connect ?? ((options?: unknown) => CDP(options as CDP.Options))
+            )(
               browserWSEndpoint
                 ? {
                     target: browserWSEndpoint,
@@ -111,9 +119,11 @@ export async function resumeBrowserSession(
                     port,
                     target: target?.targetId ?? target?.id,
                   },
-            )) as unknown as ChromeClient,
-            close: async () => undefined,
-          } as const);
+            )) as unknown as ChromeClient;
+            return { client, close: () => client.close() };
+          })();
+    closeAttachedConnection = () => connection.close();
+
     const client: ChromeClient = connection.client;
     const { Runtime, DOM, Page } = client;
     if (Runtime?.enable) {
@@ -177,7 +187,7 @@ export async function resumeBrowserSession(
         timeoutMs + 5_000,
         "Reattach Deep Research response timed out",
       );
-      await connection.close().catch(() => undefined);
+      await closeAttached();
       return {
         answerText: researchResult.text,
         answerMarkdown: researchResult.text,
@@ -205,10 +215,10 @@ export async function resumeBrowserSession(
       )) ?? recovered.text;
     const aligned = alignPromptEchoMarkdown(recovered.text, markdown, promptEcho, logger);
 
-    await connection.close().catch(() => undefined);
-
+    await closeAttached();
     return { answerText: aligned.answerText, answerMarkdown: aligned.answerMarkdown };
   } catch (error) {
+    await closeAttached();
     const message = error instanceof Error ? error.message : String(error);
     logger(
       `Existing Chrome reattach failed (${message}); reopening browser to locate the session.`,

@@ -58,9 +58,13 @@ function firewallHint(host: string, devtoolsPort: number): string | null {
   ].join("\n");
 }
 
-async function fetchVersion(host: string, devtoolsPort: number): Promise<boolean> {
+async function fetchVersion(
+  host: string,
+  devtoolsPort: number,
+  timeoutMs = 5000,
+): Promise<boolean> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 5000);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(`http://${host}:${devtoolsPort}/json/version`, {
       signal: controller.signal,
@@ -73,6 +77,17 @@ async function fetchVersion(host: string, devtoolsPort: number): Promise<boolean
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function waitForDevToolsShutdown(host: string, devtoolsPort: number): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    if (!(await fetchVersion(host, devtoolsPort, 250))) {
+      return;
+    }
+    await sleep(100);
+  }
+  throw new Error(`DevTools did not stop listening at ${host}:${devtoolsPort}`);
 }
 
 async function main() {
@@ -89,6 +104,7 @@ async function main() {
   }
 
   await chrome.kill();
+  await waitForDevToolsShutdown(targetHost, chrome.port);
 
   if (ok) {
     console.log(`[browser-test] PASS: DevTools responding on ${targetHost}:${chrome.port}`);

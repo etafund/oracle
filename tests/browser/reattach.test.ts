@@ -43,6 +43,7 @@ describe("resumeBrowserSession", () => {
       }
       return { result: { value: null } };
     });
+    const close = vi.fn(async () => {});
     const connect = vi.fn(
       async () =>
         ({
@@ -50,7 +51,7 @@ describe("resumeBrowserSession", () => {
           Runtime: { enable: vi.fn(), evaluate },
           // biome-ignore lint/style/useNamingConvention: mirrors DevTools protocol domain names
           DOM: { enable: vi.fn() },
-          close: vi.fn(async () => {}),
+          close,
         }) satisfies FakeClient,
     ) as unknown as (options?: unknown) => Promise<ChromeClient>;
     const waitForAssistantResponse = vi.fn(async () => ({
@@ -75,6 +76,7 @@ describe("resumeBrowserSession", () => {
     );
     expect(waitForAssistantResponse).toHaveBeenCalled();
     expect(captureAssistantMarkdown).toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
   });
 
   test("uses prompt preview turn index when reattaching to an already-open answer", async () => {
@@ -282,23 +284,52 @@ describe("resumeBrowserSession", () => {
     );
   });
 
-  test("falls back to recovery when existing chrome attach fails", async () => {
+  test("closes the attached client before falling back to recovery", async () => {
     const runtime = {
       chromePort: 51559,
       chromeHost: "127.0.0.1",
+      chromeTargetId: "target-1",
+      tabUrl: "https://chatgpt.com/c/abc",
     };
     const listTargets = vi.fn(async () => {
-      throw new Error("no targets");
+      return [{ targetId: "target-1", type: "page", url: runtime.tabUrl }] satisfies FakeTarget[];
     }) as unknown as () => Promise<FakeTarget[]>;
+    const evaluate = vi.fn(async ({ expression }: { expression: string }) => {
+      if (expression === "location.href") {
+        return { result: { value: runtime.tabUrl } };
+      }
+      if (expression === "1+1") {
+        return { result: { value: 2 } };
+      }
+      return { result: { value: null } };
+    });
+    const close = vi.fn(async () => {});
+    const connect = vi.fn(
+      async () =>
+        ({
+          Runtime: { enable: vi.fn(), evaluate },
+          DOM: { enable: vi.fn() },
+          close,
+        }) satisfies FakeClient,
+    ) as unknown as (options?: unknown) => Promise<ChromeClient>;
+    const waitForAssistantResponse = vi.fn(async () => {
+      throw new Error("response timeout");
+    });
     const recoverSession = vi.fn(async () => ({
       answerText: "fallback",
       answerMarkdown: "fallback-md",
     }));
     const logger = vi.fn() as BrowserLogger;
 
-    const result = await resumeBrowserSession(runtime, {}, logger, { listTargets, recoverSession });
+    const result = await resumeBrowserSession(runtime, {}, logger, {
+      listTargets,
+      connect,
+      waitForAssistantResponse,
+      recoverSession,
+    });
 
     expect(result.answerText).toBe("fallback");
+    expect(close).toHaveBeenCalledOnce();
     expect(recoverSession).toHaveBeenCalled();
   });
 });
