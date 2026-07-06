@@ -59,10 +59,11 @@ import {
 import { estimateTokenCount, withRetries, delay } from "./utils.js";
 import { formatElapsed } from "../oracle/format.js";
 import type { BrowserModelSelectionEvidence } from "../sessionStore.js";
-import { CHATGPT_URL, CONVERSATION_TURN_SELECTOR, DEFAULT_MODEL_STRATEGY } from "./constants.js";
+import { CHATGPT_URL, DEFAULT_MODEL_STRATEGY } from "./constants.js";
 import type { LaunchedChrome } from "chrome-launcher";
 import { BrowserAutomationError } from "../oracle/errors.js";
 import { alignPromptEchoPair, buildPromptEchoMatcher } from "./reattachHelpers.js";
+import { buildConversationTurnCountExpression } from "./conversationTurns.js";
 import type { ProfileRunLock } from "./profileState.js";
 import {
   cleanupStaleProfileState,
@@ -4424,12 +4425,12 @@ async function readConversationTurnCount(
   Runtime: ChromeClient["Runtime"],
   logger?: BrowserLogger,
 ): Promise<number | null> {
-  const selectorLiteral = JSON.stringify(CONVERSATION_TURN_SELECTOR);
+  const expression = buildConversationTurnCountExpression();
   const attempts = 4;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       const { result } = await Runtime.evaluate({
-        expression: `document.querySelectorAll(${selectorLiteral}).length`,
+        expression,
         returnByValue: true,
       });
       const raw = typeof result?.value === "number" ? result.value : Number(result?.value);
