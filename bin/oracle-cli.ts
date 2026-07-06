@@ -1487,6 +1487,11 @@ program
   )
   .option("--all", "Include all stored sessions regardless of age.", false)
   .option("--clear", "Delete stored sessions older than the provided window (24h default).", false)
+  .option(
+    "--yes",
+    "Confirm the irreversible full wipe when combining --clear with --all (otherwise a dry-run preview is printed).",
+    false,
+  )
   .option("--hide-prompt", "Hide stored prompt when displaying a session.", false)
   .option("--render", "Render completed session output as markdown (rich TTY only).", false)
   .option("--render-markdown", "Alias for --render.", false)
@@ -1535,6 +1540,11 @@ program
   .option("--limit <count>", "Maximum sessions to show (max 1000).", parseIntOption, 100)
   .option("--all", "Include all stored sessions regardless of age.", false)
   .option("--clear", "Delete stored sessions older than the provided window (24h default).", false)
+  .option(
+    "--yes",
+    "Confirm the irreversible full wipe when combining --clear with --all (otherwise a dry-run preview is printed).",
+    false,
+  )
   .option("--render", "Render completed session output as markdown (rich TTY only).", false)
   .option("--render-markdown", "Alias for --render.", false)
   .option("--model <name>", "Filter sessions/output for a specific model.", "")
@@ -1573,12 +1583,16 @@ program
         process.exitCode = 1;
         return;
       }
-      const hours = statusOptions.hours;
-      const includeAll = statusOptions.all;
-      const result = await sessionStore.deleteOlderThan({ hours, includeAll });
-      const scope = includeAll ? "all stored sessions" : `sessions older than ${hours}h`;
-      const { formatSessionCleanupMessage } = await import("../src/cli/sessionCommand.js");
-      console.log(formatSessionCleanupMessage(result, scope));
+      const { runSessionClear } = await import("../src/cli/sessionCommand.js");
+      await runSessionClear(
+        {
+          hours: statusOptions.hours,
+          includeAll: statusOptions.all,
+          confirmed: Boolean(statusOptions.yes),
+          commandName: "status",
+        },
+        (options) => sessionStore.deleteOlderThan(options),
+      );
       return;
     }
     if (sessionId === "clear" || sessionId === "clean") {

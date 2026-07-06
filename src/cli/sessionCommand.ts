@@ -19,6 +19,8 @@ import {
   type SessionArtifactIndex,
 } from "../sessionArtifacts.js";
 import { sessionStore } from "../sessionStore.js";
+import type { SessionCleanupCandidate, SessionCleanupResult } from "../sessionManager.js";
+import { formatElapsed } from "../oracle/format.js";
 import {
   runSessionListJson,
   type BuildSessionListOptions,
@@ -31,6 +33,7 @@ export interface StatusOptions extends OptionValues {
   all: boolean;
   clear?: boolean;
   clean?: boolean;
+  yes?: boolean;
   render?: boolean;
   renderMarkdown?: boolean;
   path?: boolean;
@@ -63,7 +66,8 @@ interface SessionCommandDependencies {
   deleteSessionsOlderThan: (options?: {
     hours?: number;
     includeAll?: boolean;
-  }) => Promise<{ deleted: number; remaining: number }>;
+    dryRun?: boolean;
+  }) => Promise<SessionCleanupResult>;
   getSessionPaths: (
     sessionId: string,
   ) => Promise<{ dir: string; metadata: string; log: string; request: string }>;
@@ -91,6 +95,7 @@ const SESSION_OPTION_KEYS = new Set([
   "all",
   "clear",
   "clean",
+  "yes",
   "render",
   "renderMarkdown",
   "path",
@@ -142,11 +147,15 @@ export async function handleSessionCommand(
       process.exitCode = 1;
       return;
     }
-    const hours = sessionOptions.hours;
-    const includeAll = sessionOptions.all;
-    const result = await deps.deleteSessionsOlderThan({ hours, includeAll });
-    const scope = includeAll ? "all stored sessions" : `sessions older than ${hours}h`;
-    console.log(formatSessionCleanupMessage(result, scope));
+    await runSessionClear(
+      {
+        hours: sessionOptions.hours,
+        includeAll: sessionOptions.all,
+        confirmed: Boolean(sessionOptions.yes),
+        commandName: "session",
+      },
+      deps.deleteSessionsOlderThan,
+    );
     return;
   }
   if (sessionId === "clear" || sessionId === "clean") {
@@ -280,14 +289,90 @@ export async function handleSessionCommand(
   });
 }
 
+export interface RunSessionClearOptions {
+  hours: number;
+  includeAll: boolean;
+  /** True when the caller passed --yes to confirm a full wipe. */
+  confirmed: boolean;
+  /** CLI command the clear was invoked through (for accurate hints). */
+  commandName: "session" | "status";
+}
+
+/**
+ * Shared implementation behind `oracle session --clear` and
+ * `oracle status --clear`.
+ *
+ * The default windowed clear (no --all) deletes immediately, as documented.
+ * The full wipe (--all) is a dangerous irreversible operation, so it requires
+ * an explicit --yes; without it we print a non-destructive dry-run preview of
+ * the sessions that would be deleted and exit without touching anything.
+ */
+export async function runSessionClear(
+  options: RunSessionClearOptions,
+  deleteSessionsOlderThan: SessionCommandDependencies["deleteSessionsOlderThan"] = defaultDependencies.deleteSessionsOlderThan,
+): Promise<void> {
+  const { hours, includeAll, confirmed, commandName } = options;
+  if (includeAll && !confirmed) {
+    const preview = await deleteSessionsOlderThan({ hours, includeAll: true, dryRun: true });
+    console.log(formatSessionClearPreview(preview.sessions, commandName));
+    return;
+  }
+  const result = await deleteSessionsOlderThan({ hours, includeAll });
+  const scope = includeAll ? "all stored sessions" : `sessions older than ${hours}h`;
+  console.log(formatSessionCleanupMessage(result, scope));
+}
+
+function describeSessionCleanupCandidate(session: SessionCleanupCandidate): string {
+  const parts: string[] = [];
+  if (session.createdMs !== undefined) {
+    parts.push(`age ${formatElapsed(Math.max(Date.now() - session.createdMs, 0))}`);
+  }
+  if (session.sizeBytes !== undefined) {
+    parts.push(formatSessionSize(session.sizeBytes));
+  }
+  return parts.length > 0 ? ` (${parts.join(", ")})` : "";
+}
+
+function formatSessionSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  if (bytes >= 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${bytes} B`;
+}
+
+export function formatSessionClearPreview(
+  sessions: SessionCleanupCandidate[],
+  commandName: "session" | "status",
+): string {
+  const confirmCommand = `oracle ${commandName} --clear --all --yes`;
+  if (sessions.length === 0) {
+    return "[dry-run] --clear --all matched 0 stored sessions. Nothing to delete.";
+  }
+  const sessionLabel = `${sessions.length} stored ${sessions.length === 1 ? "session" : "sessions"}`;
+  const lines = [
+    `[dry-run] --clear --all would permanently delete ${sessionLabel}:`,
+    ...sessions.map((session) => `  - ${session.id}${describeSessionCleanupCandidate(session)}`),
+    `[dry-run] No sessions were deleted. Re-run with --yes to confirm: ${confirmCommand}`,
+  ];
+  return lines.join("\n");
+}
+
 export function formatSessionCleanupMessage(
-  result: { deleted: number; remaining: number },
+  result: { deleted: number; remaining: number; sessions?: SessionCleanupCandidate[] },
   scope: string,
 ): string {
   const deletedLabel = `${result.deleted} ${result.deleted === 1 ? "session" : "sessions"}`;
   const remainingLabel = `${result.remaining} ${result.remaining === 1 ? "session" : "sessions"} remain`;
-  const hint = 'Run "oracle session --clear --all" to delete everything.';
-  return `Deleted ${deletedLabel} (${scope}). ${remainingLabel}.\n${hint}`;
+  const hint = 'Run "oracle session --clear --all --yes" to delete everything.';
+  const lines = [`Deleted ${deletedLabel} (${scope}). ${remainingLabel}.`];
+  for (const session of result.sessions ?? []) {
+    lines.push(`  - ${session.id}${describeSessionCleanupCandidate(session)}`);
+  }
+  lines.push(hint);
+  return lines.join("\n");
 }
 
 export function formatSessionArtifactIndex(index: SessionArtifactIndex): string {

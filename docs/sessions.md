@@ -118,10 +118,12 @@ GPT-5.x Pro defaults to background; non-Pro models block by default. Override pe
 ## Pruning
 
 ```bash
-oracle status --clear --hours 168   # delete sessions older than a week
+oracle status --clear --hours 168     # delete sessions older than a week
+oracle status --clear --all           # dry-run preview of a full wipe (deletes nothing)
+oracle status --clear --all --yes     # confirm and delete every stored session
 ```
 
-`--clear` is destructive — preview without it first. Sessions are local files, so `rm -rf ~/.oracle/sessions/<id>` works too.
+`--clear` is destructive — preview without it first. The full wipe (`--clear --all`) requires `--yes`; without it Oracle prints the sessions (IDs, ages, sizes) that would be deleted and exits without touching anything. Sessions are local files, so `rm -rf ~/.oracle/sessions/<id>` works too.
 
 ## Stale / zombie detection
 

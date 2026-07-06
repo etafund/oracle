@@ -599,7 +599,8 @@ describe("session listing and filtering", () => {
     vi.setSystemTime(new Date("2025-01-03T12:00:00Z"));
 
     const result = await sessionModule.deleteSessionsOlderThan({ hours: 24 });
-    expect(result).toEqual({ deleted: 1, remaining: 1 });
+    expect(result).toMatchObject({ deleted: 1, remaining: 1 });
+    expect(result.sessions.map((session) => session.id)).toEqual([oldMeta.id]);
     expect(await sessionModule.readSessionMetadata(oldMeta.id)).toBeNull();
     expect(await sessionModule.readSessionMetadata(freshMeta.id)).not.toBeNull();
     vi.useRealTimers();
@@ -611,8 +612,25 @@ describe("session listing and filtering", () => {
       "/tmp/c",
     );
     const result = await sessionModule.deleteSessionsOlderThan({ includeAll: true });
-    expect(result).toEqual({ deleted: 1, remaining: 0 });
+    expect(result).toMatchObject({ deleted: 1, remaining: 0 });
+    expect(result.sessions.map((session) => session.id)).toEqual([meta.id]);
     expect(await sessionModule.readSessionMetadata(meta.id)).toBeNull();
+  });
+
+  test("deleteSessionsOlderThan with dryRun reports candidates without deleting", async () => {
+    const meta = await sessionModule.initializeSession(
+      { prompt: "Survivor", model: "gpt-5.2-pro" },
+      "/tmp/d",
+    );
+    const result = await sessionModule.deleteSessionsOlderThan({ includeAll: true, dryRun: true });
+    expect(result.deleted).toBe(0);
+    expect(result.remaining).toBe(1);
+    expect(result.sessions).toHaveLength(1);
+    expect(result.sessions[0].id).toBe(meta.id);
+    expect(result.sessions[0].createdMs).toBeGreaterThan(0);
+    expect(result.sessions[0].sizeBytes).toBeGreaterThan(0);
+    // The dry run must be non-destructive: the session is still readable.
+    expect(await sessionModule.readSessionMetadata(meta.id)).not.toBeNull();
   });
 });
 

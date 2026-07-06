@@ -78,7 +78,7 @@ describe("runMultiModelApiSession", () => {
       readRequest: async () => null,
       listSessions: async () => [],
       filterSessions: (metas) => ({ entries: metas, truncated: false, total: metas.length }),
-      deleteOlderThan: async () => ({ deleted: 0, remaining: 0 }),
+      deleteOlderThan: async () => ({ deleted: 0, remaining: 0, sessions: [] }),
       getPaths: async (sessionId: string) => ({
         dir: path.join(tmpRoot, sessionId),
         metadata: "",
@@ -192,7 +192,7 @@ describe("runMultiModelApiSession", () => {
       readRequest: async () => null,
       listSessions: async () => [],
       filterSessions: (metas) => ({ entries: metas, truncated: false, total: metas.length }),
-      deleteOlderThan: async () => ({ deleted: 0, remaining: 0 }),
+      deleteOlderThan: async () => ({ deleted: 0, remaining: 0, sessions: [] }),
       getPaths: async (sessionId: string) => ({
         dir: path.join(tmpRoot, sessionId),
         metadata: "",
@@ -266,7 +266,7 @@ describe("runMultiModelApiSession", () => {
       readRequest: async () => null,
       listSessions: async () => [],
       filterSessions: (metas) => ({ entries: metas, truncated: false, total: metas.length }),
-      deleteOlderThan: async () => ({ deleted: 0, remaining: 0 }),
+      deleteOlderThan: async () => ({ deleted: 0, remaining: 0, sessions: [] }),
       getPaths: async (sessionId: string) => ({
         dir: path.join(tmpRoot, sessionId),
         metadata: "",
@@ -345,7 +345,7 @@ describe("runMultiModelApiSession", () => {
       readRequest: async () => null,
       listSessions: async () => [],
       filterSessions: (metas) => ({ entries: metas, truncated: false, total: metas.length }),
-      deleteOlderThan: async () => ({ deleted: 0, remaining: 0 }),
+      deleteOlderThan: async () => ({ deleted: 0, remaining: 0, sessions: [] }),
       getPaths: async (sessionId: string) => ({
         dir: path.join(tmpRoot, sessionId),
         metadata: "",
@@ -430,7 +430,7 @@ describe("runMultiModelApiSession", () => {
       readRequest: async () => null,
       listSessions: async () => [],
       filterSessions: (metas) => ({ entries: metas, truncated: false, total: metas.length }),
-      deleteOlderThan: async () => ({ deleted: 0, remaining: 0 }),
+      deleteOlderThan: async () => ({ deleted: 0, remaining: 0, sessions: [] }),
       getPaths: async (sessionId: string) => ({
         dir: path.join(tmpRoot, sessionId),
         metadata: "",

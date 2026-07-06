@@ -16,6 +16,9 @@ function createCommandWithOptions(options: StatusOptions): Command {
   if (options.clean !== undefined) {
     command.setOptionValueWithSource("clean", options.clean, "cli");
   }
+  if (options.yes !== undefined) {
+    command.setOptionValueWithSource("yes", options.yes, "cli");
+  }
   if (options.harvest !== undefined) {
     command.setOptionValueWithSource("harvest", options.harvest, "cli");
   }
@@ -305,13 +308,73 @@ describe("handleSessionCommand", () => {
   test("clears sessions when --clear is provided", async () => {
     const command = createCommandWithOptions({ hours: 6, limit: 5, all: false, clear: true });
     const deps = createDeps();
-    deps.deleteSessionsOlderThan.mockResolvedValue({ deleted: 3, remaining: 2 });
+    deps.deleteSessionsOlderThan.mockResolvedValue({
+      deleted: 3,
+      remaining: 2,
+      sessions: [{ id: "old-a" }, { id: "old-b" }, { id: "old-c" }],
+    });
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
     await handleSessionCommand(undefined, command, deps);
     expect(deps.deleteSessionsOlderThan).toHaveBeenCalledWith({ hours: 6, includeAll: false });
     expect(logSpy).toHaveBeenCalledWith(
-      'Deleted 3 sessions (sessions older than 6h). 2 sessions remain.\nRun "oracle session --clear --all" to delete everything.',
+      "Deleted 3 sessions (sessions older than 6h). 2 sessions remain.\n" +
+        "  - old-a\n  - old-b\n  - old-c\n" +
+        'Run "oracle session --clear --all --yes" to delete everything.',
     );
+  });
+
+  test("--clear --all without --yes previews the wipe and deletes nothing", async () => {
+    const command = createCommandWithOptions({ hours: 24, limit: 5, all: true, clear: true });
+    const deps = createDeps();
+    deps.deleteSessionsOlderThan.mockResolvedValue({
+      deleted: 0,
+      remaining: 2,
+      sessions: [
+        { id: "keep-me", createdMs: Date.now() - 2 * 60 * 60 * 1000, sizeBytes: 2048 },
+        { id: "keep-me-too" },
+      ],
+    });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    await handleSessionCommand(undefined, command, deps);
+    // The only store call must be the non-destructive dry run.
+    expect(deps.deleteSessionsOlderThan).toHaveBeenCalledTimes(1);
+    expect(deps.deleteSessionsOlderThan).toHaveBeenCalledWith({
+      hours: 24,
+      includeAll: true,
+      dryRun: true,
+    });
+    const output = String(logSpy.mock.calls[0]?.[0]);
+    expect(output).toContain("[dry-run] --clear --all would permanently delete 2 stored sessions:");
+    expect(output).toContain("  - keep-me (age 2h 0m, 2.0 KB)");
+    expect(output).toContain("  - keep-me-too");
+    expect(output).toContain(
+      "[dry-run] No sessions were deleted. Re-run with --yes to confirm: oracle session --clear --all --yes",
+    );
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  test("--clear --all --yes performs the full wipe", async () => {
+    const command = createCommandWithOptions({
+      hours: 24,
+      limit: 5,
+      all: true,
+      clear: true,
+      yes: true,
+    } as StatusOptions);
+    const deps = createDeps();
+    deps.deleteSessionsOlderThan.mockResolvedValue({
+      deleted: 2,
+      remaining: 0,
+      sessions: [{ id: "gone-a" }, { id: "gone-b" }],
+    });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    await handleSessionCommand(undefined, command, deps);
+    expect(deps.deleteSessionsOlderThan).toHaveBeenCalledTimes(1);
+    expect(deps.deleteSessionsOlderThan).toHaveBeenCalledWith({ hours: 24, includeAll: true });
+    const output = String(logSpy.mock.calls[0]?.[0]);
+    expect(output).toContain("Deleted 2 sessions (all stored sessions). 0 sessions remain.");
+    expect(output).toContain("  - gone-a");
+    expect(output).toContain("  - gone-b");
   });
 
   test('rejects slug-style "clear" ids with guidance', async () => {

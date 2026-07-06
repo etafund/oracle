@@ -3,6 +3,7 @@ import type {
   SessionNotifications,
   StoredRunOptions,
   SessionModelRun,
+  SessionCleanupResult,
 } from "./sessionManager.js";
 import {
   ensureSessionStorage,
@@ -50,7 +51,8 @@ export interface SessionStore {
   deleteOlderThan(options?: {
     hours?: number;
     includeAll?: boolean;
-  }): Promise<{ deleted: number; remaining: number }>;
+    dryRun?: boolean;
+  }): Promise<SessionCleanupResult>;
   getPaths(
     sessionId: string,
   ): Promise<{ dir: string; metadata: string; log: string; request: string }>;
@@ -118,7 +120,8 @@ class FileSessionStore implements SessionStore {
   deleteOlderThan(options?: {
     hours?: number;
     includeAll?: boolean;
-  }): Promise<{ deleted: number; remaining: number }> {
+    dryRun?: boolean;
+  }): Promise<SessionCleanupResult> {
     return deleteSessionsOlderThan(options);
   }
 

@@ -1162,17 +1162,53 @@ export async function readSessionRequest(sessionId: string): Promise<StoredRunOp
   }
 }
 
+export interface SessionCleanupCandidate {
+  id: string;
+  createdMs?: number;
+  sizeBytes?: number;
+}
+
+export interface SessionCleanupResult {
+  deleted: number;
+  remaining: number;
+  /** Sessions removed (or, with dryRun, sessions that would be removed). */
+  sessions: SessionCleanupCandidate[];
+}
+
+async function directorySizeBytes(dir: string): Promise<number | undefined> {
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    let total = 0;
+    for (const entry of entries) {
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        total += (await directorySizeBytes(entryPath)) ?? 0;
+      } else if (entry.isFile()) {
+        try {
+          total += (await fs.stat(entryPath)).size;
+        } catch {
+          // Ignore files that vanish mid-walk.
+        }
+      }
+    }
+    return total;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function deleteSessionsOlderThan({
   hours = 24,
   includeAll = false,
-}: { hours?: number; includeAll?: boolean } = {}): Promise<{ deleted: number; remaining: number }> {
+  dryRun = false,
+}: { hours?: number; includeAll?: boolean; dryRun?: boolean } = {}): Promise<SessionCleanupResult> {
   await ensureSessionStorage();
   const entries = await fs.readdir(getSessionsDir()).catch(() => []);
   if (!entries.length) {
-    return { deleted: 0, remaining: 0 };
+    return { deleted: 0, remaining: 0, sessions: [] };
   }
   const cutoff = includeAll ? Number.NEGATIVE_INFINITY : Date.now() - hours * 60 * 60 * 1000;
-  let deleted = 0;
+  const sessions: SessionCleanupCandidate[] = [];
 
   for (const entry of entries) {
     const dir = sessionDir(entry);
@@ -1193,13 +1229,17 @@ export async function deleteSessionsOlderThan({
       }
     }
     if (includeAll || (createdMs !== undefined && createdMs < cutoff)) {
-      await fs.rm(dir, { recursive: true, force: true });
-      deleted += 1;
+      const sizeBytes = await directorySizeBytes(dir);
+      if (!dryRun) {
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+      sessions.push({ id: entry, createdMs, sizeBytes });
     }
   }
 
+  const deleted = dryRun ? 0 : sessions.length;
   const remaining = Math.max(entries.length - deleted, 0);
-  return { deleted, remaining };
+  return { deleted, remaining, sessions };
 }
 
 export async function wait(ms: number): Promise<void> {
