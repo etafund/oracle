@@ -12,7 +12,7 @@ import { delay } from "../browser/utils.js";
 import { BrowserAutomationError } from "../oracle/errors.js";
 import { runGeminiWebWithFallback, saveFirstGeminiImageFromOutput } from "./client.js";
 import {
-  geminiDeepThinkDomProviderWithFsm,
+  geminiDeepThinkWithStrategyDomProviderWithFsm,
   emitGeminiDeepThinkV18ArtifactsForRun,
   type WiredGeminiDeepThinkAdapter,
 } from "../browser/providers/index.js";
@@ -472,7 +472,12 @@ export function createGeminiWebExecutor(
         // below can read the FSM's recorded verdict on BOTH the success
         // and failure paths (oracle-scb: live Deep Think DOM runs must
         // stop shipping zero v18 artifacts/evidence-ledger entries).
-        const wired = geminiDeepThinkDomProviderWithFsm();
+        // The *WithStrategy* variant additionally applies the
+        // high-if-exposed thinking-level strategy during selectMode, so
+        // live runs pick the 'high' effort tier whenever Gemini's UI
+        // exposes the selector (previously dead code — the bare variant
+        // was wired here and 'high' was never attempted).
+        const wired = geminiDeepThinkWithStrategyDomProviderWithFsm();
         const sessionId = runOptions.sessionId ?? `gemini-deep-think-dom-${randomUUID()}`;
 
         let browserResult: { text: string; thoughts: string | null } | null = null;

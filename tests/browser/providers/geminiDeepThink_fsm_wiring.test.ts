@@ -9,6 +9,9 @@
 // wrapper's contract without touching Chrome — every call is observed,
 // every transition is asserted.
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import type {
@@ -19,6 +22,7 @@ import type {
 import {
   GeminiDeepThinkFsmError,
   geminiDeepThinkDomProviderWithFsm,
+  geminiDeepThinkWithStrategyDomProviderWithFsm,
   wireGeminiDeepThinkFsm,
 } from "../../../src/browser/providers/geminiDeepThinkDomProvider.js";
 import {
@@ -254,5 +258,96 @@ describe("wireGeminiDeepThinkFsm — adapter wrapper invariants (oracle-svt)", (
     expect(GEMINI_DEEP_THINK_LEGAL_STATES).toContain("output_captured_nonempty");
     expect(GEMINI_DEEP_THINK_FAILURE_STATES).toContain("prompt_submitted_before_verification");
     expect(GEMINI_DEEP_THINK_FAILURE_STATES).toContain("output_empty");
+  });
+});
+
+describe("high-if-exposed thinking-level strategy wiring (dead-code regression)", () => {
+  // Regression for: the 'high-if-exposed' Deep Think strategy variant
+  // (geminiDeepThinkWithStrategyDomProviderWithFsm) was exported but the
+  // live executor consumed the bare geminiDeepThinkDomProviderWithFsm, so
+  // live runs never attempted to click Gemini's 'high' thinking-level
+  // control even when the UI exposed it.
+
+  /**
+   * Builds a ProviderDomFlowContext whose evaluate() plays a Gemini page
+   * that exposes the thinking-level control, keyed on distinctive
+   * substrings of the real provider's evaluate expressions.
+   */
+  function makeStrategyCtx(): {
+    ctx: ProviderDomFlowContext;
+    thinkingLevelEvals: string[];
+    logs: string[];
+  } {
+    const thinkingLevelEvals: string[] = [];
+    const logs: string[] = [];
+    const evaluate: ProviderDomFlowContext["evaluate"] = async <T>(
+      expr: string,
+    ): Promise<T | undefined> => {
+      if (expr.includes(".thinking-level-option")) {
+        // applyHighIfExposedStrategy's control probe.
+        thinkingLevelEvals.push(expr);
+        return { clicked: true, label: "high" } as T;
+      }
+      if (expr.includes("requiresLogin")) {
+        // waitForUi readiness probe.
+        return { ready: true, requiresLogin: false } as T;
+      }
+      if (expr.includes("label.includes('deep think')")) {
+        // selectMode's "Deep Think is active" verification probe.
+        return true as T;
+      }
+      // Tools-button / menu-item click probes.
+      return "clicked" as T;
+    };
+    const ctx: ProviderDomFlowContext = {
+      prompt: "hello deep think",
+      evaluate,
+      delay: async () => {},
+      log: (msg: string) => logs.push(msg),
+    };
+    return { ctx, thinkingLevelEvals, logs };
+  }
+
+  it("strategy variant clicks the 'high' control during selectMode when exposed", async () => {
+    const wired = geminiDeepThinkWithStrategyDomProviderWithFsm();
+    const { ctx, thinkingLevelEvals, logs } = makeStrategyCtx();
+
+    await wired.waitForUi(ctx);
+    await wired.selectMode!(ctx);
+
+    expect(thinkingLevelEvals, "high-if-exposed strategy never probed the control").toHaveLength(
+      1,
+    );
+    expect(logs.some((l) => l.includes("Selected high thinking level"))).toBe(true);
+    // The strategy must not derail the verification FSM.
+    expect(wired.getMachine().state).toBe<GeminiDeepThinkState>(
+      "deep_think_verified_same_session",
+    );
+  });
+
+  it("bare variant never probes the thinking-level control (contrast case)", async () => {
+    // Proves the previous assertion actually distinguishes the variants:
+    // wiring the bare provider (the old executor behavior) skips 'high'.
+    const wired = geminiDeepThinkDomProviderWithFsm();
+    const { ctx, thinkingLevelEvals } = makeStrategyCtx();
+
+    await wired.waitForUi(ctx);
+    await wired.selectMode!(ctx);
+
+    expect(thinkingLevelEvals).toHaveLength(0);
+  });
+
+  it("live executor wires the strategy variant, not the bare provider", () => {
+    // Guards the executor.ts wiring itself: the strategy variant must be
+    // the one constructed for live DOM runs. A pure-source check is used
+    // because the executor's DOM path cannot run without Chrome.
+    const executorSource = readFileSync(
+      fileURLToPath(new URL("../../../src/gemini-web/executor.ts", import.meta.url)),
+      "utf8",
+    );
+    expect(executorSource).toMatch(/\bgeminiDeepThinkWithStrategyDomProviderWithFsm\s*\(\s*\)/);
+    // The bare variant must not be referenced anywhere in the executor.
+    // (Note: the bare name is not a substring of the strategy name.)
+    expect(executorSource).not.toMatch(/\bgeminiDeepThinkDomProviderWithFsm\b/);
   });
 });
