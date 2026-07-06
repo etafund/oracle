@@ -115,6 +115,16 @@ export class RemoteRunFailedError extends Error {
   }
 }
 
+/**
+ * Send-confirmation marker mirrored from the worker (src/remote/server.ts):
+ * both submission paths (send-button click and Enter fallback) emit a
+ * "Submitted prompt via ..." log line at dispatch time; "clicked send button"
+ * is a defensive alias for older browser layers. The client tracks this so a
+ * caller-gone abort can be classified before/after the account-safety
+ * boundary (the ChatGPT submit moment, not /runs acceptance).
+ */
+const SUBMIT_CONFIRMATION_LOG_PATTERN = /submitted prompt|prompt submitted|clicked send button/i;
+
 export function createRemoteBrowserExecutor({
   host,
   token,
@@ -127,6 +137,15 @@ export function createRemoteBrowserExecutor({
     options: BrowserRunOptions,
   ): Promise<BrowserRunResult> {
     const log = options.log ?? (() => {});
+    const signal = options.signal;
+    if (signal?.aborted) {
+      // Caller already gone before any work: fail fast without reading
+      // attachment files or opening a connection to the worker.
+      throw new RemoteRunFailedError(
+        "Caller aborted before submit; aborting the remote run.",
+        { errorClass: "transport_interrupted_before_submit", retryable: true },
+      );
+    }
     let fallbackSubmission = options.fallbackSubmission;
     if (fallbackSubmission && !isPromptFallbackOptInEnabled()) {
       // NO SILENT PROMPT FALLBACK on fleet lanes: an oversized inline prompt
@@ -179,6 +198,15 @@ export function createRemoteBrowserExecutor({
       // `streamIdleTimeoutMs` doc): armed once the 200 response begins, reset
       // on every chunk, cleared once the stream ends or the run settles.
       let idleTimer: ReturnType<typeof setTimeout> | null = null;
+      // Whether the worker's send-confirmation log line has been observed
+      // (see SUBMIT_CONFIRMATION_LOG_PATTERN): decides the typed transport
+      // class (before/after submit) for a caller-gone abort.
+      let submitObserved = false;
+      // Live 200 response, if the stream has started — destroyed alongside
+      // the request on caller-gone abort. Registered abort-listener removal
+      // runs whenever the run settles (success or failure).
+      let activeRes: http.IncomingMessage | null = null;
+      let removeAbortListener: (() => void) | null = null;
 
       const clearIdleTimer = () => {
         if (idleTimer) {
@@ -187,10 +215,18 @@ export function createRemoteBrowserExecutor({
         }
       };
 
+      const cleanup = () => {
+        clearIdleTimer();
+        if (removeAbortListener) {
+          removeAbortListener();
+          removeAbortListener = null;
+        }
+      };
+
       const fail = (error: Error) => {
         if (settled) return;
         settled = true;
-        clearIdleTimer();
+        cleanup();
         reject(error);
       };
 
@@ -207,6 +243,7 @@ export function createRemoteBrowserExecutor({
           },
         },
         (res) => {
+          activeRes = res;
           if (res.statusCode !== 200) {
             collectRefusal(res)
               .then((refusal) =>
@@ -262,6 +299,9 @@ export function createRemoteBrowserExecutor({
                   onDone: () => {
                     doneObserved = true;
                   },
+                  onSubmitObserved: () => {
+                    submitObserved = true;
+                  },
                   onArtifact: (artifact) => {
                     transferredFiles.push(artifact);
                   },
@@ -316,6 +356,7 @@ export function createRemoteBrowserExecutor({
                 return;
               }
               settled = true;
+              cleanup();
               resolve(mergeTransferredArtifacts(resolved, transferredFiles, transferFailures));
             })().catch(fail);
           });
@@ -323,6 +364,39 @@ export function createRemoteBrowserExecutor({
         },
       );
       req.on("error", fail);
+      if (signal) {
+        // Caller-gone abort (mirrors buildClientAbortError in
+        // src/browser/index.ts for the remote lane): fail with the typed
+        // transport class reflecting whether the account-safety boundary
+        // (the observed submit-confirmation marker) was crossed, then tear
+        // down the outbound request so the worker's own client-gone handling
+        // (res "close" -> onClientGone in src/remote/server.ts) fires and
+        // frees the single-flight busy slot instead of streaming the rest of
+        // the run to a caller that already gave up.
+        const onAbort = () => {
+          fail(
+            new RemoteRunFailedError(
+              submitObserved
+                ? "Caller aborted after submit; abandoning the remote run without ChatGPT-side cancellation."
+                : "Caller aborted before submit; aborting the remote run.",
+              {
+                errorClass: submitObserved
+                  ? "transport_interrupted_after_submit"
+                  : "transport_interrupted_before_submit",
+                retryable: !submitObserved,
+              },
+            ),
+          );
+          req.destroy();
+          activeRes?.destroy();
+        };
+        if (signal.aborted) {
+          onAbort();
+        } else {
+          signal.addEventListener("abort", onAbort, { once: true });
+          removeAbortListener = () => signal.removeEventListener("abort", onAbort);
+        }
+      }
       req.write(body);
       req.end();
     });
@@ -364,6 +438,7 @@ function handleEvent(params: {
   token?: string;
   onResult: (result: BrowserRunResult) => void;
   onDone: () => void;
+  onSubmitObserved: () => void;
   onArtifact: (artifact: SavedBrowserFile) => void;
   onArtifactFailure: (message: string) => void;
   enqueueArtifactTransfer: (transfer: () => Promise<void>) => Promise<void>;
@@ -381,6 +456,9 @@ function handleEvent(params: {
     return null;
   }
   if (event.type === "log") {
+    if (SUBMIT_CONFIRMATION_LOG_PATTERN.test(event.message)) {
+      params.onSubmitObserved();
+    }
     params.options.log?.(event.message);
     return null;
   }
