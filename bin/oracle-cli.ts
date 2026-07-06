@@ -34,6 +34,11 @@ import {
   stableJsonStringify,
 } from "../src/cli/errorEnvelope.js";
 import {
+  buildSessionActionEnvelope,
+  renderSessionActionEnvelope,
+  type BuildSessionActionInput,
+} from "../src/cli/sessionActionJson.js";
+import {
   collectPaths,
   collectModelList,
   collectTextValues,
@@ -247,6 +252,7 @@ interface RestartCommandOptions {
   remoteBrowser?: string;
   remoteHost?: string;
   remoteToken?: string;
+  json?: boolean;
 }
 
 interface FollowUpCommandOptions {
@@ -255,6 +261,7 @@ interface FollowUpCommandOptions {
   wait?: boolean;
   recover?: boolean;
   file?: string[];
+  json?: boolean;
 }
 
 function collectFollowUpCommandOptions(...values: unknown[]): FollowUpCommandOptions {
@@ -1624,8 +1631,18 @@ program
   .addOption(new Option("--no-wait").default(undefined).hideHelp())
   .option("--remote-host <host:port>", "Delegate browser runs to a remote `oracle serve` instance.")
   .option("--remote-token <token>", "Access token for the remote `oracle serve` instance.")
+  .option(
+    "--json",
+    "Emit one oracle_session_action.v1 launch receipt on stdout; progress lines move to stderr.",
+    false,
+  )
   .action(async (sessionId: string, _options: RestartCommandOptions, cmd: Command) => {
     const restartOptions = cmd.opts<RestartCommandOptions>();
+    // The root program also declares --json and consumes the flag before
+    // the subcommand sees it; merge globals like `status` does.
+    restartOptions.json = Boolean(
+      restartOptions.json || cmd.optsWithGlobals<RestartCommandOptions>()?.json,
+    );
     await restartSession(sessionId, restartOptions);
   });
 
@@ -1646,6 +1663,11 @@ program
     "--no-recover",
     "Do not relaunch Chrome to reopen the saved conversation URL; require a live matching tab.",
   )
+  .option(
+    "--json",
+    "Emit one oracle_session_action.v1 launch receipt on stdout; progress lines move to stderr.",
+    false,
+  )
   .action(
     async (
       parentSessionId: string,
@@ -1654,6 +1676,10 @@ program
       cmd?: Command,
     ) => {
       const options = collectFollowUpCommandOptions(program, cmd, optionsOrCommand, promptArg);
+      // The root program also declares --json and consumes the flag before
+      // the subcommand sees it (and the subcommand's `false` default would
+      // otherwise clobber the root-parsed value in the merge above).
+      options.json = Boolean(options.json || program.opts<{ json?: boolean }>().json);
       const positionalPrompt = typeof promptArg === "string" ? promptArg : undefined;
       await runFollowUpCommand(parentSessionId, positionalPrompt, options);
     },
@@ -3198,6 +3224,10 @@ async function runInteractiveSession(
   browserDeps?: BrowserSessionRunnerDeps,
   cwd: string = process.cwd(),
   jsonMode = false,
+  // When false alongside jsonMode, stdout stays muted but the top-level
+  // success envelope is NOT printed — the caller (e.g. `oracle restart
+  // --json`) emits its own single JSON object afterwards instead.
+  emitJsonEnvelope = true,
 ): Promise<void> {
   const { logLine, writeChunk, stream } = sessionStore.createLogWriter(sessionMeta.id);
   let headerAugmented = false;
@@ -3266,7 +3296,7 @@ async function runInteractiveSession(
   } finally {
     stream.end();
   }
-  if (jsonMode) {
+  if (jsonMode && emitJsonEnvelope) {
     process.stdout.write(
       stableJsonStringify(
         buildTopLevelCliSuccessEnvelope({
@@ -3289,7 +3319,7 @@ interface DetachedLaunchResult {
 
 async function launchDetachedSession(
   sessionId: string,
-  { engine }: { engine: EngineMode },
+  { engine, log = console.log }: { engine: EngineMode; log?: (message: string) => void },
 ): Promise<DetachedLaunchResult> {
   const env = buildDetachedPerfTraceEnv(process.env, perfTraceArgs.value, sessionId);
   const launchOptions = {
@@ -3300,7 +3330,7 @@ async function launchDetachedSession(
   const finalizerStarted = shouldLaunchDetachedSessionFinalizer({ engine })
     ? await launchDetachedSessionFinalizer(sessionId, launchOptions).catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
-        console.log(chalk.yellow(`Unable to detach session finalizer (${message}).`));
+        log(chalk.yellow(`Unable to detach session finalizer (${message}).`));
         return false;
       })
     : false;
@@ -3310,25 +3340,65 @@ async function launchDetachedSession(
   };
 }
 
+interface SessionActionJsonIo {
+  /** In --json mode progress lines move to stderr; otherwise stdout as before. */
+  progress: (message?: string) => void;
+  /** In --json mode, mirror a fatal message as one error envelope on stdout. */
+  emitJsonError: (message: string) => void;
+  /** Print the single oracle_session_action.v1 launch receipt to stdout. */
+  emitReceipt: (input: BuildSessionActionInput) => void;
+}
+
+function createSessionActionJsonIo(
+  jsonMode: boolean,
+  command: "oracle restart" | "oracle follow-up",
+): SessionActionJsonIo {
+  return {
+    progress: (message = "") => {
+      if (jsonMode) {
+        process.stderr.write(`${message}\n`);
+      } else {
+        console.log(message);
+      }
+    },
+    emitJsonError: (message) => {
+      if (!jsonMode) return;
+      process.stdout.write(
+        stableJsonStringify(
+          buildTopLevelCliErrorEnvelope({ error: new Error(message), command, exitCode: 1 }),
+        ),
+      );
+    },
+    emitReceipt: (input) => {
+      const { envelope } = buildSessionActionEnvelope(input);
+      process.stdout.write(renderSessionActionEnvelope(envelope));
+    },
+  };
+}
+
 async function runFollowUpCommand(
   parentSessionId: string,
   promptArg: string | undefined,
   options: FollowUpCommandOptions,
 ): Promise<void> {
+  const jsonMode = Boolean(options.json);
+  const { progress, emitJsonError, emitReceipt } = createSessionActionJsonIo(
+    jsonMode,
+    "oracle follow-up",
+  );
   const prompt = (await resolveDashPrompt(options.prompt ?? promptArg ?? "")) ?? "";
   if (!prompt.trim()) {
-    console.error(
-      chalk.red("Prompt is required for follow-up. Use positional [prompt] or --prompt."),
-    );
+    const message = "Prompt is required for follow-up. Use positional [prompt] or --prompt.";
+    console.error(chalk.red(message));
+    emitJsonError(message);
     process.exitCode = 1;
     return;
   }
   if (options.file && options.file.length > 0) {
-    console.error(
-      chalk.red(
-        'Browser follow-up is prompt-only in v1. To attach files, start a new run instead: oracle --lane <lane> --prompt "..." --file <path>',
-      ),
-    );
+    const message =
+      'Browser follow-up is prompt-only in v1. To attach files, start a new run instead: oracle --lane <lane> --prompt "..." --file <path>';
+    console.error(chalk.red(message));
+    emitJsonError(message);
     process.exitCode = 1;
     return;
   }
@@ -3343,29 +3413,53 @@ async function runFollowUpCommand(
     files: options.file,
     cliEntrypoint: CLI_ENTRYPOINT,
     env: process.env,
-    log: console.log,
+    log: progress,
   });
 
-  console.log(chalk.blue(`Follow-up session: ${result.session.id}`));
-  console.log(chalk.dim(`Parent session: ${result.parentSessionId}`));
-  console.log(chalk.dim(`Conversation: ${result.parentConversationUrl}`));
+  progress(chalk.blue(`Follow-up session: ${result.session.id}`));
+  progress(chalk.dim(`Parent session: ${result.parentSessionId}`));
+  progress(chalk.dim(`Conversation: ${result.parentConversationUrl}`));
   if (!result.finalizerStarted) {
-    console.log(chalk.yellow("Detached finalizer did not start; use oracle-await if needed."));
+    progress(chalk.yellow("Detached finalizer did not start; use oracle-await if needed."));
   }
+
+  const buildReceiptInput = (status: string): BuildSessionActionInput => ({
+    action: "follow-up",
+    sessionId: result.session.id,
+    parentSessionId: result.parentSessionId,
+    engine: "browser",
+    mode: "browser",
+    lane: result.session.lane ?? null,
+    model: result.session.model ?? null,
+    status,
+    waitPreference: result.session.options?.waitPreference === true,
+    detached: result.detached,
+    reattachCommand: result.reattachCommand,
+    conversationUrl: result.parentConversationUrl,
+  });
 
   const shouldWait = result.session.options?.waitPreference === true;
   if (!shouldWait) {
     for (const line of formatSessionLifecycleBlock(result.session)) {
-      console.log(line);
+      progress(line);
     }
-    console.log(chalk.blue(`Reattach via: ${result.reattachCommand}`));
+    progress(chalk.blue(`Reattach via: ${result.reattachCommand}`));
+    if (jsonMode) {
+      emitReceipt(buildReceiptInput(result.session.status));
+    }
     return;
   }
 
-  const finalMeta = await waitForFollowUpSession(result.session.id, { log: console.log });
+  const finalMeta = await waitForFollowUpSession(result.session.id, { log: progress });
   if (!finalMeta) {
-    console.log(chalk.red(`Follow-up session ${result.session.id} disappeared.`));
+    const message = `Follow-up session ${result.session.id} disappeared.`;
+    progress(chalk.red(message));
+    emitJsonError(message);
     process.exitCode = 1;
+    return;
+  }
+  if (jsonMode) {
+    emitReceipt(buildReceiptInput(finalMeta.status));
     return;
   }
   const { attachSession } = await import("../src/cli/sessionDisplay.js");
@@ -3373,24 +3467,25 @@ async function runFollowUpCommand(
 }
 
 async function restartSession(sessionId: string, options: RestartCommandOptions): Promise<void> {
+  const jsonMode = Boolean(options.json);
+  const { progress, emitJsonError, emitReceipt } = createSessionActionJsonIo(
+    jsonMode,
+    "oracle restart",
+  );
   const metadata = await sessionStore.readSession(sessionId);
   if (!metadata) {
-    console.error(
-      chalk.red(
-        `No session found with ID ${sessionId}. List valid IDs with: oracle status --json`,
-      ),
-    );
+    const message = `No session found with ID ${sessionId}. List valid IDs with: oracle status --json`;
+    console.error(chalk.red(message));
+    emitJsonError(message);
     process.exitCode = 1;
     return;
   }
 
   const runOptions = buildRunOptionsFromMetadata(metadata);
   if (!runOptions.prompt) {
-    console.error(
-      chalk.red(
-        `Session ${sessionId} has no stored prompt; cannot restart. Start a fresh run instead: oracle -p "<prompt>" --lane fable-local`,
-      ),
-    );
+    const message = `Session ${sessionId} has no stored prompt; cannot restart. Start a fresh run instead: oracle -p "<prompt>" --lane fable-local`;
+    console.error(chalk.red(message));
+    emitJsonError(message);
     process.exitCode = 1;
     return;
   }
@@ -3399,11 +3494,9 @@ async function restartSession(sessionId: string, options: RestartCommandOptions)
   const engine: EngineMode = sessionMode === "browser" ? "browser" : "api";
   const browserConfig = getBrowserConfigFromMetadata(metadata);
   if (sessionMode === "browser" && !browserConfig) {
-    console.error(
-      chalk.red(
-        `Session ${sessionId} is missing browser config; cannot restart. Start a fresh run instead: oracle -p "<prompt>" --lane chatgpt-pro (or --lane gemini-deep-think)`,
-      ),
-    );
+    const message = `Session ${sessionId} is missing browser config; cannot restart. Start a fresh run instead: oracle -p "<prompt>" --lane chatgpt-pro (or --lane gemini-deep-think)`;
+    console.error(chalk.red(message));
+    emitJsonError(message);
     process.exitCode = 1;
     return;
   }
@@ -3426,7 +3519,7 @@ async function restartSession(sessionId: string, options: RestartCommandOptions)
     }
   }
 
-  enforceBrowserSearchFlag(runOptions, sessionMode, console.log);
+  enforceBrowserSearchFlag(runOptions, sessionMode, progress);
 
   let waitPreference = resolveRestartWaitPreference({
     waitFlag: options.wait,
@@ -3448,10 +3541,10 @@ async function restartSession(sessionId: string, options: RestartCommandOptions)
     throw new Error("--remote-host requires a browser session.");
   }
   if (remoteHost) {
-    console.log(chalk.dim(`Remote browser host detected: ${remoteHost}`));
+    progress(chalk.dim(`Remote browser host detected: ${remoteHost}`));
   }
   if (remoteHost && waitPreference === false) {
-    console.log(chalk.dim("Remote browser runs require --wait; ignoring --no-wait."));
+    progress(chalk.dim("Remote browser runs require --wait; ignoring --no-wait."));
     waitPreference = true;
   }
 
@@ -3461,7 +3554,7 @@ async function restartSession(sessionId: string, options: RestartCommandOptions)
     browserDeps = {
       executeBrowser: createRemoteBrowserExecutor({ host: remoteHost, token: remoteToken }),
     };
-    console.log(chalk.dim(`Routing browser automation to remote host ${remoteHost}`));
+    progress(chalk.dim(`Routing browser automation to remote host ${remoteHost}`));
   } else if (browserConfig && runOptions.model.startsWith("gemini")) {
     const { createGeminiWebExecutor } = await import("../src/gemini-web/index.js");
     browserDeps = {
@@ -3475,11 +3568,11 @@ async function restartSession(sessionId: string, options: RestartCommandOptions)
         deepThinkFallback: toGeminiDeepThinkFallback(storedOptions.geminiDeepThinkFallback),
       }),
     };
-    console.log(chalk.dim("Using Gemini web client for browser automation"));
+    progress(chalk.dim("Using Gemini web client for browser automation"));
     if (browserConfig.modelStrategy && browserConfig.modelStrategy !== "select") {
-      console.log(chalk.dim("Browser model strategy is ignored for Gemini web runs."));
+      progress(chalk.dim("Browser model strategy is ignored for Gemini web runs."));
     }
-    warnGeminiIgnoredThinkingTime(runOptions.model, browserConfig.thinkingTime);
+    warnGeminiIgnoredThinkingTime(runOptions.model, browserConfig.thinkingTime, progress);
   }
   const remoteExecutionActive = Boolean(browserDeps);
 
@@ -3530,11 +3623,9 @@ async function restartSession(sessionId: string, options: RestartCommandOptions)
       });
   const detachedLaunch = !detachAllowed
     ? { runnerStarted: false, finalizerStarted: false }
-    : await launchDetachedSession(sessionMeta.id, { engine }).catch((error) => {
+    : await launchDetachedSession(sessionMeta.id, { engine, log: progress }).catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
-        console.log(
-          chalk.yellow(`Unable to detach session runner (${message}). Running inline...`),
-        );
+        progress(chalk.yellow(`Unable to detach session runner (${message}). Running inline...`));
         return { runnerStarted: false, finalizerStarted: false };
       });
   const detached = detachedLaunch.runnerStarted;
@@ -3550,23 +3641,44 @@ async function restartSession(sessionId: string, options: RestartCommandOptions)
     shouldLaunchDetachedSessionFinalizer({ engine }) &&
     !detachedLaunch.finalizerStarted
   ) {
-    console.log(
+    progress(
       chalk.yellow("Detached finalizer did not start; use `oracle session --render` if needed."),
     );
   }
 
+  const buildReceiptInput = (status: string): BuildSessionActionInput => ({
+    action: "restart",
+    sessionId: sessionMeta.id,
+    parentSessionId: sessionId,
+    engine,
+    mode: sessionMode,
+    lane: sessionMeta.lane ?? metadata.lane ?? null,
+    model: sessionMeta.model ?? runOptions.model ?? null,
+    status,
+    waitPreference: waitPreference === true,
+    detached,
+    reattachCommand: lifecycle.reattachCommand,
+  });
+  const readLatestStatus = async (): Promise<string> =>
+    (await sessionStore.readSession(sessionMeta.id))?.status ?? sessionMeta.status;
+
   if (!waitPreference) {
     if (!detached) {
-      console.log(chalk.red("Unable to start in background; use --wait to run inline."));
+      const message = "Unable to start in background; use --wait to run inline.";
+      progress(chalk.red(message));
+      emitJsonError(message);
       process.exitCode = 1;
       return;
     }
     for (const line of formatSessionLifecycleBlock(sessionWithLifecycle)) {
-      console.log(line);
+      progress(line);
     }
-    console.log(
+    progress(
       chalk.dim("Pro runs can take up to 60 minutes (usually 10-15). Add --wait to stay attached."),
     );
+    if (jsonMode) {
+      emitReceipt(buildReceiptInput(await readLatestStatus()));
+    }
     return;
   }
 
@@ -3582,11 +3694,35 @@ async function restartSession(sessionId: string, options: RestartCommandOptions)
       true,
       browserDeps,
       cwd,
+      jsonMode,
+      // `oracle restart --json` emits its own oracle_session_action.v1
+      // receipt below instead of the top-level answer envelope.
+      false,
     );
+    if (jsonMode) {
+      emitReceipt(buildReceiptInput(await readLatestStatus()));
+    }
     return;
   }
   if (detached) {
-    console.log(chalk.blue(`Reattach via: oracle session ${sessionMeta.id}`));
+    progress(chalk.blue(`Reattach via: oracle session ${sessionMeta.id}`));
+    if (jsonMode) {
+      // Block until the detached run reaches a terminal status, then emit
+      // the single receipt — never tail human output onto JSON stdout.
+      const { waitForFollowUpSession } = await import("../src/cli/browserFollowUp.js");
+      const finalMeta = await waitForFollowUpSession(sessionMeta.id, {
+        log: (line) => progress(line.replace("[follow-up]", "[restart]")),
+      });
+      if (!finalMeta) {
+        const message = `Restarted session ${sessionMeta.id} disappeared.`;
+        progress(chalk.red(message));
+        emitJsonError(message);
+        process.exitCode = 1;
+        return;
+      }
+      emitReceipt(buildReceiptInput(finalMeta.status));
+      return;
+    }
     const { attachSession } = await import("../src/cli/sessionDisplay.js");
     await attachSession(sessionMeta.id, { suppressMetadata: true });
   }

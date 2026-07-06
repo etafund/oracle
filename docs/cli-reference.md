@@ -12,7 +12,7 @@ This is the curated cheatsheet. The authoritative source is always `oracle --hel
 | `oracle [flags] -p "<prompt>"` | Run a consult.                                                                                                                  |
 | `oracle status`                | List recent sessions (see [Sessions](sessions.md)).                                                                             |
 | `oracle session <id>`          | Replay or block on a stored session.                                                                                            |
-| `oracle restart <id>`          | Re-run with the same prompt + files.                                                                                            |
+| `oracle restart <id>`          | Re-run with the same prompt + files. `--json` emits one `oracle_session_action.v1` launch receipt (progress moves to stderr).   |
 | `oracle docs check`            | Check documented flags against CLI help metadata.                                                                               |
 | `oracle doctor lanes --json`   | Print the reviewed lane policy without launching browsers or models.                                                            |
 | `oracle serve`                 | Run the remote browser host (see [Browser Mode](browser-mode.md)).                                                              |

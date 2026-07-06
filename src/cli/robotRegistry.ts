@@ -38,6 +38,7 @@ import {
 } from "../oracle/capabilities/registry.js";
 import { REMOTE_FLEET_SLOTS_SCHEMA_VERSION } from "../remote/types.js";
 import { SESSION_ARTIFACT_INDEX_SCHEMA_VERSION } from "../sessionArtifacts.js";
+import { ORACLE_SESSION_ACTION_SCHEMA_VERSION } from "./sessionActionJson.js";
 import { AGENT_LANE_POLICY_VERSION } from "./laneRegistry.js";
 import { ORACLE_EXIT_CODE_DICTIONARY } from "./exitCodes.js";
 
@@ -330,8 +331,54 @@ export const ROBOT_COMMANDS: readonly RobotCommandEntry[] = Object.freeze([
   }),
 ]);
 
+/**
+ * Session ACTION commands — lifecycle verbs that start a paid live run
+ * (`paid_calls: true`), advertised under a distinct `action_commands`
+ * key so the gating-only invariant on `ROBOT_COMMANDS`/`commands`
+ * ("no entry currently exposes paid_calls=true") stays intact, mirroring
+ * how the paid `lanes` array is kept separate.
+ *
+ * Both entries carry `--json`: stdout gets exactly one
+ * `oracle_session_action.v1` launch receipt (new session id, parent id,
+ * engine/mode, lane/model, wait/detach disposition, reattach command)
+ * and all progress lines move to stderr. Known remaining gap, noted for
+ * honesty: `oracle session <id>` / `oracle status <id>` attach mode
+ * (non-`--artifacts`) still emits unstructured human text even with
+ * `--json` — only the no-ID list form and `--artifacts` are structured.
+ */
+export const ROBOT_ACTION_COMMANDS: readonly RobotCommandEntry[] = Object.freeze([
+  entry({
+    name: "restart",
+    command: "oracle restart <sessionId> --json",
+    purpose:
+      "Re-run a stored session as a new session (paid live run); --json emits one oracle_session_action.v1 launch receipt on stdout.",
+    paid_calls: true,
+    dry_run: false,
+    required_env: ORACLE_REMOTE_ENVS,
+    output_schema_version: ORACLE_SESSION_ACTION_SCHEMA_VERSION,
+    recovery_fields: ROBOT_RECOVERY_FIELDS,
+    touches_network: true,
+    touches_chrome: true,
+    docs_path: "docs/cli-reference.md",
+  }),
+  entry({
+    name: "follow-up",
+    command: "oracle follow-up <parentSessionId> --prompt <text> --json",
+    purpose:
+      "Continue a stored browser session as a new child session (paid live run); --json emits one oracle_session_action.v1 launch receipt on stdout.",
+    paid_calls: true,
+    dry_run: false,
+    required_env: [],
+    output_schema_version: ORACLE_SESSION_ACTION_SCHEMA_VERSION,
+    recovery_fields: ROBOT_RECOVERY_FIELDS,
+    touches_network: true,
+    touches_chrome: true,
+    docs_path: "docs/cli-reference.md",
+  }),
+]);
+
 const COMMAND_BY_NAME: ReadonlyMap<string, RobotCommandEntry> = new Map(
-  ROBOT_COMMANDS.map((c) => [c.name, c]),
+  [...ROBOT_COMMANDS, ...ROBOT_ACTION_COMMANDS].map((c) => [c.name, c]),
 );
 
 export function findRobotCommand(name: string): RobotCommandEntry | null {
@@ -340,6 +387,10 @@ export function findRobotCommand(name: string): RobotCommandEntry | null {
 
 export function listRobotCommands(): readonly RobotCommandEntry[] {
   return ROBOT_COMMANDS;
+}
+
+export function listRobotActionCommands(): readonly RobotCommandEntry[] {
+  return ROBOT_ACTION_COMMANDS;
 }
 
 /**
@@ -375,6 +426,11 @@ export interface RobotSurfacePayload {
   /** Process exit-code dictionary; see `src/cli/exitCodes.ts`. */
   readonly exit_codes: typeof ORACLE_EXIT_CODE_DICTIONARY;
   readonly commands: readonly Record<string, unknown>[];
+  /**
+   * Paid session lifecycle verbs (`restart`, `follow-up`) — kept out of
+   * the gating-only `commands` array, like `lanes`.
+   */
+  readonly action_commands: readonly Record<string, unknown>[];
 }
 
 /**
@@ -384,22 +440,22 @@ export interface RobotSurfacePayload {
  * matches the canonical bundle's `robots.json` shape.
  */
 export function buildRobotSurfacePayload(): RobotSurfacePayload {
-  const commands = ROBOT_COMMANDS.map(
-    (cmd): Record<string, unknown> => ({
-      name: cmd.name,
-      command: cmd.command,
-      purpose: cmd.purpose,
-      paid_calls: cmd.paid_calls,
-      dry_run: cmd.dry_run,
-      required_env: [...cmd.required_env],
-      output_schema_version: cmd.output_schema_version,
-      recovery_fields: [...cmd.recovery_fields],
-      touches_network: cmd.touches_network,
-      touches_chrome: cmd.touches_chrome,
-      ...(cmd.mock_command ? { mock_command: cmd.mock_command } : {}),
-      ...(cmd.docs_path ? { docs_path: cmd.docs_path } : {}),
-    }),
-  );
+  const toCommandRecord = (cmd: RobotCommandEntry): Record<string, unknown> => ({
+    name: cmd.name,
+    command: cmd.command,
+    purpose: cmd.purpose,
+    paid_calls: cmd.paid_calls,
+    dry_run: cmd.dry_run,
+    required_env: [...cmd.required_env],
+    output_schema_version: cmd.output_schema_version,
+    recovery_fields: [...cmd.recovery_fields],
+    touches_network: cmd.touches_network,
+    touches_chrome: cmd.touches_chrome,
+    ...(cmd.mock_command ? { mock_command: cmd.mock_command } : {}),
+    ...(cmd.docs_path ? { docs_path: cmd.docs_path } : {}),
+  });
+  const commands = ROBOT_COMMANDS.map(toCommandRecord);
+  const actionCommands = ROBOT_ACTION_COMMANDS.map(toCommandRecord);
   return {
     schema_version: ROBOT_SURFACE_SCHEMA_VERSION,
     bundle_version: V18_BUNDLE_VERSION,
@@ -416,6 +472,7 @@ export function buildRobotSurfacePayload(): RobotSurfacePayload {
     lanes_policy_version: AGENT_LANE_POLICY_VERSION,
     exit_codes: ORACLE_EXIT_CODE_DICTIONARY,
     commands,
+    action_commands: actionCommands,
   };
 }
 

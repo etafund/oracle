@@ -116,6 +116,12 @@ export function buildRobotDocsGuideText(): string {
     lines.push(`    ${cmd.purpose}`);
   }
   lines.push("");
+  lines.push("## Session action commands (paid live runs; --json = launch receipt on stdout)");
+  lines.push("");
+  for (const cmd of payload.action_commands) {
+    lines.push(`- ${cmd.command as string}`);
+  }
+  lines.push("");
   lines.push("## Exit codes");
   lines.push("");
   for (const [code, meaning] of Object.entries(payload.exit_codes)) {
@@ -148,7 +154,7 @@ function formatHuman(result: RobotDocsCommandResult): string {
   lines.push(`tool=${payload.tool}  json_envelope_required=${payload.json_envelope_required}`);
   lines.push(`error_fields_required: ${payload.error_fields_required.join(", ")}`);
   lines.push("");
-  for (const cmd of payload.commands) {
+  for (const cmd of [...payload.commands, ...payload.action_commands]) {
     const name = cmd.name as string;
     const command = cmd.command as string;
     const purpose = cmd.purpose as string;

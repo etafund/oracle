@@ -220,6 +220,7 @@ describe("robot-docs does not leak secrets", () => {
 
 describe("RobotSurfacePayload — schema-pin regression test (agent-ergonomics Stage 1)", () => {
   const EXPECTED_TOP_LEVEL_KEYS = [
+    "action_commands",
     "bundle_version",
     "commands",
     "error_fields_required",
@@ -260,6 +261,27 @@ describe("RobotSurfacePayload — schema-pin regression test (agent-ergonomics S
     for (const cmd of payload.commands) {
       expect(cmd.paid_calls).toBe(false);
     }
+  });
+
+  test("action_commands advertises restart and follow-up as honestly-paid session verbs", () => {
+    // Regression for the `oracle restart <id>` --json gap: robot-docs was
+    // silent about the restart/follow-up lifecycle verbs, so agents had no
+    // machine-readable warning that surface existed (or that it now emits
+    // an oracle_session_action.v1 launch receipt with --json).
+    const payload = buildRobotSurfacePayload();
+    expect(payload.action_commands.map((cmd) => cmd.name)).toEqual(["restart", "follow-up"]);
+    for (const cmd of payload.action_commands) {
+      expect(cmd.paid_calls).toBe(true);
+      expect(cmd.command as string).toContain("--json");
+      expect(cmd.output_schema_version).toBe("oracle_session_action.v1");
+    }
+    // Registered by name too, like every gating command.
+    expect(findRobotCommand("restart")).not.toBeNull();
+    expect(findRobotCommand("follow-up")).not.toBeNull();
+    // But never folded into the gating-only `commands` array.
+    const gatingNames = new Set(payload.commands.map((cmd) => cmd.name));
+    expect(gatingNames.has("restart")).toBe(false);
+    expect(gatingNames.has("follow-up")).toBe(false);
   });
 
   test("run_action matches the shared CORE_RUN_ACTION literal capabilities --json also reports", () => {
