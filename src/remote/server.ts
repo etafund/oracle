@@ -1014,13 +1014,13 @@ export async function createRemoteServer(
             // of the terminal done event. bindingVerified means the
             // validation PASSED at some tier; bindingQuality records the
             // tier so a degraded conversation-only pass is never mistaken
-            // for full structural (message-handle) verification.
+            // for full structural (message-handle) verification. Binding
+            // FAILURES never travel as log lines — they surface as the typed
+            // capture-binding error handled in the catch block below — so
+            // there is deliberately no failure regex here.
             if (/capture binding verified/i.test(message)) {
               bindingVerified = true;
               bindingQuality = parseCaptureBindingVerifiedQuality(message);
-            } else if (/capture binding (?:failed|mismatch|lost|unverified)/i.test(message)) {
-              bindingVerified = false;
-              bindingQuality = null;
             }
             sendEvent({ type: "log", message });
           }
@@ -1126,6 +1126,18 @@ export async function createRemoteServer(
         const message = error instanceof Error ? error.message : String(error);
         runErrorMessage = message;
         const details = (error as Partial<OracleUserError>)?.details;
+        // Structural capture-binding failures surface as a typed
+        // BrowserAutomationError with details.stage === "capture-binding"
+        // (buildCaptureBindingFailureError, browser/actions/captureBinding.ts)
+        // rather than as a chat log line. Read the verdict from the typed
+        // error itself so a multi-turn run whose FIRST turn verified (the log
+        // marker above set bindingVerified=true) never reports a stale
+        // captureBindingVerified:true on the failed terminal done event when
+        // a LATER follow-up turn's binding fails.
+        if (details?.stage === "capture-binding") {
+          bindingVerified = false;
+          bindingQuality = null;
+        }
         const declaredClass = details?.oracleErrorClass;
         const declaredRetryable = details?.retryable;
         runErrorClass = isRunErrorClass(declaredClass)

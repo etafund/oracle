@@ -5,7 +5,10 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createRemoteServer, parseCaptureBindingVerifiedQuality } from "../../src/remote/server.js";
-import { formatCaptureBindingVerifiedLog } from "../../src/browser/actions/captureBinding.js";
+import {
+  buildCaptureBindingFailureError,
+  formatCaptureBindingVerifiedLog,
+} from "../../src/browser/actions/captureBinding.js";
 import { createRemoteBrowserExecutor, RemoteRunFailedError } from "../../src/remote/client.js";
 import { BrowserAutomationError } from "../../src/oracle/errors.js";
 import type { BrowserRunResult } from "../../src/browserMode.js";
@@ -146,6 +149,55 @@ describe("server: terminal done event", () => {
         const provenance = done.provenance as Record<string, unknown>;
         expect(provenance.captureBindingVerified).toBe(true);
         expect(provenance.captureBindingQuality).toBe("conversation-only");
+      } finally {
+        await server.close();
+      }
+    },
+  );
+
+  // Regression: a multi-turn run whose FIRST turn's capture binding verified
+  // but whose LATER follow-up turn failed structural binding validation must
+  // not report a stale captureBindingVerified:true on the failed terminal
+  // done event. The failure travels as the typed capture-binding error (its
+  // message contains no "capture binding" substring, so log-text sniffing
+  // can never see it); the server must read the verdict from the error's
+  // own details.stage === "capture-binding".
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "a later turn's binding failure overrides an earlier turn's verified marker",
+    async () => {
+      await isolatedFleetDir();
+      const server = await createRemoteServer(
+        { host: "127.0.0.1", port: 0, token: "secret", logger: () => {}, attachOnly: false },
+        {
+          runBrowser: async (options) => {
+            // Turn 1: submit confirmed and capture binding verified at full
+            // structural strength.
+            options.log?.("Submitted prompt via Enter key");
+            options.log?.(formatCaptureBindingVerifiedLog("message-handle", "abc123"));
+            // Follow-up turn: the capture binding fails structurally — thrown
+            // exactly as assertCapturedAssistantResponseBound throws it.
+            throw buildCaptureBindingFailureError(
+              {
+                ok: false,
+                code: "capture-binding-message-mismatch",
+                detail: "captured assistant message is not bound to this run's user message",
+                warnings: [],
+              },
+              { quality: "message-handle", promptSha256: "abc123" },
+            );
+          },
+        },
+      );
+      try {
+        const response = await rawRun(server.port, "secret");
+        const done = lastEvent(response.body);
+        expect(done.type).toBe("done");
+        expect(done.ok).toBe(false);
+        expect(done.errorClass).toBe("integrity_binding_failed");
+        expect(done.retryable).toBe(false);
+        const provenance = done.provenance as Record<string, unknown>;
+        expect(provenance.captureBindingVerified).toBe(false);
+        expect(provenance.captureBindingQuality).toBeNull();
       } finally {
         await server.close();
       }

@@ -571,12 +571,27 @@ export async function assertCapturedAssistantResponseBound(
     }
     lastVerdict = verdict;
   }
-  throw new BrowserAutomationError(
-    `Captured assistant response failed structural binding validation: ${lastVerdict.detail}. ` +
+  throw buildCaptureBindingFailureError(lastVerdict, binding);
+}
+
+/**
+ * The one typed error every structural capture-binding failure surfaces as.
+ * `details.stage === "capture-binding"` is the machine-readable failure
+ * signal consumers (e.g. the remote server's terminal done-event provenance)
+ * key on — the human-readable message is NOT a stable contract, so nothing
+ * should pattern-match it. Exported so tests exercising those consumers stay
+ * coupled to the exact error shape this module throws.
+ */
+export function buildCaptureBindingFailureError(
+  verdict: CaptureBindingVerdict,
+  binding: Pick<SubmittedUserMessageBinding, "quality" | "promptSha256">,
+): BrowserAutomationError {
+  return new BrowserAutomationError(
+    `Captured assistant response failed structural binding validation: ${verdict.detail}. ` +
       "Refusing to return a response that cannot be proven to answer this run's own submitted message.",
     {
       stage: "capture-binding",
-      code: lastVerdict.code,
+      code: verdict.code,
       bindingQuality: binding.quality,
       promptSha256: binding.promptSha256,
     },
