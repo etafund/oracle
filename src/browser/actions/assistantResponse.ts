@@ -19,6 +19,7 @@ import { buildClickDispatcher } from "./domEvents.js";
 
 const ASSISTANT_POLL_TIMEOUT_ERROR = "assistant-response-watchdog-timeout";
 const STOP_CONTROL_SELECTOR = STOP_BUTTON_SELECTORS.join(", ");
+const MIN_CONFIDENT_ANSWER_LENGTH = 16;
 const PREAMBLE_SIZED_ANSWER_CHARS = 500;
 const PREAMBLE_COMPLETION_STABLE_MS = 60_000;
 // Consecutive accepting samples (~3.2s at the 400ms poll cadence) required
@@ -33,6 +34,21 @@ const NONCOMPACT_ACCEPT_CONFIRM_SAMPLES = 8;
 // literal section heading "1) Verdict"), not a real one-liner. Past this
 // point compact answers also need finished-action controls.
 const COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS = 60_000;
+
+function isImplausiblyShortAnswer(candidateLength: number): boolean {
+  return candidateLength > 0 && candidateLength < MIN_CONFIDENT_ANSWER_LENGTH;
+}
+
+export function shouldConfirmAssistantCompletion(args: {
+  candidateLength: number;
+  stopVisible: boolean;
+  completionVisible: boolean;
+}): boolean {
+  if (args.stopVisible || args.completionVisible) {
+    return true;
+  }
+  return isImplausiblyShortAnswer(args.candidateLength);
+}
 const THINKING_STATUS_LABELS = [
   "thinking",
   "pro thinking",
@@ -298,7 +314,7 @@ function shouldAcceptStableAssistantSnapshot({
   // unreliable (the Pro thinking gate hides it mid-turn), so never treat it as
   // final without finished-action controls.
   if (compactAnswer) {
-    if (ultraShortAnswer || !stableEnough) {
+    if (shortAnswer || ultraShortAnswer || !stableEnough) {
       return false;
     }
     // A compact answer minutes into the wait is almost always a paused
@@ -394,7 +410,9 @@ export async function waitForAssistantResponse(
         error instanceof Error &&
         error.message === ASSISTANT_POLL_TIMEOUT_ERROR
       ) {
-        evaluation = await evaluationPromise;
+        evaluationPromise.catch(() => undefined);
+        await terminateRuntimeExecution(Runtime);
+        throw error;
       } else if (source === "poll") {
         throw error;
       } else if (source === "evaluation") {
@@ -467,6 +485,8 @@ export async function waitForAssistantResponse(
   // The evaluation path can race ahead of completion. If ChatGPT is still streaming, wait for the watchdog poller.
   const elapsedMs = Date.now() - start;
   const remainingMs = Math.max(0, timeoutMs - elapsedMs);
+  const candidateText = String(candidate?.text ?? "").trim();
+  const suspiciouslyShort = isImplausiblyShortAnswer(candidateText.length);
   if (remainingMs > 0) {
     const [stopVisible, completionVisible, thinkingActive] = await Promise.all([
       isStopButtonVisible(Runtime),
@@ -476,7 +496,6 @@ export async function waitForAssistantResponse(
     // Completion controls can appear briefly while Pro is still replacing its thinking UI.
     // Confirm every capture from that transition with the stability-based watchdog; a
     // partial first paragraph can be arbitrarily long.
-    const candidateText = String(candidate?.text ?? "").trim();
     const ultraShortAnswer = candidateText.length === 1;
     // At the thinking→answer transition there is a third state where BOTH the
     // stop button and the finished-action controls are hidden. Returning the
@@ -484,7 +503,15 @@ export async function waitForAssistantResponse(
     // preamble becomes the archived answer, so preamble-sized candidates and
     // live-thinking captures must also be confirmed by the watchdog.
     const preambleSizedCandidate = candidateText.length < PREAMBLE_SIZED_ANSWER_CHARS;
-    if (stopVisible || completionVisible || thinkingActive || preambleSizedCandidate) {
+    if (
+      thinkingActive ||
+      preambleSizedCandidate ||
+      shouldConfirmAssistantCompletion({
+        candidateLength: candidateText.length,
+        stopVisible,
+        completionVisible,
+      })
+    ) {
       logger(
         stopVisible
           ? "Assistant still generating; waiting for completion"
@@ -572,17 +599,33 @@ export async function waitForAssistantResponse(
         }
       }
       // Genuinely calm and stable across both reads: prefer any strictly
-      // longer snapshot the page produced since capture, then keep the legacy
-      // behavior (return the capture) so genuinely short answers whose
-      // completion controls never render are not broken.
+      // longer snapshot the page produced since capture. After the compact
+      // grace window, a preamble-sized calm capture is more likely a hidden
+      // Pro-thinking pause than a real final answer, so fail loud instead of
+      // returning the original teaser.
       if (secondRead && secondRead.text.trim().length > candidateText.length) {
         logger("Watchdog budget elapsed; returning the longer late snapshot");
         return secondRead;
+      }
+      if (
+        suspiciouslyShort ||
+        (preambleSizedCandidate && Date.now() - start >= COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS)
+      ) {
+        await logDomFailure(Runtime, logger, "assistant-response-unconfirmed-completion");
+        throw new Error(
+          "assistant-response short capture could not be confirmed before timeout; refusing to finalize it",
+        );
       }
       logger(
         "Short answer could not be re-confirmed by the watchdog; returning original capture",
       );
     }
+  }
+
+  if (suspiciouslyShort) {
+    throw new Error(
+      "assistant-response short capture could not be confirmed before timeout; refusing to finalize it",
+    );
   }
 
   return candidate;
@@ -692,6 +735,7 @@ async function recoverAssistantResponse(
   if (recoveryTimeoutMs === 0) {
     return null;
   }
+  const recoveryStartedAt = Date.now();
   // Thread the true elapsed-since-wait-start baseline through: recovery often
   // starts minutes into a run, and a zero baseline would re-open the bare
   // compact fast path that COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS exists to close.
@@ -704,6 +748,11 @@ async function recoverAssistantResponse(
     elapsedBaselineMs,
   );
   if (recovered) {
+    if (isImplausiblyShortAnswer(recovered.text.length)) {
+      logger("Recovered an implausibly short response; waiting for completion proof");
+      const remainingMs = Math.max(0, recoveryTimeoutMs - (Date.now() - recoveryStartedAt));
+      return pollAssistantCompletion(Runtime, remainingMs, minTurnIndex, expectedConversationId);
+    }
     logger("Recovered assistant response via polling fallback");
     return recovered;
   }
@@ -940,8 +989,8 @@ async function pollAssistantCompletion(
         lastChangeAt = Date.now();
         acceptStreak = 0;
       }
-      const shortAnswer = currentLength > 0 && currentLength < 16;
-      const mediumAnswer = currentLength >= 16 && currentLength < 40;
+      const shortAnswer = isImplausiblyShortAnswer(currentLength);
+      const mediumAnswer = currentLength >= MIN_CONFIDENT_ANSWER_LENGTH && currentLength < 40;
       const longAnswer = currentLength >= 40 && currentLength < 500;
       // Learned: short answers need a longer stability window or they truncate.
       // Learned: long streaming responses (esp. thinking models) can pause mid-stream;
@@ -1380,8 +1429,8 @@ function buildResponseObserverExpression(
       // use progressively longer windows to avoid truncation (#71).
       const classifyLength = (length) => ({
         ultraShortAnswer: length === 1,
-        shortAnswer: length > 0 && length < 16,
-        mediumAnswer: length >= 16 && length < 40,
+        shortAnswer: length > 0 && length < ${MIN_CONFIDENT_ANSWER_LENGTH},
+        mediumAnswer: length >= ${MIN_CONFIDENT_ANSWER_LENGTH} && length < 40,
         longAnswer: length >= 40 && length < 500,
       });
       const settleWindowForLength = (length) => {

@@ -892,12 +892,17 @@ describe("waitForAssistantResponse", () => {
       evaluate: vi.fn().mockResolvedValue({
         result: {
           type: "object",
-          value: { text: "Answer", html: "<p>Answer</p>", messageId: "mid", turnId: "tid" },
+          value: {
+            text: "Answer to the question.",
+            html: "<p>Answer to the question.</p>",
+            messageId: "mid",
+            turnId: "tid",
+          },
         },
       }),
     } as unknown as ChromeClient["Runtime"];
     const result = await waitForAssistantResponse(runtime, 1000, logger);
-    expect(result.text).toBe("Answer");
+    expect(result.text).toBe("Answer to the question.");
     expect(result.meta).toEqual({ messageId: "mid", turnId: "tid" });
   });
 
@@ -905,7 +910,16 @@ describe("waitForAssistantResponse", () => {
     vi.useFakeTimers();
     try {
       let snapshotCalls = 0;
-      const payload = { text: "Answer", html: "<p>Answer</p>", messageId: "mid", turnId: "tid" };
+      // Use a confident-length answer so the fast path returns directly; a
+      // sub-16-char capture would (intentionally) trigger the short-response
+      // confirmation watchdog, which this test is not exercising.
+      const answerText = "Answer to the question.";
+      const payload = {
+        text: answerText,
+        html: `<p>${answerText}</p>`,
+        messageId: "mid",
+        turnId: "tid",
+      };
       const evaluate = vi
         .fn()
         .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
@@ -930,11 +944,122 @@ describe("waitForAssistantResponse", () => {
       // (short answers need ~8s of stability), so advance past that window.
       await vi.advanceTimersByTimeAsync(20_000);
       const result = await promise;
-      expect(result.text).toBe("Answer");
+      expect(result.text).toBe(answerText);
 
       const callsAtReturn = evaluate.mock.calls.length;
       await vi.advanceTimersByTimeAsync(5_000);
       expect(evaluate.mock.calls.length).toBe(callsAtReturn);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("reconfirms a short no-control capture and returns the grown answer", async () => {
+    vi.useFakeTimers();
+    try {
+      const startedAt = Date.now();
+      const partial = { text: "I", messageId: "mid", turnId: "tid" };
+      const complete = {
+        text: `I finished the answer after the thinking transition. ${"The completed response continues with enough detail to exceed the preamble-sized capture threshold and prove that the short initial capture grew into the final answer. ".repeat(5)}`,
+        messageId: "mid",
+        turnId: "tid",
+      };
+      let snapshotCalls = 0;
+      const evaluate = vi
+        .fn()
+        .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
+          if (params.awaitPromise) {
+            return { result: { type: "object", value: partial } };
+          }
+          const expression = String(params.expression ?? "");
+          if (expression.includes("extractAssistantTurn")) {
+            snapshotCalls += 1;
+            if (snapshotCalls === 1) {
+              await new Promise((resolve) => setTimeout(resolve, 50));
+            }
+            return {
+              result: { value: Date.now() - startedAt < 3_500 ? partial : complete },
+            };
+          }
+          if (expression.includes("Find the LAST assistant turn")) {
+            return { result: { value: Date.now() - startedAt >= 3_500 } };
+          }
+          return { result: { value: false } };
+        });
+
+      const promise = waitForAssistantResponse(
+        { evaluate } as unknown as ChromeClient["Runtime"],
+        30_000,
+        logger,
+      );
+      await vi.advanceTimersByTimeAsync(12_000);
+
+      await expect(promise).resolves.toMatchObject({ text: complete.text.trim() });
+      expect(logger).toHaveBeenCalledWith(
+        "Captured one-character assistant response; re-polling for completion",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("rejects a stable short capture without a completion signal", async () => {
+    vi.useFakeTimers();
+    try {
+      const partial = { text: "I", messageId: "mid", turnId: "tid" };
+      const evaluate = vi
+        .fn()
+        .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
+          if (params.awaitPromise) {
+            return { result: { type: "object", value: partial } };
+          }
+          const expression = String(params.expression ?? "");
+          if (expression.includes("extractAssistantTurn")) {
+            return { result: { value: partial } };
+          }
+          return { result: { value: false } };
+        });
+
+      const promise = waitForAssistantResponse(
+        { evaluate } as unknown as ChromeClient["Runtime"],
+        15_000,
+        logger,
+      );
+      const assertion = expect(promise).rejects.toThrow(/stable completion/i);
+      await vi.advanceTimersByTimeAsync(16_000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("rejects a stable short watchdog capture when the observer hangs", async () => {
+    vi.useFakeTimers();
+    try {
+      const partial = { text: "I", messageId: "mid", turnId: "tid" };
+      const evaluate = vi
+        .fn()
+        .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
+          if (params.awaitPromise) {
+            return new Promise(() => undefined);
+          }
+          const expression = String(params.expression ?? "");
+          if (expression.includes("extractAssistantTurn")) {
+            return { result: { value: partial } };
+          }
+          return { result: { value: false } };
+        });
+      const terminateExecution = vi.fn().mockResolvedValue(undefined);
+
+      const promise = waitForAssistantResponse(
+        { evaluate, terminateExecution } as unknown as ChromeClient["Runtime"],
+        15_000,
+        logger,
+      );
+      const assertion = expect(promise).rejects.toThrow(/watchdog-timeout/i);
+      await vi.advanceTimersByTimeAsync(16_000);
+      await assertion;
+      expect(terminateExecution).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
     }
@@ -1051,7 +1176,7 @@ describe("waitForAssistantResponse", () => {
     }
   });
 
-  test("returns a calm-page short capture after the bounded confirmation budget", async () => {
+  test("rejects a calm-page preamble-sized capture after the bounded confirmation budget", async () => {
     vi.useFakeTimers();
     try {
       const teaser = {
@@ -1077,13 +1202,14 @@ describe("waitForAssistantResponse", () => {
         1_200_000,
         logger,
       );
+      const assertion = expect(promise).rejects.toThrow(/refusing to finalize/i);
       // The calm-page confirmation budget is capped at 90s; without the cap
       // this would not resolve until the full 20-minute response timeout.
       await vi.advanceTimersByTimeAsync(100_000);
 
-      await expect(promise).resolves.toMatchObject({ text: teaser.text });
+      await assertion;
       expect(logger).toHaveBeenCalledWith(
-        "Short answer could not be re-confirmed by the watchdog; returning original capture",
+        "Captured preamble-sized answer without completion controls; re-polling for completion",
       );
     } finally {
       vi.useRealTimers();
@@ -1370,8 +1496,8 @@ describe("waitForAssistantResponse", () => {
             return {
               result: {
                 value: {
-                  text: "Recovered",
-                  html: "<p>Recovered</p>",
+                  text: "Recovered assistant response.",
+                  html: "<p>Recovered assistant response.</p>",
                   messageId: "mid",
                   turnId: "tid",
                 },
@@ -1384,7 +1510,7 @@ describe("waitForAssistantResponse", () => {
       const promise = waitForAssistantResponse(runtime, 12_000, logger);
       await vi.advanceTimersByTimeAsync(10_000);
       const result = await promise;
-      expect(result.text).toBe("Recovered");
+      expect(result.text).toBe("Recovered assistant response.");
       expect(evaluate).toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
