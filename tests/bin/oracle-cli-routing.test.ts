@@ -15,6 +15,36 @@ const LEDGER_ROBOT_COMMANDS = [
   "oracle evidence ledger export <session> --json",
 ] as const;
 
+describe("hidden alias option-source tracking", () => {
+  // Regression: --mode used a source-less setOptionValue, so optionUsesDefault("engine")
+  // stayed true and the Gemini Deep Think root route silently forced engine=browser
+  // over an explicit --mode api. The alias must behave exactly like --engine.
+  test("--mode api is not silently clobbered by the Gemini Deep Think root route", async () => {
+    const result = await runOracleAllowFailure([
+      "--dry-run",
+      "-p",
+      "hi",
+      "--mode",
+      "api",
+      "--model",
+      "gemini-3-deep-think",
+    ]);
+    const output = `${result.stdout}\n${result.stderr}`;
+    // The explicit engine choice must surface the browser-only conflict (same as
+    // --engine api) instead of silently rerouting to the browser engine.
+    expect(result.exitCode).toBe(1);
+    expect(output).toContain("Gemini Deep Think is browser-only");
+    expect(output).not.toContain("browser mode");
+  }, 60_000);
+
+  test("--mode api routes to the api engine like --engine api", async () => {
+    const result = await runOracleAllowFailure(["--dry-run", "-p", "hi", "--mode", "api"]);
+    const output = `${result.stdout}\n${result.stderr}`;
+    expect(result.exitCode).toBe(0);
+    expect(output).toContain("Route: api/local");
+  }, 60_000);
+});
+
 describe("bin/oracle-cli robot command routing", () => {
   test("oracle --help lists every robot JSON command", async () => {
     const { stdout, stderr } = await runOracle(["--help"]);
@@ -29,6 +59,22 @@ describe("bin/oracle-cli robot command routing", () => {
     }
   });
 });
+
+async function runOracleAllowFailure(
+  args: string[],
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  try {
+    const { stdout, stderr } = await runOracle(args);
+    return { stdout, stderr, exitCode: 0 };
+  } catch (error) {
+    const failure = error as { stdout?: string; stderr?: string; code?: number };
+    return {
+      stdout: failure.stdout ?? "",
+      stderr: failure.stderr ?? "",
+      exitCode: typeof failure.code === "number" ? failure.code : 1,
+    };
+  }
+}
 
 async function runOracle(args: string[]): Promise<{ stdout: string; stderr: string }> {
   return execFileAsync(process.execPath, ["--import", "tsx", CLI_ENTRYPOINT, ...args], {

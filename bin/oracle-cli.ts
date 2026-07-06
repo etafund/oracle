@@ -481,7 +481,11 @@ program.hook("preAction", async (thisCommand) => {
     return;
   }
   const opts = thisCommand.optsWithGlobals() as CliOptions;
-  applyHiddenAliases(opts, (key, value) => thisCommand.setOptionValue(key, value));
+  // Use setOptionValueWithSource so alias-driven assignments (e.g. --mode -> engine)
+  // register as explicitly set; a bare setOptionValue leaves the recorded source at
+  // "default", letting optionUsesDefault() checks silently clobber the user's choice
+  // (e.g. the Gemini Deep Think root route forcing engine=browser over --mode api).
+  applyHiddenAliases(opts, (key, value) => thisCommand.setOptionValueWithSource(key, value, "cli"));
   const positional = thisCommand.args?.[0] as string | undefined;
   if (!opts.prompt && positional) {
     opts.prompt = positional;
