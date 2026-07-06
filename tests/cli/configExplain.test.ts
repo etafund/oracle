@@ -176,6 +176,46 @@ describe("config explain helper", () => {
     });
   });
 
+  test("redacts URL-userinfo credentials regardless of the config key name", async () => {
+    const userConfigPath = path.join(tempDir, "config.json");
+    await fs.writeFile(
+      userConfigPath,
+      `{
+        apiBaseUrl: "https://proxyuser:s3cr3tPass@proxy.internal/v1",
+        promptSuffix: "route via https://alice:hunter2c4nd0r@mirror.example/path when asked",
+        azure: { endpoint: "https://svc-identity-leak@azure.example/" },
+      }`,
+      "utf8",
+    );
+
+    const report = await buildConfigExplainReport({
+      cwd: tempDir,
+      includeProject: false,
+      env: {} as NodeJS.ProcessEnv,
+      now: NOW,
+    });
+
+    // Whole-URL values with userinfo get the entire userinfo redacted.
+    expect(report.effective_config.apiBaseUrl).toBe("https://[redacted]@proxy.internal/v1");
+    // Username-only userinfo is still identity-leaking and gets redacted too.
+    expect((report.effective_config.azure as Record<string, unknown>).endpoint).toBe(
+      "https://[redacted]@azure.example/",
+    );
+    // URLs embedded inside larger strings get their password redacted.
+    expect(report.effective_config.promptSuffix).toBe(
+      "route via https://alice:[redacted]@mirror.example/path when asked",
+    );
+
+    expect(report.redaction.redacted_paths).toEqual(
+      expect.arrayContaining(["apiBaseUrl", "azure.endpoint", "promptSuffix"]),
+    );
+
+    const serialized = formatConfigExplainJson(report) + formatConfigExplainHuman(report);
+    expect(serialized).not.toContain("s3cr3tPass");
+    expect(serialized).not.toContain("hunter2c4nd0r");
+    expect(serialized).not.toContain("svc-identity-leak");
+  });
+
   test("reports invalid project ChatGPT URLs as ignored without exposing values", async () => {
     const userConfigPath = path.join(tempDir, "config.json");
     await fs.writeFile(

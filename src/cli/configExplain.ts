@@ -84,6 +84,8 @@ const BASIC_PATTERN = /\bBasic\s+[A-Za-z0-9+/]{8,}={0,2}/gi;
 const OPENAI_KEY_PATTERN = /\bsk-(?:proj-|ant-|or-)?[A-Za-z0-9_-]{8,}\b/g;
 const XAI_KEY_PATTERN = /\bxai-[A-Za-z0-9_-]{8,}\b/g;
 const GEMINI_KEY_PATTERN = /\bAIza[0-9A-Za-z_-]{8,}\b/g;
+const URL_USERINFO_PATTERN = /(\/\/[^/\s@]*:)[^@/\s]+(@)/g;
+const URL_LEADING_USERINFO_PATTERN = /^([a-z][a-z0-9+.-]*:\/\/)[^/@\s]*@/i;
 
 export async function buildConfigExplainReport(
   options: ConfigExplainOptions = {},
@@ -283,7 +285,7 @@ function redactConfigValue(value: unknown, path: string, redactedPaths: Set<stri
   }
 
   if (typeof value === "string") {
-    const redacted = redactSecretShapedString(value);
+    const redacted = redactSecretShapedString(redactUrlUserinfo(value));
     if (redacted !== value && path) {
       redactedPaths.add(path);
     }
@@ -313,12 +315,32 @@ function redactConfigValue(value: unknown, path: string, redactedPaths: Set<stri
 
 function redactSecretShapedString(value: string): string {
   return value
+    .replace(URL_USERINFO_PATTERN, "$1[redacted]$2")
     .replace(BEARER_PATTERN, "Bearer [redacted]")
     .replace(BASIC_PATTERN, "Basic [redacted]")
     .replace(OPENAI_KEY_PATTERN, "sk-...[redacted]")
     .replace(XAI_KEY_PATTERN, "xai-...[redacted]")
     .replace(GEMINI_KEY_PATTERN, "AIza...[redacted]")
     .replace(SECRET_ASSIGNMENT_PATTERN, "$1=[redacted]");
+}
+
+function redactUrlUserinfo(value: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return value;
+  }
+  if (parsed.username.length === 0 && parsed.password.length === 0) {
+    return value;
+  }
+  const replaced = value.replace(
+    URL_LEADING_USERINFO_PATTERN,
+    `$1${REDACTED_CONFIG_VALUE}@`,
+  );
+  // If the userinfo could not be located textually, fail closed rather than
+  // printing a value known to carry credentials.
+  return replaced === value ? REDACTED_CONFIG_VALUE : replaced;
 }
 
 function isSensitivePath(path: string): boolean {
