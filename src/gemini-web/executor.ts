@@ -9,6 +9,7 @@ import type {
 import { getCookies } from "@steipete/sweet-cookie";
 import { runProviderDomFlow } from "../browser/providerDomFlow.js";
 import { delay } from "../browser/utils.js";
+import { BrowserAutomationError } from "../oracle/errors.js";
 import { runGeminiWebWithFallback, saveFirstGeminiImageFromOutput } from "./client.js";
 import {
   geminiDeepThinkDomProviderWithFsm,
@@ -180,18 +181,48 @@ async function loadGeminiCookiesFromCDP(
   }
 }
 
+/**
+ * Typed error for a caller-gone abort on the Gemini lane, mirroring the
+ * ChatGPT lane's contract (buildClientAbortError in src/browser/index.ts):
+ * pre-submit aborts are retryable transport interruptions; once the prompt
+ * has been submitted the run is NOT auto-retryable and no Gemini-side
+ * cancellation is attempted — the run is simply abandoned.
+ */
+function buildGeminiClientAbortError(promptSubmitted: boolean): BrowserAutomationError {
+  return new BrowserAutomationError(
+    promptSubmitted
+      ? "Caller disconnected after submit; abandoning the Gemini run without Gemini-side cancellation."
+      : "Caller disconnected before submit; aborting the Gemini run.",
+    {
+      stage: "client-abort",
+      oracleErrorClass: promptSubmitted
+        ? "transport_interrupted_after_submit"
+        : "transport_interrupted_before_submit",
+      retryable: !promptSubmitted,
+    },
+  );
+}
+
 async function runGeminiDeepThinkViaBrowser(
   prompt: string,
   wired: WiredGeminiDeepThinkAdapter,
   browserConfig: BrowserRunOptions["config"],
   log?: BrowserLogger,
+  signal?: AbortSignal,
 ): Promise<{ text: string; thoughts: string | null }> {
+  // promptSubmitted is read at abort time so the typed class reflects
+  // whether the Send boundary was crossed (same contract as the ChatGPT lane).
+  let promptSubmitted = false;
+  if (signal?.aborted) {
+    throw buildGeminiClientAbortError(promptSubmitted);
+  }
   const session = await openGeminiBrowserSession({
     browserConfig,
     keepBrowserDefault: true,
     purpose: "Gemini Deep Think",
     log,
   });
+  let removeAbortListener: (() => void) | null = () => {};
   try {
     const client = session.client;
     const { Runtime, Page } = client;
@@ -208,34 +239,76 @@ async function runGeminiDeepThinkViaBrowser(
     await Runtime.enable();
     await Page.enable();
 
+    // Caller-gone abort (BrowserRunOptions.signal): mirror the ChatGPT
+    // lane's raceWithAbort (src/browser/index.ts) so a cancelled run stops
+    // at the next wait point and unwinds through session cleanup instead
+    // of polling out the full RESPONSE_TIMEOUT_MS.
+    const abortPromise = new Promise<never>((_, reject) => {
+      if (!signal) {
+        return;
+      }
+      const rejectAborted = () => {
+        log?.("[gemini-web] Caller disconnected; aborting run at the next wait point.");
+        reject(buildGeminiClientAbortError(promptSubmitted));
+      };
+      if (signal.aborted) {
+        rejectAborted();
+        return;
+      }
+      signal.addEventListener("abort", rejectAborted, { once: true });
+      removeAbortListener = () => signal.removeEventListener("abort", rejectAborted);
+    });
+    // Keep the rejection handled even if no wait is currently racing it.
+    void abortPromise.catch(() => undefined);
+    const raceWithAbort = <T>(promise: Promise<T>): Promise<T> =>
+      Promise.race([promise, abortPromise]);
+
     const evaluate = async <T>(expression: string): Promise<T | undefined> => {
       const { result } = await Runtime.evaluate({ expression, returnByValue: true });
       return result?.value as T | undefined;
     };
 
     log?.("[gemini-web] Navigating to gemini.google.com...");
-    await Page.navigate({ url: "https://gemini.google.com/app" });
-    await delay(3_000);
+    await raceWithAbort(Promise.resolve(Page.navigate({ url: "https://gemini.google.com/app" })));
+    await raceWithAbort(delay(3_000));
+
+    // Track the Send boundary so an abort mid-flight is classified
+    // before/after submit like the ChatGPT lane. The wrapper delegates to
+    // the FSM-wired adapter, so verification gating is unchanged.
+    const adapter: WiredGeminiDeepThinkAdapter = {
+      ...wired,
+      submitPrompt: async (ctx) => {
+        await wired.submitPrompt(ctx);
+        promptSubmitted = true;
+      },
+    };
 
     // Production path: wrap through the v18 verification FSM so the
     // adapter cannot call submitPrompt before Deep Think is verified
     // in the same browser session (oracle-svt). The caller owns the
     // wired adapter (one per run) so it can also emit v18 artifacts
     // from the FSM's recorded verdict after this call resolves.
-    const domResult = await runProviderDomFlow(wired, {
-      prompt,
-      evaluate,
-      delay,
-      log,
-      state: {
-        inputTimeoutMs: browserConfig?.inputTimeoutMs,
-        timeoutMs: browserConfig?.timeoutMs,
-      },
-    });
+    // Every wait point inside the provider polls via ctx.evaluate/ctx.delay,
+    // so racing those (plus the flow itself) makes an abort take effect
+    // promptly at whichever wait the run is currently parked on.
+    const domResult = await raceWithAbort(
+      runProviderDomFlow(adapter, {
+        prompt,
+        evaluate: <T>(expression: string): Promise<T | undefined> =>
+          raceWithAbort(evaluate<T>(expression)),
+        delay: (ms: number) => raceWithAbort(delay(ms)),
+        log,
+        state: {
+          inputTimeoutMs: browserConfig?.inputTimeoutMs,
+          timeoutMs: browserConfig?.timeoutMs,
+        },
+      }),
+    );
 
     log?.(`[gemini-web] Deep Think response received (${domResult.text.length} chars).`);
     return domResult;
   } finally {
+    removeAbortListener?.();
     await session.close();
   }
 }
@@ -410,6 +483,7 @@ export function createGeminiWebExecutor(
             wired,
             runOptions.config,
             log,
+            runOptions.signal,
           );
         } catch (error) {
           runError = error;
@@ -503,6 +577,17 @@ export function createGeminiWebExecutor(
         const timeoutMs = Math.min(configTimeout ?? defaultTimeoutMs, 600_000);
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), timeoutMs);
+        // Caller-gone abort (BrowserRunOptions.signal): merge the caller's
+        // signal into the timeout controller so cancelling the run actually
+        // aborts in-flight Gemini fetches instead of letting them run to
+        // completion (the ChatGPT lane already honors this signal).
+        const callerSignal = runOptions.signal;
+        const onCallerAbort = () => controller.abort();
+        if (callerSignal?.aborted) {
+          controller.abort();
+        } else {
+          callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
+        }
 
         let response: GeminiWebResponse;
 
@@ -592,6 +677,7 @@ export function createGeminiWebExecutor(
           }
         } finally {
           clearTimeout(timeout);
+          callerSignal?.removeEventListener("abort", onCallerAbort);
         }
 
         const answerText = response.text ?? "";

@@ -442,6 +442,132 @@ describe("gemini-web executor", () => {
     }
   });
 
+  it("aborts a Deep Think DOM run at the next wait point when runOptions.signal fires", async () => {
+    // Regression for: BrowserRunOptions.signal (caller-gone abort) was never
+    // wired into the Gemini executor, so an orchestrator cancel left the DOM
+    // path polling for up to RESPONSE_TIMEOUT_MS (10 minutes). The response
+    // poll below never reports "done"; the run must still reject promptly
+    // once the caller's signal fires.
+    const abortController = new AbortController();
+    const runtimeEvaluate = vi.fn(async ({ expression }: { expression?: string }) => {
+      const source = String(expression ?? "");
+      if (source.includes("requiresLogin")) {
+        return {
+          result: {
+            value: { ready: true, requiresLogin: false, href: "https://gemini.google.com/app" },
+          },
+        };
+      }
+      if (source.includes("toolbox-drawer-button")) return { result: { value: "clicked" } };
+      if (source.includes("includes('deep think')")) return { result: { value: "clicked" } };
+      if (source.includes("Deselect Deep Think")) return { result: { value: true } };
+      if (source.includes("document.execCommand")) return { result: { value: "typed" } };
+      if (source.includes("button.send-button")) return { result: { value: "clicked" } };
+      if (source.includes("response-footer") && source.includes("status: 'done'")) {
+        // Simulate a run cancelled mid-generation: fire the caller-gone
+        // signal while the response poll is still pending.
+        abortController.abort();
+        return { result: { value: JSON.stringify({ status: "pending" }) } };
+      }
+      return { result: { value: null } };
+    });
+    connectWithNewTab.mockResolvedValue({
+      targetId: "target-abort",
+      client: {
+        Runtime: { enable: vi.fn(async () => undefined), evaluate: runtimeEvaluate },
+        Network: {
+          enable: vi.fn(async () => undefined),
+          getCookies: vi.fn(async () => ({ cookies: requiredGeminiCookies() })),
+        },
+        Page: {
+          enable: vi.fn(async () => undefined),
+          navigate: vi.fn(async () => ({ frameId: "f-abort" })),
+        },
+        close: vi.fn(async () => undefined),
+      },
+    });
+
+    const { createGeminiWebExecutor } = await import("../../src/gemini-web/executor.js");
+    const exec = createGeminiWebExecutor({});
+    const run = exec({
+      prompt: "hello",
+      attachments: [],
+      config: { desiredModel: "gemini-3-deep-think", keepBrowser: false },
+      log: () => {},
+      signal: abortController.signal,
+    });
+
+    await expect(run).rejects.toMatchObject({
+      name: "BrowserAutomationError",
+      details: {
+        stage: "client-abort",
+        oracleErrorClass: "transport_interrupted_after_submit",
+        retryable: false,
+      },
+    });
+    // The abandoned run must still unwind through the normal cleanup path.
+    expect(closeTab).toHaveBeenCalled();
+  });
+
+  it("rejects a Deep Think DOM run pre-submit when the caller signal is already aborted", async () => {
+    const abortController = new AbortController();
+    abortController.abort();
+
+    const { createGeminiWebExecutor } = await import("../../src/gemini-web/executor.js");
+    const exec = createGeminiWebExecutor({});
+    const run = exec({
+      prompt: "hello",
+      attachments: [],
+      config: { desiredModel: "gemini-3-deep-think", keepBrowser: false },
+      log: () => {},
+      signal: abortController.signal,
+    });
+
+    await expect(run).rejects.toMatchObject({
+      name: "BrowserAutomationError",
+      details: {
+        stage: "client-abort",
+        oracleErrorClass: "transport_interrupted_before_submit",
+        retryable: true,
+      },
+    });
+    // Pre-flight abort: no browser session should ever be opened.
+    expect(launchChrome).not.toHaveBeenCalled();
+    expect(connectWithNewTab).not.toHaveBeenCalled();
+  });
+
+  it("propagates runOptions.signal into the HTTP fallback fetch signal", async () => {
+    // Regression for: the httpClient path built its own AbortController tied
+    // only to the request timeout, so a caller-gone abort never cancelled the
+    // in-flight Gemini fetch.
+    const abortController = new AbortController();
+    runGeminiWebWithFallback.mockImplementationOnce((options: unknown) => {
+      const { signal } = options as { signal: AbortSignal };
+      return new Promise((_, reject) => {
+        const onAbort = () => reject(new Error("gemini fetch aborted by caller signal"));
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        signal.addEventListener("abort", onAbort, { once: true });
+        // The fetch is now "in flight"; simulate the orchestrator cancelling.
+        abortController.abort();
+      });
+    });
+
+    const { createGeminiWebExecutor } = await import("../../src/gemini-web/executor.js");
+    const exec = createGeminiWebExecutor({});
+    const run = exec({
+      prompt: "hello",
+      attachments: [],
+      config: { desiredModel: "Gemini 3 Pro", chromeProfile: "Default" },
+      log: () => {},
+      signal: abortController.signal,
+    });
+
+    await expect(run).rejects.toThrow("gemini fetch aborted by caller signal");
+  });
+
   it("keeps the launched browser alive when Deep Think uses the keep-browser default", async () => {
     const { createGeminiWebExecutor } = await import("../../src/gemini-web/executor.js");
     const exec = createGeminiWebExecutor({});
