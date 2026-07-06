@@ -6,7 +6,7 @@
 // property (detection is strictly read-only).
 
 import { describe, expect, test, vi } from "vitest";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";

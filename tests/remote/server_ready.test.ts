@@ -358,12 +358,9 @@ describe("GET /ready", () => {
           phase: "completed",
           clientConnected: true,
         });
-        expect(typeof (finalizing.json?.activeRun as Record<string, unknown>).completedAt).toBe(
-          "string",
-        );
-        expect(
-          typeof (finalizing.json?.activeRun as Record<string, unknown>).completedAgeSeconds,
-        ).toBe("number");
+        const activeRun = finalizing.json?.activeRun as Record<string, unknown> | undefined;
+        expect(typeof activeRun?.completedAt).toBe("string");
+        expect(typeof activeRun?.completedAgeSeconds).toBe("number");
 
         releaseFinalize();
         const finished = await active.finished;

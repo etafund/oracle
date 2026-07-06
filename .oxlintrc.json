@@ -26,5 +26,5 @@
     "unicorn/prefer-add-event-listener": "off",
     "unicorn/prefer-set-has": "off"
   },
-  "ignorePatterns": ["coverage/", "dist/", "node_modules/", "pnpm-lock.yaml", "types/", "vendor/"]
+  "ignorePatterns": [".planning-runs/", "coverage/", "dist/", "node_modules/", "pnpm-lock.yaml", "types/", "vendor/"]
 }

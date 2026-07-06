@@ -50,6 +50,7 @@ oracle --followup <id> -p "Re-evaluate with this new context" --file "src/**/*.t
 - **Wiring up an agent.** [Agents](agents.md) covers Claude Code, Codex, Cursor, and the `oracle` skill. [MCP](mcp.md) plugs Oracle into any MCP-aware client.
 - **Driving ChatGPT without keys.** [Browser mode](browser-mode.md) walks through manual-login profiles, attach-running, remote browsers, and Deep Research.
 - **Long Pro runs.** [Sessions](sessions.md) and the [followup](followup.md) flow handle background runs, reattach, and lineage.
+- **Running a serve host.** [Serve operations](serve-operations.md) covers diagnosing answer truncation, deploying so "installed" means "live," and verifying a deploy end to end.
 
 ## Why these lanes?
 

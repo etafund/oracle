@@ -13,6 +13,8 @@
 - Remote: expose installed-package build provenance in `oracle remote status --json`, `oracle remote doctor --json`, and authenticated `/health` responses, including sanitized commit, dirty-state, and build-time metadata when available.
 - Remote: add `pnpm smoke:remote-browser`, a live full-response smoke harness that requires remote browser answers to echo a generated marker, attachment checksum, sentinel, minimum length, and repeated operational-implication labels before passing.
 - Browser: read-only access-state gates for login walls, verification interstitials, account security blocks, and rate limits — a pre-run gate refuses before any prompt is composed and a pre-result gate ensures an access-wall page is never emitted as an answer; challenge-class detections atomically trip a worker-local account quarantine latch (cleared only manually by a human) so a challenged account is never retried into or worked around.
+- Docs/Ops: add a [serve operations runbook](docs/serve-operations.md) covering answer-truncation diagnosis, the "installed is not live" deploy discipline, and `/health` verification.
+- Ops: add `scripts/fleet-deploy.sh`, a parameterized safe-deploy helper (idle guard → install → restart → `/health` commit + fresh-uptime assertion) so a deploy that never restarts the process cannot silently pass as live.
 
 ### Changed
 

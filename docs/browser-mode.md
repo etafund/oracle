@@ -375,6 +375,8 @@ Prefer to keep Chrome entirely on the remote Mac (no DevTools tunneling, no manu
 
 This mode is ideal when you have a macOS VM (or spare Mac mini) logged into ChatGPT and you just want to run the CLI from another machine without ever copying profiles or keeping Chrome visible locally.
 
+For running a long-lived serve host in production — diagnosing answer truncation, deploying so that "installed" always means "live," and verifying a deploy end to end — see [Serve operations](serve-operations.md).
+
 ## Limitations / Follow-Up Plan
 
 - **Attachment lifecycle** – in `auto` mode we prefer inlining files into the composer (fewer moving parts). When we do upload, each `--file` path is uploaded separately (or bundled) so ChatGPT can ingest filenames/content. The automation waits for uploads to finish (send button enabled, upload chips visible) before submitting. When inline paste is rejected by ChatGPT (too large), Oracle retries automatically with uploads.
