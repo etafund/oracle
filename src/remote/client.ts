@@ -279,6 +279,39 @@ export function createRemoteBrowserExecutor({
             }, streamIdleTimeoutMs);
           };
           armIdleTimer();
+          const processLine = (line: string) => {
+            const transferPromise = handleEvent({
+              line,
+              options,
+              hostname,
+              port,
+              token,
+              onResult: (result) => {
+                resolved = result;
+              },
+              onDone: () => {
+                doneObserved = true;
+              },
+              onSubmitObserved: () => {
+                submitObserved = true;
+              },
+              onArtifact: (artifact) => {
+                transferredFiles.push(artifact);
+              },
+              onArtifactFailure: (message) => {
+                transferFailures.push(message);
+              },
+              enqueueArtifactTransfer: (transfer) => {
+                const queued = artifactTransferQueue.then(transfer);
+                artifactTransferQueue = queued.catch(() => undefined);
+                return queued;
+              },
+              onError: fail,
+            });
+            if (transferPromise) {
+              transferPromises.push(transferPromise);
+            }
+          };
           res.on("data", (chunk: string) => {
             armIdleTimer();
             buffer += chunk;
@@ -287,37 +320,7 @@ export function createRemoteBrowserExecutor({
               const line = buffer.slice(0, newlineIndex).trim();
               buffer = buffer.slice(newlineIndex + 1);
               if (line.length > 0) {
-                const transferPromise = handleEvent({
-                  line,
-                  options,
-                  hostname,
-                  port,
-                  token,
-                  onResult: (result) => {
-                    resolved = result;
-                  },
-                  onDone: () => {
-                    doneObserved = true;
-                  },
-                  onSubmitObserved: () => {
-                    submitObserved = true;
-                  },
-                  onArtifact: (artifact) => {
-                    transferredFiles.push(artifact);
-                  },
-                  onArtifactFailure: (message) => {
-                    transferFailures.push(message);
-                  },
-                  enqueueArtifactTransfer: (transfer) => {
-                    const queued = artifactTransferQueue.then(transfer);
-                    artifactTransferQueue = queued.catch(() => undefined);
-                    return queued;
-                  },
-                  onError: fail,
-                });
-                if (transferPromise) {
-                  transferPromises.push(transferPromise);
-                }
+                processLine(line);
               }
               newlineIndex = buffer.indexOf("\n");
             }
@@ -340,6 +343,25 @@ export function createRemoteBrowserExecutor({
           });
           res.on("end", () => {
             clearIdleTimer();
+            // NDJSON permits the FINAL line to omit the trailing newline: a
+            // complete terminal event buffered at EOF must not be
+            // misclassified as truncation. Only a tail that parses as JSON is
+            // flushed — an unparseable tail is genuine mid-line truncation
+            // and falls through to the EOF-without-done failure below.
+            const tail = buffer.trim();
+            buffer = "";
+            if (tail.length > 0 && !settled) {
+              let parseable = false;
+              try {
+                JSON.parse(tail);
+                parseable = true;
+              } catch {
+                // truncated partial line — handled by the done-event check
+              }
+              if (parseable) {
+                processLine(tail);
+              }
+            }
             void (async () => {
               await Promise.allSettled(transferPromises);
               if (settled) return;

@@ -408,6 +408,59 @@ describe("client: terminal done enforcement", () => {
     },
   );
 
+  // Regression: NDJSON permits the final line to omit the trailing newline.
+  // A COMPLETE terminal done event buffered at EOF must resolve the run, not
+  // be dropped and misreported as "stream ended without a terminal done
+  // event". (A genuinely truncated tail must still fail — covered above.)
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "a complete done event without a trailing newline still resolves",
+    async () => {
+      const fake = await startFakeRunServer([{ type: "log", message: "working" }], {
+        rawTail: JSON.stringify({ type: "done", ok: true, result: MINIMAL_RESULT }),
+      });
+      try {
+        const executor = createRemoteBrowserExecutor({
+          host: `127.0.0.1:${fake.port}`,
+          token: "secret",
+        });
+        const result = await executor({ prompt: "x", config: {} });
+        expect(result.answerText).toBe("the answer");
+      } finally {
+        await fake.close();
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "a complete done.ok=false event without a trailing newline surfaces the typed failure",
+    async () => {
+      const fake = await startFakeRunServer([], {
+        rawTail: JSON.stringify({
+          type: "done",
+          ok: false,
+          errorClass: "account_quarantine",
+          errorMessage: "quarantined",
+          retryable: false,
+        }),
+      });
+      try {
+        const executor = createRemoteBrowserExecutor({
+          host: `127.0.0.1:${fake.port}`,
+          token: "secret",
+        });
+        const failure = await executor({ prompt: "x", config: {} }).then(
+          () => null,
+          (error: unknown) => error,
+        );
+        expect(failure).toBeInstanceOf(RemoteRunFailedError);
+        expect((failure as RemoteRunFailedError).errorClass).toBe("account_quarantine");
+        expect((failure as RemoteRunFailedError).retryable).toBe(false);
+      } finally {
+        await fake.close();
+      }
+    },
+  );
+
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
     "done.ok=false surfaces the typed class to the caller",
     async () => {
