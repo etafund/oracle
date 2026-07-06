@@ -20,5 +20,12 @@ export interface GeminiWebResponse {
   thoughts: string | null;
   has_images: boolean;
   image_count: number;
+  /**
+   * Model that actually produced this answer. Differs from the requested
+   * model when the HTTP path retried with FALLBACK_GEMINI_WEB_MODEL after a
+   * model-unavailable error (errorCode 1052); callers must surface that
+   * substitution instead of silently returning a weaker model's answer.
+   */
+  effective_model?: string | null;
   error?: string;
 }

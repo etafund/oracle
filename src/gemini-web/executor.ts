@@ -630,6 +630,7 @@ export function createGeminiWebExecutor(
               thoughts: geminiOptions.showThoughts ? out.thoughts : null,
               has_images: false,
               image_count: 0,
+              effective_model: out.effectiveModel,
             };
 
             const resolvedOutputPath = outputPath ?? generateImagePath ?? "generated.png";
@@ -661,6 +662,7 @@ export function createGeminiWebExecutor(
               thoughts: geminiOptions.showThoughts ? out.thoughts : null,
               has_images: false,
               image_count: 0,
+              effective_model: out.effectiveModel,
             };
             const imageSave = await saveFirstGeminiImageFromOutput(
               out,
@@ -690,6 +692,7 @@ export function createGeminiWebExecutor(
               thoughts: geminiOptions.showThoughts ? out.thoughts : null,
               has_images: out.images.length > 0,
               image_count: out.images.length,
+              effective_model: out.effectiveModel,
             };
           }
         } finally {
@@ -709,12 +712,39 @@ export function createGeminiWebExecutor(
           answerMarkdown += `\n\n*Generated ${response.image_count} image(s). Saved to: ${imagePath}*`;
         }
 
+        // Surface silent model fallback (oracle: "silent model downgrade"):
+        // runGeminiWebWithFallback retries with FALLBACK_GEMINI_WEB_MODEL when
+        // the requested model is unavailable, so a gemini-3.1-pro request can
+        // be answered by a materially weaker model. Mirror the
+        // `Resolved model: X → Y` pattern from oracle/run.ts so the
+        // substitution is visible in logs, the answer, and result warnings.
+        const effectiveModel = response.effective_model ?? null;
+        const modelDowngraded = effectiveModel !== null && effectiveModel !== model;
+        if (modelDowngraded) {
+          log?.(
+            `[gemini-web] Resolved model: ${model} → ${effectiveModel} (requested model unavailable; fell back)`,
+          );
+          answerMarkdown += `\n\n*Note: requested model \`${model}\` was unavailable; this answer was produced by \`${effectiveModel}\`.*`;
+        }
+
         const tookMs = Date.now() - startTime;
         log?.(`[gemini-web] Completed in ${tookMs}ms`);
 
         return {
           answerText,
           answerMarkdown,
+          ...(modelDowngraded
+            ? {
+                warnings: [
+                  {
+                    code: "gemini-web-model-fallback",
+                    severity: "warning" as const,
+                    message: `Requested Gemini model ${model} was unavailable; response was produced by ${effectiveModel}.`,
+                    details: { requestedModel: model, effectiveModel },
+                  },
+                ],
+              }
+            : {}),
           tookMs,
           answerTokens: estimateTokenCount(answerText),
           answerChars: answerText.length,

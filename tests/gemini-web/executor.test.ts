@@ -301,6 +301,66 @@ describe("gemini-web executor", () => {
     );
   });
 
+  it("surfaces a silent model downgrade in log, markdown, and result warnings", async () => {
+    const { createGeminiWebExecutor } = await import("../../src/gemini-web/executor.js");
+    // Requested gemini-3.1-pro, but the HTTP fallback path answered with the
+    // weaker fallback model — the substitution must be visible to the caller.
+    runGeminiWebWithFallback.mockResolvedValueOnce({
+      rawResponseText: "",
+      text: "fallback answer",
+      thoughts: null,
+      metadata: null,
+      images: [],
+      effectiveModel: "gemini-3.1-flash-lite",
+    });
+
+    const logs: string[] = [];
+    const exec = createGeminiWebExecutor({});
+    const result = await exec({
+      prompt: "hello",
+      attachments: [],
+      config: { desiredModel: "Gemini 3 Pro", chromeProfile: "Default" },
+      log: (message: string) => logs.push(message),
+    });
+
+    expect(
+      logs.some((message) =>
+        message.includes("Resolved model: gemini-3.1-pro → gemini-3.1-flash-lite"),
+      ),
+    ).toBe(true);
+    expect(result.answerMarkdown).toContain(
+      "requested model `gemini-3.1-pro` was unavailable; this answer was produced by `gemini-3.1-flash-lite`",
+    );
+    expect(result.answerText).toBe("fallback answer");
+    expect(result.warnings).toEqual([
+      expect.objectContaining({
+        code: "gemini-web-model-fallback",
+        severity: "warning",
+        details: {
+          requestedModel: "gemini-3.1-pro",
+          effectiveModel: "gemini-3.1-flash-lite",
+        },
+      }),
+    ]);
+  });
+
+  it("does not annotate the answer when the requested model actually answered", async () => {
+    const { createGeminiWebExecutor } = await import("../../src/gemini-web/executor.js");
+    // Default mock returns effectiveModel "gemini-3.1-pro" (matches request).
+    const logs: string[] = [];
+    const exec = createGeminiWebExecutor({});
+    const result = await exec({
+      prompt: "hello",
+      attachments: [],
+      config: { desiredModel: "Gemini 3 Pro", chromeProfile: "Default" },
+      log: (message: string) => logs.push(message),
+    });
+
+    expect(logs.some((message) => message.includes("Resolved model:"))).toBe(false);
+    expect(result.answerMarkdown).not.toContain("was unavailable");
+    expect(result.warnings).toBeUndefined();
+  });
+
   it("uses chromeCookiePath when provided", async () => {
     const { createGeminiWebExecutor } = await import("../../src/gemini-web/executor.js");
     const exec = createGeminiWebExecutor({});
