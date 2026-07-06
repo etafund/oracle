@@ -6,6 +6,7 @@ import path from "node:path";
 const cdpNewMock = vi.fn();
 const cdpCloseMock = vi.fn();
 const cdpListMock = vi.fn();
+const cdpVersionMock = vi.fn();
 const cdpMock = Object.assign(vi.fn(), {
   // biome-ignore lint/style/useNamingConvention: CDP API uses capitalized members.
   New: cdpNewMock,
@@ -13,6 +14,8 @@ const cdpMock = Object.assign(vi.fn(), {
   Close: cdpCloseMock,
   // biome-ignore lint/style/useNamingConvention: CDP API uses capitalized members.
   List: cdpListMock,
+  // biome-ignore lint/style/useNamingConvention: CDP API uses capitalized members.
+  Version: cdpVersionMock,
 });
 
 vi.mock("chrome-remote-interface", () => ({ default: cdpMock }));
@@ -129,6 +132,7 @@ describe("connectWithNewTab", () => {
     cdpNewMock.mockReset();
     cdpCloseMock.mockReset();
     cdpListMock.mockReset();
+    cdpVersionMock.mockReset();
   });
 
   afterEach(() => {
@@ -195,6 +199,94 @@ describe("connectWithNewTab", () => {
     expect(result.targetId).toBe("target-2");
     expect(cdpNewMock).toHaveBeenCalledTimes(1);
     expect(cdpMock).toHaveBeenCalledWith({ host: "127.0.0.1", port: 9222, target: "target-2" });
+  });
+
+  // Regression: enableFocusEmulation only overrides document.hasFocus()/:focus,
+  // not the Page Visibility API. CDP.New (`PUT /json/new`) always opens the new
+  // tab inside Chrome's existing window, so under c>=2 the non-frontmost lane's
+  // tab stayed `document.visibilityState === "hidden"` for its entire lifetime.
+  // The isolated tab must therefore be created in its own OS window via a
+  // browser-level Target.createTarget({newWindow: true}) when Chrome exposes a
+  // browser WebSocket endpoint.
+  test("opens the isolated tab in its own OS window via Target.createTarget({newWindow: true})", async () => {
+    const browserWSEndpoint = "ws://127.0.0.1:9222/devtools/browser/abc";
+    cdpVersionMock.mockResolvedValue({ webSocketDebuggerUrl: browserWSEndpoint });
+    const createTargetMock = vi.fn().mockResolvedValue({ targetId: "window-target-1" });
+    const browserCloseMock = vi.fn().mockResolvedValue(undefined);
+    const browserClient = {
+      // biome-ignore lint/style/useNamingConvention: CDP API uses capitalized members.
+      Target: { createTarget: createTargetMock },
+      close: browserCloseMock,
+    };
+    cdpMock.mockImplementation(async (options: { target?: string; local?: boolean }) => {
+      if (options?.target === browserWSEndpoint) {
+        return browserClient;
+      }
+      return {};
+    });
+
+    const { connectWithNewTab } = await import("../../src/browser/chromeLifecycle.js");
+    const logger = vi.fn();
+
+    const result = await connectWithNewTab(9222, logger);
+
+    expect(result.targetId).toBe("window-target-1");
+    expect(createTargetMock).toHaveBeenCalledWith({ url: "about:blank", newWindow: true });
+    // The same-window HTTP shortcut must not be used when the new-window path works.
+    expect(cdpNewMock).not.toHaveBeenCalled();
+    // The temporary browser-level connection is released after target creation.
+    expect(browserCloseMock).toHaveBeenCalledTimes(1);
+    expect(cdpMock).toHaveBeenCalledWith({
+      host: "127.0.0.1",
+      port: 9222,
+      target: "window-target-1",
+    });
+  });
+
+  test("falls back to a same-window tab and logs the visibility limitation when the new-window path is unavailable", async () => {
+    cdpVersionMock.mockRejectedValue(new Error("ancient chrome: no /json/version"));
+    cdpNewMock.mockResolvedValue({ id: "same-window-target" });
+    cdpMock.mockResolvedValue({});
+
+    const { connectWithNewTab } = await import("../../src/browser/chromeLifecycle.js");
+    const logger = vi.fn();
+
+    const result = await connectWithNewTab(9222, logger);
+
+    expect(result.targetId).toBe("same-window-target");
+    expect(cdpNewMock).toHaveBeenCalledWith({ host: "127.0.0.1", port: 9222, url: "about:blank" });
+    // The residual limitation must be surfaced, not silently swallowed: the
+    // fallback tab can stay visibility-hidden while another lane is frontmost.
+    expect(logger).toHaveBeenCalledWith(expect.stringContaining("Page Visibility API"));
+  });
+
+  test("falls back to a same-window tab when browser-level createTarget fails", async () => {
+    const browserWSEndpoint = "ws://127.0.0.1:9222/devtools/browser/def";
+    cdpVersionMock.mockResolvedValue({ webSocketDebuggerUrl: browserWSEndpoint });
+    const createTargetMock = vi.fn().mockRejectedValue(new Error("'newWindow' not supported"));
+    const browserCloseMock = vi.fn().mockResolvedValue(undefined);
+    cdpMock.mockImplementation(async (options: { target?: string; local?: boolean }) => {
+      if (options?.target === browserWSEndpoint) {
+        return {
+          // biome-ignore lint/style/useNamingConvention: CDP API uses capitalized members.
+          Target: { createTarget: createTargetMock },
+          close: browserCloseMock,
+        };
+      }
+      return {};
+    });
+    cdpNewMock.mockResolvedValue({ id: "fallback-target" });
+
+    const { connectWithNewTab } = await import("../../src/browser/chromeLifecycle.js");
+    const logger = vi.fn();
+
+    const result = await connectWithNewTab(9222, logger);
+
+    expect(result.targetId).toBe("fallback-target");
+    expect(createTargetMock).toHaveBeenCalledWith({ url: "about:blank", newWindow: true });
+    expect(browserCloseMock).toHaveBeenCalledTimes(1);
+    expect(cdpNewMock).toHaveBeenCalledTimes(1);
+    expect(logger).toHaveBeenCalledWith(expect.stringContaining("Page Visibility API"));
   });
 
   test("manual-login connect options never allow default-target fallback (launching lane included)", async () => {

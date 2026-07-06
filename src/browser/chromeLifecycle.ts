@@ -426,6 +426,57 @@ function formatApprovalWait(waitMs: number): string {
   return `${waitMs}ms`;
 }
 
+/**
+ * Open the isolated tab in its own OS window so it can be non-hidden while
+ * other lanes' tabs are frontmost.
+ *
+ * The HTTP DevTools shortcut (`CDP.New` -> `PUT /json/new`) always opens the
+ * new tab inside Chrome's existing window; it has no new-window parameter. So
+ * with c>=2 lanes sharing one Chrome, only one lane's tab can be the
+ * tab-strip's active tab — every other lane's tab reports
+ * `document.visibilityState === "hidden"` for its entire lifetime. Focus
+ * emulation (Emulation.setFocusEmulationEnabled) only overrides
+ * `document.hasFocus()`/`:focus`, NOT the Page Visibility API, so client-side
+ * behavior gated on `document.hidden`/`visibilitychange` still misbehaves in
+ * background lanes. A browser-level `Target.createTarget({url, newWindow:
+ * true})` gives each lane its own window, letting every lane's tab stay
+ * visible simultaneously.
+ *
+ * Returns the created targetId, or null when the browser-level path is
+ * unavailable (no browser WebSocket endpoint, older Chrome, transient
+ * connect failure). Callers then fall back to the same-window `CDP.New` tab —
+ * a documented residual limitation: that tab may stay visibility-hidden
+ * whenever another tab in the shared window is frontmost.
+ */
+async function createTargetInNewWindow(
+  host: string,
+  port: number,
+  url: string,
+  logger: BrowserLogger,
+): Promise<string | null> {
+  let browser: ChromeClient | undefined;
+  try {
+    const version = await CDP.Version({ host, port });
+    const browserWSEndpoint = version?.webSocketDebuggerUrl;
+    if (!browserWSEndpoint) {
+      return null;
+    }
+    browser = (await CDP({ target: browserWSEndpoint, local: true })) as ChromeClient;
+    const created = await browser.Target.createTarget({ url, newWindow: true });
+    return created.targetId ?? null;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger(
+      `Could not open the isolated tab in its own window (${message}); opening a same-window tab instead. ` +
+        "While another tab in the shared window is frontmost, this tab reports document.visibilityState === " +
+        '"hidden" (focus emulation does not cover the Page Visibility API).',
+    );
+    return null;
+  } finally {
+    await browser?.close().catch(() => undefined);
+  }
+}
+
 async function connectToNewTarget(
   host: string,
   port: number,
@@ -433,22 +484,26 @@ async function connectToNewTarget(
   logger: BrowserLogger,
   messages: TargetConnectMessages,
 ): Promise<{ client: ChromeClient; targetId: string } | null> {
+  // Prefer a genuinely separate OS window per lane (see createTargetInNewWindow)
+  // and fall back to the classic same-window HTTP tab when that path is
+  // unavailable.
+  const newWindowTargetId = await createTargetInNewWindow(host, port, url, logger);
   try {
-    const target = await CDP.New({ host, port, url });
+    const targetId = newWindowTargetId ?? (await CDP.New({ host, port, url })).id;
     try {
-      const client = await CDP({ host, port, target: target.id });
+      const client = await CDP({ host, port, target: targetId });
       if (messages.opened) {
-        logger(messages.opened(target.id));
+        logger(messages.opened(targetId));
       }
-      return { client, targetId: target.id };
+      return { client, targetId };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      logger(messages.attachFailed(target.id, message));
+      logger(messages.attachFailed(targetId, message));
       try {
-        await CDP.Close({ host, port, id: target.id });
+        await CDP.Close({ host, port, id: targetId });
       } catch (closeError) {
         const closeMessage = closeError instanceof Error ? closeError.message : String(closeError);
-        logger(messages.closeFailed(target.id, closeMessage));
+        logger(messages.closeFailed(targetId, closeMessage));
       }
     }
   } catch (error) {

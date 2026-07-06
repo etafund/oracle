@@ -497,8 +497,18 @@ function hasBrowserErrorCode(error: unknown, code: string): boolean {
 // attached tab that isn't the OS-focused foreground window, not just remote
 // targets: a shared/manual-login Chrome window running other tabs (c>=2), or
 // a window hidden via --browser-hide-window, exhibit the same condition
-// locally. Emulating focus makes the page behave like a real foreground tab
-// regardless of how we attached to it.
+// locally. Emulating focus makes the page report `document.hasFocus() ===
+// true` (and `:focus` state) regardless of how we attached to it.
+//
+// Scope caveat: focus emulation does NOT cover the Page Visibility API. A tab
+// that is not its window's active tab still reports
+// `document.visibilityState === "hidden"`, so page code gated on
+// `document.hidden`/`visibilitychange` is unaffected by this emulation. That
+// is why each lane's isolated tab is opened in its own OS window
+// (Target.createTarget({newWindow: true}) — see createTargetInNewWindow in
+// chromeLifecycle.ts); when that path is unavailable and we fall back to a
+// same-window tab, hidden-visibility in background lanes remains a known
+// residual limitation.
 async function enableFocusEmulation(
   client: ChromeClient,
   logger: BrowserLogger,
