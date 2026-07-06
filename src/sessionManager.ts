@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import { createWriteStream, mkdirSync } from "node:fs";
 import type { WriteStream } from "node:fs";
 import net from "node:net";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
   BrowserArchiveMode,
   BrowserArchiveResult,
@@ -727,18 +727,23 @@ export async function updateModelRunMetadata(
   model: string,
   updates: Partial<SessionModelRun>,
 ): Promise<SessionModelRun> {
-  await ensureDir(modelsDir(sessionId));
-  const existing = (await readModelRunFile(sessionId, model)) ?? {
-    model,
-    status: "pending",
-  };
-  const next: SessionModelRun = ensureModelLogReference(sessionId, {
-    ...existing,
-    ...updates,
-    model,
+  // Serialized with updateSessionMetadata: both mutate files that
+  // persistSessionMetadata may rewrite (models/*.json), so the
+  // read-merge-write must not interleave within this process.
+  return withSessionMetadataLock(sessionId, async () => {
+    await ensureDir(modelsDir(sessionId));
+    const existing = (await readModelRunFile(sessionId, model)) ?? {
+      model,
+      status: "pending",
+    };
+    const next: SessionModelRun = ensureModelLogReference(sessionId, {
+      ...existing,
+      ...updates,
+      model,
+    });
+    await atomicWriteFileUtf8(modelJsonPath(sessionId, model), JSON.stringify(next, null, 2));
+    return next;
   });
-  await fs.writeFile(modelJsonPath(sessionId, model), JSON.stringify(next, null, 2), "utf8");
-  return next;
 }
 
 export async function readModelRunMetadata(
@@ -873,17 +878,129 @@ export async function readSessionMetadata(sessionId: string): Promise<SessionMet
   return null;
 }
 
+// ─── Serialized session-metadata updates ─────────────────────────────────────
+//
+// updateSessionMetadata / updateModelRunMetadata are read-modify-write
+// cycles over shared files. Two layers of protection against lost
+// updates (same pattern as src/oracle/v18/artifact_index_lock.ts):
+//
+//   1. In-process per-session async mutex (promise queue keyed on the
+//      session directory), so concurrent callers in one Node process
+//      never interleave the read-merge-write window.
+//
+//   2. Cross-process optimistic-concurrency guard: capture a stat
+//      fingerprint of meta.json at read time and re-check it just
+//      before writing. If another process replaced the file in
+//      between (e.g. a background runner completing while `oracle
+//      session --live` harvests), re-read and re-merge instead of
+//      blindly overwriting the fresher state; fail loud after
+//      repeated conflicts instead of silently reverting.
+//
+// Writes themselves are tmp-file + rename so readers (and crashes)
+// never observe a torn meta.json.
+
+const SESSION_META_LOCKS = new Map<string, Promise<void>>();
+
+async function withSessionMetadataLock<T>(sessionId: string, work: () => Promise<T>): Promise<T> {
+  const key = path.resolve(sessionDir(sessionId));
+  const prior = SESSION_META_LOCKS.get(key) ?? Promise.resolve();
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const chained = prior.then(() => gate);
+  SESSION_META_LOCKS.set(key, chained);
+  await prior;
+  try {
+    return await work();
+  } finally {
+    release();
+    if (SESSION_META_LOCKS.get(key) === chained) {
+      SESSION_META_LOCKS.delete(key);
+    }
+  }
+}
+
+interface MetadataFileFingerprint {
+  ino: bigint;
+  mtimeNs: bigint;
+  size: bigint;
+}
+
+async function statMetadataFingerprint(filePath: string): Promise<MetadataFileFingerprint | null> {
+  try {
+    const stats = await fs.stat(filePath, { bigint: true });
+    return { ino: stats.ino, mtimeNs: stats.mtimeNs, size: stats.size };
+  } catch {
+    return null;
+  }
+}
+
+function metadataFingerprintsEqual(
+  left: MetadataFileFingerprint | null,
+  right: MetadataFileFingerprint | null,
+): boolean {
+  if (left === null || right === null) {
+    return left === right;
+  }
+  return left.ino === right.ino && left.mtimeNs === right.mtimeNs && left.size === right.size;
+}
+
+async function atomicWriteFileUtf8(filePath: string, contents: string): Promise<void> {
+  await ensureDir(path.dirname(filePath));
+  // Unique tmpfile in the same directory so the rename stays on one FS
+  // and replaces the target atomically (new inode on every write, which
+  // also strengthens the fingerprint guard above).
+  const tmpPath = `${filePath}.tmp-${process.pid}-${randomUUID().slice(0, 8)}`;
+  try {
+    await fs.writeFile(tmpPath, contents, "utf8");
+    await fs.rename(tmpPath, filePath);
+  } catch (error) {
+    await fs.rm(tmpPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+/**
+ * Compute a metadata patch from the freshest on-disk state. Called under
+ * the per-session lock (and re-called after an optimistic-concurrency
+ * retry), so it must be side-effect free with respect to session storage
+ * and must NOT call back into updateSessionMetadata / updateModelRunMetadata
+ * for the same session.
+ */
+export type SessionMetadataUpdater = (current: SessionMetadata) => Partial<SessionMetadata>;
+
+const MAX_METADATA_UPDATE_ATTEMPTS = 5;
+
 export async function updateSessionMetadata(
   sessionId: string,
-  updates: Partial<SessionMetadata>,
+  updates: Partial<SessionMetadata> | SessionMetadataUpdater,
 ): Promise<SessionMetadata> {
-  const existing =
-    (await readModernSessionMetadata(sessionId, { reconcile: false, persist: false })) ??
-    (await readLegacySessionMetadata(sessionId, { reconcile: false, persist: false })) ??
-    ({ id: sessionId } as SessionMetadata);
-  const next = normalizeTerminalModelRuns({ ...existing, ...updates });
-  await persistSessionMetadata(next.metadata, next.modelRunsChanged);
-  return next.metadata;
+  return withSessionMetadataLock(sessionId, async () => {
+    const targetPath = metaPath(sessionId);
+    for (let attempt = 1; attempt <= MAX_METADATA_UPDATE_ATTEMPTS; attempt += 1) {
+      const readFingerprint = await statMetadataFingerprint(targetPath);
+      const existing =
+        (await readModernSessionMetadata(sessionId, { reconcile: false, persist: false })) ??
+        (await readLegacySessionMetadata(sessionId, { reconcile: false, persist: false })) ??
+        ({ id: sessionId } as SessionMetadata);
+      const patch = typeof updates === "function" ? updates(existing) : updates;
+      const next = normalizeTerminalModelRuns({ ...existing, ...patch });
+      // Optimistic-concurrency guard: if another process replaced
+      // meta.json since we read it, our merge base is stale — writing it
+      // would silently revert the fresher fields (e.g. a terminal status
+      // written by the session's runner). Re-read and re-merge instead.
+      const writeFingerprint = await statMetadataFingerprint(targetPath);
+      if (!metadataFingerprintsEqual(readFingerprint, writeFingerprint)) {
+        continue;
+      }
+      await persistSessionMetadata(next.metadata, next.modelRunsChanged);
+      return next.metadata;
+    }
+    throw new Error(
+      `Session "${sessionId}" metadata kept changing concurrently; aborting update after ${MAX_METADATA_UPDATE_ATTEMPTS} attempts instead of overwriting newer state.`,
+    );
+  });
 }
 
 interface ReadSessionMetadataOptions {
@@ -1022,7 +1139,7 @@ async function persistSessionMetadata(
   meta: SessionMetadata,
   persistModelRuns = false,
 ): Promise<void> {
-  await fs.writeFile(metaPath(meta.id), JSON.stringify(meta, null, 2), "utf8");
+  await atomicWriteFileUtf8(metaPath(meta.id), JSON.stringify(meta, null, 2));
   if (!persistModelRuns || !Array.isArray(meta.models)) {
     return;
   }
@@ -1030,11 +1147,7 @@ async function persistSessionMetadata(
   await Promise.all(
     meta.models.map(async (run) => {
       const record = ensureModelLogReference(meta.id, run);
-      await fs.writeFile(
-        modelJsonPath(meta.id, run.model),
-        JSON.stringify(record, null, 2),
-        "utf8",
-      );
+      await atomicWriteFileUtf8(modelJsonPath(meta.id, run.model), JSON.stringify(record, null, 2));
     }),
   );
 }
@@ -1305,7 +1418,7 @@ async function markZombie(
     completedAt: new Date().toISOString(),
   };
   if (persist) {
-    await fs.writeFile(metaPath(meta.id), JSON.stringify(updated, null, 2), "utf8");
+    await atomicWriteFileUtf8(metaPath(meta.id), JSON.stringify(updated, null, 2));
   }
   return updated;
 }
@@ -1350,7 +1463,7 @@ async function markDeadBrowser(
     response,
   };
   if (persist) {
-    await fs.writeFile(metaPath(meta.id), JSON.stringify(updated, null, 2), "utf8");
+    await atomicWriteFileUtf8(metaPath(meta.id), JSON.stringify(updated, null, 2));
   }
   return updated;
 }

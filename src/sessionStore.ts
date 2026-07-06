@@ -1,5 +1,6 @@
 import type {
   SessionMetadata,
+  SessionMetadataUpdater,
   SessionNotifications,
   StoredRunOptions,
   SessionModelRun,
@@ -33,7 +34,16 @@ export interface SessionStore {
     baseSlugOverride?: string,
   ): Promise<SessionMetadata>;
   readSession(sessionId: string): Promise<SessionMetadata | null>;
-  updateSession(sessionId: string, updates: Partial<SessionMetadata>): Promise<SessionMetadata>;
+  /**
+   * Merge `updates` into the stored session metadata under the store's
+   * serialized-update guard. Pass a function to compute the patch from
+   * the freshest on-disk state (re-invoked if a concurrent writer lands
+   * first); the updater must not call back into the session store.
+   */
+  updateSession(
+    sessionId: string,
+    updates: Partial<SessionMetadata> | SessionMetadataUpdater,
+  ): Promise<SessionMetadata>;
   createLogWriter(sessionId: string, model?: string): ReturnType<typeof createSessionLogWriter>;
   updateModelRun(
     sessionId: string,
@@ -78,7 +88,10 @@ class FileSessionStore implements SessionStore {
     return readSessionMetadata(sessionId);
   }
 
-  updateSession(sessionId: string, updates: Partial<SessionMetadata>): Promise<SessionMetadata> {
+  updateSession(
+    sessionId: string,
+    updates: Partial<SessionMetadata> | SessionMetadataUpdater,
+  ): Promise<SessionMetadata> {
     return updateSessionMetadata(sessionId, updates);
   }
 
@@ -140,6 +153,7 @@ export const sessionStore: SessionStore = new FileSessionStore();
 export { wait } from "./sessionManager.js";
 export type {
   SessionMetadata,
+  SessionMetadataUpdater,
   SessionMode,
   BrowserSessionConfig,
   BrowserRuntimeMetadata,

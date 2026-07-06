@@ -134,24 +134,35 @@ async function persistHarvest(
   const hash = createHash("sha1")
     .update(harvested.lastAssistantMarkdown ?? harvested.lastAssistantText ?? "")
     .digest("hex");
-  const browser = {
-    ...(meta.browser ?? {}),
-    harvest: {
-      targetId: harvested.targetId,
-      url: harvested.url,
-      conversationId: harvested.conversationId ?? extractConversationIdFromUrl(harvested.url),
-      harvestedAt: new Date().toISOString(),
-      assistantHash: hash,
-      state: harvested.state,
-      stopExists: harvested.stopExists,
-      sendExists: harvested.sendExists,
-      assistantCount: harvested.assistantCount,
-      currentModelLabel: harvested.currentModelLabel,
-      lastAssistantSnippet: harvested.lastAssistantSnippet,
-    },
+  const harvest = {
+    targetId: harvested.targetId,
+    url: harvested.url,
+    conversationId: harvested.conversationId ?? extractConversationIdFromUrl(harvested.url),
+    harvestedAt: new Date().toISOString(),
+    assistantHash: hash,
+    state: harvested.state,
+    stopExists: harvested.stopExists,
+    sendExists: harvested.sendExists,
+    assistantCount: harvested.assistantCount,
+    currentModelLabel: harvested.currentModelLabel,
+    lastAssistantSnippet: harvested.lastAssistantSnippet,
   };
-  await sessionStore.updateSession(sessionId, { browser });
+  // The session's runner process may still be updating this session
+  // (status transitions, runtime fields, artifacts) while we harvest
+  // from a second process. Merge the harvest into the FRESH on-disk
+  // `browser` value inside the store's serialized update — never into
+  // the `meta` snapshot captured when tailing started — so this write
+  // only ever owns the `harvest` key and cannot revert newer state.
+  await sessionStore.updateSession(sessionId, (current) => ({
+    browser: {
+      ...(current.browser ?? meta.browser ?? {}),
+      harvest,
+    },
+  }));
 }
+
+/** Test-only export: exercises the concurrent-writer persistence path. */
+export const persistHarvestForTest = persistHarvest;
 
 function printHarvestSummary(sessionId: string, harvested: ChatGptTabSummary): void {
   console.log(chalk.bold(`Session: ${sessionId}`));
