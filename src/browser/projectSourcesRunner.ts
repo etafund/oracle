@@ -11,7 +11,7 @@ import {
   registerTerminationHooks,
 } from "./chromeLifecycle.js";
 import { resolveBrowserConfig } from "./config.js";
-import { syncCookies } from "./cookies.js";
+import { clearStaleChatGptConversationCookies, syncCookies } from "./cookies.js";
 import {
   installJavaScriptDialogAutoDismissal,
   navigateToChatGPT,
@@ -181,7 +181,7 @@ export async function runBrowserProjectSources(
     const raceWithDisconnect = <T>(promise: Promise<T>): Promise<T> =>
       Promise.race([promise, disconnectPromise]);
 
-    const { Network, Page, Runtime, Input, DOM } = client;
+    const { Network, Page, Runtime, Input, DOM, Target } = client;
     if (!config.headless && config.hideWindow) {
       await hideChromeWindow(chrome, logger);
     }
@@ -201,6 +201,7 @@ export async function runBrowserProjectSources(
       manualLogin,
       logger,
     });
+    await clearStaleChatGptConversationCookies(Network, Target, logger);
 
     await raceWithDisconnect(navigateToChatGPT(Page, Runtime, CHATGPT_URL, logger));
     await raceWithDisconnect(

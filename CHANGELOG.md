@@ -40,6 +40,7 @@
 - Browser/Bridge: improve ChatGPT ZIP artifact capture before bridge transfer by broadening sandbox/file-card/download-control discovery, adding sanitized direct-download diagnostics, and falling back to scoped browser downloads when sandbox fetches fail. Thanks @DK625!
 - Browser: retain runtime, model-selection, and redacted prompt-commit diagnostics in failed session metadata when ChatGPT submission verification times out. Fixes #286. Thanks @LeoLin990405!
 - API: forward configured reasoning effort through custom OpenAI-compatible chat-completions gateways.
+- Browser: clear stale ChatGPT temporary-conversation cookies before navigation while preserving keys for open or resumed conversations, preventing accumulated `conv_key_*` entries from triggering header-size failures. Thanks @jung0han!
 - Browser: accept a stable, exact file-input name match when ChatGPT marks the composer ready but exposes no attachment chip or count, while still waiting through active uploads and rejecting missing or extra files. Fixes #275. Thanks @wangwllu!
 - Browser: avoid returning truncated Pro answers when completion controls appear during the thinking-to-answer transition. Thanks @xuan-wei!
 - Browser: keep waiting on ChatGPT Pro review preambles when the stop button disappears without finished-turn controls, reject bare `Answer now` placeholders, and align remote-browser post-capture recovery with the local browser path.
