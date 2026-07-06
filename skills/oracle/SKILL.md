@@ -81,6 +81,19 @@ Recommended defaults:
   - Host: `oracle serve --host 0.0.0.0 --port 9473 --token <secret>`
   - Client: `oracle --engine browser --remote-host <host:port> --remote-token <secret> -p "<task>" --file "src/**"`
 
+## API preflight
+
+- API runs require explicit user consent and cost money.
+- Before API runs, check provider readiness without printing secrets:
+  - `oracle doctor --providers --models gpt-5.4,claude-4.6-sonnet,gemini-3-pro`
+  - `oracle --preflight --models gpt-5.4,gemini-3-pro`
+  - `oracle --route --model gpt-5.4`
+- If the user wants first-party OpenAI, pass `--provider openai` or `--no-azure`. This prevents exported Azure env/config from hijacking the route:
+  - `oracle --provider openai --engine api --model gpt-5.5-pro ...`
+- For advisory multi-model panels where partial success is useful, use `--allow-partial --write-output <path>` so successful model files and the `<stem>.oracle.json` manifest are easy to recover:
+  - `oracle --models gpt-5.4,claude-4.6-sonnet,gemini-3-pro --allow-partial --write-output /tmp/panel.md -p "<task>"`
+- `--timeout 10m` is the normal user-facing API deadline; Oracle derives the HTTP transport timeout unless `--http-timeout` is explicitly set.
+
 ## Sessions + slugs (don’t lose work)
 
 - Stored under `~/.oracle/sessions` (override with `ORACLE_HOME_DIR`).
