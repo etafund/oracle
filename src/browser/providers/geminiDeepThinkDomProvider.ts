@@ -456,6 +456,97 @@ export interface WireGeminiDeepThinkFsmOptions {
   readonly onTransition?: (machine: GeminiDeepThinkMachine) => void;
 }
 
+export interface GeminiDeepThinkSelectionProbe {
+  readonly deepThinkLabel: string | null;
+  readonly thinkingLevelControlExposed: boolean;
+  readonly observedThinkingLevelLabels: readonly string[];
+  readonly selectedThinkingLevel: string | null;
+}
+
+/**
+ * Reads the live DOM state the verification FSM needs to gate
+ * `deep_think_candidate_selected`: the actual Deep Think active label
+ * plus the thinking-level control's visible options and selection.
+ *
+ * Regression context: the wired adapter previously sent
+ * `{ deepThinkLabel: 'deep think' }` unconditionally, so
+ * verifyGeminiDeepThinkCandidate always took its trivially-verified
+ * "no thinking-level control exposed" branch and the tier /
+ * highest-visible-option drift checks could never execute on a live
+ * run. This probe feeds the verifier real observations instead.
+ *
+ * Returns null when the environment cannot evaluate the probe (e.g.
+ * fake adapters in unit tests whose evaluate() yields undefined).
+ */
+async function probeDeepThinkSelectionState(
+  ctx: ProviderDomFlowContext,
+): Promise<GeminiDeepThinkSelectionProbe | null> {
+  const activeSelector = asSelectorLiteral(GEMINI_DEEP_THINK_SELECTORS.deepThinkActive);
+  const thinkingLevelControl = GEMINI_DEEP_THINK_MANIFEST.thinkingLevelControl;
+  const controlSelector = thinkingLevelControl
+    ? getManifestSelectorLiteral(thinkingLevelControl.selector)
+    : JSON.stringify("");
+
+  const raw = await ctx.evaluate<{
+    deepThinkLabel?: string | null;
+    thinkingLevelControlExposed?: boolean;
+    observedThinkingLevelLabels?: readonly string[];
+    selectedThinkingLevel?: string | null;
+  }>(
+    `(() => {
+      const active = document.querySelector(${activeSelector});
+      let deepThinkLabel = null;
+      if (active instanceof HTMLElement) {
+        const ariaLabel = active.getAttribute('aria-label')?.trim() ?? '';
+        const text = active.textContent?.trim() ?? '';
+        deepThinkLabel = ariaLabel || text || null;
+      }
+      const observedThinkingLevelLabels = [];
+      let selectedThinkingLevel = null;
+      const controlSelector = ${controlSelector};
+      if (controlSelector) {
+        for (const el of Array.from(document.querySelectorAll(controlSelector))) {
+          if (!(el instanceof HTMLElement)) continue;
+          const label = el.textContent?.trim() ?? '';
+          if (!label) continue;
+          observedThinkingLevelLabels.push(label);
+          const checked =
+            el.getAttribute('aria-checked') === 'true' ||
+            el.getAttribute('aria-selected') === 'true' ||
+            el.classList.contains('selected') ||
+            el.classList.contains('is-selected');
+          if (checked && selectedThinkingLevel === null) selectedThinkingLevel = label;
+        }
+      }
+      return {
+        deepThinkLabel,
+        thinkingLevelControlExposed: observedThinkingLevelLabels.length > 0,
+        observedThinkingLevelLabels,
+        selectedThinkingLevel,
+      };
+    })()`,
+  );
+
+  if (!raw || typeof raw !== "object") return null;
+  const labels = Array.isArray(raw.observedThinkingLevelLabels)
+    ? raw.observedThinkingLevelLabels.filter(
+        (label): label is string => typeof label === "string" && label.trim().length > 0,
+      )
+    : [];
+  return {
+    deepThinkLabel:
+      typeof raw.deepThinkLabel === "string" && raw.deepThinkLabel.trim().length > 0
+        ? raw.deepThinkLabel
+        : null,
+    thinkingLevelControlExposed: raw.thinkingLevelControlExposed === true || labels.length > 0,
+    observedThinkingLevelLabels: labels,
+    selectedThinkingLevel:
+      typeof raw.selectedThinkingLevel === "string" && raw.selectedThinkingLevel.trim().length > 0
+        ? raw.selectedThinkingLevel
+        : null,
+  };
+}
+
 function classifyAdapterError(err: unknown): "login_required" | "ui_drift" {
   const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
   if (msg.includes("sign in") || msg.includes("sign-in") || msg.includes("login")) {
@@ -504,8 +595,10 @@ export function wireGeminiDeepThinkFsm(
     async selectMode(ctx: ProviderDomFlowContext) {
       send({ type: "gemini_model_candidate_selected", modelLabel: "gemini" });
       send({ type: "deep_think_menu_opened" });
+      let probe: GeminiDeepThinkSelectionProbe | null = null;
       try {
         if (adapter.selectMode) await adapter.selectMode(ctx);
+        probe = await probeDeepThinkSelectionState(ctx);
       } catch (err) {
         send({
           type: "ui_drift_observed",
@@ -513,7 +606,23 @@ export function wireGeminiDeepThinkFsm(
         });
         throw err;
       }
-      send({ type: "deep_think_candidate_selected", deepThinkLabel: "deep think" });
+      // Forward the observed DOM state so verifyGeminiDeepThinkCandidate
+      // can actually gate on the thinking-level control instead of always
+      // taking its trivially-verified "no control exposed" branch. When
+      // the probe is unavailable (evaluate() returned nothing — fake
+      // adapters in tests), fall back to the manifest label: the
+      // underlying adapter.selectMode has already thrown if Deep Think
+      // was not verifiably active.
+      send({
+        type: "deep_think_candidate_selected",
+        deepThinkLabel: probe?.deepThinkLabel ?? GEMINI_DEEP_THINK_MANIFEST.observedDeepThinkLabel,
+        observedThinkingLevelLabels: probe?.observedThinkingLevelLabels ?? [],
+        selectedThinkingLevel: probe?.selectedThinkingLevel ?? null,
+        thinkingLevelControlExposed: probe?.thinkingLevelControlExposed ?? false,
+      });
+      if (isGeminiDeepThinkFailureState(machine.state)) {
+        throw new GeminiDeepThinkFsmError(geminiDeepThinkMachineVerdict(machine));
+      }
       send({
         type: "deep_think_verified_same_session",
         sessionIdHash,

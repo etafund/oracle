@@ -271,21 +271,36 @@ describe("high-if-exposed thinking-level strategy wiring (dead-code regression)"
   /**
    * Builds a ProviderDomFlowContext whose evaluate() plays a Gemini page
    * that exposes the thinking-level control, keyed on distinctive
-   * substrings of the real provider's evaluate expressions.
+   * substrings of the real provider's evaluate expressions. The page
+   * defaults the control to "Standard"; only the high-if-exposed
+   * strategy's click moves it to "High".
    */
-  function makeStrategyCtx(): {
+  function makeStrategyCtx(options: { thinkingLevelLabels?: readonly string[] } = {}): {
     ctx: ProviderDomFlowContext;
     thinkingLevelEvals: string[];
     logs: string[];
   } {
     const thinkingLevelEvals: string[] = [];
     const logs: string[] = [];
+    const labels = options.thinkingLevelLabels ?? ["Standard", "High"];
+    let highClicked = false;
     const evaluate: ProviderDomFlowContext["evaluate"] = async <T>(
       expr: string,
     ): Promise<T | undefined> => {
+      if (expr.includes("observedThinkingLevelLabels")) {
+        // The wired selectMode's read-only post-selection DOM probe
+        // (probeDeepThinkSelectionState) — reports what the page shows.
+        return {
+          deepThinkLabel: "Deselect Deep Think",
+          thinkingLevelControlExposed: true,
+          observedThinkingLevelLabels: labels,
+          selectedThinkingLevel: highClicked ? "High" : "Standard",
+        } as T;
+      }
       if (expr.includes(".thinking-level-option")) {
-        // applyHighIfExposedStrategy's control probe.
+        // applyHighIfExposedStrategy's click probe.
         thinkingLevelEvals.push(expr);
+        highClicked = true;
         return { clicked: true, label: "high" } as T;
       }
       if (expr.includes("requiresLogin")) {
@@ -323,18 +338,51 @@ describe("high-if-exposed thinking-level strategy wiring (dead-code regression)"
     expect(wired.getMachine().state).toBe<GeminiDeepThinkState>(
       "deep_think_verified_same_session",
     );
+    // Regression (hardcoded-label bug): the candidate event must carry
+    // the OBSERVED DOM state, not a literal — the recorded verdict
+    // proves the thinking-level checks actually ran.
+    const deepThink = wired.getMachine().context.deepThink;
+    expect(deepThink?.thinkingLevelControlExposed).toBe(true);
+    expect(deepThink?.selected).toBe("High");
+    expect(deepThink?.tier).toBe("high");
+    expect(deepThink?.selectedIsHighestVisible).toBe(true);
+    expect(deepThink?.observedLabels).toContain("Standard");
+    expect(deepThink?.observedLabels).toContain("High");
   });
 
-  it("bare variant never probes the thinking-level control (contrast case)", async () => {
+  it("bare variant never clicks the thinking-level control, and the FSM now catches the non-high selection", async () => {
     // Proves the previous assertion actually distinguishes the variants:
     // wiring the bare provider (the old executor behavior) skips 'high'.
+    // Since the wrapper forwards live DOM state into
+    // deep_think_candidate_selected, leaving the exposed control on
+    // "Standard" is no longer trivially verified — the FSM rejects it.
     const wired = geminiDeepThinkDomProviderWithFsm();
     const { ctx, thinkingLevelEvals } = makeStrategyCtx();
 
     await wired.waitForUi(ctx);
-    await wired.selectMode!(ctx);
+    await expect(wired.selectMode!(ctx)).rejects.toBeInstanceOf(GeminiDeepThinkFsmError);
 
     expect(thinkingLevelEvals).toHaveLength(0);
+    const verdict = wired.getVerdict();
+    expect(verdict.state).toBe<GeminiDeepThinkState>("deep_think_unverified");
+    expect(verdict.errorCode).toBe("gemini_deep_think_unverified");
+    expect(verdict.failureReason).toMatch(/not the highest visible option/i);
+  });
+
+  it("regression: drifted thinking-level labels land the FSM in ui_drift_suspected during selectMode", async () => {
+    // Before the fix, selectMode sent a hardcoded
+    // `{ deepThinkLabel: 'deep think' }` event, so verification always
+    // took the trivial "no control exposed" branch and unknown effort
+    // labels (UI drift) could never be detected on a live run.
+    const wired = geminiDeepThinkWithStrategyDomProviderWithFsm();
+    const { ctx } = makeStrategyCtx({ thinkingLevelLabels: ["Turbo Max", "Ludicrous"] });
+
+    await wired.waitForUi(ctx);
+    await expect(wired.selectMode!(ctx)).rejects.toBeInstanceOf(GeminiDeepThinkFsmError);
+
+    const verdict = wired.getVerdict();
+    expect(verdict.state).toBe<GeminiDeepThinkState>("ui_drift_suspected");
+    expect(verdict.errorCode).toBe("ui_drift_suspected");
   });
 
   it("live executor wires the strategy variant, not the bare provider", () => {
