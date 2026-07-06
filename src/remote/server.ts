@@ -270,6 +270,19 @@ export async function probeAttachTarget(params: {
 }
 
 /**
+ * Whether the probed DevTools endpoint ANSWERED, independent of whether this
+ * worker may use it. An owner mismatch means the endpoint is reachable but
+ * belongs to a Chrome this worker must not touch: reachable yes, usable no.
+ * Shared by /ready and the authorized /status branch so the two
+ * authenticated surfaces can never disagree about the same cached probe
+ * (they used to: /ready said chromeReachable:true on
+ * attach-target-owner-mismatch while /status said false).
+ */
+function attachTargetChromeReachable(probe: AttachTargetProbe): boolean {
+  return probe.ok || probe.reason === "attach-target-owner-mismatch";
+}
+
+/**
  * Best-effort verification that the DevTools endpoint belongs to the Chrome
  * recorded for this profile (split-brain / rogue-listener defense):
  * - the profile's recorded DevToolsActivePort must agree with the probed
@@ -469,9 +482,7 @@ export async function createRemoteServer(
     try {
       if (attachOnly) {
         const probe = await probeAttachTargetCached();
-        // Owner mismatch means the endpoint answered but belongs to a Chrome
-        // this worker must not touch: reachable yes, usable no.
-        base.chromeReachable = probe.ok || probe.reason === "attach-target-owner-mismatch";
+        base.chromeReachable = attachTargetChromeReachable(probe);
         base.chromeOwnerOk = probe.ownerOk;
         if (!probe.ok) {
           base.reason = probe.reason;
@@ -643,7 +654,11 @@ export async function createRemoteServer(
               attachOnly: true,
               ...(authorized
                 ? {
-                    chromeReachable: probe.ok,
+                    // Same computation as /ready (attachTargetChromeReachable
+                    // + probe.ownerOk) so the two authenticated surfaces
+                    // never contradict each other for the same cached probe.
+                    chromeReachable: attachTargetChromeReachable(probe),
+                    chromeOwnerOk: probe.ownerOk,
                     ...(probe.reason ? { reason: probe.reason } : {}),
                   }
                 : {}),

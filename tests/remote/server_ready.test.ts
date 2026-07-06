@@ -211,6 +211,57 @@ describe("GET /ready", () => {
   );
 
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "authenticated /status agrees with /ready on chromeReachable/chromeOwnerOk for the same owner-mismatch probe",
+    async () => {
+      await isolateManifest();
+      const profileDir = await tempDir("oracle-ready-profile-");
+      const fakeCdp = await startFakeCdp();
+      try {
+        // Same split-brain fixture as the /ready test above: the pinned
+        // DevTools port answers, but the profile records a different port,
+        // so the probe resolves attach-target-owner-mismatch (reachable yes,
+        // usable no). Regression: /status used to compute chromeReachable as
+        // bare probe.ok (false here) and omit chromeOwnerOk, contradicting
+        // /ready's chromeReachable:true for the identical cached probe.
+        await writeFile(
+          path.join(profileDir, "DevToolsActivePort"),
+          `${fakeCdp.port + 1}\n/devtools/browser/00000000-0000-0000-0000-000000000000\n`,
+          "utf8",
+        );
+        const server = await createRemoteServer(
+          {
+            host: "127.0.0.1",
+            port: 0,
+            token: "secret",
+            logger: () => {},
+            attachOnly: true,
+            manualLoginProfileDir: profileDir,
+            devtoolsPort: fakeCdp.port,
+          },
+          { runBrowser: async () => MINIMAL_RESULT },
+        );
+        try {
+          // Both requests land inside the 2s probe cache window, so they
+          // describe the exact same underlying probe result.
+          const ready = await getReady(server.port, "secret");
+          const status = await getJson(server.port, "/status", "secret");
+          expect(ready.json?.chromeReachable).toBe(true);
+          expect(status.json?.chromeReachable).toBe(true);
+          expect(status.json?.chromeReachable).toBe(ready.json?.chromeReachable);
+          expect(ready.json?.chromeOwnerOk).toBe(false);
+          expect(status.json?.chromeOwnerOk).toBe(false);
+          expect(status.json?.reason).toBe("attach-target-owner-mismatch");
+          expect(status.json?.ok).toBe(false);
+        } finally {
+          await server.close();
+        }
+      } finally {
+        await fakeCdp.close();
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
     "busy worker distinguishes client-connected from client-disconnected (409)",
     async () => {
       await isolateManifest();
@@ -540,12 +591,20 @@ async function getReady(
   port: number,
   token: string,
 ): Promise<{ statusCode: number; json: Record<string, unknown> | null }> {
+  return await getJson(port, "/ready", token);
+}
+
+async function getJson(
+  port: number,
+  requestPath: string,
+  token: string,
+): Promise<{ statusCode: number; json: Record<string, unknown> | null }> {
   return await new Promise((resolve, reject) => {
     const req = http.request(
       {
         hostname: "127.0.0.1",
         port,
-        path: "/ready",
+        path: requestPath,
         method: "GET",
         headers: { authorization: `Bearer ${token}` },
       },
