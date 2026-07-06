@@ -615,38 +615,76 @@ export async function closeTab(
   }
 }
 
+/**
+ * Age-gate for the blank-tab sweep. CDP's HTTP target list carries no
+ * creation timestamps, so "age" is established empirically: candidates from a
+ * first snapshot must still be blank after this grace period before they are
+ * closed. A concurrently-opening lane's brand-new tab (CDP.New defaults to
+ * about:blank before navigation lands) either navigates away within the grace
+ * window or its lease record becomes visible to the caller's exclude set —
+ * either way it survives a sweep that raced its creation.
+ */
+export const DEFAULT_BLANK_TAB_SWEEP_GRACE_MS = 3000;
+
 export async function closeBlankChromeTabs(
   port: number,
   logger: BrowserLogger,
   host?: string,
-  options?: { excludeTargetIds?: Iterable<string | null | undefined> },
+  options?: {
+    excludeTargetIds?: Iterable<string | null | undefined>;
+    /** 0 disables the age-gate (close blank tabs from a single snapshot). */
+    blankGraceMs?: number;
+  },
 ): Promise<void> {
   const effectiveHost = host ?? "127.0.0.1";
+  const blankGraceMs = Math.max(0, options?.blankGraceMs ?? DEFAULT_BLANK_TAB_SWEEP_GRACE_MS);
   const excluded = new Set(
     [...(options?.excludeTargetIds ?? [])].filter(
       (targetId): targetId is string => typeof targetId === "string" && targetId.length > 0,
     ),
   );
-  let targets: Array<{ id?: string; targetId?: string; type?: string; url?: string }>;
-  try {
-    targets = (await CDP.List({ host: effectiveHost, port })) as Array<{
-      id?: string;
-      targetId?: string;
-      type?: string;
-      url?: string;
-    }>;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger(`Failed to inspect blank Chrome tabs: ${message}`);
+  type TargetSummary = { id?: string; targetId?: string; type?: string; url?: string };
+  const listBlankCandidateIds = async (): Promise<Set<string> | null> => {
+    let targets: TargetSummary[];
+    try {
+      targets = (await CDP.List({ host: effectiveHost, port })) as TargetSummary[];
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger(`Failed to inspect blank Chrome tabs: ${message}`);
+      return null;
+    }
+    const candidates = new Set<string>();
+    for (const target of targets) {
+      const targetId = target.targetId ?? target.id;
+      if (targetId && !excluded.has(targetId) && isBlankPageTarget(target)) {
+        candidates.add(targetId);
+      }
+    }
+    return candidates;
+  };
+
+  let candidates = await listBlankCandidateIds();
+  if (candidates === null || candidates.size === 0) {
     return;
+  }
+  if (blankGraceMs > 0) {
+    // Only tabs that are blank in BOTH snapshots are closed: a just-opened
+    // tab that is mid-navigation (e.g. another lane's isolated tab whose
+    // lease record was not yet visible when the caller built its exclude
+    // set) leaves the blank state before the second look and survives. A
+    // tab created between the snapshots is never a candidate at all.
+    await delay(blankGraceMs);
+    const confirmed = await listBlankCandidateIds();
+    if (confirmed === null) {
+      // Fail closed: without a confirming snapshot we cannot distinguish an
+      // orphaned blank tab from one that is mid-navigation.
+      return;
+    }
+    candidates = new Set([...candidates].filter((targetId) => confirmed.has(targetId)));
   }
 
   let closed = 0;
-  for (const target of targets) {
-    const targetId = target.targetId ?? target.id;
-    if (!targetId || excluded.has(targetId) || !isBlankPageTarget(target)) {
-      continue;
-    }
+  for (const targetId of candidates) {
     try {
       await CDP.Close({ host: effectiveHost, port, id: targetId });
       closed += 1;

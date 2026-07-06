@@ -294,6 +294,7 @@ describe("closeBlankChromeTabs", () => {
 
     await closeBlankChromeTabs(9222, logger, "127.0.0.1", {
       excludeTargetIds: ["active-blank"],
+      blankGraceMs: 0,
     });
 
     expect(cdpListMock).toHaveBeenCalledWith({ host: "127.0.0.1", port: 9222 });
@@ -309,6 +310,90 @@ describe("closeBlankChromeTabs", () => {
       id: "newtab-1",
     });
     expect(logger).toHaveBeenCalledWith("Closed 2 blank Chrome tabs.");
+  });
+
+  test("age-gate spares a just-opened blank tab that navigates within the grace window", async () => {
+    // Regression: a concurrent lane's brand-new tab (CDP.New defaults to
+    // about:blank) must not be swept as an orphan when its lease record was
+    // not yet visible to the caller's exclude set. Only tabs blank in BOTH
+    // snapshots are closed.
+    vi.useFakeTimers();
+    cdpListMock
+      .mockResolvedValueOnce([
+        { id: "orphan-blank", type: "page", url: "about:blank" },
+        { id: "lane-b-fresh", type: "page", url: "about:blank" },
+      ])
+      .mockResolvedValueOnce([
+        { id: "orphan-blank", type: "page", url: "about:blank" },
+        { id: "lane-b-fresh", type: "page", url: "https://chatgpt.com/" },
+      ]);
+    cdpCloseMock.mockResolvedValue(undefined);
+
+    const { closeBlankChromeTabs, DEFAULT_BLANK_TAB_SWEEP_GRACE_MS } = await import(
+      "../../src/browser/chromeLifecycle.js"
+    );
+    const logger = vi.fn();
+
+    const sweep = closeBlankChromeTabs(9222, logger, "127.0.0.1", {
+      excludeTargetIds: [],
+    });
+    await vi.advanceTimersByTimeAsync(DEFAULT_BLANK_TAB_SWEEP_GRACE_MS);
+    await sweep;
+
+    expect(cdpListMock).toHaveBeenCalledTimes(2);
+    expect(cdpCloseMock).toHaveBeenCalledTimes(1);
+    expect(cdpCloseMock).toHaveBeenCalledWith({
+      host: "127.0.0.1",
+      port: 9222,
+      id: "orphan-blank",
+    });
+    expect(logger).toHaveBeenCalledWith("Closed 1 blank Chrome tab.");
+  });
+
+  test("age-gate never closes a tab that only appeared after the first snapshot", async () => {
+    vi.useFakeTimers();
+    cdpListMock
+      .mockResolvedValueOnce([{ id: "orphan-blank", type: "page", url: "about:blank" }])
+      .mockResolvedValueOnce([
+        { id: "orphan-blank", type: "page", url: "about:blank" },
+        { id: "created-during-grace", type: "page", url: "about:blank" },
+      ]);
+    cdpCloseMock.mockResolvedValue(undefined);
+
+    const { closeBlankChromeTabs, DEFAULT_BLANK_TAB_SWEEP_GRACE_MS } = await import(
+      "../../src/browser/chromeLifecycle.js"
+    );
+    const logger = vi.fn();
+
+    const sweep = closeBlankChromeTabs(9222, logger, "127.0.0.1", {});
+    await vi.advanceTimersByTimeAsync(DEFAULT_BLANK_TAB_SWEEP_GRACE_MS);
+    await sweep;
+
+    expect(cdpCloseMock).toHaveBeenCalledTimes(1);
+    expect(cdpCloseMock).toHaveBeenCalledWith({
+      host: "127.0.0.1",
+      port: 9222,
+      id: "orphan-blank",
+    });
+  });
+
+  test("age-gate stands down when the confirming snapshot fails", async () => {
+    vi.useFakeTimers();
+    cdpListMock
+      .mockResolvedValueOnce([{ id: "maybe-orphan", type: "page", url: "about:blank" }])
+      .mockRejectedValueOnce(new Error("devtools endpoint went away"));
+    cdpCloseMock.mockResolvedValue(undefined);
+
+    const { closeBlankChromeTabs, DEFAULT_BLANK_TAB_SWEEP_GRACE_MS } = await import(
+      "../../src/browser/chromeLifecycle.js"
+    );
+    const logger = vi.fn();
+
+    const sweep = closeBlankChromeTabs(9222, logger, "127.0.0.1", {});
+    await vi.advanceTimersByTimeAsync(DEFAULT_BLANK_TAB_SWEEP_GRACE_MS);
+    await sweep;
+
+    expect(cdpCloseMock).not.toHaveBeenCalled();
   });
 
   test("opens a dedicated tab through a browser websocket endpoint", async () => {

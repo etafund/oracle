@@ -79,6 +79,7 @@ import {
 import {
   acquireBrowserTabLease,
   hasOtherActiveBrowserTabLeases,
+  listOtherActiveBrowserTabLeaseTargetIds,
   type BrowserTabLease,
 } from "./tabLeaseRegistry.js";
 import {
@@ -2640,10 +2641,24 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       chrome?.port &&
       ownsTarget
     ) {
-      const otherLeasesActive = await hasOtherActiveLeases().catch(() => true);
-      if (!otherLeasesActive) {
+      // The sweep excludes OTHER active leases' recorded Chrome targets, not
+      // just this run's own tabs: a concurrently-opening lane's isolated tab
+      // sits on about:blank until its navigation lands and would otherwise be
+      // swept as an orphan. Any other active occupant whose target cannot be
+      // attributed (lease registered but chromeTargetId not recorded yet, or
+      // an opaque assume-active record) makes the sweep stand down entirely,
+      // as does an unverifiable registry (fail closed). The remaining TOCTOU
+      // (a lease created strictly after this snapshot) is covered by the
+      // blank-tab age-gate inside closeBlankChromeTabs.
+      const otherLeaseTargets =
+        tabLease === null
+          ? { readable: true as const, targetIds: [], unattributedCount: 0 }
+          : await listOtherActiveBrowserTabLeaseTargetIds(userDataDir, tabLease.id).catch(
+              () => null,
+            );
+      if (otherLeaseTargets?.readable && otherLeaseTargets.unattributedCount === 0) {
         await closeBlankChromeTabs(chrome.port, logger, chromeHost, {
-          excludeTargetIds: [isolatedTargetId, lastTargetId],
+          excludeTargetIds: [isolatedTargetId, lastTargetId, ...otherLeaseTargets.targetIds],
         }).catch(() => undefined);
       }
     }

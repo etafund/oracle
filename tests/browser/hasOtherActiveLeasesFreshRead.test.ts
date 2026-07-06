@@ -2,13 +2,15 @@
  * hasOtherActiveLeases() must re-read the tab-lease registry on every call,
  * not memoize the first result for the lifetime of the run-cleanup closure.
  *
- * Property (correctness / fault isolation): this closure backs two gates in
- * runBrowserMode()'s run-cleanup finally block, separated in time by
- * acquireProfileRunLock() (`cleanupProfileLock`):
- *   1. the blank-tab-close gate (closes blank tabs when no other lease is
- *      active), and
+ * Property (correctness / fault isolation): runBrowserMode()'s run-cleanup
+ * finally block has two lease-registry-gated cleanup decisions, separated in
+ * time by acquireProfileRunLock() (`cleanupProfileLock`):
+ *   1. the blank-tab-close gate (sweeps blank tabs, excluding other active
+ *      leases' recorded Chrome targets, and stands down when any other
+ *      occupant's tab cannot be attributed), backed by a direct
+ *      listOtherActiveBrowserTabLeaseTargetIds() read at the gate, and
  *   2. the Chrome-termination gate (SIGTERMs the shared Chrome when no other
- *      lease is active).
+ *      lease is active), backed by the hasOtherActiveLeases closure.
  * Under c>=2 manual-login concurrency, a second worker can acquire its own
  * tab lease and briefly touch the same profile lock in the gap between gate 1
  * and gate 2. If gate 2 reused a cached "no other leases" result computed
@@ -53,12 +55,17 @@ async function hasOtherActiveLeasesClosureSource(): Promise<string> {
 }
 
 describe("hasOtherActiveLeases fresh-read regression", () => {
-  test("guard: the hasOtherActiveLeases closure still exists and is still used by both gates", async () => {
+  test("guard: both cleanup gates perform their own fresh registry reads", async () => {
     const source = await readSource("browser/index.ts");
-    // Both call sites must remain: the blank-tab gate and the
-    // Chrome-termination gate, straddling cleanupProfileLock acquisition.
+    // The Chrome-termination gate must still consult the closure (after
+    // cleanupProfileLock acquisition), and the blank-tab gate must consult
+    // the registry directly at the gate — each invocation is a fresh,
+    // lock-protected read with nothing memoized across the lock boundary.
     const callSites = source.match(/hasOtherActiveLeases\(\)/gu) ?? [];
-    expect(callSites.length).toBeGreaterThanOrEqual(2);
+    expect(callSites.length).toBeGreaterThanOrEqual(1);
+    expect(source).toContain(
+      "await listOtherActiveBrowserTabLeaseTargetIds(userDataDir, tabLease.id)",
+    );
     expect(source).toContain("cleanupProfileLock = await acquireProfileRunLock(");
   });
 

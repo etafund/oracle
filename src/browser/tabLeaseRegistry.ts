@@ -348,6 +348,85 @@ export async function hasOtherActiveBrowserTabLeases(
   );
 }
 
+/**
+ * Snapshot of the OTHER currently-active leases' recorded Chrome target IDs,
+ * taken under the same registry lock / prune-stale path as
+ * hasOtherActiveBrowserTabLeases. Consumed by the exit-time blank-tab sweep so
+ * a concurrently-running lane's tab is excluded from closure instead of being
+ * mistaken for an orphaned about:blank tab.
+ *
+ * Fail-closed shape: `readable: false` means the registry is unverifiable and
+ * the caller must assume unknown tabs belong to live lanes (stand down);
+ * `unattributedCount > 0` means at least one other active occupant has no
+ * recorded chromeTargetId yet (its brand-new tab is indistinguishable from an
+ * orphan), so a sweep must also stand down.
+ */
+export interface OtherActiveLeaseTargetSnapshot {
+  readable: boolean;
+  /** Deduplicated chromeTargetIds recorded by OTHER active leases. */
+  targetIds: string[];
+  /**
+   * Other active occupants whose tab cannot be attributed to a target ID:
+   * valid leases that have not recorded chromeTargetId yet, plus opaque
+   * (assume-active) records.
+   */
+  unattributedCount: number;
+}
+
+export async function listOtherActiveBrowserTabLeaseTargetIds(
+  profileDir: string,
+  leaseId: string,
+  options: {
+    staleMs?: number;
+    now?: () => number;
+    isProcessAlive?: (pid: number) => boolean;
+    logger?: BrowserLogger;
+  } = {},
+): Promise<OtherActiveLeaseTargetSnapshot> {
+  const now = options.now ?? Date.now;
+  const staleMs = Math.max(60_000, options.staleMs ?? DEFAULT_STALE_MS);
+  return withRegistryLock(
+    profileDir,
+    async () => {
+      const outcome = await readRegistryOutcomeLocked(profileDir, options.logger);
+      if (!outcome.readable) {
+        // Fail-closed: we cannot enumerate other leases' targets, so report
+        // the registry unverifiable and let destructive sweeps stand down.
+        return { readable: false, targetIds: [], unattributedCount: 0 };
+      }
+      const pruneOptions = {
+        nowMs: now(),
+        staleMs,
+        isProcessAlive: options.isProcessAlive ?? isProcessAlive,
+      };
+      const activeValid = pruneStaleLeases(outcome.valid, pruneOptions);
+      const activeOpaque = pruneOpaqueRecords(outcome.opaque, pruneOptions);
+      if (
+        activeValid.length + activeOpaque.length !==
+        outcome.valid.length + outcome.opaque.length
+      ) {
+        // Best-effort persistence of the prune; the computed answer below is
+        // valid regardless of whether this write lands.
+        await writeRegistry(profileDir, [...activeValid, ...activeOpaque]).catch(() => undefined);
+      }
+      const targetIds = new Set<string>();
+      let unattributedCount = activeOpaque.length;
+      for (const lease of activeValid) {
+        if (lease.id === leaseId) {
+          continue;
+        }
+        if (typeof lease.chromeTargetId === "string" && lease.chromeTargetId.length > 0) {
+          targetIds.add(lease.chromeTargetId);
+        } else {
+          unattributedCount += 1;
+        }
+      }
+      return { readable: true, targetIds: [...targetIds], unattributedCount };
+    },
+    options.logger,
+  );
+}
+
 interface RegistryLockOwner {
   pid: number;
   startTicks?: string | null;
