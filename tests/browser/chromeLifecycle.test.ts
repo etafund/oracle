@@ -197,6 +197,53 @@ describe("connectWithNewTab", () => {
     expect(cdpMock).toHaveBeenCalledWith({ host: "127.0.0.1", port: 9222, target: "target-2" });
   });
 
+  test("manual-login connect options never allow default-target fallback (launching lane included)", async () => {
+    const { resolveIsolatedTabConnectOptions } = await import(
+      "../../src/browser/chromeLifecycle.js"
+    );
+
+    // Regression: the launching lane used to gate strict isolation on
+    // reusedChrome, silently attaching manual-login runs that launched
+    // Chrome themselves to the shared default tab. The policy is a function
+    // of manualLogin alone.
+    const manualLoginOptions = resolveIsolatedTabConnectOptions(true);
+    expect(manualLoginOptions.fallbackToDefault).toBe(false);
+    expect(manualLoginOptions.retries).toBe(6);
+
+    const throwawayProfileOptions = resolveIsolatedTabConnectOptions(false);
+    expect(throwawayProfileOptions.fallbackToDefault).toBe(true);
+    expect(throwawayProfileOptions.retries).toBe(0);
+  });
+
+  test("manual-login lane throws after exhausting retries instead of attaching to the default target", async () => {
+    vi.useFakeTimers();
+    cdpNewMock.mockRejectedValue(new Error("boom"));
+    cdpMock.mockResolvedValue({});
+
+    const { connectWithNewTab, resolveIsolatedTabConnectOptions } = await import(
+      "../../src/browser/chromeLifecycle.js"
+    );
+    const logger = vi.fn();
+
+    const resultPromise = connectWithNewTab(
+      9222,
+      logger,
+      undefined,
+      undefined,
+      resolveIsolatedTabConnectOptions(true),
+    );
+    const expectation = expect(resultPromise).rejects.toThrow(
+      /refusing to attach to default target/i,
+    );
+    await vi.runAllTimersAsync();
+    await expectation;
+
+    // 1 initial attempt + 6 retries, and no fallback connection to Chrome's
+    // default target was ever opened.
+    expect(cdpNewMock).toHaveBeenCalledTimes(7);
+    expect(cdpMock).not.toHaveBeenCalled();
+  });
+
   test("retries transient DevTools connection failures before falling back", async () => {
     vi.useFakeTimers();
     cdpNewMock

@@ -525,6 +525,30 @@ function createSessionBoundChromeClient(browser: ChromeClient, sessionId: string
   } as ChromeClient;
 }
 
+/**
+ * Connection options for opening the run's isolated tab in a local Chrome.
+ *
+ * Manual-login runs share a persistent profile — and, with concurrency, a
+ * live Chrome — with other runs, so attaching to the shared default target
+ * risks cross-talk between lanes (two runs driving the same tab). Every
+ * manual-login lane therefore forbids the default-target fallback, whether
+ * this run launched Chrome or reused one that was already running; a stuck
+ * new-tab creation must throw instead of silently reusing whatever tab
+ * happens to be default. Throwaway-profile runs own the whole Chrome, so
+ * falling back to its default target is harmless there.
+ */
+export function resolveIsolatedTabConnectOptions(manualLogin: boolean): {
+  fallbackToDefault: boolean;
+  retries: number;
+  retryDelayMs: number;
+} {
+  return {
+    fallbackToDefault: !manualLogin,
+    retries: manualLogin ? 6 : 0,
+    retryDelayMs: 500,
+  };
+}
+
 export async function connectWithNewTab(
   port: number,
   logger: BrowserLogger,

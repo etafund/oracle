@@ -6,6 +6,7 @@ import {
   closeTab,
   connectWithNewTab,
   hideChromeWindow,
+  resolveIsolatedTabConnectOptions,
   launchChrome,
   registerTerminationHooks,
 } from "./chromeLifecycle.js";
@@ -153,13 +154,13 @@ export async function runBrowserProjectSources(
       },
     );
 
-    const strictTabIsolation = Boolean(manualLogin && reusedChrome);
-    const devtoolsRetries = manualLogin ? 6 : 0;
-    const connection = await connectWithNewTab(chrome.port, logger, "about:blank", chromeHost, {
-      fallbackToDefault: !strictTabIsolation,
-      retries: devtoolsRetries,
-      retryDelayMs: 500,
-    });
+    const connection = await connectWithNewTab(
+      chrome.port,
+      logger,
+      "about:blank",
+      chromeHost,
+      resolveIsolatedTabConnectOptions(manualLogin),
+    );
     client = connection.client;
     isolatedTargetId = connection.targetId ?? null;
     if (tabLease && isolatedTargetId) {

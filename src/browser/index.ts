@@ -22,6 +22,7 @@ import {
   hideChromeWindow,
   connectToRemoteChrome,
   connectWithNewTab,
+  resolveIsolatedTabConnectOptions,
   closeTab,
   closeRemoteChromeTarget,
   closeBlankChromeTabs,
@@ -1365,13 +1366,13 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         // remote path does, so Send clicks aren't dropped.
         await enableFocusEmulation(client, logger, "local tab");
       } else {
-        const strictTabIsolation = Boolean(manualLogin && reusedChrome);
-        const devtoolsRetries = manualLogin ? 6 : 0;
-        const connection = await connectWithNewTab(chrome.port, logger, config.url, chromeHost, {
-          fallbackToDefault: !strictTabIsolation,
-          retries: devtoolsRetries,
-          retryDelayMs: 500,
-        });
+        const connection = await connectWithNewTab(
+          chrome.port,
+          logger,
+          config.url,
+          chromeHost,
+          resolveIsolatedTabConnectOptions(manualLogin),
+        );
         client = connection.client;
         isolatedTargetId = connection.targetId ?? null;
         ownsTarget = true;
