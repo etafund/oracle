@@ -6,12 +6,18 @@ import { CHATGPT_URL, DEEP_RESEARCH_DEFAULT_TIMEOUT_MS } from "../../src/browser
 
 describe("resolveBrowserConfig", () => {
   const originalProfileDir = process.env.ORACLE_BROWSER_PROFILE_DIR;
+  const originalMaxTabs = process.env.ORACLE_BROWSER_MAX_CONCURRENT_TABS;
 
   afterEach(() => {
     if (originalProfileDir === undefined) {
       delete process.env.ORACLE_BROWSER_PROFILE_DIR;
     } else {
       process.env.ORACLE_BROWSER_PROFILE_DIR = originalProfileDir;
+    }
+    if (originalMaxTabs === undefined) {
+      delete process.env.ORACLE_BROWSER_MAX_CONCURRENT_TABS;
+    } else {
+      process.env.ORACLE_BROWSER_MAX_CONCURRENT_TABS = originalMaxTabs;
     }
   });
 
@@ -94,6 +100,18 @@ describe("resolveBrowserConfig", () => {
     );
 
     expect(resolveBrowserConfig({ manualLogin: false }).manualLoginProfileDir).toBeNull();
+  });
+
+  test("resolves maxConcurrentTabs from config, env, and default", () => {
+    process.env.ORACLE_BROWSER_MAX_CONCURRENT_TABS = "5";
+    expect(resolveBrowserConfig({ maxConcurrentTabs: 2 }).maxConcurrentTabs).toBe(2);
+    expect(resolveBrowserConfig(undefined).maxConcurrentTabs).toBe(5);
+
+    process.env.ORACLE_BROWSER_MAX_CONCURRENT_TABS = "0";
+    expect(resolveBrowserConfig(undefined).maxConcurrentTabs).toBe(3);
+
+    process.env.ORACLE_BROWSER_MAX_CONCURRENT_TABS = "not-a-number";
+    expect(resolveBrowserConfig(undefined).maxConcurrentTabs).toBe(3);
   });
 
   test("uses the longer Deep Research timeout unless explicitly overridden", () => {

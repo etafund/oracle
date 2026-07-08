@@ -78,6 +78,9 @@ export function resolveBrowserConfig(
   const envAllowCookieErrors =
     (process.env.ORACLE_BROWSER_ALLOW_COOKIE_ERRORS ?? "").trim().toLowerCase() === "true" ||
     (process.env.ORACLE_BROWSER_ALLOW_COOKIE_ERRORS ?? "").trim() === "1";
+  const envMaxConcurrentTabs = parseMaxConcurrentTabs(
+    process.env.ORACLE_BROWSER_MAX_CONCURRENT_TABS,
+  );
   const rawUrl = config?.chatgptUrl ?? config?.url ?? DEFAULT_BROWSER_CONFIG.url;
   const normalizedUrl = normalizeChatgptUrl(
     rawUrl ?? DEFAULT_BROWSER_CONFIG.url,
@@ -118,7 +121,7 @@ export function resolveBrowserConfig(
     profileLockTimeoutMs:
       config?.profileLockTimeoutMs ?? DEFAULT_BROWSER_CONFIG.profileLockTimeoutMs,
     maxConcurrentTabs: normalizeMaxConcurrentTabs(
-      config?.maxConcurrentTabs ?? DEFAULT_BROWSER_CONFIG.maxConcurrentTabs,
+      config?.maxConcurrentTabs ?? envMaxConcurrentTabs ?? DEFAULT_BROWSER_CONFIG.maxConcurrentTabs,
     ),
     autoReattachDelayMs: config?.autoReattachDelayMs ?? DEFAULT_BROWSER_CONFIG.autoReattachDelayMs,
     autoReattachIntervalMs:
@@ -171,6 +174,15 @@ function parseDebugPort(raw?: string | null): number | null {
   if (!raw) return null;
   const value = Number.parseInt(raw, 10);
   if (!Number.isFinite(value) || value <= 0 || value > 65535) {
+    return null;
+  }
+  return value;
+}
+
+function parseMaxConcurrentTabs(raw?: string | null): number | null {
+  if (!raw) return null;
+  const value = Number.parseInt(raw, 10);
+  if (!Number.isFinite(value) || value <= 0) {
     return null;
   }
   return value;
