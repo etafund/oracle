@@ -24,6 +24,7 @@ describe("remote client payload sanitizer", () => {
         timeoutMs: 90_000,
         inputTimeoutMs: 12_000,
         researchMode: "deep",
+        resumeConversationUrl: "https://chat.openai.com/c/client-safe-resume",
         inlineCookies: [
           {
             name: "__Secure-next-auth.session-token",
@@ -75,6 +76,7 @@ describe("remote client payload sanitizer", () => {
       timeoutMs: 90_000,
       inputTimeoutMs: 12_000,
       researchMode: "deep",
+      resumeConversationUrl: "https://chat.openai.com/c/client-safe-resume",
     });
     for (const forbidden of [
       "inlineCookies",
@@ -98,6 +100,26 @@ describe("remote client payload sanitizer", () => {
       sessionId: "client-payload-sanitize",
       followUpPrompts: ["safe follow-up"],
     });
+  });
+
+  test("rejects unsafe resumeConversationUrl before writing the request", async () => {
+    const { requestFn, body } = captureSerializedBodyRequest();
+    const exec = createRemoteBrowserExecutor({
+      host: "localhost:9222",
+      token: "remote-client-token",
+      requestFn,
+    });
+
+    await expect(
+      exec({
+        prompt: "CHECK_CLIENT_SANITIZE",
+        config: {
+          resumeConversationUrl: "https://evil.example/c/not-chatgpt",
+        },
+        log: () => {},
+      }),
+    ).rejects.toThrow(/resumeConversationUrl/i);
+    expect(body()).toBeNull();
   });
 });
 

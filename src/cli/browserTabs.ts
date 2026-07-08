@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import { createHash } from "node:crypto";
 import chalk from "chalk";
 import { sessionStore } from "../sessionStore.js";
-import type { SessionMetadata } from "../sessionStore.js";
+import type { BrowserHarvestState, SessionMetadata } from "../sessionStore.js";
 import {
   collectChatGptTabs,
   DEFAULT_REMOTE_CHROME_HOST,
@@ -179,6 +179,20 @@ function printHarvestSummary(sessionId: string, harvested: ChatGptTabSummary): v
   }
   console.log(chalk.dim("---"));
 }
+
+function deriveLiveTailState(
+  harvested: ChatGptTabSummary,
+  unchangedForMs: number,
+  stallThresholdMs: number,
+): BrowserHarvestState {
+  const observedState = formatBrowserTabState(harvested);
+  if (observedState !== "running") {
+    return observedState;
+  }
+  return unchangedForMs >= stallThresholdMs ? "stalled" : "running";
+}
+
+export const deriveLiveTailStateForTest = deriveLiveTailState;
 
 async function maybeWriteHarvestOutput(
   pathInput: string | undefined,
@@ -373,13 +387,11 @@ export async function liveTailSessionBrowserOutput(
         await persistHarvest(sessionId, meta, harvested);
       }
 
-      const derivedState = harvested.stopExists
-        ? Date.now() - unchangedSince >= stallThresholdMs
-          ? "stalled"
-          : "running"
-        : harvested.authenticated
-          ? "completed"
-          : "detached";
+      const derivedState = deriveLiveTailState(
+        harvested,
+        Date.now() - unchangedSince,
+        stallThresholdMs,
+      );
 
       if (
         derivedState === "completed" ||

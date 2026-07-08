@@ -44,6 +44,8 @@ export interface ChatGptTabSummary {
   promptReady: boolean;
   loginButtonExists: boolean;
   authenticated: boolean;
+  answerNowExists?: boolean;
+  thinkingActive?: boolean;
   assistantCount: number;
   lastAssistantText: string;
   lastAssistantSnippet: string;
@@ -183,6 +185,37 @@ function buildTabInspectionExpression(): string {
         const label = normalize(node.textContent || node.getAttribute('aria-label') || node.getAttribute('title'));
         return LOGIN_CTA.test(label);
       });
+      const labelFor = (node) =>
+        normalize([
+          node.textContent,
+          node.getAttribute?.('aria-label'),
+          node.getAttribute?.('title'),
+          node.getAttribute?.('data-testid'),
+        ].filter(Boolean).join(' ')).toLowerCase();
+      const answerNowExists = Array.from(document.querySelectorAll('button,[role="button"]')).some((node) => {
+        if (!isVisible(node)) return false;
+        const label = labelFor(node);
+        return label === 'answer now' || label === 'answer now edit' || label.includes('answer now');
+      });
+      const thinkingKeywords = [
+        'thinking',
+        'reasoning',
+        'finalizing',
+        'analyzing',
+        'researching',
+        'working on it',
+        'planning',
+        'searching',
+        'thought for',
+        'pro thinking',
+      ];
+      const structuralThinking = Array.from(
+        document.querySelectorAll('span.loading-shimmer,.result-streaming,[data-is-streaming="true"]'),
+      ).some((node) => isVisible(node));
+      const labeledThinking = Array.from(
+        document.querySelectorAll('[data-testid*="thinking"],[data-testid*="reasoning"],[role="status"],[aria-live="polite"]'),
+      ).some((node) => isVisible(node) && thinkingKeywords.some((keyword) => labelFor(node).includes(keyword)));
+      const thinkingActive = answerNowExists || structuralThinking || labeledThinking;
       const stopButton = document.querySelector(STOP_BUTTON_SELECTOR);
       const stopExists = Boolean(stopButton && isVisible(stopButton));
       const sendButton = firstVisible(SEND_SELECTORS);
@@ -228,6 +261,8 @@ function buildTabInspectionExpression(): string {
         promptReady,
         loginButtonExists,
         authenticated,
+        answerNowExists,
+        thinkingActive,
         assistantCount,
         lastAssistantText,
         lastUserText,
@@ -291,6 +326,8 @@ export async function inspectChatGptTab(
       promptReady?: boolean;
       loginButtonExists?: boolean;
       authenticated?: boolean;
+      answerNowExists?: boolean;
+      thinkingActive?: boolean;
       assistantCount?: number;
       lastAssistantText?: string;
       lastUserText?: string;
@@ -315,6 +352,8 @@ export async function inspectChatGptTab(
       promptReady: Boolean(info.promptReady),
       loginButtonExists: Boolean(info.loginButtonExists),
       authenticated: Boolean(info.authenticated),
+      answerNowExists: Boolean(info.answerNowExists),
+      thinkingActive: Boolean(info.thinkingActive),
       assistantCount: Number.isFinite(info.assistantCount) ? Number(info.assistantCount) : 0,
       lastAssistantText,
       lastAssistantSnippet: trimToSnippet(lastAssistantText),
@@ -342,12 +381,13 @@ export function classifyTabState(
   summary: Pick<
     ChatGptTabSummary,
     "authenticated" | "stopExists" | "sendExists" | "promptReady" | "assistantCount"
-  >,
+  > &
+    Partial<Pick<ChatGptTabSummary, "answerNowExists" | "thinkingActive">>,
 ): BrowserHarvestState {
   if (!summary?.authenticated) {
     return "detached";
   }
-  if (summary.stopExists) {
+  if (summary.stopExists || summary.answerNowExists || summary.thinkingActive) {
     return "running";
   }
   if (summary.sendExists || summary.promptReady || summary.assistantCount > 0) {
@@ -377,6 +417,8 @@ export async function collectChatGptTabs(options: HostPort = {}): Promise<ChatGp
         promptReady: false,
         loginButtonExists: false,
         authenticated: false,
+        answerNowExists: false,
+        thinkingActive: false,
         assistantCount: 0,
         lastAssistantText: "",
         lastAssistantSnippet: "",
@@ -532,6 +574,8 @@ export async function harvestChatGptTab(
       harvested.visibilityState = followup.visibilityState;
       harvested.assistantCount = followup.assistantCount;
       harvested.authenticated = followup.authenticated;
+      harvested.answerNowExists = followup.answerNowExists;
+      harvested.thinkingActive = followup.thinkingActive;
       harvested.loginButtonExists = followup.loginButtonExists;
       harvested.lastUserText = followup.lastUserText;
       harvested.lastUserSnippet = followup.lastUserSnippet;

@@ -38,6 +38,7 @@ const SAFE_BROWSER_CONFIG_KEYS = [
   "thinkingTime",
   "researchMode",
   "archiveConversations",
+  "resumeConversationUrl",
 ] as const satisfies readonly (keyof BrowserSessionConfig)[];
 
 type SafeBrowserConfigKey = (typeof SAFE_BROWSER_CONFIG_KEYS)[number];
@@ -132,10 +133,53 @@ function pickSafeBrowserConfig(
   for (const key of SAFE_BROWSER_CONFIG_KEYS) {
     const value = (config as Record<string, unknown>)[key];
     if (value !== undefined) {
-      out[key] = value;
+      out[key] =
+        key === "resumeConversationUrl" ? normalizeRemoteResumeConversationUrl(value) : value;
     }
   }
   return out as BrowserSessionConfig;
+}
+
+function normalizeRemoteResumeConversationUrl(value: unknown): string | null {
+  if (value === null) {
+    return null;
+  }
+  if (typeof value !== "string") {
+    throw new Error("Invalid resumeConversationUrl: expected a ChatGPT conversation URL.");
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (/[\u0000-\u001f\u007f]/u.test(trimmed)) {
+    throw new Error("Invalid resumeConversationUrl: control characters are not allowed.");
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error("Invalid resumeConversationUrl: provide an absolute ChatGPT conversation URL.");
+  }
+  if (parsed.protocol !== "https:") {
+    throw new Error("Invalid resumeConversationUrl: use https.");
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error("Invalid resumeConversationUrl: credentials are not allowed.");
+  }
+  if (parsed.port) {
+    throw new Error("Invalid resumeConversationUrl: custom ports are not allowed.");
+  }
+  const hostname = parsed.hostname.toLowerCase();
+  if (hostname !== "chatgpt.com" && hostname !== "chat.openai.com") {
+    throw new Error("Invalid resumeConversationUrl: host must be chatgpt.com.");
+  }
+  if (parsed.search || parsed.hash) {
+    throw new Error("Invalid resumeConversationUrl: query strings and fragments are not allowed.");
+  }
+  if (!/^\/c\/[A-Za-z0-9_-]+$/.test(parsed.pathname)) {
+    throw new Error("Invalid resumeConversationUrl: expected path /c/<conversation-id>.");
+  }
+  return parsed.href;
 }
 
 function sanitizeAttachments(value: unknown): RemoteAttachmentPayload[] {

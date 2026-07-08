@@ -57,6 +57,26 @@ describe("liveTabs helpers", () => {
     ).toBe("completed");
     expect(
       classifyTabState({
+        authenticated: true,
+        stopExists: false,
+        sendExists: true,
+        promptReady: true,
+        assistantCount: 1,
+        answerNowExists: true,
+      }),
+    ).toBe("running");
+    expect(
+      classifyTabState({
+        authenticated: true,
+        stopExists: false,
+        sendExists: true,
+        promptReady: true,
+        assistantCount: 1,
+        thinkingActive: true,
+      }),
+    ).toBe("running");
+    expect(
+      classifyTabState({
         authenticated: false,
         stopExists: false,
         sendExists: false,

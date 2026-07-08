@@ -45,6 +45,7 @@ describe("remote payload sanitization", () => {
       modelStrategy: "select",
       timeoutMs: 90_000,
       thinkingTime: "heavy",
+      resumeConversationUrl: "https://chatgpt.com/c/safe-resume-id",
     });
     expect(parsed.browserConfig).not.toHaveProperty("inlineCookies");
     expect(parsed.browserConfig).not.toHaveProperty("inlineCookiesSource");
@@ -106,6 +107,7 @@ describe("remote payload sanitization", () => {
         modelStrategy: "select",
         timeoutMs: 90_000,
         thinkingTime: "heavy",
+        resumeConversationUrl: "https://chatgpt.com/c/safe-resume-id",
         cookieSync: true,
         inlineCookies: null,
         inlineCookiesSource: null,
@@ -135,6 +137,7 @@ function maliciousPayload(): RemoteRunPayload {
       modelStrategy: "select",
       timeoutMs: 90_000,
       thinkingTime: "heavy",
+      resumeConversationUrl: "https://chatgpt.com/c/safe-resume-id",
       inlineCookies: [
         {
           name: "__Secure-next-auth.session-token",

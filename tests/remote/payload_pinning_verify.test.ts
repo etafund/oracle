@@ -78,7 +78,11 @@ import type { RemoteRunPayload } from "../../src/remote/types.js";
 //                                       allowCookieErrors
 //   Window / lifecycle / debug          headless, keepBrowser, hideWindow,
 //                                       manualLogin, debug
-//   Navigation pinning                  resumeConversationUrl
+//   Navigation pinning                  resumeConversationUrl is ALLOW only
+//                                       for strict ChatGPT conversation URLs:
+//                                       https, chatgpt.com/chat.openai.com,
+//                                       exact /c/<id>, no query/hash,
+//                                       credentials, ports, or nested paths.
 //   Host-budgeted timings               attachmentTimeoutMs
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -129,7 +133,6 @@ const STRIPPED_KEYS = [
   "hideWindow",
   "manualLogin",
   "debug",
-  "resumeConversationUrl",
   "attachmentTimeoutMs",
 ] as const;
 
@@ -162,7 +165,6 @@ function hostilePayload(): Record<string, unknown> {
       hideWindow: true,
       manualLogin: true,
       debug: true,
-      resumeConversationUrl: "https://chatgpt.com/c/other-tenant",
       attachmentTimeoutMs: 1,
       // Sentinel/pinning attempts on allowlisted keys.
       timeoutMs: 0,
@@ -221,10 +223,47 @@ describe("host-side browserConfig timing clamps", () => {
       sanitize({ assistantRecheckTimeoutMs: 10 * 60 * 60 * 1000 }).assistantRecheckTimeoutMs,
     ).toBe(REMOTE_RUN_TIMEOUT_MS_MAX);
     expect(sanitize({ autoReattachIntervalMs: 0 }).autoReattachIntervalMs).toBe(0);
-    expect(
-      sanitize({ autoReattachTimeoutMs: Number.MAX_SAFE_INTEGER }).autoReattachTimeoutMs,
-    ).toBe(REMOTE_RUN_TIMEOUT_MS_MAX);
+    expect(sanitize({ autoReattachTimeoutMs: Number.MAX_SAFE_INTEGER }).autoReattachTimeoutMs).toBe(
+      REMOTE_RUN_TIMEOUT_MS_MAX,
+    );
     expect(sanitize({ autoReattachDelayMs: "soon" }).autoReattachDelayMs).toBeUndefined();
+  });
+});
+
+describe("host-side resumeConversationUrl validation", () => {
+  const sanitizeResume = (resumeConversationUrl: unknown) =>
+    sanitizeRemoteRunPayloadForHost({
+      prompt: "x",
+      attachments: [],
+      browserConfig: { resumeConversationUrl },
+      options: {},
+    } as unknown as RemoteRunPayload).browserConfig.resumeConversationUrl;
+
+  test.each([
+    ["https://chatgpt.com/c/abc123", "https://chatgpt.com/c/abc123"],
+    [" https://chat.openai.com/c/legacy-id ", "https://chat.openai.com/c/legacy-id"],
+    [null, null],
+    ["", null],
+  ])("allows strict resumeConversationUrl %j", (input, expected) => {
+    expect(sanitizeResume(input)).toBe(expected);
+  });
+
+  test.each([
+    "http://chatgpt.com/c/id",
+    "https://chatgpt.com:444/c/id",
+    "https://user:pass@chatgpt.com/c/id",
+    "https://example.com/c/id",
+    "https://chatgpt.com.evil/c/id",
+    "https://chatgpt.com/",
+    "https://chatgpt.com/g/g-123/project/c/id",
+    "https://chatgpt.com/c/id/extra",
+    "https://chatgpt.com/c/id?model=gpt",
+    "https://chatgpt.com/c/id#fragment",
+    "not a url",
+    "https://chatgpt.com/c/id\nhttps://evil.example/",
+    42,
+  ])("rejects unsafe resumeConversationUrl %j", (input) => {
+    expect(() => sanitizeResume(input)).toThrow(/resumeConversationUrl/i);
   });
 });
 
@@ -258,6 +297,39 @@ describe("sanitizer is the single choke point between payloads and runBrowser", 
         // Sentinel attempts on allowlisted timings never arrive.
         expect(config.timeoutMs).toBeUndefined();
         expect(config.inputTimeoutMs).toBeUndefined();
+      } finally {
+        await server.close();
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "unsafe resumeConversationUrl is refused before runBrowser",
+    async () => {
+      let calledRunBrowser = false;
+      const server = await createRemoteServer(
+        { host: "127.0.0.1", port: 0, token: "secret", logger: () => {} },
+        {
+          runBrowser: async () => {
+            calledRunBrowser = true;
+            return MINIMAL_RESULT;
+          },
+        },
+      );
+
+      try {
+        const payload = {
+          prompt: "pinning verify",
+          attachments: [],
+          browserConfig: {
+            resumeConversationUrl: "https://evil.example/c/not-chatgpt",
+          },
+          options: {},
+        };
+        const response = await sendRun(server.port, "secret", JSON.stringify(payload));
+        expect(response.statusCode).toBe(400);
+        expect(response.body).toContain("invalid_request");
+        expect(calledRunBrowser).toBe(false);
       } finally {
         await server.close();
       }

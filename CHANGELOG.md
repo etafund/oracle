@@ -2,6 +2,10 @@
 
 ## 0.15.3 — Unreleased
 
+### Fixed
+
+- Browser/Remote: preserve strict ChatGPT conversation resume URLs across remote browser follow-ups, reject unsafe resume targets instead of silently starting fresh, and keep live-tab tailing in `running`/`stalled` while ChatGPT shows Pro thinking or `Answer now` with no stop button.
+
 ## 0.15.2 — 2026-07-06
 
 ### Changed

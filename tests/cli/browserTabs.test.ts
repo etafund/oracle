@@ -2,7 +2,11 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { persistHarvestForTest, resolveSessionTabRefForTest } from "../../src/cli/browserTabs.js";
+import {
+  deriveLiveTailStateForTest,
+  persistHarvestForTest,
+  resolveSessionTabRefForTest,
+} from "../../src/cli/browserTabs.js";
 import { sessionStore } from "../../src/sessionStore.js";
 import type { SessionMetadata } from "../../src/sessionStore.js";
 import type { ChatGptTabSummary } from "../../src/browser/liveTabs.js";
@@ -26,6 +30,36 @@ describe("browser tab CLI helpers", () => {
     } as SessionMetadata;
 
     expect(resolveSessionTabRefForTest(meta)).toBe("https://chatgpt.com/c/runtime-conversation");
+  });
+
+  test("keeps Answer now / thinking tabs running even when the stop button is hidden", () => {
+    const harvested = {
+      targetId: "target-1",
+      title: "ChatGPT",
+      url: "https://chatgpt.com/c/fresh-conversation",
+      currentModelLabel: "GPT-5.5 Pro",
+      stopExists: false,
+      sendExists: true,
+      promptReady: true,
+      loginButtonExists: false,
+      authenticated: true,
+      answerNowExists: true,
+      thinkingActive: true,
+      assistantCount: 1,
+      lastAssistantText: "1) Verdict",
+      lastAssistantSnippet: "1) Verdict",
+      lastUserText: "question",
+      lastUserSnippet: "question",
+      focused: false,
+      visibilityState: "hidden",
+      conversationId: "fresh-conversation",
+      fingerprint: "fp-1",
+      state: "running",
+      lastAssistantMarkdown: "1) Verdict",
+    } satisfies ChatGptTabSummary;
+
+    expect(deriveLiveTailStateForTest(harvested, 5_000, 60_000)).toBe("running");
+    expect(deriveLiveTailStateForTest(harvested, 65_000, 60_000)).toBe("stalled");
   });
 });
 
