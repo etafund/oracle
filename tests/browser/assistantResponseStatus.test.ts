@@ -206,6 +206,26 @@ describe("assistant thinking-status capture", () => {
     expect(shouldAcceptStableAssistantSnapshotForTest({ ...state, stableMs: 60_000 })).toBe(true);
   });
 
+  test("requires a longer calm window for preamble-sized output after thinking was observed", () => {
+    const state = {
+      stopVisible: false,
+      completionVisible: true,
+      thinkingActive: false,
+      thinkingObserved: true,
+      currentLength: 180,
+      stableCycles: 30,
+      requiredStableCycles: 8,
+      completionStableTarget: 6,
+      minStableMs: 2000,
+    };
+    expect(shouldAcceptStableAssistantSnapshotForTest({ ...state, stableMs: 240_000 })).toBe(
+      false,
+    );
+    expect(shouldAcceptStableAssistantSnapshotForTest({ ...state, stableMs: 300_000 })).toBe(
+      true,
+    );
+  });
+
   test("does not accept substantial idle output without finished controls", () => {
     // Regression for Pro review preambles: even a long stable idle window is
     // not proof of finality when ChatGPT hides the stop button mid-turn.

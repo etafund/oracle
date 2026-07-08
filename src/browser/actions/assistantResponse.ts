@@ -22,6 +22,7 @@ const STOP_CONTROL_SELECTOR = STOP_BUTTON_SELECTORS.join(", ");
 const MIN_CONFIDENT_ANSWER_LENGTH = 16;
 const PREAMBLE_SIZED_ANSWER_CHARS = 500;
 const PREAMBLE_COMPLETION_STABLE_MS = 60_000;
+const PRO_PREAMBLE_COMPLETION_STABLE_MS = 5 * 60_000;
 // Consecutive accepting samples (~3.2s at the 400ms poll cadence) required
 // before a non-compact answer is returned. At the thinking→answer transition
 // the finished-action controls can flicker visible for a single sample while
@@ -256,6 +257,13 @@ type AssistantCompletionState = {
    * and tests keep the historical fast-path behavior (0 = no gating).
    */
   elapsedMs?: number;
+  /**
+   * Sticky signal that a Pro thinking / streaming indicator appeared at any
+   * point during this wait. Finished controls can appear during the
+   * thinking-to-answer transition, so preamble-sized captures need a much
+   * longer calm window in that territory.
+   */
+  thinkingObserved?: boolean;
 };
 
 function shouldAcceptStableAssistantSnapshot({
@@ -269,6 +277,7 @@ function shouldAcceptStableAssistantSnapshot({
   stableMs,
   minStableMs,
   elapsedMs = 0,
+  thinkingObserved = false,
 }: AssistantCompletionState): boolean {
   const ultraShortAnswer = currentLength === 1;
   const shortAnswer = currentLength > 0 && currentLength < 16;
@@ -303,7 +312,10 @@ function shouldAcceptStableAssistantSnapshot({
   // enough for preamble-sized captures; otherwise a one-sentence plan/review
   // preamble can be archived as a completed answer.
   if (completionEnough) {
-    if (preambleSizedAnswer && stableMs < PREAMBLE_COMPLETION_STABLE_MS) {
+    const preambleStableTargetMs = thinkingObserved
+      ? PRO_PREAMBLE_COMPLETION_STABLE_MS
+      : PREAMBLE_COMPLETION_STABLE_MS;
+    if (preambleSizedAnswer && stableMs < preambleStableTargetMs) {
       return false;
     }
     return true;
@@ -1011,6 +1023,7 @@ async function pollAssistantCompletion(
         stableMs,
         minStableMs,
         elapsedMs,
+        thinkingObserved: sawThinking,
       });
       if (accepted) {
         acceptStreak += 1;
@@ -1544,7 +1557,11 @@ function buildResponseObserverExpression(
             }
           } else if (
             !stopVisible &&
-            (!preambleSizedAnswer || idleMs >= PREAMBLE_COMPLETION_STABLE_MS)
+            (!preambleSizedAnswer ||
+              idleMs >=
+                (sawThinking
+                  ? ${PRO_PREAMBLE_COMPLETION_STABLE_MS}
+                  : ${PREAMBLE_COMPLETION_STABLE_MS}))
           ) {
             acceptStreak += 1;
             if (acceptStreak >= confirmSamples) {
