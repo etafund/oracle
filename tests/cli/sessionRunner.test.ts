@@ -2627,7 +2627,6 @@ describe("performSessionRun", () => {
       ...baseSessionMeta,
       browser: {
         config: { desiredModel: "Old Pro" },
-        runtime: { promptSubmitted: true, tabUrl: "https://chatgpt.com/c/old" },
         modelSelection: {
           requestedModel: "Old Pro",
           resolvedLabel: "Old Pro",

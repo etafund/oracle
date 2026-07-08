@@ -51,7 +51,9 @@ describe("runRemoteBrowserMode abort wiring (oracle-router-6rx)", () => {
   test("races the abort promise (not just the disconnect flag) via raceWithAbort", async () => {
     const remote = await remoteBrowserModeSlice();
     const normalized = normalize(remote);
-    expect(normalized).toContain("constraceWithAbort=<T>(promise:Promise<T>):Promise<T>=>Promise.race([promise,abortPromise]);");
+    expect(normalized).toContain(
+      "constraceWithAbort=<T>(promise:Promise<T>):Promise<T>=>Promise.race([promise,abortPromise]);",
+    );
   });
 
   test("wires the abort race into the primary assistant-response wait", async () => {
@@ -68,7 +70,9 @@ describe("runRemoteBrowserMode abort wiring (oracle-router-6rx)", () => {
   test("removes the abort listener in the finally block (no leaked listener)", async () => {
     const remote = await remoteBrowserModeSlice();
     const normalized = normalize(remote);
-    expect(normalized).toContain("}finally{conversationHintStopped=true;removeAbortListener?.();removeAbortListener=null;");
+    expect(normalized).toContain(
+      "}finally{awaitconversationUrlMonitor?.stop();removeAbortListener?.();removeAbortListener=null;",
+    );
   });
 
   test("guard: does not reintroduce remoteChrome into SAFE_BROWSER_CONFIG_KEYS (stays latent)", async () => {

@@ -4121,9 +4121,9 @@ async function runRemoteBrowserMode(
       },
     });
   } finally {
+    await conversationUrlMonitor?.stop();
     removeAbortListener?.();
     removeAbortListener = null;
-    await conversationUrlMonitor?.stop();
     try {
       await closeRemoteConnectionAfterRun({
         connectionClosedUnexpectedly,
