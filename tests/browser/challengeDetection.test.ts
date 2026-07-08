@@ -150,6 +150,24 @@ describe("classifyBrowserAccessFacts", () => {
     expect(report.state).toBe("rate_limited");
   });
 
+  test("ordinary sidebar/task titles about rate limiters do not classify as rate_limited", () => {
+    const report = classifyBrowserAccessFacts({
+      ...HEALTHY_FACTS,
+      bodySample:
+        "chat history chatgpt pro recents api rate limiter review oracle sentinel review ready when you are.",
+    });
+    expect(report.state).toBe("healthy");
+    expect(report.signals).not.toContain("rate-limit-text");
+  });
+
+  test("explicit quota exhaustion still classifies as rate_limited", () => {
+    const report = classifyBrowserAccessFacts({
+      ...HEALTHY_FACTS,
+      bodySample: "rate limit exceeded. please wait a few minutes before trying again.",
+    });
+    expect(report.state).toBe("rate_limited");
+  });
+
   test("no signals at all is indeterminate", () => {
     const report = classifyBrowserAccessFacts({
       ...HEALTHY_FACTS,

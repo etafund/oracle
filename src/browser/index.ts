@@ -237,7 +237,9 @@ function classifyChatGptUiWarningText(text: string): ChatGptUiWarningType | null
     /\btoo quickly\b/.test(normalized) ||
     /\btemporarily limited access\b/.test(normalized) ||
     /\bplease wait a few minutes\b/.test(normalized) ||
-    /\brate limit(?:ed)?\b/.test(normalized) ||
+    /\byou(?:'re| are) being rate limited\b/.test(normalized) ||
+    /\brate limited\b/.test(normalized) ||
+    /\brate limit (?:exceeded|reached|hit)\b/.test(normalized) ||
     /\bslow down\b/.test(normalized)
   ) {
     return "rate_limit";
@@ -304,7 +306,7 @@ async function collectChatGptUiWarnings(
       awaitPromise: true,
       returnByValue: true,
       expression: `(() => {
-        const warningPattern = /too many requests|sending too many requests|too quickly|temporarily limited access|please wait a few minutes|rate limit|rate limited|slow down|try again later|temporarily unavailable|something went wrong|failed to generate|verify you are human|unusual activity|cloudflare|challenge|login required|sign in/i;
+        const warningPattern = /too many requests|sending too many requests|too quickly|temporarily limited access|please wait a few minutes|you(?:'re| are) being rate limited|rate limited|rate limit (?:exceeded|reached|hit)|slow down|try again later|temporarily unavailable|something went wrong|failed to generate|verify you are human|unusual activity|cloudflare|challenge|login required|sign in/i;
         const selectors = [
           '[role="alert"]',
           '[role="status"]',

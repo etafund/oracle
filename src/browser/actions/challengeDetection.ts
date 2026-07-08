@@ -120,7 +120,10 @@ const RATE_LIMIT_PHRASES = [
   "temporarily limited access",
   "please wait a few minutes",
   "you are being rate limited",
-  "rate limit",
+  "rate limited",
+  "rate limit exceeded",
+  "rate limit reached",
+  "rate limit hit",
 ] as const;
 
 const LOGIN_WALL_PHRASES = [

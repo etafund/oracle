@@ -265,6 +265,17 @@ describe("ChatGPT UI warning detection", () => {
     ).toBe("rate_limit");
   });
 
+  test("classifies explicit quota warnings as rate limits", () => {
+    expect(__test__.classifyChatGptUiWarningText("Rate limit exceeded.")).toBe("rate_limit");
+    expect(__test__.classifyChatGptUiWarningText("You are being rate limited.")).toBe(
+      "rate_limit",
+    );
+  });
+
+  test("does not classify ordinary rate-limiter task titles as warnings", () => {
+    expect(__test__.classifyChatGptUiWarningText("API Rate Limiter Review")).toBeNull();
+  });
+
   test("classifies visually mangled request-speed modal text as rate limits", () => {
     expect(
       __test__.classifyChatGptUiWarningText(
