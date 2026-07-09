@@ -93,6 +93,24 @@ describe("classifyBrowserAccessFacts", () => {
     expect(report.state).toBe("verification_interstitial");
   });
 
+  test("transient challenge script does not quarantine a healthy signed-in app", () => {
+    const report = classifyBrowserAccessFacts({
+      ...HEALTHY_FACTS,
+      interstitialScript: true,
+    });
+    expect(report.state).toBe("healthy");
+    expect(report.appSessionOk).toBe(true);
+    expect(report.signals).toContain("interstitial-script");
+  });
+
+  test("authoritative challenge text still outranks a stale usable app DOM", () => {
+    const report = classifyBrowserAccessFacts({
+      ...HEALTHY_FACTS,
+      bodySample: "verify you are human. checking your browser.",
+    });
+    expect(report.state).toBe("verification_interstitial");
+  });
+
   test("account security block requires both phrases", () => {
     const blocked = classifyBrowserAccessFacts({
       ...HEALTHY_FACTS,

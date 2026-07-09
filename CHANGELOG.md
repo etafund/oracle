@@ -6,7 +6,7 @@
 
 - Browser/Remote: update the protected ChatGPT lane to the current two-axis `GPT-5.6 Sol` + checked `Pro` UI, require both selections before every prompt (including resumed runs), carry model/mode proof through remote terminal events into session metadata, and keep visible or status-combined `Answer now` placeholders classified as generation liveness without ever clicking them.
 - Browser/Remote: preserve strict ChatGPT conversation resume URLs across remote browser follow-ups, reject unsafe resume targets instead of silently starting fresh, and keep live-tab tailing in `running`/`stalled` while ChatGPT shows Pro thinking or `Answer now` with no stop button.
-- Browser: avoid false pre-run rate-limit refusals when ordinary ChatGPT sidebar or task text mentions rate limiters, while still blocking real request-throttle warnings.
+- Browser: avoid false pre-run access refusals when ordinary ChatGPT sidebar or task text mentions rate limiters or a healthy signed-in app transiently loads Cloudflare's challenge script, while still blocking real request-throttle and verification walls.
 - Browser: require a longer calm window before accepting preamble-sized ChatGPT Pro answers after thinking/streaming was observed, preventing review prompts from archiving a partial first sentence as the final response.
 
 ## 0.15.2 — 2026-07-06

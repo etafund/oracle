@@ -276,7 +276,15 @@ export function classifyBrowserAccessFacts(facts: BrowserAccessFacts): BrowserAc
     appSessionOk,
   };
 
-  if (signals.some((signal) => signal.startsWith("interstitial-"))) {
+  // ChatGPT can transiently load Cloudflare's challenge-platform script inside
+  // an otherwise healthy signed-in app. Script presence alone is only a
+  // challenge signal when the usable app session is absent; title, URL, and
+  // wall text remain authoritative even if stale app DOM is still mounted.
+  const authoritativeInterstitial = signals.some(
+    (signal) => signal.startsWith("interstitial-") && signal !== "interstitial-script",
+  );
+  const scriptWithoutUsableApp = facts.interstitialScript && !appSessionOk;
+  if (authoritativeInterstitial || scriptWithoutUsableApp) {
     return { state: "verification_interstitial", ...base };
   }
   if (securityBlock) {
