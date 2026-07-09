@@ -36,7 +36,12 @@ try {
     "bin",
     "oracle-cli.js",
   );
-  const help = run(process.execPath, [cliPath, "--help", "--verbose"], { cwd: installDir });
+  // The CLI intentionally separates the core and advanced help surfaces.
+  // Validate the packed artifact against their union instead of requiring
+  // core flags to be duplicated in advanced help.
+  const help =
+    run(process.execPath, [cliPath, "--help"], { cwd: installDir }) +
+    run(process.execPath, [cliPath, "--help", "--verbose"], { cwd: installDir });
 
   for (const expected of [
     "--no-azure",
