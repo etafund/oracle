@@ -4405,6 +4405,7 @@ export const __test__ = {
   enableFocusEmulation,
   formatManualLoginSetupCommand,
   isAssistantResponseTimeoutError,
+  shouldReloadAfterAssistantError,
   isManualLoginProfileInitialized,
   isImageOnlyUiChromeText,
   listIgnoredRemoteChromeFlags,
@@ -4504,6 +4505,10 @@ async function waitForAssistantResponseWithReload(
 
 function shouldReloadAfterAssistantError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
+  if (error instanceof BrowserAutomationError) {
+    const stage = (error.details as { stage?: unknown } | undefined)?.stage;
+    return stage === "assistant-timeout";
+  }
   const message = error.message.toLowerCase();
   return (
     message.includes("assistant-response") ||
@@ -4515,6 +4520,13 @@ function shouldReloadAfterAssistantError(error: unknown): boolean {
 
 function isAssistantResponseTimeoutError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
+  // Typed browser errors carry their stable classification in details.stage.
+  // Never reinterpret capture-binding, challenge, or other typed failures from
+  // human-readable text such as "Captured assistant response failed ...".
+  if (error instanceof BrowserAutomationError) {
+    const stage = (error.details as { stage?: unknown } | undefined)?.stage;
+    return stage === "assistant-timeout";
+  }
   const message = error.message.toLowerCase();
   if (!message) return false;
   return (

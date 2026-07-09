@@ -5,6 +5,7 @@ import {
   buildAnswerNowPlaceholderPredicateJsForTest,
   buildAssistantSnapshotExpressionForTest,
   buildStopButtonVisibilityExpressionForTest,
+  isFinishedAssistantSnapshotStableForTest,
   isAnswerNowPlaceholderTextForTest,
   matchesThinkingStatusLabelForTest,
   shouldAcceptStableAssistantSnapshotForTest,
@@ -127,6 +128,21 @@ describe("assistant thinking-status capture", () => {
     ).toBe(false);
   });
 
+  test("requires substantial finished-control captures to stop growing before acceptance", () => {
+    const state = {
+      currentLength: 900,
+      stableCycles: 8,
+      completionStableTarget: 8,
+      stableMs: 3_000,
+      minStableMs: 3_000,
+      preambleStableTargetMs: 60_000,
+    };
+
+    expect(isFinishedAssistantSnapshotStableForTest({ ...state, stableCycles: 0 })).toBe(false);
+    expect(isFinishedAssistantSnapshotStableForTest({ ...state, stableMs: 2_999 })).toBe(false);
+    expect(isFinishedAssistantSnapshotStableForTest(state)).toBe(true);
+  });
+
   test("accepts compact finished answers even if the stop button lingers", () => {
     expect(
       shouldAcceptStableAssistantSnapshotForTest({
@@ -240,12 +256,8 @@ describe("assistant thinking-status capture", () => {
       completionStableTarget: 6,
       minStableMs: 2000,
     };
-    expect(shouldAcceptStableAssistantSnapshotForTest({ ...state, stableMs: 240_000 })).toBe(
-      false,
-    );
-    expect(shouldAcceptStableAssistantSnapshotForTest({ ...state, stableMs: 300_000 })).toBe(
-      true,
-    );
+    expect(shouldAcceptStableAssistantSnapshotForTest({ ...state, stableMs: 240_000 })).toBe(false);
+    expect(shouldAcceptStableAssistantSnapshotForTest({ ...state, stableMs: 300_000 })).toBe(true);
   });
 
   test("does not accept substantial idle output without finished controls", () => {

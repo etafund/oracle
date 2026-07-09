@@ -333,6 +333,32 @@ type AssistantCompletionState = {
   thinkingObserved?: boolean;
 };
 
+type FinishedAssistantSnapshotState = {
+  currentLength: number;
+  stableCycles: number;
+  completionStableTarget: number;
+  stableMs: number;
+  minStableMs: number;
+  preambleStableTargetMs: number;
+};
+
+// Kept side-effect free so the Node watchdog and the generated in-page
+// observer can execute the same completion-stability rule.
+const isFinishedAssistantSnapshotStable = ({
+  currentLength,
+  stableCycles,
+  completionStableTarget,
+  stableMs,
+  minStableMs,
+  preambleStableTargetMs,
+}: FinishedAssistantSnapshotState): boolean => {
+  if (stableCycles < completionStableTarget || stableMs < minStableMs) {
+    return false;
+  }
+  const preambleSized = currentLength >= 40 && currentLength < PREAMBLE_SIZED_ANSWER_CHARS;
+  return !preambleSized || stableMs >= preambleStableTargetMs;
+};
+
 function shouldAcceptStableAssistantSnapshot({
   stopVisible,
   completionVisible,
@@ -350,10 +376,19 @@ function shouldAcceptStableAssistantSnapshot({
   const shortAnswer = currentLength > 0 && currentLength < 16;
   const mediumAnswer = currentLength >= 16 && currentLength < 40;
   const compactAnswer = shortAnswer || mediumAnswer;
-  const preambleSizedAnswer = currentLength >= 40 && currentLength < PREAMBLE_SIZED_ANSWER_CHARS;
   const stableEnough = stableCycles >= requiredStableCycles && stableMs >= minStableMs;
   const completionEnough =
-    completionVisible && stableCycles >= completionStableTarget && stableMs >= minStableMs;
+    completionVisible &&
+    isFinishedAssistantSnapshotStable({
+      currentLength,
+      stableCycles,
+      completionStableTarget,
+      stableMs,
+      minStableMs,
+      preambleStableTargetMs: thinkingObserved
+        ? PRO_PREAMBLE_COMPLETION_STABLE_MS
+        : PREAMBLE_COMPLETION_STABLE_MS,
+    });
 
   // A live "Pro thinking" indicator is authoritative: the real answer has not
   // finished regardless of stop-button / stability heuristics. Keep waiting.
@@ -379,12 +414,6 @@ function shouldAcceptStableAssistantSnapshot({
   // enough for preamble-sized captures; otherwise a one-sentence plan/review
   // preamble can be archived as a completed answer.
   if (completionEnough) {
-    const preambleStableTargetMs = thinkingObserved
-      ? PRO_PREAMBLE_COMPLETION_STABLE_MS
-      : PREAMBLE_COMPLETION_STABLE_MS;
-    if (preambleSizedAnswer && stableMs < preambleStableTargetMs) {
-      return false;
-    }
     return true;
   }
 
@@ -411,6 +440,12 @@ export function shouldAcceptStableAssistantSnapshotForTest(
   state: AssistantCompletionState,
 ): boolean {
   return shouldAcceptStableAssistantSnapshot(state);
+}
+
+export function isFinishedAssistantSnapshotStableForTest(
+  state: FinishedAssistantSnapshotState,
+): boolean {
+  return isFinishedAssistantSnapshotStable(state);
 }
 
 export async function waitForAssistantResponse(
@@ -469,8 +504,12 @@ export async function waitForAssistantResponse(
         throw { source: "poll" as const, error: new Error(ASSISTANT_POLL_TIMEOUT_ERROR) };
       }
       logger("Captured assistant response via snapshot watchdog");
+      // Do not call Runtime.terminateExecution() to cancel the losing in-page
+      // observer. CDP termination is context-global (and can apply to the next
+      // evaluation), so it can kill the capture-binding probe that immediately
+      // follows this return. The handled observer promise will settle when its
+      // own DOM/timeout path runs or when the owned target closes.
       evaluationPromise.catch(() => undefined);
-      await terminateRuntimeExecution(Runtime);
       return winner.value;
     }
     // Evaluation won - abort the poller to prevent it from running until timeout
@@ -490,7 +529,6 @@ export async function waitForAssistantResponse(
         error.message === ASSISTANT_POLL_TIMEOUT_ERROR
       ) {
         evaluationPromise.catch(() => undefined);
-        await terminateRuntimeExecution(Runtime);
         throw error;
       } else if (source === "poll") {
         throw error;
@@ -995,17 +1033,6 @@ export function shouldReplaceAssistantSnapshotForTest(state: {
   return shouldReplaceAssistantSnapshot(state);
 }
 
-async function terminateRuntimeExecution(Runtime: ChromeClient["Runtime"]): Promise<void> {
-  if (typeof Runtime.terminateExecution !== "function") {
-    return;
-  }
-  try {
-    await Runtime.terminateExecution();
-  } catch {
-    // ignore termination failures
-  }
-}
-
 async function pollAssistantCompletion(
   Runtime: ChromeClient["Runtime"],
   timeoutMs: number,
@@ -1093,12 +1120,12 @@ async function pollAssistantCompletion(
       if (accepted) {
         acceptStreak += 1;
         const compactAnswer = currentLength > 0 && currentLength < 40;
-        // The multi-sample confirmation guards against finished-controls
-        // flickers during thinking pauses. Only waits in thinking territory
-        // (indicator seen, or long-elapsed — covering detection misses) pay
-        // the extra ~3.2s; ordinary fast captures return on first acceptance.
-        const requireStreak = sawThinking || elapsedMs >= COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS;
-        if (compactAnswer || !requireStreak || acceptStreak >= NONCOMPACT_ACCEPT_CONFIRM_SAMPLES) {
+        // Finished controls can flicker before the thinking/status detector has
+        // observed anything (live Sol + Pro incident: a substantial answer began
+        // after 26s, briefly looked finished, then kept streaming). Every
+        // non-compact answer therefore pays the ~3.2s confirmation streak; only
+        // compact exact replies retain the first-acceptance fast path.
+        if (compactAnswer || acceptStreak >= NONCOMPACT_ACCEPT_CONFIRM_SAMPLES) {
           return normalized;
         }
       } else {
@@ -1332,6 +1359,7 @@ function buildResponseObserverExpression(
     const PREAMBLE_COMPLETION_STABLE_MS = ${PREAMBLE_COMPLETION_STABLE_MS};
     const NONCOMPACT_ACCEPT_CONFIRM_SAMPLES = ${NONCOMPACT_ACCEPT_CONFIRM_SAMPLES};
     const COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS = ${COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS};
+    const isFinishedSnapshotStable = ${isFinishedAssistantSnapshotStable.toString()};
     // Anchor for every elapsed-time gate in this expression. waitForSettle can
     // start minutes into the wait (captureViaObserver resolves only when the
     // FIRST extractable text appears — for thinking models that is when the
@@ -1558,9 +1586,11 @@ function buildResponseObserverExpression(
         }
         const size = classifyLength(lastLength);
         const compactAnswer = size.shortAnswer || size.mediumAnswer;
-        const preambleSizedAnswer =
-          lastLength >= 40 && lastLength < PREAMBLE_SIZED_ANSWER_CHARS;
         const stableTarget = size.shortAnswer ? 6 : size.mediumAnswer ? 3 : size.longAnswer ? 5 : 6;
+        const completionStableTarget =
+          size.shortAnswer ? 12 : size.mediumAnswer ? 8 : size.longAnswer ? 6 : 8;
+        const minStableMs =
+          size.shortAnswer ? 8_000 : size.mediumAnswer ? 1_200 : size.longAnswer ? 2_000 : 3_000;
         const stopVisible = Boolean(document.querySelector(STOP_SELECTOR));
         const finishedVisible = isLastAssistantTurnFinished();
         const thinkingActive = isThinkingIndicatorActive();
@@ -1583,16 +1613,11 @@ function buildResponseObserverExpression(
           );
           continue;
         }
-        // Acceptance must hold across consecutive samples when this wait is in
-        // thinking territory (indicator seen, or the wait already outlasted the
-        // compact grace window — which covers indicator-detection misses): a
-        // one-sample finished-controls flicker at the thinking→answer
-        // transition must never archive a stale fragment. Ordinary fast
-        // captures keep their single-sample latency.
-        const confirmSamples =
-          sawThinking || Date.now() - waitStartedAt >= COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS
-            ? NONCOMPACT_ACCEPT_CONFIRM_SAMPLES
-            : 1;
+        // Completion controls can flicker before any thinking signal is
+        // observable. Require consecutive confirmation for every non-compact
+        // answer, including early responses; compact exact replies below keep a
+        // smaller bounded threshold.
+        const confirmSamples = NONCOMPACT_ACCEPT_CONFIRM_SAMPLES;
         // Finished-action controls can appear on Pro preambles before the final
         // answer expands. Compact exact answers keep their fast path; preamble-
         // sized answers need a long idle window before controls are trusted.
@@ -1605,11 +1630,16 @@ function buildResponseObserverExpression(
             }
           } else if (
             !stopVisible &&
-            (!preambleSizedAnswer ||
-              idleMs >=
-                (sawThinking
-                  ? ${PRO_PREAMBLE_COMPLETION_STABLE_MS}
-                  : ${PREAMBLE_COMPLETION_STABLE_MS}))
+            isFinishedSnapshotStable({
+              currentLength: lastLength,
+              stableCycles,
+              completionStableTarget,
+              stableMs: idleMs,
+              minStableMs,
+              preambleStableTargetMs: sawThinking
+                ? ${PRO_PREAMBLE_COMPLETION_STABLE_MS}
+                : ${PREAMBLE_COMPLETION_STABLE_MS},
+            })
           ) {
             acceptStreak += 1;
             if (acceptStreak >= confirmSamples) {

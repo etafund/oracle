@@ -954,6 +954,62 @@ describe("waitForAssistantResponse", () => {
     }
   });
 
+  test("does not accept an early substantial completion-control flicker before streaming ends", async () => {
+    vi.useFakeTimers();
+    try {
+      const startedAt = Date.now();
+      const partial = {
+        text: "Partial streamed analysis with substantial detail. ".repeat(14),
+        messageId: "mid",
+        turnId: "tid",
+      };
+      const complete = {
+        text: `${partial.text}${"The final response continued after the early controls flickered and now contains the required closing analysis. ".repeat(8)}`,
+        messageId: "mid",
+        turnId: "tid",
+      };
+      let runtimePoisoned = false;
+      const evaluate = vi
+        .fn()
+        .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
+          if (runtimePoisoned) {
+            throw new Error("Runtime execution was globally terminated");
+          }
+          if (params.awaitPromise) {
+            return new Promise(() => undefined);
+          }
+          const expression = String(params.expression ?? "");
+          if (expression.includes("extractAssistantTurn")) {
+            return {
+              result: { value: Date.now() - startedAt < 5_000 ? partial : complete },
+            };
+          }
+          if (expression.includes("Find the LAST assistant turn")) {
+            return { result: { value: true } };
+          }
+          return { result: { value: false } };
+        });
+
+      const terminateExecution = vi.fn().mockImplementation(async () => {
+        runtimePoisoned = true;
+      });
+      const promise = waitForAssistantResponse(
+        { evaluate, terminateExecution } as unknown as ChromeClient["Runtime"],
+        30_000,
+        logger,
+      );
+      await vi.advanceTimersByTimeAsync(20_000);
+
+      await expect(promise).resolves.toMatchObject({ text: complete.text.trim() });
+      expect(terminateExecution).not.toHaveBeenCalled();
+      await expect(evaluate({ expression: "post-capture-binding-probe" })).resolves.toEqual({
+        result: { value: false },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("reconfirms a short no-control capture and returns the grown answer", async () => {
     vi.useFakeTimers();
     try {
@@ -1033,7 +1089,7 @@ describe("waitForAssistantResponse", () => {
     }
   });
 
-  test("rejects a stable short watchdog capture when the observer hangs", async () => {
+  test("rejects a stable short watchdog capture without globally terminating runtime", async () => {
     vi.useFakeTimers();
     try {
       const partial = { text: "I", messageId: "mid", turnId: "tid" };
@@ -1059,7 +1115,7 @@ describe("waitForAssistantResponse", () => {
       const assertion = expect(promise).rejects.toThrow(/watchdog-timeout/i);
       await vi.advanceTimersByTimeAsync(16_000);
       await assertion;
-      expect(terminateExecution).toHaveBeenCalledOnce();
+      expect(terminateExecution).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
@@ -1446,6 +1502,13 @@ describe("waitForAssistantResponse", () => {
     expect(capturedExpression).toContain("characterData: true");
     expect(capturedExpression).toContain("copy-turn-action-button");
     expect(capturedExpression).toContain("isLastAssistantTurnFinished");
+    expect(capturedExpression).toContain(
+      "const confirmSamples = NONCOMPACT_ACCEPT_CONFIRM_SAMPLES;",
+    );
+    expect(capturedExpression).toContain("const isFinishedSnapshotStable =");
+    expect(capturedExpression).toContain("isFinishedSnapshotStable({");
+    expect(capturedExpression).toContain("completionStableTarget,");
+    expect(capturedExpression).toContain("stableMs: idleMs,");
     expect(capturedExpression).toContain("const turnScope");
     expect(capturedExpression).toContain("turnScope.querySelector(FINISHED_SELECTOR)");
     expect(capturedExpression).not.toContain("document.querySelector(FINISHED_SELECTOR)");
@@ -1554,13 +1617,11 @@ describe("waitForAssistantResponse pre-result gate account-id threading (8t1 reg
       },
     });
 
-    expect(
-      (await getQuarantineLatchState({ accountId: "options-account" })).quarantined,
-    ).toBe(true);
-    expect(
-      (await getQuarantineLatchState({ accountId: "env-account" })).quarantined,
-    ).toBe(false);
-  });
+    expect((await getQuarantineLatchState({ accountId: "options-account" })).quarantined).toBe(
+      true,
+    );
+    expect((await getQuarantineLatchState({ accountId: "env-account" })).quarantined).toBe(false);
+  }, 10_000);
 });
 
 describe("uploadAttachmentFile", () => {

@@ -533,6 +533,27 @@ describe("ChatGPT UI warning detection", () => {
     expect(__test__.isAssistantResponseTimeoutError(new Error("Response timeout"))).toBe(true);
     expect(__test__.isAssistantResponseTimeoutError(new Error("Navigation timeout"))).toBe(false);
   });
+
+  test("does not rewrite typed capture-binding failures as assistant timeouts", () => {
+    const captureBinding = new BrowserAutomationError(
+      "Captured assistant response failed structural binding validation.",
+      { stage: "capture-binding", code: "capture-not-after-submitted-user" },
+    );
+    const timeout = new BrowserAutomationError("Assistant response timed out.", {
+      stage: "assistant-timeout",
+    });
+    const recheckSessionError = new BrowserAutomationError(
+      "ChatGPT session expired during recheck.",
+      { stage: "assistant-recheck" },
+    );
+
+    expect(__test__.isAssistantResponseTimeoutError(captureBinding)).toBe(false);
+    expect(__test__.shouldReloadAfterAssistantError(captureBinding)).toBe(false);
+    expect(__test__.isAssistantResponseTimeoutError(timeout)).toBe(true);
+    expect(__test__.shouldReloadAfterAssistantError(timeout)).toBe(true);
+    expect(__test__.isAssistantResponseTimeoutError(recheckSessionError)).toBe(false);
+    expect(__test__.shouldReloadAfterAssistantError(recheckSessionError)).toBe(false);
+  });
 });
 
 describe("browser follow-ups", () => {
