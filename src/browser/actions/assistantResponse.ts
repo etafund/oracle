@@ -68,6 +68,14 @@ const THINKING_STATUS_LABELS = [
   "reading",
 ];
 
+const ANSWER_NOW_PLACEHOLDER_FRAGMENTS = [
+  ...THINKING_STATUS_LABELS,
+  "chatgpt said",
+  "file upload request",
+  "answer now",
+  "edit",
+].sort((left, right) => right.length - left.length);
+
 function matchesThinkingStatusLabel(trimmed: string): boolean {
   if (!trimmed) return false;
   if (THINKING_STATUS_LABELS.includes(trimmed)) return true;
@@ -76,7 +84,7 @@ function matchesThinkingStatusLabel(trimmed: string): boolean {
 }
 
 function isAnswerNowPlaceholderText(normalized: string): boolean {
-  const text = normalized.trim();
+  const text = normalized.toLowerCase().replace(/\s+/g, " ").trim();
   if (!text) return false;
   // Learned: "Pro thinking" shows a placeholder turn that contains "Answer now".
   // That is not the final answer and must be ignored in browser automation.
@@ -88,9 +96,45 @@ function isAnswerNowPlaceholderText(normalized: string): boolean {
   ) {
     return true;
   }
-  return (
-    text.includes("answer now") && (text.includes("pro thinking") || text.includes("chatgpt said"))
-  );
+  if (
+    text.includes("answer now") &&
+    (text.includes("pro thinking") || text.includes("chatgpt said"))
+  ) {
+    return true;
+  }
+  if (!text.includes("answer now")) return false;
+
+  // ChatGPT can expose the thinking status and interrupt CTA as one assistant
+  // snapshot (for example, "Finalizing answer\nAnswer now"). Strip only known
+  // UI chrome and punctuation; any remaining words mean this is real prose that
+  // merely mentions the control and must not be discarded.
+  let remainder = text;
+  for (const fragment of ANSWER_NOW_PLACEHOLDER_FRAGMENTS) {
+    remainder = remainder.split(fragment).join(" ");
+  }
+  return remainder.replace(/[^a-z0-9]+/g, "").length === 0;
+}
+
+function buildAnswerNowPlaceholderPredicateJs(fnName: string): string {
+  const fragmentsLiteral = JSON.stringify(ANSWER_NOW_PLACEHOLDER_FRAGMENTS);
+  return `const ${fnName} = (snapshot) => {
+    const normalized = String(snapshot?.text ?? '').toLowerCase().replace(/\\s+/g, ' ').trim();
+    if (!normalized) return false;
+    if (normalized === 'chatgpt said:' || normalized === 'chatgpt said') return true;
+    if (normalized === 'answer now' || normalized === 'answer now edit') return true;
+    if (normalized.includes('file upload request') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'))) {
+      return true;
+    }
+    if (normalized.includes('answer now') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'))) {
+      return true;
+    }
+    if (!normalized.includes('answer now')) return false;
+    let remainder = normalized;
+    for (const fragment of ${fragmentsLiteral}) {
+      remainder = remainder.split(fragment).join(' ');
+    }
+    return remainder.replace(/[^a-z0-9]+/g, '').length === 0;
+  };`;
 }
 
 function buildActiveThinkingStatusPredicateJs(fnName: string): string {
@@ -251,6 +295,10 @@ export function matchesThinkingStatusLabelForTest(text: string): boolean {
 
 export function isAnswerNowPlaceholderTextForTest(text: string): boolean {
   return isAnswerNowPlaceholderText(text.toLowerCase().replace(/\s+/g, " ").trim());
+}
+
+export function buildAnswerNowPlaceholderPredicateJsForTest(fnName: string): string {
+  return buildAnswerNowPlaceholderPredicateJs(fnName);
 }
 
 export function buildActiveThinkingStatusPredicateJsForTest(fnName: string): string {
@@ -1249,15 +1297,7 @@ function buildAssistantSnapshotExpression(
     // Learned: the default turn DOM misses project view; keep a fallback extractor.
     ${buildAssistantExtractor("extractAssistantTurn")}
     const extracted = extractAssistantTurn();
-    const isPlaceholder = (snapshot) => {
-      const normalized = String(snapshot?.text ?? '').toLowerCase().trim();
-      if (normalized === 'chatgpt said:' || normalized === 'chatgpt said') return true;
-      if (normalized === 'answer now' || normalized === 'answer now edit') return true;
-      if (normalized.includes('file upload request') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'))) {
-        return true;
-      }
-      return normalized.includes('answer now') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'));
-    };
+    ${buildAnswerNowPlaceholderPredicateJs("isPlaceholder")}
     ${buildActiveThinkingStatusPredicateJs("isActiveThinkingStatus")}
     if (
       extracted &&
@@ -1320,15 +1360,7 @@ function buildResponseObserverExpression(
       const currentId = currentConversationId();
       return !currentId || currentId === EXPECTED_CONVERSATION_ID;
     };
-    const isAnswerNowPlaceholder = (snapshot) => {
-      const normalized = String(snapshot?.text ?? '').toLowerCase().trim();
-      if (normalized === 'chatgpt said:' || normalized === 'chatgpt said') return true;
-      if (normalized === 'answer now' || normalized === 'answer now edit') return true;
-      if (normalized.includes('file upload request') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'))) {
-        return true;
-      }
-      return normalized.includes('answer now') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'));
-    };
+    ${buildAnswerNowPlaceholderPredicateJs("isAnswerNowPlaceholder")}
     ${buildActiveThinkingStatusPredicateJs("isActiveThinkingStatus")}
 
     // Helper to detect assistant turns - must match buildAssistantExtractor logic for consistency.

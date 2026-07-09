@@ -2,6 +2,7 @@ import { createContext, Script } from "node:vm";
 import { describe, expect, test } from "vitest";
 import {
   buildActiveThinkingStatusPredicateJsForTest,
+  buildAnswerNowPlaceholderPredicateJsForTest,
   buildAssistantSnapshotExpressionForTest,
   buildStopButtonVisibilityExpressionForTest,
   isAnswerNowPlaceholderTextForTest,
@@ -36,6 +37,13 @@ function evaluatePredicate(text: string, generating: boolean): boolean {
   ).runInContext(context) as boolean;
 }
 
+function evaluateAnswerNowPredicate(text: string): boolean {
+  const predicate = buildAnswerNowPlaceholderPredicateJsForTest("isPlaceholder");
+  return new Script(
+    `${predicate}\nisPlaceholder({ text: ${JSON.stringify(text)} });`,
+  ).runInNewContext({ String }) as boolean;
+}
+
 describe("assistant thinking-status capture", () => {
   const statusLabels = [
     "Pro thinking",
@@ -59,10 +67,20 @@ describe("assistant thinking-status capture", () => {
     expect(evaluatePredicate("Thinking about the design, use Postgres.", true)).toBe(false);
   });
 
-  test("rejects bare Answer now placeholder captures", () => {
+  test("rejects bare and status-combined Answer now placeholder captures", () => {
     expect(isAnswerNowPlaceholderTextForTest("Answer now")).toBe(true);
     expect(isAnswerNowPlaceholderTextForTest("Answer now Edit")).toBe(true);
+    expect(isAnswerNowPlaceholderTextForTest("Finalizing answer\nAnswer now")).toBe(true);
+    expect(isAnswerNowPlaceholderTextForTest("Thinking · Answer now · Edit")).toBe(true);
+    expect(evaluateAnswerNowPredicate("Finalizing answer\nAnswer now")).toBe(true);
+    expect(evaluateAnswerNowPredicate("Thinking · Answer now · Edit")).toBe(true);
     expect(isAnswerNowPlaceholderTextForTest("Do not click Answer now; wait.")).toBe(false);
+    expect(evaluateAnswerNowPredicate("Do not click Answer now; wait.")).toBe(false);
+    expect(
+      isAnswerNowPlaceholderTextForTest(
+        "While finalizing the answer, do not click Answer now; the explanation follows.",
+      ),
+    ).toBe(false);
   });
 
   test("uses the active-status predicate in snapshot capture", () => {
