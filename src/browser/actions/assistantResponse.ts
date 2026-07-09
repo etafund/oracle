@@ -96,12 +96,6 @@ function isAnswerNowPlaceholderText(normalized: string): boolean {
   ) {
     return true;
   }
-  if (
-    text.includes("answer now") &&
-    (text.includes("pro thinking") || text.includes("chatgpt said"))
-  ) {
-    return true;
-  }
   if (!text.includes("answer now")) return false;
 
   // ChatGPT can expose the thinking status and interrupt CTA as one assistant
@@ -123,9 +117,6 @@ function buildAnswerNowPlaceholderPredicateJs(fnName: string): string {
     if (normalized === 'chatgpt said:' || normalized === 'chatgpt said') return true;
     if (normalized === 'answer now' || normalized === 'answer now edit') return true;
     if (normalized.includes('file upload request') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'))) {
-      return true;
-    }
-    if (normalized.includes('answer now') && (normalized.includes('pro thinking') || normalized.includes('chatgpt said'))) {
       return true;
     }
     if (!normalized.includes('answer now')) return false;

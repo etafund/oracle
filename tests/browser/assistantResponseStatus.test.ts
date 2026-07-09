@@ -76,6 +76,10 @@ describe("assistant thinking-status capture", () => {
     expect(evaluateAnswerNowPredicate("Thinking · Answer now · Edit")).toBe(true);
     expect(isAnswerNowPlaceholderTextForTest("Do not click Answer now; wait.")).toBe(false);
     expect(evaluateAnswerNowPredicate("Do not click Answer now; wait.")).toBe(false);
+    const explanatoryProse =
+      "In Pro thinking mode, Answer now is an interrupt control; Oracle must wait for the complete response.";
+    expect(isAnswerNowPlaceholderTextForTest(explanatoryProse)).toBe(false);
+    expect(evaluateAnswerNowPredicate(explanatoryProse)).toBe(false);
     expect(
       isAnswerNowPlaceholderTextForTest(
         "While finalizing the answer, do not click Answer now; the explanation follows.",
