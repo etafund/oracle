@@ -319,10 +319,12 @@ export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNT
 window="$1"; shift
 busy=0
 for unit in "$@"; do
-  last="$(journalctl --user -u "$unit" --since "$window" --no-pager 2>/dev/null \
-    | grep -oP 'Accepted run \K[a-f0-9-]+' | tail -n1 || true)"
-  if [ -n "$last" ] && ! journalctl --user -u "$unit" --since "$window" --no-pager 2>/dev/null \
-      | grep -qE "Run $last (completed|failed)"; then
+  journal="$(journalctl --user -u "$unit" --since "$window" --no-pager 2>/dev/null || true)"
+  last="$(grep -oP 'Accepted run \K[a-f0-9-]+' <<<"$journal" | tail -n1 || true)"
+  # Do not pipe journalctl directly into grep -q under pipefail: grep exits as
+  # soon as it matches, journalctl receives SIGPIPE, and a completed run is
+  # then misclassified as busy.
+  if [ -n "$last" ] && ! grep -qE "Run $last (completed|failed)" <<<"$journal"; then
     echo "BUSY $unit (in-flight run $last has no completed/failed record)"
     busy=1
   else
