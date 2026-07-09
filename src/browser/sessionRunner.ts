@@ -5,6 +5,7 @@ import { formatTokenCount } from "../oracle/runUtils.js";
 import { formatFinishLine } from "../oracle/finishLine.js";
 import type {
   BrowserModelSelectionEvidence,
+  BrowserRemoteRunEvidence,
   BrowserRunWarning,
   BrowserSessionConfig,
   BrowserRuntimeMetadata,
@@ -39,6 +40,7 @@ export interface BrowserExecutionResult {
   runtime: BrowserRuntimeMetadata;
   archive?: BrowserArchiveResult;
   modelSelection?: BrowserModelSelectionEvidence;
+  remoteRun?: BrowserRemoteRunEvidence;
   warnings?: BrowserRunWarning[];
   answerText: string;
   artifacts?: SessionArtifact[];
@@ -133,7 +135,7 @@ function buildBrowserRunWarnings(args: {
     {
       code: "browser-pro-fast-large-run",
       severity: "warning",
-      message: `Large browser Pro run completed quickly (${(args.elapsedMs / 1000).toFixed(0)}s for ~${args.inputTokens.toLocaleString()} input tokens); verify the stored model selection evidence before claiming Pro Extended output.`,
+      message: `Large browser Pro run completed quickly (${(args.elapsedMs / 1000).toFixed(0)}s for ~${args.inputTokens.toLocaleString()} input tokens); verify the stored model/mode evidence before claiming GPT-5.6 Sol + Pro output.`,
       details: {
         inputTokens: args.inputTokens,
         elapsedMs: args.elapsedMs,
@@ -345,6 +347,7 @@ export async function runBrowserSessionExecution(
     },
     archive: browserResult.archive,
     modelSelection,
+    remoteRun: browserResult.remoteRun,
     warnings,
     answerText,
     artifacts: savedArtifacts,

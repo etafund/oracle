@@ -4,8 +4,160 @@ import {
   ensureThinkingTime,
   inferThinkingTargetModelKindForTest,
 } from "../../src/browser/actions/thinkingTime.js";
+import { loadBrowserFixture } from "../_helpers/browserFixture.js";
+
+async function evaluateGpt56SolProIntelligenceMenu(options: {
+  includeSol: boolean;
+  proChecked: boolean;
+}): Promise<unknown> {
+  class FakeEventTarget {
+    dispatchEvent(_event: unknown): boolean {
+      return true;
+    }
+  }
+
+  class FakeMouseEvent {
+    constructor(
+      readonly type: string,
+      readonly init?: unknown,
+    ) {}
+  }
+
+  class FakeElement extends FakeEventTarget {
+    constructor(
+      public textContent: string,
+      private readonly attributes: Readonly<Record<string, string>> = {},
+      private readonly children: readonly FakeElement[] = [],
+      private readonly onDispatch?: () => void,
+    ) {
+      super();
+    }
+
+    getAttribute(name: string): string | null {
+      return this.attributes[name] ?? null;
+    }
+
+    setAttribute(name: string, value: string): void {
+      (this.attributes as Record<string, string>)[name] = value;
+    }
+
+    querySelector(_selector: string): FakeElement | null {
+      return null;
+    }
+
+    querySelectorAll(_selector: string): FakeElement[] {
+      return [...this.children];
+    }
+
+    matches(selector: string): boolean {
+      return selector.includes("__composer-pill") && this.attributes.class === "__composer-pill";
+    }
+
+    getBoundingClientRect(): { width: number; height: number } {
+      return { width: 120, height: 36 };
+    }
+
+    override dispatchEvent(event: unknown): boolean {
+      this.onDispatch?.();
+      return super.dispatchEvent(event);
+    }
+  }
+
+  let menuOpen = false;
+  const proMode = new FakeElement(
+    "Pro",
+    {
+      role: "menuitemradio",
+      "aria-checked": String(options.proChecked),
+    },
+    [],
+    () => proMode.setAttribute("aria-checked", "true"),
+  );
+  const items = [
+    ...(options.includeSol
+      ? [
+          new FakeElement("GPT-5.6 Sol", {
+            role: "menuitem",
+            "aria-haspopup": "menu",
+          }),
+        ]
+      : []),
+    proMode,
+  ];
+  const intelligenceOwner = new FakeElement(
+    "Intelligence GPT-5.6 Sol Pro",
+    { role: "group", "data-testid": "composer-intelligence-picker-content" },
+    items,
+  );
+  const primaryMenu = new FakeElement("Intelligence GPT-5.6 Sol Pro", { role: "menu" }, [
+    intelligenceOwner,
+  ]);
+  const modelButton = new FakeElement(
+    "Pro",
+    { class: "__composer-pill", "aria-haspopup": "menu", "aria-expanded": "false" },
+    [],
+    () => {
+      menuOpen = true;
+    },
+  );
+  const documentStub = {
+    body: new FakeElement(""),
+    querySelector: (selector: string) => {
+      if (selector.includes("composer-intelligence-picker-content")) {
+        return menuOpen ? intelligenceOwner : null;
+      }
+      if (
+        selector.includes("model-switcher-dropdown-button") ||
+        selector.includes("__composer-pill")
+      ) {
+        return modelButton;
+      }
+      return null;
+    },
+    querySelectorAll: (selector: string) =>
+      menuOpen && selector.includes('role="menu"') ? [primaryMenu] : [],
+    dispatchEvent: () => true,
+  };
+  let now = 0;
+  const expression = buildThinkingTimeExpressionForTest("extended", "GPT-5.6 Sol");
+  const evaluate = new Function(
+    "document",
+    "performance",
+    "setTimeout",
+    "window",
+    "EventTarget",
+    "PointerEvent",
+    "MouseEvent",
+    "HTMLElement",
+    `return ${expression};`,
+  ) as (...args: unknown[]) => unknown;
+  return await Promise.resolve(
+    evaluate(
+      documentStub,
+      { now: () => (now += 100) },
+      (handler: () => void) => handler(),
+      { PointerEvent: FakeMouseEvent, MouseEvent: FakeMouseEvent, Event: FakeMouseEvent },
+      FakeEventTarget,
+      FakeMouseEvent,
+      FakeMouseEvent,
+      FakeElement,
+    ),
+  );
+}
 
 describe("browser thinking-time selection expression", () => {
+  it("captures the live GPT-5.6 Sol trigger plus checked bare Pro owner shape", async () => {
+    const fixture = await loadBrowserFixture("chatgpt", "gpt-5-6-sol-pro");
+    const model = fixture.elements.find((element) => element.role === "chatgpt-model-trigger");
+    const mode = fixture.elements.find((element) => element.role === "chatgpt-intelligence-option");
+    expect(fixture.html).toContain(
+      'role="group" data-testid="composer-intelligence-picker-content"',
+    );
+    expect(model).toMatchObject({ text: "GPT-5.6 Sol", selected: false });
+    expect(model?.attrs["aria-haspopup"]).toBe("menu");
+    expect(mode).toMatchObject({ text: "Pro", selected: true });
+  });
+
   it("uses centralized menu selectors and normalized matching", () => {
     const expression = buildThinkingTimeExpressionForTest();
     expect(expression).toContain("const MENU_CONTAINER_SELECTOR");
@@ -72,6 +224,7 @@ describe("browser thinking-time selection expression", () => {
   });
 
   it("infers target model kind with token matching", () => {
+    expect(inferThinkingTargetModelKindForTest("GPT-5.6 Sol")).toBe("pro");
     expect(inferThinkingTargetModelKindForTest("gpt-5.5-pro")).toBe("pro");
     expect(inferThinkingTargetModelKindForTest("Thinking 5.5")).toBe("thinking");
     expect(inferThinkingTargetModelKindForTest("Instant")).toBe("instant");
@@ -79,6 +232,98 @@ describe("browser thinking-time selection expression", () => {
     expect(inferThinkingTargetModelKindForTest("profile")).toBeNull();
     expect(inferThinkingTargetModelKindForTest("prototype")).toBeNull();
     expect(inferThinkingTargetModelKindForTest("project")).toBeNull();
+  });
+
+  it("proves checked bare Pro only beside GPT-5.6 Sol in the same Intelligence menu", async () => {
+    await expect(
+      evaluateGpt56SolProIntelligenceMenu({ includeSol: true, proChecked: true }),
+    ).resolves.toMatchObject({
+      status: "already-selected",
+      label: "Pro",
+      modelKind: "pro",
+      modelLabel: "GPT-5.6 Sol",
+      modelVerified: true,
+      modeLabel: "Pro",
+      modeVerified: true,
+      verifiedBeforePromptSubmit: true,
+    });
+  });
+
+  it("selects and re-verifies bare Pro beside GPT-5.6 Sol", async () => {
+    await expect(
+      evaluateGpt56SolProIntelligenceMenu({ includeSol: true, proChecked: false }),
+    ).resolves.toMatchObject({
+      status: "switched",
+      modelLabel: "GPT-5.6 Sol",
+      modelVerified: true,
+      modeLabel: "Pro",
+      modeVerified: true,
+      verifiedBeforePromptSubmit: true,
+    });
+  });
+
+  it("fails closed when checked bare Pro lacks GPT-5.6 Sol in its owner menu", async () => {
+    await expect(
+      evaluateGpt56SolProIntelligenceMenu({ includeSol: false, proChecked: true }),
+    ).resolves.toMatchObject({
+      status: "model-kind-not-found",
+      modelVerified: false,
+      modeVerified: false,
+      verifiedBeforePromptSubmit: false,
+    });
+  });
+
+  it("returns structured pre-submit evidence for GPT-5.6 Sol + Pro", async () => {
+    const runtime = {
+      evaluate: async () => ({
+        result: {
+          value: {
+            status: "already-selected",
+            label: "Pro",
+            modelKind: "pro",
+            modelLabel: "GPT-5.6 Sol",
+            modelVerified: true,
+            modeLabel: "Pro",
+            modeVerified: true,
+            verifiedBeforePromptSubmit: true,
+          },
+        },
+      }),
+    };
+
+    await expect(
+      ensureThinkingTime(runtime as never, "extended", (() => {}) as never, "GPT-5.6 Sol"),
+    ).resolves.toEqual({
+      requestedModelLabel: "GPT-5.6 Sol",
+      resolvedModelLabel: "GPT-5.6 Sol",
+      modelVerified: true,
+      requestedMode: "Pro",
+      resolvedModeLabel: "Pro",
+      modeVerified: true,
+      verifiedBeforePromptSubmit: true,
+    });
+  });
+
+  it("rejects bare Pro evidence without same-menu Sol proof", async () => {
+    const runtime = {
+      evaluate: async () => ({
+        result: {
+          value: {
+            status: "already-selected",
+            label: "Pro",
+            modelKind: "pro",
+            modeLabel: "Pro",
+            modeVerified: true,
+            modelVerified: false,
+            verifiedBeforePromptSubmit: false,
+          },
+        },
+      }),
+    };
+
+    await expect(
+      ensureThinkingTime(runtime as never, "extended", (() => {}) as never, "GPT-5.6 Sol"),
+    ).rejects.toThrow(/checked bare Pro mode paired with GPT-5.6 Sol/);
   });
 
   it("waits for the model button when current Pro effort rows render first", async () => {

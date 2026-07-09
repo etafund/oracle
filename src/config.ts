@@ -111,7 +111,7 @@ export interface UserConfig {
 
 export const DEFAULT_USER_CONFIG: UserConfig = {
   engine: "browser",
-  model: "gpt-5.5-pro",
+  model: "gpt-5.6-sol",
   browser: {
     thinkingTime: "extended",
   },

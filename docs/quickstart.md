@@ -7,14 +7,14 @@ This walks through the minimum to get a useful answer back. If you haven't insta
 
 ## 1. Pick a reviewed route
 
-| Route                          | When to use it                                      | What you need                                      |
-| ------------------------------ | --------------------------------------------------- | -------------------------------------------------- |
-| ChatGPT Pro Extended Reasoning | Long browser reasoning in your ChatGPT Pro account. | Signed-in Chrome or a configured remote browser.   |
-| Fable xHigh                    | Local read-only challenge through Claude Code.      | Logged-in local `claude` CLI; no remote transport. |
-| Gemini 3.1 Deep Think          | Browser Deep Think review through Gemini.           | Signed-in Gemini browser session.                  |
-| Render                         | Air-gapped review, paste manually.                  | Just Oracle.                                       |
+| Route                     | When to use it                                      | What you need                                      |
+| ------------------------- | --------------------------------------------------- | -------------------------------------------------- |
+| ChatGPT GPT-5.6 Sol + Pro | Long browser reasoning in your ChatGPT Pro account. | Signed-in Chrome or a configured remote browser.   |
+| Fable xHigh               | Local read-only challenge through Claude Code.      | Logged-in local `claude` CLI; no remote transport. |
+| Gemini 3.1 Deep Think     | Browser Deep Think review through Gemini.           | Signed-in Gemini browser session.                  |
+| Render                    | Air-gapped review, paste manually.                  | Just Oracle.                                       |
 
-Check the current policy before a long run. `doctor lanes` reports explicit lane-template readiness; ChatGPT/Gemini may be doctor-gated even while their browser command forms remain available for live smokes.
+Check the current policy before a long run. `doctor lanes` reports lane-template readiness; use only lanes it reports enabled.
 
 ```bash
 oracle doctor lanes --json
@@ -22,12 +22,12 @@ oracle doctor lanes --json
 
 ## 2. Your first run
 
-### ChatGPT Pro Extended Reasoning
+### ChatGPT GPT-5.6 Sol + Pro
 
 First run with a manual login profile:
 
 ```bash
-oracle --engine browser --model gpt-5.5-pro --browser-thinking-time extended \
+oracle --lane chatgpt-pro \
   --browser-manual-login \
   --browser-keep-browser --browser-input-timeout 120000 \
   -p "HI"
@@ -36,7 +36,7 @@ oracle --engine browser --model gpt-5.5-pro --browser-thinking-time extended \
 Subsequent runs reuse the saved profile:
 
 ```bash
-oracle --engine browser --model gpt-5.5-pro --browser-thinking-time extended \
+oracle --lane chatgpt-pro \
   --browser-manual-login \
   --browser-auto-reattach-delay 5s \
   --browser-auto-reattach-interval 3s \
@@ -88,7 +88,7 @@ oracle --dry-run summary --files-report \
 
 ## 4. Compatibility API and multi-model paths
 
-The old API provider matrix and multi-model fan-out still exist for compatibility. They are not the reviewed ChatGPT Pro Extended Reasoning, Fable xHigh, or Gemini 3.1 Deep Think lane surface. For those paths, run `oracle doctor --providers ...` or see [CLI reference](cli-reference.md).
+The old API provider matrix and multi-model fan-out still exist for compatibility. They are not the reviewed ChatGPT GPT-5.6 Sol + Pro, Fable xHigh, or Gemini 3.1 Deep Think lane surface. For those paths, run `oracle doctor --providers ...` or see [CLI reference](cli-reference.md).
 
 Need startup proof for a slow CLI path?
 
@@ -112,7 +112,7 @@ For browser runs, `--browser-auto-reattach-*` polls the existing ChatGPT tab whe
 Drop this in `AGENTS.md` or `CLAUDE.md`:
 
 ```
-- Oracle bundles a prompt plus the right files for the reviewed lanes: ChatGPT Pro Extended Reasoning, Fable xHigh, and Gemini 3.1 Deep Think. Use when stuck, debugging, or reviewing.
+- Oracle bundles a prompt plus the right files for the reviewed lanes: ChatGPT GPT-5.6 Sol + Pro, Fable xHigh, and Gemini 3.1 Deep Think. Use when stuck, debugging, or reviewing.
 - Run `npx -y @steipete/oracle --help` once per session before first use.
 ```
 

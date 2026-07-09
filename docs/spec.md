@@ -7,7 +7,7 @@ This page captures the design constraints. The README and the rest of the docs d
 
 ## Goals
 
-1. **One CLI for reviewed expert routes.** Same session store and bundling rules whether the answer comes from ChatGPT Pro Extended Reasoning, Fable xHigh, or Gemini 3.1 Deep Think. Older API/provider routes remain compatibility paths, not the primary agent-facing surface.
+1. **One CLI for reviewed expert routes.** Same session store and bundling rules whether the answer comes from ChatGPT GPT-5.6 Sol + Pro, Fable xHigh, or Gemini 3.1 Deep Think. Older API/provider routes remain compatibility paths, not the primary agent-facing surface.
 2. **Runs on every box.** macOS first, Linux and Windows supported. Browser mode optional.
 3. **Stable artifacts.** `--render` is contracted; session metadata stays machine-readable; stderr is for humans.
 4. **Bundles, not chats.** Oracle assembles a deterministic prompt+files bundle and ships it once. Chat-style interactivity is the agent's job, not Oracle's.

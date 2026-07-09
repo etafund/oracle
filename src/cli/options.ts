@@ -288,7 +288,8 @@ export function isChatGptProModelAlias(value: string | undefined): boolean {
   if (
     collapsed === CHATGPT_PRO_BROWSER_MODEL ||
     collapsed === "chatgpt-pro" ||
-    collapsed === "pro"
+    collapsed === "pro" ||
+    collapsed === "gpt-5.6-sol"
   ) {
     return true;
   }
@@ -548,6 +549,9 @@ export function inferModelFromLabel(modelValue: string): ModelName {
   }
   if (normalized.includes("classic")) {
     return "gpt-5-pro";
+  }
+  if ((normalized.includes("5.6") || normalized.includes("5_6")) && normalized.includes("sol")) {
+    return "gpt-5.6-sol" as ModelName;
   }
   if (normalized.includes("thinking") && normalized.includes("heavy")) {
     return "gpt-5.5";

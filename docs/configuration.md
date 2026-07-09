@@ -87,10 +87,11 @@ Put a project-level config at `.oracle/config.json` inside any project folder:
 ```json5
 {
   engine: "browser",
-  model: "gpt-5.5-pro",
+  model: "gpt-5.6-sol",
   browser: {
     chatgptUrl: "https://chatgpt.com/g/g-p-example/project",
-    modelStrategy: "current",
+    modelStrategy: "select",
+    thinkingTime: "extended",
     archiveConversations: "never",
   },
 }

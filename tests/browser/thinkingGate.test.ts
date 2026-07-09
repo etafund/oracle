@@ -4,6 +4,7 @@ import {
   buildResponseObserverExpressionForTest,
   buildThinkingGatePredicateJsForTest,
 } from "../../src/browser/actions/assistantResponse.js";
+import { chatgptSelectorList } from "../../src/browser/selectors/chatgpt/index.js";
 
 type FakeRect = { width: number; height: number };
 
@@ -73,37 +74,64 @@ function runGate(nodesBySelector: Record<string, FakeNode[]>): boolean {
 }
 
 describe("shared thinking-gate predicate", () => {
+  const answerNowSelectors = chatgptSelectorList("answer_now_cta");
+
   test("detects the classic English thinking status", () => {
-    expect(
-      runGate({ '[role="status"]': [new FakeNode({ text: "Thinking" })] }),
-    ).toBe(true);
+    expect(runGate({ '[role="status"]': [new FakeNode({ text: "Thinking" })] })).toBe(true);
   });
 
   // Regression: the acceptance gate only knew 4 English keywords while the
   // logging monitor already knew localized stems — a localized UI silently
   // disabled the only anti-truncation guard.
   test("detects localized thinking labels", () => {
-    expect(
-      runGate({ '[role="status"]': [new FakeNode({ text: "Denkt nach…" })] }),
-    ).toBe(true);
-    expect(
-      runGate({ '[aria-live="polite"]': [new FakeNode({ text: "Rozumowanie" })] }),
-    ).toBe(true);
+    expect(runGate({ '[role="status"]': [new FakeNode({ text: "Denkt nach…" })] })).toBe(true);
+    expect(runGate({ '[aria-live="polite"]': [new FakeNode({ text: "Rozumowanie" })] })).toBe(true);
   });
 
   test("detects broadened thinking-verb labels", () => {
-    expect(
-      runGate({ '[role="status"]': [new FakeNode({ text: "Analyzing sources" })] }),
-    ).toBe(true);
-    expect(
-      runGate({ '[role="status"]': [new FakeNode({ text: "Searching the web" })] }),
-    ).toBe(true);
+    expect(runGate({ '[role="status"]': [new FakeNode({ text: "Analyzing sources" })] })).toBe(
+      true,
+    );
+    expect(runGate({ '[role="status"]': [new FakeNode({ text: "Searching the web" })] })).toBe(
+      true,
+    );
   });
 
   test("treats structural streaming markers as active without any label", () => {
     expect(runGate({ ".result-streaming": [new FakeNode({})] })).toBe(true);
     expect(runGate({ '[data-is-streaming="true"]': [new FakeNode({})] })).toBe(true);
     expect(runGate({ "span.loading-shimmer": [new FakeNode({})] })).toBe(true);
+  });
+
+  test.each(answerNowSelectors)("treats visible Answer-now CTA %j as active", (selector) => {
+    expect(
+      runGate({
+        [selector]: [
+          new FakeNode({
+            text: "Answer now",
+            attrs: { "aria-label": "Answer now" },
+          }),
+        ],
+      }),
+    ).toBe(true);
+  });
+
+  test("ignores hidden Answer-now CTAs", () => {
+    const selector = answerNowSelectors[0]!;
+    expect(runGate({ [selector]: [new FakeNode({ text: "Answer now", visible: false })] })).toBe(
+      false,
+    );
+    expect(
+      runGate({
+        [selector]: [new FakeNode({ text: "Answer now", style: { visibility: "hidden" } })],
+      }),
+    ).toBe(false);
+  });
+
+  test("keeps Answer-now selectors detection-only", () => {
+    const predicate = buildThinkingGatePredicateJsForTest("isThinkingGateActive");
+    expect(predicate).toContain("ANSWER_NOW_SELECTORS");
+    expect(predicate).not.toMatch(/\.click\s*\(|dispatchClick|dispatchMouseEvent/);
   });
 
   test("ignores composer-adjacent and invisible indicators", () => {
@@ -125,9 +153,7 @@ describe("shared thinking-gate predicate", () => {
   });
 
   test("ignores ordinary status text", () => {
-    expect(
-      runGate({ '[role="status"]': [new FakeNode({ text: "Saved to memory" })] }),
-    ).toBe(false);
+    expect(runGate({ '[role="status"]': [new FakeNode({ text: "Saved to memory" })] })).toBe(false);
     expect(runGate({})).toBe(false);
   });
 });
@@ -141,9 +167,14 @@ describe("observer expression lockstep", () => {
 
   test("embeds the exact shared gate predicate source", () => {
     const expression = buildResponseObserverExpressionForTest();
-    expect(expression).toContain(
-      buildThinkingGatePredicateJsForTest("isThinkingIndicatorActive"),
-    );
+    expect(expression).toContain(buildThinkingGatePredicateJsForTest("isThinkingIndicatorActive"));
+  });
+
+  test("embeds manifest Answer-now liveness selectors in the observer", () => {
+    const expression = buildResponseObserverExpressionForTest();
+    for (const selector of chatgptSelectorList("answer_now_cta")) {
+      expect(expression).toContain(JSON.stringify(selector));
+    }
   });
 
   test("wires the anti-flicker hardening into the in-page settle loop", () => {

@@ -106,6 +106,13 @@ export interface RemoteRunProvenanceSummary {
   modelVerified: boolean | null;
   modelRequested: string | null;
   modelResolved: string | null;
+  requestedModelLabel?: string | null;
+  resolvedModelLabel?: string | null;
+  modelLabelVerified?: boolean | null;
+  requestedMode?: string | null;
+  resolvedModeLabel?: string | null;
+  modeVerified?: boolean | null;
+  verifiedBeforePromptSubmit?: boolean | null;
   captureBindingVerified: boolean | null;
   /**
    * Strength tier of a passed capture-binding validation:

@@ -22,11 +22,23 @@ const DEFAULT_BROWSER_RECHECK_TIMEOUT_MS = 120_000;
 const DEFAULT_BROWSER_AUTO_REATTACH_TIMEOUT_MS = 120_000;
 const DEFAULT_CHROME_PROFILE = "Default";
 
+export const CURRENT_CHATGPT_PRO_MODEL_LABEL = "GPT-5.6 Sol" as const;
+export const CURRENT_CHATGPT_PRO_MODE_LABEL = "Pro" as const;
+
+export interface ChatGptBrowserTarget {
+  modelLabel: string;
+  modeLabel: typeof CURRENT_CHATGPT_PRO_MODE_LABEL | null;
+}
+
 // Ordered array: most specific models first to ensure correct selection.
 // The browser label is passed to the model picker which fuzzy-matches against ChatGPT's UI.
 const BROWSER_MODEL_LABELS: [ModelName, string][] = [
   // Most specific first (e.g., "gpt-5.2-thinking" before "gpt-5.2")
-  ["gpt-5.5-pro", "Pro"],
+  ["chatgpt-pro-latest", CURRENT_CHATGPT_PRO_MODEL_LABEL],
+  ["chatgpt-pro", CURRENT_CHATGPT_PRO_MODEL_LABEL],
+  ["pro", CURRENT_CHATGPT_PRO_MODEL_LABEL],
+  ["gpt-5.6-sol", CURRENT_CHATGPT_PRO_MODEL_LABEL],
+  ["gpt-5.5-pro", CURRENT_CHATGPT_PRO_MODEL_LABEL],
   ["gpt-5.5-instant", "GPT-5.5 Instant"],
   ["gpt-5.5", "GPT-5.5"],
   ["gpt-5.4-pro", "Pro"],
@@ -98,6 +110,7 @@ export function normalizeChatGptModelForBrowser(model: ModelName): ModelName {
   }
 
   if (
+    normalized === "gpt-5.6-sol" ||
     normalized === "gpt-5.5-pro" ||
     normalized === "gpt-5.5-instant" ||
     normalized === "gpt-5.5" ||
@@ -186,11 +199,12 @@ export async function buildBrowserConfig(
   const rawUrl = options.chatgptUrl ?? options.browserUrl;
   const url = rawUrl ? normalizeChatgptUrl(rawUrl, CHATGPT_URL) : undefined;
 
+  const browserTarget = resolveChatGptBrowserTarget(options.model);
   const desiredModel = isChatGptModel
-    ? mapModelToBrowserLabel(options.model)
+    ? browserTarget.modelLabel
     : shouldUseOverride
       ? desiredModelOverride
-      : mapModelToBrowserLabel(options.model);
+      : browserTarget.modelLabel;
 
   return {
     chromeProfile: options.copyProfile
@@ -252,7 +266,9 @@ export async function buildBrowserConfig(
     allowCookieErrors: options.browserAllowCookieErrors ?? true,
     remoteChrome,
     browserTabRef: options.browserTab ?? undefined,
-    thinkingTime: normalizeThinkingTimeLevel(options.browserThinkingTime) ?? undefined,
+    thinkingTime:
+      normalizeThinkingTimeLevel(options.browserThinkingTime) ??
+      (browserTarget.modeLabel === CURRENT_CHATGPT_PRO_MODE_LABEL ? "extended" : undefined),
     researchMode: options.browserResearch === "deep" ? "deep" : "off",
     archiveConversations: options.browserArchive,
   };
@@ -329,6 +345,25 @@ export function mapModelToBrowserLabel(model: ModelName): string {
     }
   }
   return DEFAULT_MODEL_TARGET;
+}
+
+/**
+ * Resolves ChatGPT's current two-axis browser target. The stable Pro aliases
+ * select the GPT-5.6 Sol model first, then the checked bare Pro intelligence
+ * mode through the existing thinking-time activation seam.
+ */
+export function resolveChatGptBrowserTarget(model: ModelName): ChatGptBrowserTarget {
+  const normalized = normalizeChatGptModelForBrowser(model).toLowerCase();
+  const currentProAlias =
+    normalized === "gpt-5.6-sol" ||
+    normalized === "gpt-5.5-pro" ||
+    normalized === "chatgpt-pro-latest" ||
+    normalized === "chatgpt-pro" ||
+    normalized === "pro";
+  return {
+    modelLabel: mapModelToBrowserLabel(model),
+    modeLabel: currentProAlias ? CURRENT_CHATGPT_PRO_MODE_LABEL : null,
+  };
 }
 
 export function resolveBrowserModelLabel(input: string | undefined, model: ModelName): string {

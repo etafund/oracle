@@ -521,7 +521,7 @@ program.hook("preAction", async (thisCommand) => {
 program
   .name("oracle")
   .description(
-    "One-shot expert review tool for the reviewed lanes: ChatGPT Pro Extended Reasoning, Fable xHigh, and Gemini 3.1 Deep Think.",
+    "One-shot expert review tool for the reviewed lanes: ChatGPT GPT-5.6 Sol + Pro, Fable xHigh, and Gemini 3.1 Deep Think.",
   )
   .version(VERSION)
   .argument("[prompt]", "Prompt text (shorthand for --prompt).")
@@ -1900,6 +1900,13 @@ function applyResolvedLaneCliOptions(
   const geminiDeepThink = laneOptions.geminiDeepThink;
   if (typeof geminiDeepThink === "boolean" && optionUsesDefault("geminiDeepThink")) {
     options.geminiDeepThink = geminiDeepThink;
+  }
+  // The reviewed ChatGPT lane is a protected two-axis route: GPT-5.6 Sol
+  // plus the checked Pro intelligence mode. A caller-supplied weaker model
+  // strategy must not turn the lane into an unverified current/ignore run.
+  if (resolvedLane.lane === "chatgpt-pro") {
+    options.browserModelStrategy = "select";
+    options.browserThinkingTime = "extended";
   }
 }
 
@@ -3946,7 +3953,7 @@ function detectRootCommandTypo(
 function printDebugHelp(cliName: string): void {
   console.log(
     chalk.bold(
-      "🧿 oracle advanced help — Reviewed lanes: ChatGPT Pro Extended Reasoning, Fable xHigh, and Gemini 3.1 Deep Think.",
+      "🧿 oracle advanced help — Reviewed lanes: ChatGPT GPT-5.6 Sol + Pro, Fable xHigh, and Gemini 3.1 Deep Think.",
     ),
   );
   console.log(

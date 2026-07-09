@@ -39,7 +39,7 @@ oracle --followup browser-architecture-review \
   --file "src/auth/rate-limiter.ts"
 ```
 
-Oracle creates a child session, reopens the parent's exact ChatGPT conversation, and submits the new prompt there. It inherits the parent's browser profile, browser configuration, and model, bypasses the model picker, disables Deep Research for the resumed turn, and leaves the conversation unarchived.
+Oracle creates a child session, reopens the parent's exact ChatGPT conversation, and submits the new prompt there. It inherits the parent's browser profile, browser configuration, and model, disables Deep Research for the resumed turn, and leaves the conversation unarchived. Protected GPT-5.6 Sol + Pro resumes deliberately re-verify both model and mode before the new prompt; other compatibility resumes may skip the picker.
 
 Browser resume is fail-closed: Oracle refuses to submit if the saved URL is not a recoverable HTTPS ChatGPT conversation, the page has no stable prior turns, or the browser lands on a different conversation.
 
@@ -74,7 +74,7 @@ If you try to follow up on an unsupported provider, Oracle errors clearly instea
 In browser mode, `--browser-follow-up` adds planned prompts to the _same ChatGPT conversation_ during one Oracle run:
 
 ```bash
-oracle --engine browser --model gpt-5.5-pro \
+oracle --lane chatgpt-pro \
   -p "Review this migration plan" --file docs/migration.md \
   --browser-follow-up "Challenge your previous recommendation" \
   --browser-follow-up "Give the final decision"

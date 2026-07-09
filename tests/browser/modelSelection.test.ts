@@ -455,6 +455,153 @@ const evaluateIntelligenceModelSelectionExpression = async (
   );
 };
 
+const evaluateGpt56SolPrimaryIntelligenceTrigger = async (
+  insideIntelligenceOwner = true,
+): Promise<unknown> => {
+  class FakeEventTarget {
+    dispatchEvent(_event: unknown): boolean {
+      return true;
+    }
+  }
+
+  class FakeMouseEvent {
+    constructor(
+      readonly type: string,
+      readonly init?: unknown,
+    ) {}
+  }
+
+  let menuOpen = false;
+  class FakeElement extends FakeEventTarget {
+    public parentElement: FakeElement | null = null;
+
+    constructor(
+      public textContent: string,
+      private readonly attributes: Readonly<Record<string, string>> = {},
+      private readonly children: readonly FakeElement[] = [],
+      private readonly onDispatch?: () => void,
+    ) {
+      super();
+      for (const child of children) child.parentElement = this;
+    }
+
+    getAttribute(name: string): string | null {
+      return this.attributes[name] ?? null;
+    }
+
+    querySelector(selector: string): FakeElement | null {
+      if (selector.includes('[data-testid^="model-switcher-"]')) {
+        for (const child of this.children) {
+          if (child.getAttribute("data-testid")?.startsWith("model-switcher-")) return child;
+          const nested = child.querySelector(selector);
+          if (nested) return nested;
+        }
+      }
+      return null;
+    }
+
+    querySelectorAll(_selector: string): FakeElement[] {
+      return this.children.flatMap((child) => [child, ...child.querySelectorAll(_selector)]);
+    }
+
+    closest(selector: string): FakeElement | null {
+      if (
+        selector.includes("composer-intelligence-picker-content") &&
+        this.getAttribute("data-testid") === "composer-intelligence-picker-content"
+      ) {
+        return this;
+      }
+      if (
+        (selector.includes('[role="menu"]') || selector.includes('[role="listbox"]')) &&
+        ["menu", "listbox"].includes(this.getAttribute("role") ?? "")
+      ) {
+        return this;
+      }
+      return this.parentElement?.closest(selector) ?? null;
+    }
+
+    matches(selector: string): boolean {
+      return selector.includes("__composer-pill") && this.attributes.class === "__composer-pill";
+    }
+
+    getBoundingClientRect(): { width: number; height: number } {
+      return { width: 120, height: 36 };
+    }
+
+    override dispatchEvent(event: unknown): boolean {
+      this.onDispatch?.();
+      return super.dispatchEvent(event);
+    }
+  }
+
+  const solTrigger = new FakeElement("GPT-5.6 Sol", {
+    role: "menuitem",
+    "aria-haspopup": "menu",
+    "data-testid": "model-switcher-gpt-5-6-sol",
+  });
+  const pro = new FakeElement("Pro", { role: "menuitemradio", "aria-checked": "true" });
+  const intelligenceOwner = new FakeElement(
+    "Intelligence GPT-5.6 Sol Pro",
+    { role: "group", "data-testid": "composer-intelligence-picker-content" },
+    [solTrigger, pro],
+  );
+  const primaryMenu = new FakeElement(
+    "Intelligence GPT-5.6 Sol Pro",
+    { role: "menu" },
+    insideIntelligenceOwner ? [intelligenceOwner] : [solTrigger, pro],
+  );
+  const modelButton = new FakeElement(
+    "Pro",
+    { class: "__composer-pill", "aria-haspopup": "menu", "aria-expanded": "false" },
+    [],
+    () => {
+      menuOpen = true;
+    },
+  );
+  const expression = buildModelSelectionExpressionForTest("GPT-5.6 Sol");
+  const documentStub = {
+    querySelector: (selector: string) =>
+      selector.includes("model-switcher-dropdown-button") || selector.includes("__composer-pill")
+        ? modelButton
+        : null,
+    querySelectorAll: (selector: string) => {
+      if (selector.includes('role="menu"') || selector.includes("data-radix")) {
+        return menuOpen ? [primaryMenu] : [];
+      }
+      if (selector.includes("button.__composer-pill")) return [modelButton];
+      return [];
+    },
+    title: "",
+    body: { innerText: "" },
+    dispatchEvent: () => true,
+  };
+  let now = 0;
+  const evaluate = new Function(
+    "document",
+    "performance",
+    "setTimeout",
+    "window",
+    "EventTarget",
+    "MouseEvent",
+    "HTMLElement",
+    `return ${expression};`,
+  ) as (...args: unknown[]) => unknown;
+  return await Promise.resolve(
+    evaluate(
+      documentStub,
+      { now: () => (now += 250) },
+      (handler: () => void) => handler(),
+      {
+        location: { href: "https://chatgpt.com/" },
+        getComputedStyle: () => ({ display: "block", visibility: "visible" }),
+      },
+      FakeEventTarget,
+      FakeMouseEvent,
+      FakeElement,
+    ),
+  );
+};
+
 const evaluateConfiguredModelSelectionExpression = async (
   targetModel: string,
   initialVariant = "Thinking",
@@ -909,6 +1056,32 @@ const evaluateNoModelButtonExpression = (
 };
 
 describe("browser model selection matchers", () => {
+  it("includes exact GPT-5.6 Sol labels and test ids", () => {
+    const { labelTokens, testIdTokens } = buildModelMatchersLiteralForTest("GPT-5.6 Sol");
+    expect(labelTokens).toContain("gpt-5.6 sol");
+    expect(testIdTokens).toContain("model-switcher-gpt-5-6-sol");
+  });
+
+  it("accepts the un-checked GPT-5.6 Sol trigger only in the primary Intelligence menu", async () => {
+    await expect(evaluateGpt56SolPrimaryIntelligenceTrigger()).resolves.toEqual({
+      status: "already-selected",
+      label: "GPT-5.6 Sol",
+    });
+    await expect(evaluateGpt56SolPrimaryIntelligenceTrigger(false)).resolves.toMatchObject({
+      status: "option-not-found",
+    });
+  });
+
+  it("requires exact GPT-5.6 Sol resolved model evidence", () => {
+    expect(() => assertResolvedModelSelectionForTest("GPT-5.6 Sol", "GPT-5.6 Sol")).not.toThrow();
+    expect(() => assertResolvedModelSelectionForTest("GPT-5.6 Sol", "Pro")).toThrow(
+      /requires GPT-5.6 Sol/,
+    );
+    expect(() => assertResolvedModelSelectionForTest("GPT-5.6 Sol", "GPT-5.6")).toThrow(
+      /requires GPT-5.6 Sol/,
+    );
+  });
+
   it("includes pro + 5.5 tokens for gpt-5.5-pro", () => {
     const { labelTokens, testIdTokens } = buildModelMatchersLiteralForTest("gpt-5.5-pro");
     expect(labelTokens).toContain("pro extended");
@@ -1306,6 +1479,11 @@ describe("browser model selection matchers", () => {
   });
 
   it("builds composer footer matchers for generic ChatGPT header states", () => {
+    expect(buildComposerSignalMatchersForTest("GPT-5.6 Sol")).toEqual({
+      includesAny: ["gpt 5 6 sol", "5 6 sol"],
+      excludesAny: ["thinking", "instant"],
+      allowBlank: false,
+    });
     expect(buildComposerSignalMatchersForTest("GPT-5.5 Pro")).toEqual({
       includesAny: ["pro"],
       excludesAny: ["thinking"],
@@ -1481,6 +1659,21 @@ describe("ensureModelSelection composer-pill wait", () => {
     expect(evidence.resolvedLabel).toBe("Pro Extended");
     expect(evidence.verified).toBe(true);
     expect((Runtime.evaluate as ReturnType<typeof vi.fn>).mock.calls.length).toBe(3);
+  });
+
+  it("records structured model-only evidence for GPT-5.6 Sol", async () => {
+    const Runtime = makeRuntime([{ status: "already-selected", label: "GPT-5.6 Sol" }]);
+
+    await expect(
+      ensureModelSelection(Runtime, "GPT-5.6 Sol", noopLogger, "select"),
+    ).resolves.toMatchObject({
+      requestedModel: "GPT-5.6 Sol",
+      resolvedLabel: "GPT-5.6 Sol",
+      requestedModelLabel: "GPT-5.6 Sol",
+      resolvedModelLabel: "GPT-5.6 Sol",
+      modelVerified: true,
+      verified: true,
+    });
   });
 
   it("gives up once the button-wait deadline passes", async () => {

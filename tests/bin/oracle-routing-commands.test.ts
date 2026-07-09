@@ -56,7 +56,7 @@ describe("bin/oracle-cli preview and visibility routing", () => {
 
     expect(preview).toMatchObject({
       engine: "browser",
-      model: "gpt-5.5-pro",
+      model: "gpt-5.6-sol",
     });
   });
 
@@ -154,7 +154,7 @@ describe("bin/oracle-cli preview and visibility routing", () => {
     expect(output).not.toContain("Did you mean");
     expect(output).not.toContain("is invalid");
     const preview = parseLastJson(stdout);
-    expect(preview).toMatchObject({ engine: "browser", model: "gpt-5.5-pro" });
+    expect(preview).toMatchObject({ engine: "browser", model: "gpt-5.6-sol" });
   });
 
   test("fable-local is CLI-visible even while its readiness remains hidden-alpha-only", async () => {
@@ -213,19 +213,15 @@ describe("error-teaches: restart/status name the exact corrected command", () =>
   // must not just say "not found" — it must name the exact command an
   // agent can run to find a valid ID or start over.
   test("oracle restart <bogus-id> points at `oracle status --json` to find a valid ID", async () => {
-    await expect(runOracle(["restart", "definitely-not-a-real-session-id"])).rejects.toMatchObject(
-      {
-        stderr: expect.stringMatching(
-          /No session found with ID definitely-not-a-real-session-id\. List valid IDs with: oracle status --json/,
-        ),
-      },
-    );
+    await expect(runOracle(["restart", "definitely-not-a-real-session-id"])).rejects.toMatchObject({
+      stderr: expect.stringMatching(
+        /No session found with ID definitely-not-a-real-session-id\. List valid IDs with: oracle status --json/,
+      ),
+    });
   });
 
   test("oracle status <id> --clear names the exact fixed command (drop the ID)", async () => {
-    await expect(
-      runOracle(["status", "some-id", "--clear"]),
-    ).rejects.toMatchObject({
+    await expect(runOracle(["status", "some-id", "--clear"])).rejects.toMatchObject({
       stderr: expect.stringMatching(
         /Cannot combine a session ID with --clear\. Drop the ID: oracle status --clear --hours 24/,
       ),
@@ -233,9 +229,7 @@ describe("error-teaches: restart/status name the exact corrected command", () =>
   });
 
   test("oracle status <id> --browser-tabs names the exact fixed command (drop the ID)", async () => {
-    await expect(
-      runOracle(["status", "some-id", "--browser-tabs"]),
-    ).rejects.toMatchObject({
+    await expect(runOracle(["status", "some-id", "--browser-tabs"])).rejects.toMatchObject({
       stderr: expect.stringMatching(
         /Cannot combine a session ID with --browser-tabs\. Drop the ID: oracle status --browser-tabs/,
       ),

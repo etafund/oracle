@@ -26,13 +26,13 @@ This is the curated cheatsheet. The authoritative source is always `oracle --hel
 
 ## Core consult flags
 
-The reviewed agent-facing route families are below. `oracle doctor lanes --json` remains the source of truth for explicit lane-template readiness in the current checkout; ChatGPT/Gemini browser command forms may be used for live browser smokes even when their explicit `--lane ...` templates are doctor-gated.
+The reviewed agent-facing route families are below. `oracle doctor lanes --json` remains the source of truth for lane-template readiness in the current checkout; use only lanes it reports enabled.
 
-| Lane                           | Command shape                                                                                      | Notes                                                                                                                                                    |
-| ------------------------------ | -------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ChatGPT Pro Extended Reasoning | `oracle --engine browser --model gpt-5.5-pro --browser-thinking-time extended -p "..." --file ...` | Uses ChatGPT browser automation; remote router/serve hosts are allowed when configured. The explicit `--lane chatgpt-pro` template may report not-ready. |
-| Fable xHigh                    | `oracle --lane fable-local -p "..." --file ...`                                                    | Uses the local Claude Code subscription CLI only. It refuses API, browser, router, and multi-model fan-out.                                              |
-| Gemini 3.1 Deep Think          | `oracle --engine browser --provider gemini --gemini-deep-think -p "..." --file ...`                | Uses browser automation and API-substitution guardrails. The explicit `--lane gemini-deep-think` template may report deferred.                           |
+| Lane                      | Command shape                                                                       | Notes                                                                                                                                                   |
+| ------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ChatGPT GPT-5.6 Sol + Pro | `oracle --lane chatgpt-pro -p "..." --file ...`                                     | Selects exact `GPT-5.6 Sol`, separately verifies checked `Pro`, and fails before submit if either is unverified. Remote router/serve hosts are allowed. |
+| Fable xHigh               | `oracle --lane fable-local -p "..." --file ...`                                     | Uses the local Claude Code subscription CLI only. It refuses API, browser, router, and multi-model fan-out.                                             |
+| Gemini 3.1 Deep Think     | `oracle --engine browser --provider gemini --gemini-deep-think -p "..." --file ...` | Uses browser automation and API-substitution guardrails. The explicit `--lane gemini-deep-think` template may report deferred.                          |
 
 Run `oracle doctor lanes --json`, `oracle capabilities --json`, and `oracle remote doctor --json` before remote browser smokes.
 
@@ -91,7 +91,7 @@ Notes:
 
 ## Compatibility API endpoints
 
-These flags remain for older API workflows. They are not the reviewed ChatGPT Pro Extended Reasoning, Fable xHigh, or Gemini 3.1 Deep Think lane surface.
+These flags remain for older API workflows. They are not the reviewed ChatGPT GPT-5.6 Sol + Pro, Fable xHigh, or Gemini 3.1 Deep Think lane surface.
 
 | Flag                  | Purpose                                   |
 | --------------------- | ----------------------------------------- |

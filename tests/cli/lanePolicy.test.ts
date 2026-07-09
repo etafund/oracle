@@ -50,7 +50,7 @@ describe("lane policy", () => {
       readiness: "enabled",
       normalizedEngineOptions: {
         engine: "browser",
-        model: "gpt-5.5-pro",
+        model: "gpt-5.6-sol",
         browserThinkingTime: "extended",
         browserModelStrategy: "select",
         browserArchive: "auto",

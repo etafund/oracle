@@ -1,5 +1,9 @@
 import { describe, expect, test } from "vitest";
-import { buildBrowserConfig, resolveBrowserModelLabel } from "../../src/cli/browserConfig.js";
+import {
+  buildBrowserConfig,
+  resolveBrowserModelLabel,
+  resolveChatGptBrowserTarget,
+} from "../../src/cli/browserConfig.js";
 
 describe("buildBrowserConfig", () => {
   test("uses defaults when optional flags omitted", async () => {
@@ -15,7 +19,8 @@ describe("buildBrowserConfig", () => {
       headless: undefined,
       keepBrowser: undefined,
       hideWindow: undefined,
-      desiredModel: "Pro",
+      desiredModel: "GPT-5.6 Sol",
+      thinkingTime: "extended",
       debug: undefined,
       allowCookieErrors: true,
       researchMode: "off",
@@ -171,7 +176,7 @@ describe("buildBrowserConfig", () => {
       model: "gpt-5.2-pro",
       browserModelLabel: "Instant",
     });
-    expect(config.desiredModel).toBe("Pro");
+    expect(config.desiredModel).toBe("GPT-5.6 Sol");
   });
 
   test("rejects invalid browser max concurrent tabs", async () => {
@@ -347,7 +352,7 @@ describe("buildBrowserConfig", () => {
       chatgptUrl: "https://chatgpt.com/?temporary-chat=true",
     });
     expect(config.url).toBe("https://chatgpt.com/?temporary-chat=true");
-    expect(config.desiredModel).toBe("Pro");
+    expect(config.desiredModel).toBe("GPT-5.6 Sol");
     expect(config.modelStrategy).toBe("select");
   });
 
@@ -417,14 +422,14 @@ describe("buildBrowserConfig", () => {
 
 describe("resolveBrowserModelLabel", () => {
   test("returns canonical ChatGPT label when CLI value matches API model", () => {
-    expect(resolveBrowserModelLabel("gpt-5.5-pro", "gpt-5.5-pro")).toBe("Pro");
+    expect(resolveBrowserModelLabel("gpt-5.5-pro", "gpt-5.5-pro")).toBe("GPT-5.6 Sol");
     expect(resolveBrowserModelLabel("gpt-5.5-instant", "gpt-5.5-instant")).toBe("GPT-5.5 Instant");
     expect(resolveBrowserModelLabel("gpt-5.5", "gpt-5.5")).toBe("GPT-5.5");
-    expect(resolveBrowserModelLabel("gpt-5.4-pro", "gpt-5.4-pro")).toBe("Pro");
+    expect(resolveBrowserModelLabel("gpt-5.4-pro", "gpt-5.4-pro")).toBe("GPT-5.6 Sol");
     expect(resolveBrowserModelLabel("gpt-5.4", "gpt-5.4")).toBe("Thinking 5.4");
-    expect(resolveBrowserModelLabel("gpt-5-pro", "gpt-5-pro")).toBe("Pro");
-    expect(resolveBrowserModelLabel("gpt-5.2-pro", "gpt-5.2-pro")).toBe("Pro");
-    expect(resolveBrowserModelLabel("gpt-5.1-pro", "gpt-5.1-pro")).toBe("Pro");
+    expect(resolveBrowserModelLabel("gpt-5-pro", "gpt-5-pro")).toBe("GPT-5.6 Sol");
+    expect(resolveBrowserModelLabel("gpt-5.2-pro", "gpt-5.2-pro")).toBe("GPT-5.6 Sol");
+    expect(resolveBrowserModelLabel("gpt-5.1-pro", "gpt-5.1-pro")).toBe("GPT-5.6 Sol");
     expect(resolveBrowserModelLabel("GPT-5.1", "gpt-5.1")).toBe("GPT-5.2");
   });
 
@@ -437,8 +442,17 @@ describe("resolveBrowserModelLabel", () => {
   });
 
   test("supports undefined or whitespace-only input", () => {
-    expect(resolveBrowserModelLabel(undefined, "gpt-5.2-pro")).toBe("Pro");
+    expect(resolveBrowserModelLabel(undefined, "gpt-5.2-pro")).toBe("GPT-5.6 Sol");
     expect(resolveBrowserModelLabel("   ", "gpt-5.1")).toBe("GPT-5.2");
+  });
+
+  test("resolves stable Pro aliases to the GPT-5.6 Sol + Pro two-axis target", () => {
+    for (const model of ["chatgpt-pro-latest", "gpt-5.5-pro", "gpt-5.2-pro", "gpt-5.6-sol"]) {
+      expect(resolveChatGptBrowserTarget(model)).toEqual({
+        modelLabel: "GPT-5.6 Sol",
+        modeLabel: "Pro",
+      });
+    }
   });
 
   test("trims descriptive labels before returning them", () => {

@@ -9,6 +9,7 @@ import {
   STOP_BUTTON_SELECTORS,
 } from "../constants.js";
 import { buildConversationTurnListExpression } from "../conversationTurns.js";
+import { chatgptSelectorList } from "../selectors/chatgpt/index.js";
 import { delay } from "../utils.js";
 import {
   logDomFailure,
@@ -147,6 +148,12 @@ const THINKING_GATE_STRUCTURAL_SELECTORS = [
   '[data-is-streaming="true"]',
 ];
 
+// A visible "Answer now" CTA is an explicit Pro-thinking liveness signal.
+// It is sourced from the shared selector manifest so the acceptance gate stays
+// aligned with provider diagnostics. This control is detection-only: Oracle
+// must wait for the real response and must never click it.
+const THINKING_GATE_ANSWER_NOW_SELECTORS = chatgptSelectorList("answer_now_cta");
+
 const THINKING_GATE_LABEL_SELECTORS = [
   '[data-testid*="thinking"]',
   '[data-testid*="reasoning"]',
@@ -163,10 +170,12 @@ const THINKING_GATE_LABEL_SELECTORS = [
 function buildThinkingGatePredicateJs(fnName: string): string {
   const keywordsLiteral = JSON.stringify(THINKING_GATE_KEYWORDS);
   const structuralLiteral = JSON.stringify(THINKING_GATE_STRUCTURAL_SELECTORS);
+  const answerNowLiteral = JSON.stringify(THINKING_GATE_ANSWER_NOW_SELECTORS);
   const labelSelectorsLiteral = JSON.stringify(THINKING_GATE_LABEL_SELECTORS);
   return `const ${fnName} = () => {
     const KEYWORDS = ${keywordsLiteral};
     const STRUCTURAL_SELECTORS = ${structuralLiteral};
+    const ANSWER_NOW_SELECTORS = ${answerNowLiteral};
     const LABEL_SELECTORS = ${labelSelectorsLiteral};
     const normalize = (value) =>
       String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
@@ -181,6 +190,15 @@ function buildThinkingGatePredicateJs(fnName: string): string {
     };
     const isComposerAdjacent = (node) =>
       Boolean(node.closest?.('[contenteditable="true"], textarea, [data-testid*="composer"], [id*="composer"]'));
+    const queryAll = (selector) => {
+      try {
+        return Array.from(document.querySelectorAll(selector));
+      } catch {
+        // Selector manifests may include tool-specific fallbacks (for example
+        // :has-text) that native querySelectorAll does not understand.
+        return [];
+      }
+    };
     const looksLikeThinking = (node) => {
       const label = normalize([
         node.textContent,
@@ -191,17 +209,27 @@ function buildThinkingGatePredicateJs(fnName: string): string {
       if (!label) return false;
       return KEYWORDS.some((keyword) => label.includes(keyword));
     };
+    // "Answer now" is an interrupt control shown while Pro is still thinking.
+    // Visibility is authoritative regardless of where the UI mounts it. Detect
+    // it only; this predicate never dispatches an interaction.
+    for (const selector of ANSWER_NOW_SELECTORS) {
+      const nodes = queryAll(selector);
+      for (const node of nodes) {
+        if (!(node instanceof HTMLElement)) continue;
+        if (isVisible(node)) return true;
+      }
+    }
     // Structural markers are themselves proof of active generation; accept on
     // visibility alone (they carry no meaningful text).
     for (const selector of STRUCTURAL_SELECTORS) {
-      const nodes = Array.from(document.querySelectorAll(selector));
+      const nodes = queryAll(selector);
       for (const node of nodes) {
         if (!(node instanceof HTMLElement)) continue;
         if (isVisible(node) && !isComposerAdjacent(node)) return true;
       }
     }
     for (const selector of LABEL_SELECTORS) {
-      const nodes = Array.from(document.querySelectorAll(selector));
+      const nodes = queryAll(selector);
       for (const node of nodes) {
         if (!(node instanceof HTMLElement)) continue;
         if (isVisible(node) && !isComposerAdjacent(node) && looksLikeThinking(node)) {
@@ -585,9 +613,7 @@ export async function waitForAssistantResponse(
       await delay(1500);
       const secondRead = await lastResortRead();
       const stillStreaming =
-        (firstRead?.text ?? "") !== (secondRead?.text ?? "") ||
-        stopNow ||
-        thinkingNow;
+        (firstRead?.text ?? "") !== (secondRead?.text ?? "") || stopNow || thinkingNow;
       if (stillStreaming || completionNow) {
         const remainingBudgetMs = Math.max(0, timeoutMs - (Date.now() - start));
         if (stillStreaming && remainingBudgetMs > 0) {
@@ -628,9 +654,7 @@ export async function waitForAssistantResponse(
           "assistant-response short capture could not be confirmed before timeout; refusing to finalize it",
         );
       }
-      logger(
-        "Short answer could not be re-confirmed by the watchdog; returning original capture",
-      );
+      logger("Short answer could not be re-confirmed by the watchdog; returning original capture");
     }
   }
 
@@ -876,7 +900,9 @@ async function refreshAssistantSnapshot(
   const latestLength = best.text.length;
   const hasBetterId = !current.meta?.messageId && Boolean(best.meta.messageId);
   const hasDifferentText = best.text.trim() !== current.text.trim();
-  if (!shouldReplaceAssistantSnapshot({ currentLength, latestLength, hasBetterId, hasDifferentText })) {
+  if (
+    !shouldReplaceAssistantSnapshot({ currentLength, latestLength, hasBetterId, hasDifferentText })
+  ) {
     // The re-read may still carry the message/turn ids the candidate lacks
     // (e.g. the candidate came from the markdown fallback): keep the longer
     // candidate text but adopt the ids so exact-turn copy targeting works.
@@ -1032,8 +1058,7 @@ async function pollAssistantCompletion(
         // flickers during thinking pauses. Only waits in thinking territory
         // (indicator seen, or long-elapsed — covering detection misses) pay
         // the extra ~3.2s; ordinary fast captures return on first acceptance.
-        const requireStreak =
-          sawThinking || elapsedMs >= COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS;
+        const requireStreak = sawThinking || elapsedMs >= COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS;
         if (compactAnswer || !requireStreak || acceptStreak >= NONCOMPACT_ACCEPT_CONFIRM_SAMPLES) {
           return normalized;
         }

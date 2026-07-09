@@ -92,7 +92,7 @@ Checks:
    `curl -fsS http://box2.example:9473/status`
    - All three should return `{"ok":true}`.
 3. Load-balanced attachment smoke:
-   - Start two ChatGPT Pro Extended Reasoning browser runs through the router with distinct slugs and small file attachments.
+   - Start two `--lane chatgpt-pro` runs through the router with distinct slugs and small file attachments. Each must prove `GPT-5.6 Sol` plus checked `Pro` before submit.
    - Inspect the router access log and confirm `POST /runs` reached both upstream boxes.
    - Reattach with `oracle session <id> --render`; never click ChatGPT's "Answer now".
 4. Artifact proxy smoke:
@@ -281,14 +281,14 @@ Expect a near-instant response (no Thinking spinner) and confirm the composer pi
    Confirm the logs show Deep Research activation/progress and the final report includes citations or source links. Do not use connected apps or private data.
 
 6. **Multi-turn browser consult smoke**
-   `pnpm run oracle -- --engine browser --browser-manual-login --model gpt-5.5-pro --browser-thinking-time extended --prompt "Give one architectural recommendation for a tiny CLI cache." --browser-follow-up "Challenge your previous recommendation with one concrete failure mode." --browser-follow-up "Now return the final recommendation in one sentence, starting with CHECK_MULTI_TURN_OK."`
+   `pnpm run oracle -- --lane chatgpt-pro --browser-manual-login --prompt "Give one architectural recommendation for a tiny CLI cache." --browser-follow-up "Challenge your previous recommendation with one concrete failure mode." --browser-follow-up "Now return the final recommendation in one sentence, starting with CHECK_MULTI_TURN_OK."`
    Confirm the output contains all captured turns, includes `CHECK_MULTI_TURN_OK`, and the saved `transcript.md` records both follow-up prompts.
 
 7. **Multi-turn value check**
    Run the same initial prompt once without follow-ups and once with the challenge/final-decision follow-ups above. In the PR notes, record concrete differences such as extra failure modes, sharper rollback steps, or test cases. Do not claim a fixed quality percentage.
 
 8. **Auto-archive smoke**
-   `pnpm run oracle -- --engine browser --browser-manual-login --model gpt-5.5-pro --browser-thinking-time extended --browser-archive always --prompt "Reply exactly CHECK_ARCHIVE_OK."`
+   `pnpm run oracle -- --lane chatgpt-pro --browser-manual-login --browser-archive always --prompt "Reply exactly CHECK_ARCHIVE_OK."`
    Confirm the output contains `CHECK_ARCHIVE_OK`, `oracle session <id> --render` still shows the transcript, and ChatGPT shows the conversation under archived chats rather than the active sidebar. Also confirm a default `--browser-archive auto` run with Deep Research or follow-ups is not archived.
 
 Record session IDs and outcomes in the PR description (pass/fail, notable delays). This ensures reviewers can audit real runs.

@@ -6,7 +6,7 @@ Oracle’s `--engine browser` supports three different execution paths:
 - **ChatGPT attach-running mode** (GPT-\* models): Oracle attaches to your already-running local Chrome session through Chrome’s local remote-debugging toggle, opens a dedicated tab, and leaves the browser process/profile alone.
 - **Gemini web mode** (Gemini models): talks directly to `gemini.google.com` using your signed-in Chrome cookies (no ChatGPT automation).
 
-The reviewed browser route forms are ChatGPT Pro Extended Reasoning (`--engine browser --model gpt-5.5-pro --browser-thinking-time extended`) and Gemini 3.1 Deep Think (`--engine browser --provider gemini --gemini-deep-think`). `oracle doctor lanes --json` reports the stricter explicit lane-template readiness for the current checkout. Remote browser hosts and the companion router (`<router-repo>`) are transport for those browser routes. Fable xHigh is a separate local `--lane fable-local` Claude Code path and is not a browser/router mode.
+The reviewed browser route forms are ChatGPT GPT-5.6 Sol + Pro (`--lane chatgpt-pro`) and Gemini 3.1 Deep Think (`--engine browser --provider gemini --gemini-deep-think`). `oracle doctor lanes --json` reports lane-template readiness for the current checkout. Remote browser hosts and the companion router (`<router-repo>`) are transport for those browser routes. Fable xHigh is a separate local `--lane fable-local` Claude Code path and is not a browser/router mode.
 
 If you’re running Gemini, also see `docs/gemini.md`.
 
@@ -21,7 +21,8 @@ If you’re running Gemini, also see `docs/gemini.md`.
 jq '.' ~/.oracle/cookies.json  # file must contain CookieParam[]
 oracle --engine browser \
   --browser-inline-cookies-file ~/.oracle/cookies.json \
-  --model "GPT-5.5 Pro" \
+  --model gpt-5.6-sol \
+  --browser-thinking-time extended \
   -p "Run the UI smoke" \
   --file "src/**/*.ts" --file "!src/**/*.test.ts"
 ```
@@ -51,7 +52,8 @@ Use this when you already have a signed-in Chrome session running with DevTools 
 ```bash
 oracle --engine browser \
   --browser-attach-running \
-  --model "GPT-5.5 Pro" \
+  --model gpt-5.6-sol \
+  --browser-thinking-time extended \
   -p "Summarize the last assistant response in one paragraph"
 ```
 
@@ -63,7 +65,8 @@ Notes:
   oracle --engine browser \
     --browser-attach-running \
     --remote-chrome 127.0.0.1:63332 \
-    --model "GPT-5.5 Pro" \
+    --model gpt-5.6-sol \
+    --browser-thinking-time extended \
     -p "Summarize the last assistant response in one paragraph"
   ```
 - Oracle reads local `DevToolsActivePort` metadata, connects to the browser websocket directly, and then reuses the normal CDP automation flow.
@@ -104,7 +107,7 @@ Notes:
 - `--browser-model-strategy <select|current|ignore>`: control ChatGPT model selection. `select` (default) switches to the requested model; `current` keeps the active model and logs its label; `ignore` skips the picker entirely. (Ignored for Gemini web runs.)
 - Temporary Chat can reduce account-sidebar clutter for one-shot browser consults, but it is a different ChatGPT workflow: Oracle skips archive attempts there and the local transcript/artifacts are the durable record. Verify live behavior before relying on Project Sources, Deep Research reports, or multi-turn persistence.
 - `--browser-thinking-time <light|standard|extended|heavy>`: set the ChatGPT thinking-time intensity (Thinking/Pro models only). You can also set a default in `~/.oracle/config.json` via `browser.thinkingTime`.
-- GPT-5.5 Pro Extended is verified from the selected item in ChatGPT's standalone Pro/Thinking effort pill or compatible Intelligence/model-picker menu. A run **fails closed** if Extended cannot be confirmed rather than silently submitting at a weaker effort. Detection failures write a bounded, redacted model-picker diagnostic to the normal session log.
+- The reviewed ChatGPT lane verifies two independent UI axes in the same live Intelligence menu: the exact visible model label `GPT-5.6 Sol` and a separately checked bare `Pro` mode. A run **fails closed before prompt submission** if either axis cannot be confirmed. The legacy `gpt-5.5-pro` and generic Pro aliases map to this current target for compatibility. Detection failures write a bounded, redacted model-picker diagnostic to the normal session log.
 - `--browser-research deep`: activate ChatGPT Deep Research before submitting the prompt. Use this for broad public-web research and final cited reports, not as a replacement for GPT-5.x Pro Heavy code review or pure reasoning.
 - `--browser-follow-up <prompt>`: submit another prompt in the same ChatGPT conversation after the initial answer. Repeat the flag for multi-turn reviews such as “challenge your recommendation”, “compare against this constraint”, then “give the final decision”. Deep Research has its own report lifecycle, so browser follow-ups are rejected when `--browser-research deep` is enabled.
 - `--followup <session-id>`: reopen the exact saved ChatGPT conversation from a completed browser session. Oracle inherits the parent browser profile, configuration, and model, then verifies the thread and prior turns before submitting.
@@ -119,7 +122,7 @@ Notes:
 - `--browser-bundle-files`: bundle all resolved attachments into a single temp file before uploading (only used when uploads are enabled/selected).
 - `--browser-bundle-format <auto|text|zip>`: choose the bundle format. `auto` uses a text bundle for text-only inputs and a byte-preserving ZIP when bundled inputs include raw files; `text` keeps the single Markdown-style text bundle; `zip` archives the original file bytes. ZIP bundles are capped at the same 20 MiB DataTransfer upload ceiling used by browser attachment transfer.
 - sqlite bindings: automatic rebuilds now require `ORACLE_ALLOW_SQLITE_REBUILD=1`. Without it, the CLI logs instructions instead of running `pnpm rebuild` on your behalf.
-- `--model`: the same flag used for API runs is accepted, but the ChatGPT automation path supports GPT-5.5, GPT-5.4, and GPT-5.2 variants. Use `gpt-5.5-pro`, `gpt-5.5`, `gpt-5.5-instant`, `gpt-5.4-pro`, `gpt-5.4`, `gpt-5.2`, `gpt-5.2-thinking`, `gpt-5.2-instant`, or `gpt-5.2-pro`. Legacy Pro aliases still resolve to the latest Pro picker target.
+- `--model`: the same flag used for API runs is accepted. The current reviewed ChatGPT target is `gpt-5.6-sol` plus `--browser-thinking-time extended`; prefer `--lane chatgpt-pro`, which injects and protects both settings. GPT-5.5, GPT-5.4, and GPT-5.2 browser variants remain compatibility paths, and legacy Pro aliases resolve to GPT-5.6 Sol + Pro.
 - Cookie sync is mandatory—if we can’t copy cookies from Chrome, the run exits early. By default Oracle copies a small ChatGPT auth/Cloudflare allowlist to avoid oversized request headers; use `--browser-cookie-names` only when you need to override that set. Use the hidden `--browser-allow-cookie-errors` flag only when you’re intentionally running logged out (it skips the early exit but still warns).
 - Attach-running mode is mutually exclusive with launcher-owned flags such as `--browser-manual-login`, `--browser-chrome-profile`, `--browser-cookie-path`, `--browser-hide-window`, `--browser-keep-browser`, and `--browser-port`. `--remote-chrome` is allowed in attach-running mode, but only as the local host:port hint used to find matching `DevToolsActivePort` metadata. `--browser-chrome-path` is accepted but ignored.
 - Experimental cookie controls (hidden flags/env):
@@ -214,9 +217,7 @@ This command uses browser automation but does not select a model, start a consul
 Use browser follow-ups when a one-shot review would be too easy for the model to answer shallowly. Oracle keeps the same ChatGPT conversation open, waits for each answer, then submits the next follow-up:
 
 ```bash
-oracle --engine browser \
-  --model gpt-5.5-pro \
-  --browser-thinking-time heavy \
+oracle --lane chatgpt-pro \
   -p "Review this migration plan and identify the top risks." \
   --file docs/migration-plan.md \
   --browser-follow-up "Challenge your previous recommendation. What would fail in production?" \

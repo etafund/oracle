@@ -46,7 +46,7 @@ export const CORE_READ_COMMANDS: readonly CoreReadCommand[] = Object.freeze([
   coreReadCommand({
     name: "doctor-chatgpt",
     command: "oracle doctor chatgpt --pro --extended-reasoning --json",
-    purpose: "ChatGPT Pro Extended Reasoning lane readiness (selectors, sign-in).",
+    purpose: "ChatGPT GPT-5.6 Sol + Pro lane readiness (selectors, sign-in).",
   }),
   coreReadCommand({
     name: "doctor-gemini",

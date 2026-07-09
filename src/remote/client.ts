@@ -141,10 +141,10 @@ export function createRemoteBrowserExecutor({
     if (signal?.aborted) {
       // Caller already gone before any work: fail fast without reading
       // attachment files or opening a connection to the worker.
-      throw new RemoteRunFailedError(
-        "Caller aborted before submit; aborting the remote run.",
-        { errorClass: "transport_interrupted_before_submit", retryable: true },
-      );
+      throw new RemoteRunFailedError("Caller aborted before submit; aborting the remote run.", {
+        errorClass: "transport_interrupted_before_submit",
+        retryable: true,
+      });
     }
     let fallbackSubmission = options.fallbackSubmission;
     if (fallbackSubmission && !isPromptFallbackOptInEnabled()) {
@@ -540,7 +540,14 @@ function handleEvent(params: {
             "(provenance verified means the plumbing was right, not that the answer is correct).",
         );
       }
-      params.onResult(event.result);
+      params.onResult({
+        ...event.result,
+        remoteRun: {
+          runId: event.runId ?? null,
+          terminalDoneOk: true,
+          provenance: event.provenance ?? null,
+        },
+      });
       params.onDone();
       return null;
     }

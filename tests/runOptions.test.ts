@@ -90,8 +90,8 @@ describe("resolveRunOptionsFromConfig", () => {
     expect(resolvedEngine).toBe("browser");
     expect(resolvedLane).toBe("chatgpt-pro");
     expect(runOptions.lane).toBe("chatgpt-pro");
-    expect(runOptions.model).toBe("gpt-5.5-pro");
-    expect(runOptions.effectiveModelId).toBe("gpt-5.5-pro");
+    expect(runOptions.model).toBe("gpt-5.6-sol");
+    expect(runOptions.effectiveModelId).toBe("gpt-5.6-sol");
     expect(runOptions.browserAttachments).toBe("auto");
   });
 

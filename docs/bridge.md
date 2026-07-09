@@ -2,7 +2,7 @@
 
 Oracle’s bridge workflow lets you keep an authenticated ChatGPT session on a Windows machine while running Oracle (CLI + `oracle-mcp`) from Linux boxes (often over SSH), without exporting browser cookies off Windows.
 
-Bridge and remote browser routing are transport for ChatGPT Pro Extended Reasoning and Gemini 3.1 Deep Think browser lanes. They are not valid transport for Fable xHigh; use `oracle --lane fable-local` only on the local machine that owns the logged-in Claude Code subscription CLI.
+Bridge and remote browser routing are transport for ChatGPT GPT-5.6 Sol + Pro and Gemini 3.1 Deep Think browser lanes. They are not valid transport for Fable xHigh; use `oracle --lane fable-local` only on the local machine that owns the logged-in Claude Code subscription CLI.
 
 ## Concepts
 
@@ -72,7 +72,7 @@ This writes:
 Now browser runs automatically route through the host:
 
 ```bash
-oracle --engine browser -p "hello" --file README.md
+oracle --lane chatgpt-pro -p "hello" --file README.md
 ```
 
 ## 2b) Linux desktop: local manual-login (no bridge)
@@ -129,7 +129,7 @@ If Claude Code and the signed-in Chrome profile are on the same Mac, skip the re
 oracle bridge claude-config --local-browser > .mcp.json
 ```
 
-This points Claude Code at `oracle-mcp`, sets `ORACLE_ENGINE="browser"`, and reuses the shared manual-login profile at `~/.oracle/browser-profile`. From Claude Code, call `consult` with `preset:"chatgpt-pro-heavy"` for the “Let Them Fight” workflow: Claude asks Oracle, Oracle asks ChatGPT Pro Extended in browser mode, and the answer comes back through MCP. Use `dryRun:true` first when you only want to validate the resolved request.
+This points Claude Code at `oracle-mcp`, sets `ORACLE_ENGINE="browser"`, and reuses the shared manual-login profile at `~/.oracle/browser-profile`. From Claude Code, call `consult` with `preset:"chatgpt-pro-heavy"` for the “Let Them Fight” workflow: Claude asks Oracle, Oracle asks GPT-5.6 Sol with checked Pro mode in the browser, and the answer comes back through MCP. Use `dryRun:true` first when you only want to validate the resolved request.
 
 For long Pro runs, keep the Oracle session id visible in the agent transcript and inspect `oracle status` / `oracle session <id>` before retrying. Browser consults may wait on ChatGPT for several minutes; the dry-run/browser control plan is the operator-facing signal for whether Oracle will attach to an existing browser, use remote Chrome, or launch a visible window.
 

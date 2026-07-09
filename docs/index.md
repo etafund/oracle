@@ -1,7 +1,7 @@
 ---
 title: Overview
 permalink: /
-description: "Oracle bundles your prompt and files for the reviewed lanes: ChatGPT Pro Extended Reasoning, Fable xHigh, and Gemini 3.1 Deep Think."
+description: "Oracle bundles your prompt and files for the reviewed lanes: ChatGPT GPT-5.6 Sol + Pro, Fable xHigh, and Gemini 3.1 Deep Think."
 ---
 
 ## Try it
@@ -9,8 +9,8 @@ description: "Oracle bundles your prompt and files for the reviewed lanes: ChatG
 After installing (`brew install steipete/tap/oracle` or `npm i -g @steipete/oracle`), every consult is a one-liner. Run `oracle doctor lanes --json` when you need the exact enabled/deferred template state for this checkout.
 
 ```bash
-# ChatGPT Pro Extended Reasoning browser lane.
-oracle --engine browser --model gpt-5.5-pro --browser-thinking-time extended \
+# ChatGPT GPT-5.6 Sol + Pro browser lane.
+oracle --lane chatgpt-pro \
   -p "Review the storage layer for schema drift" --file "src/**/*.ts"
 
 # Fable xHigh local lane.
@@ -33,7 +33,7 @@ oracle --followup <id> -p "Re-evaluate with this new context" --file "src/**/*.t
 
 ## What Oracle does
 
-- **Three reviewed route families.** ChatGPT Pro Extended Reasoning and Gemini 3.1 Deep Think run through browser automation; Fable xHigh runs through the local Claude Code subscription CLI. `doctor lanes --json` is the source of truth for which explicit lane templates are enabled in the current checkout.
+- **Three reviewed route families.** ChatGPT GPT-5.6 Sol + Pro and Gemini 3.1 Deep Think run through browser automation; Fable xHigh runs through the local Claude Code subscription CLI. `doctor lanes --json` is the source of truth for which explicit lane templates are enabled in the current checkout.
 - **Transport rules are explicit.** Remote browser hosts and the companion router (`<router-repo>`) are for browser lanes. Fable is local-only and refuses API, browser, router, and multi-model fan-out.
 - **Compatibility paths remain.** API and older provider/model flags still exist for legacy workflows, but they are not the primary agent-facing lane surface.
 - **Recoverable checks.** `doctor lanes --json`, `doctor chatgpt --pro --extended-reasoning --json`, `doctor gemini --deep-think --json`, and `remote doctor --json` make readiness and routing failures machine-readable.

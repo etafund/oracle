@@ -133,7 +133,7 @@ const consultInputShape = {
     .enum(CONSULT_PRESETS)
     .optional()
     .describe(
-      'Optional MCP convenience preset. "chatgpt-pro-heavy" selects ChatGPT browser mode, the current Pro model alias, and Pro Extended thinking unless overridden.',
+      'Optional MCP convenience preset. "chatgpt-pro-heavy" selects ChatGPT browser mode, GPT-5.6 Sol, and checked Pro mode unless overridden.',
     ),
   prompt: z.string().min(1, "Prompt is required.").describe("User prompt to run."),
   files: z
@@ -563,9 +563,12 @@ export function buildConsultDryRunResolved({
   }
   const desiredModel = browserConfig?.desiredModel ?? null;
   const thinkingTime = browserConfig?.thinkingTime ?? null;
-  if (runOptions.model === "gpt-5.5-pro" && thinkingTime === "heavy") {
+  if (
+    (runOptions.model === "gpt-5.6-sol" || runOptions.model === "gpt-5.5-pro") &&
+    thinkingTime === "heavy"
+  ) {
     guidance.push(
-      'gpt-5.5-pro should normally use Pro Extended. Use model:"gpt-5.5" with browserThinkingTime:"heavy" only when you explicitly want Thinking Heavy.',
+      'gpt-5.6-sol should use the verified Pro mode. Use model:"gpt-5.5" with browserThinkingTime:"heavy" only when you explicitly want the legacy Thinking Heavy route.',
     );
   }
   const chatgptUrl = browserConfig?.chatgptUrl ?? browserConfig?.url ?? null;

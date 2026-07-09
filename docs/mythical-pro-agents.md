@@ -1,9 +1,9 @@
 ---
 title: Mythical Pro Agents
-description: "Compatibility model catalog for older API/browser routes. The reviewed agent-facing routes are ChatGPT Pro Extended Reasoning, Fable xHigh, and Gemini 3.1 Deep Think."
+description: "Compatibility model catalog for older API/browser routes. The reviewed agent-facing routes are ChatGPT GPT-5.6 Sol + Pro, Fable xHigh, and Gemini 3.1 Deep Think."
 ---
 
-The reviewed agent-facing routes are ChatGPT Pro Extended Reasoning, Fable xHigh, and Gemini 3.1 Deep Think. This page remains as a compatibility catalog for older API/browser model routes and cost intuition; do not treat every row here as a reviewed lane.
+The reviewed agent-facing routes are ChatGPT GPT-5.6 Sol + Pro, Fable xHigh, and Gemini 3.1 Deep Think. This page remains as a compatibility catalog for older API/browser model routes and cost intuition; do not treat every row here as a reviewed lane.
 
 ## The lineup
 
@@ -28,12 +28,12 @@ Plus any **OpenRouter** id — e.g. `minimax/minimax-m2`, `openai/gpt-4o-mini`, 
 
 ## When to reach for which
 
-### GPT-5.5 Pro (default)
+### ChatGPT GPT-5.6 Sol + Pro (reviewed browser lane)
 
-The current "Oracle of last resort." Slow (10 minutes typical, hour+ for huge bundles), expensive on API, free if you have ChatGPT Pro. Best for: **long-form architecture review, multi-file refactors, gnarly bugs that need to chew on the whole repo.**
+The current "Oracle of last resort." Slow (10 minutes typical, hour+ for huge bundles), and available through a signed-in ChatGPT Pro browser. Best for: **long-form architecture review, multi-file refactors, gnarly bugs that need to chew on the whole repo.**
 
 ```bash
-oracle --engine browser --model gpt-5.5-pro \
+oracle --lane chatgpt-pro \
   -p "Plan the auth migration end-to-end" \
   --file "src/auth/**" --file "docs/auth.md"
 ```
@@ -84,7 +84,7 @@ The captured report lands at `~/.oracle/sessions/<id>/artifacts/deep-research-re
 
 ## Thinking time
 
-Pro / Thinking models in browser mode accept a `--browser-thinking-time` knob:
+Compatibility Pro / Thinking models in browser mode accept a `--browser-thinking-time` knob. The reviewed `--lane chatgpt-pro` route instead enforces GPT-5.6 Sol and checked Pro automatically:
 
 | Level      | What it maps to in ChatGPT       |
 | ---------- | -------------------------------- |
@@ -94,8 +94,7 @@ Pro / Thinking models in browser mode accept a `--browser-thinking-time` knob:
 | `heavy`    | Heavy thinking                   |
 
 ```bash
-oracle --engine browser --model gpt-5.5-pro \
-  --browser-thinking-time extended \
+oracle --lane chatgpt-pro \
   -p "Refactor this hot path" --file "src/render/**"
 ```
 

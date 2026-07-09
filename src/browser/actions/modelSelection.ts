@@ -72,12 +72,16 @@ export async function ensureModelSelection(
         assertResolvedModelSelection(desiredModel, label ?? desiredModel);
       }
       logger(`Model picker: ${label ?? "current model (label unavailable)"}`);
+      const modelVerified = strategy !== "current";
       return {
         requestedModel: desiredModel,
         resolvedLabel: label,
+        requestedModelLabel: desiredModel,
+        resolvedModelLabel: label,
+        modelVerified,
         strategy,
         status: result.status,
-        verified: strategy !== "current",
+        verified: modelVerified,
         source: "chatgpt-model-picker",
         capturedAt: new Date().toISOString(),
       };
@@ -107,6 +111,23 @@ export async function ensureModelSelection(
 function assertResolvedModelSelection(desiredModel: string, resolvedLabel: string): void {
   const desired = desiredModel.toLowerCase();
   const resolved = resolvedLabel.toLowerCase();
+  const normalizedDesired = normalizeResolvedModelLabel(desired);
+  const normalizedResolved = normalizeResolvedModelLabel(resolved);
+  const wantsGpt56Sol = normalizedDesired === "gpt 5 6 sol" || normalizedDesired === "5 6 sol";
+  if (wantsGpt56Sol) {
+    const tokens = normalizedResolved.split(" ");
+    const hasGpt56Sol =
+      tokens.includes("gpt") &&
+      tokens.includes("5") &&
+      tokens.includes("6") &&
+      tokens.includes("sol");
+    if (!hasGpt56Sol) {
+      throw new Error(
+        `Model picker selected "${resolvedLabel}" while "${desiredModel}" requires GPT-5.6 Sol.`,
+      );
+    }
+    return;
+  }
   const wantsGpt55Pro =
     desired === "pro" ||
     desired === "chatgpt pro" ||
@@ -211,7 +232,9 @@ function buildModelSelectionExpression(
       .map((token) => normalizeText(token))
       .filter(Boolean);
     const targetWords = normalizedTarget.split(' ').filter(Boolean);
-    const desiredVersion = normalizedTarget.includes('5 4')
+    const desiredVersion = normalizedTarget.includes('5 6')
+      ? '5-6'
+      : normalizedTarget.includes('5 4')
       ? '5-4'
       : normalizedTarget.includes('5 5')
         ? '5-5'
@@ -227,6 +250,7 @@ function buildModelSelectionExpression(
     const wantsPro = normalizedTarget.includes(' pro') || normalizedTarget.endsWith(' pro') || normalizedTokens.includes('pro');
     const wantsInstant = normalizedTarget.includes('instant');
     const wantsThinking = normalizedTarget.includes('thinking');
+    const wantsGpt56Sol = desiredVersion === '5-6' && hasToken(normalizedTarget, 'sol');
     const wantsPlainGpt55 =
       desiredVersion === '5-5' && !wantsPro && !wantsInstant && !wantsThinking;
     const targetUsesCurrentGpt55Alias =
@@ -380,6 +404,7 @@ function buildModelSelectionExpression(
       return 1000;
     };
     const versionFromLabel = (label) => {
+      if (label === '5 6' || label === 'gpt 5 6' || label === 'gpt 5 6 sol') return '5-6';
       if (label === '5 5' || label === 'gpt 5 5') return '5-5';
       if (label === '5 4' || label === 'gpt 5 4') return '5-4';
       if (label === '5 3' || label === 'gpt 5 3') return '5-3';
@@ -391,6 +416,7 @@ function buildModelSelectionExpression(
     };
     const versionFromTestId = (testid) => {
       const normalized = normalizeText(testid);
+      if (normalized.includes('5 6') || normalized.includes('gpt56')) return '5-6';
       if (normalized.includes('5 5') || normalized.includes('gpt55')) return '5-5';
       if (normalized.includes('5 4') || normalized.includes('gpt54')) return '5-4';
       if (normalized.includes('5 3') || normalized.includes('gpt53')) return '5-3';
@@ -416,8 +442,10 @@ function buildModelSelectionExpression(
       return label;
     };
     const configuredSelectionMatchesTarget = () => {
-      const configuredVersion = versionFromLabel(normalizeText(getConfiguredVersionLabel()));
+      const configuredVersionLabel = normalizeText(getConfiguredVersionLabel());
+      const configuredVersion = versionFromLabel(configuredVersionLabel);
       if (!configuredVersion || configuredVersion !== desiredVersion) return false;
+      if (wantsGpt56Sol && !hasToken(configuredVersionLabel, 'sol')) return false;
       const configuredVariant = normalizeText(getConfiguredVariantLabel());
       if (wantsPro) return labelHasProWord(configuredVariant);
       if (wantsInstant) return configuredVariant.includes('instant');
@@ -431,6 +459,13 @@ function buildModelSelectionExpression(
         const variant = getConfiguredVariantLabel();
         const version = formatModelOptionLabel(getConfiguredVersionLabel());
         return [variant, version].filter(Boolean).join(' ');
+      }
+      const normalizedFallback = normalizeText(fallback);
+      if (
+        wantsGpt56Sol &&
+        normalizedFallback === 'gpt 5 6 sol'
+      ) {
+        return formatModelOptionLabel(fallback);
       }
       const composerLabel = getComposerModelLabel();
       if (composerLabel) return withProPillSignal(composerLabel);
@@ -490,6 +525,7 @@ function buildModelSelectionExpression(
         return true;
       }
       if (desiredVersion) {
+        if (desiredVersion === '5-6' && !normalizedLabel.includes('5 6')) return false;
         if (desiredVersion === '5-5' && !normalizedLabel.includes('5 5')) return false;
         if (desiredVersion === '5-4' && !normalizedLabel.includes('5 4')) return false;
         if (desiredVersion === '5-3' && !normalizedLabel.includes('5 3')) return false;
@@ -497,6 +533,7 @@ function buildModelSelectionExpression(
         if (desiredVersion === '5-1' && !normalizedLabel.includes('5 1')) return false;
         if (desiredVersion === '5-0' && !normalizedLabel.includes('5 0')) return false;
       }
+      if (wantsGpt56Sol && !hasToken(normalizedLabel, 'sol')) return false;
       if (wantsPro && labelHasLegacyProVersion(normalizedLabel)) return false;
       if (wantsPro && !labelHasProWord(normalizedLabel)) return false;
       if (wantsInstant && !normalizedLabel.includes('instant')) return false;
@@ -629,6 +666,12 @@ function buildModelSelectionExpression(
       if (normalizedTestId) {
         if (desiredVersion) {
           // data-testid strings have been observed with both dotted and dashed versions (e.g. gpt-5.2-pro vs gpt-5-2-pro).
+          const has56 =
+            normalizedTestId.includes('5-6') ||
+            normalizedTestId.includes('5.6') ||
+            normalizedTestId.includes('gpt-5-6') ||
+            normalizedTestId.includes('gpt-5.6') ||
+            normalizedTestId.includes('gpt56');
           const has52 =
             normalizedTestId.includes('5-2') ||
             normalizedTestId.includes('5.2') ||
@@ -665,7 +708,9 @@ function buildModelSelectionExpression(
             normalizedTestId.includes('gpt-5-0') ||
             normalizedTestId.includes('gpt-5.0') ||
             normalizedTestId.includes('gpt50');
-          const candidateVersion = has55
+          const candidateVersion = has56
+            ? '5-6'
+            : has55
             ? '5-5'
             : has54
               ? '5-4'
@@ -723,12 +768,17 @@ function buildModelSelectionExpression(
         !normalizedTestId.includes('pro');
       const candidateSelectsDesiredVersion =
         Boolean(desiredVersion) && candidateTextVersion === desiredVersion;
+      const candidateHasSol =
+        hasToken(normalizedText, 'sol') || normalizedTestId.includes('sol');
       if (
         desiredVersion &&
         candidateTextVersion &&
         candidateTextVersion !== desiredVersion &&
         !candidateOpensVersionSubmenu
       ) {
+        return 0;
+      }
+      if (wantsGpt56Sol && candidateSelectsDesiredVersion && !candidateHasSol) {
         return 0;
       }
       const candidateIsGpt55ThinkingFamily =
@@ -904,6 +954,7 @@ function buildModelSelectionExpression(
         text.includes('instant') ||
         text.includes('thinking') ||
         labelHasProWord(text) ||
+        text.includes('5 6') ||
         text.includes('5 5') ||
         text.includes('5 4') ||
         text.includes('5 2') ||
@@ -927,12 +978,26 @@ function buildModelSelectionExpression(
         node?.getAttribute?.('aria-labelledby') === 'model-selection-label') ||
       node?.getAttribute?.('aria-haspopup') === 'menu' ||
       node?.getAttribute?.('data-has-submenu') !== null;
+    const isAuthoritativeGpt56SolTrigger = (node, normalizedText) => {
+      if (!wantsGpt56Sol || normalizedText !== 'gpt 5 6 sol') return false;
+      if (node?.getAttribute?.('role') !== 'menuitem') return false;
+      if (node?.getAttribute?.('aria-haspopup') !== 'menu') return false;
+      const owner = node?.closest?.('[data-testid="composer-intelligence-picker-content"]');
+      // The live owner is role=group nested inside the primary role=menu.
+      // Detached legacy submenus are portalled outside this owner boundary.
+      return Boolean(owner);
+    };
     const canTrustSelectedOption = (node, normalizedText, testid) => {
-      if (!optionIsSelected(node)) return false;
+      const authoritativeGpt56Sol = isAuthoritativeGpt56SolTrigger(node, normalizedText);
+      if (!optionIsSelected(node) && !authoritativeGpt56Sol) return false;
       if (getConfigurationDialog() && !configuredSelectionMatchesTarget()) return false;
       const optionVersion = versionFromLabel(normalizedText) ?? versionFromTestId(testid);
       if (desiredVersion && optionVersion !== desiredVersion) return false;
+      if (wantsGpt56Sol && !hasToken(normalizedText + ' ' + normalizeText(testid), 'sol')) {
+        return false;
+      }
       const currentButtonLabel = normalizeText(getButtonLabel());
+      if (wantsGpt56Sol) return authoritativeGpt56Sol || optionIsSelected(node);
       return !labelHasProWord(currentButtonLabel) && !hasProComposerPill();
     };
     const openedSubmenuKeys = new Set();
@@ -1153,6 +1218,13 @@ function buildComposerSignalMatchers(targetModel: string): ComposerSignalMatcher
     .replace(/\s+/g, " ")
     .trim();
 
+  if (normalized.includes("5 6") && normalized.split(" ").includes("sol")) {
+    return {
+      includesAny: ["gpt 5 6 sol", "5 6 sol"],
+      excludesAny: ["thinking", "instant"],
+      allowBlank: false,
+    };
+  }
   if (normalized.includes("pro")) {
     return { includesAny: ["pro"], excludesAny: ["thinking"], allowBlank: false };
   }
@@ -1194,6 +1266,19 @@ function buildModelMatchersLiteral(targetModel: string): {
   push(`chatgpt ${dotless}`, labelTokens);
   push(`gpt ${base}`, labelTokens);
   push(`gpt ${dotless}`, labelTokens);
+  // Current ChatGPT Pro route: GPT-5.6 Sol model + separate Pro intelligence mode.
+  if (base.includes("5.6") || base.includes("5-6") || base.includes("56")) {
+    push("5.6 sol", labelTokens);
+    push("gpt-5.6 sol", labelTokens);
+    push("gpt 5.6 sol", labelTokens);
+    push("gpt-5-6-sol", labelTokens);
+    push("gpt56sol", labelTokens);
+    testIdTokens.add("model-switcher-gpt-5-6-sol");
+    testIdTokens.add("model-switcher-gpt-5.6-sol");
+    testIdTokens.add("gpt-5-6-sol");
+    testIdTokens.add("gpt-5.6-sol");
+    testIdTokens.add("gpt56sol");
+  }
   // Numeric variations (5.5 <-> 55 <-> gpt-5-5)
   if (base.includes("5.5") || base.includes("5-5") || base.includes("55")) {
     push("5.5", labelTokens);

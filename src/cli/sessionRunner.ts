@@ -414,6 +414,7 @@ export async function performSessionRun({
           runtime: result.runtime,
           archive: result.archive,
           modelSelection: result.modelSelection,
+          remoteRun: result.remoteRun,
           warnings: result.warnings,
         },
         artifacts: mergeArtifacts(sessionMeta.artifacts, result.artifacts),

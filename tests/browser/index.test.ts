@@ -188,6 +188,117 @@ describe("manual-login profile setup gate", () => {
 // wrong for lower-tier plans where Pro defaults to Standard. The thinking time
 // step now always runs; ensureThinkingTime handles the already-selected case.
 
+describe("GPT-5.6 Sol + Pro evidence integration", () => {
+  test("merges the independently verified model and Pro mode before submit", () => {
+    const evidence = __test__.mergeModeSelectionEvidence(
+      {
+        requestedModel: "GPT-5.6 Sol",
+        resolvedLabel: "GPT-5.6 Sol",
+        requestedModelLabel: "GPT-5.6 Sol",
+        resolvedModelLabel: "GPT-5.6 Sol",
+        modelVerified: true,
+        strategy: "select",
+        status: "already-selected",
+        verified: true,
+        source: "chatgpt-model-picker",
+        capturedAt: "2026-07-09T00:00:00.000Z",
+      },
+      {
+        requestedModelLabel: "GPT-5.6 Sol",
+        resolvedModelLabel: "GPT-5.6 Sol",
+        modelVerified: true,
+        requestedMode: "Pro",
+        resolvedModeLabel: "Pro",
+        modeVerified: true,
+        verifiedBeforePromptSubmit: true,
+      },
+    );
+
+    expect(evidence).toMatchObject({
+      resolvedLabel: "GPT-5.6 Sol + Pro",
+      modelVerified: true,
+      modeVerified: true,
+      verifiedBeforePromptSubmit: true,
+      verified: true,
+    });
+    expect(() => __test__.assertProtectedSolProEvidence("GPT-5.6 Sol", evidence)).not.toThrow();
+  });
+
+  test("fails closed when only the model axis was verified", () => {
+    expect(() =>
+      __test__.assertProtectedSolProEvidence("GPT-5.6 Sol", {
+        requestedModel: "GPT-5.6 Sol",
+        resolvedLabel: "GPT-5.6 Sol",
+        requestedModelLabel: "GPT-5.6 Sol",
+        resolvedModelLabel: "GPT-5.6 Sol",
+        modelVerified: true,
+        requestedMode: "Pro",
+        resolvedModeLabel: null,
+        modeVerified: false,
+        verifiedBeforePromptSubmit: false,
+        strategy: "select",
+        status: "already-selected",
+        verified: false,
+        source: "chatgpt-model-picker",
+        capturedAt: "2026-07-09T00:00:00.000Z",
+      }),
+    ).toThrow(/atomically verified/i);
+  });
+
+  test("re-runs both protected checks for every submit attempt", async () => {
+    const selectModel = vi.fn(async () => ({
+      requestedModel: "GPT-5.6 Sol",
+      resolvedLabel: "GPT-5.6 Sol",
+      requestedModelLabel: "GPT-5.6 Sol",
+      resolvedModelLabel: "GPT-5.6 Sol",
+      modelVerified: true,
+      strategy: "select" as const,
+      status: "already-selected" as const,
+      verified: true,
+      source: "chatgpt-model-picker" as const,
+      capturedAt: "2026-07-09T00:00:00.000Z",
+    }));
+    const selectMode = vi.fn(async () => ({
+      requestedModelLabel: "GPT-5.6 Sol",
+      resolvedModelLabel: "GPT-5.6 Sol",
+      modelVerified: true,
+      requestedMode: "Pro",
+      resolvedModeLabel: "Pro",
+      modeVerified: true,
+      verifiedBeforePromptSubmit: true,
+    }));
+    const verifyAttempt = () =>
+      __test__.verifyProtectedSolProSelectionForSubmit({
+        desiredModel: "GPT-5.6 Sol",
+        modelStrategy: "select",
+        thinkingTime: "extended",
+        selectModel,
+        selectMode,
+      });
+
+    await expect(verifyAttempt()).resolves.toMatchObject({ verified: true });
+    await expect(verifyAttempt()).resolves.toMatchObject({ verified: true });
+    expect(selectModel).toHaveBeenCalledTimes(2);
+    expect(selectMode).toHaveBeenCalledTimes(2);
+  });
+
+  test("refuses a protected submit before running selectors when policy was weakened", async () => {
+    const selectModel = vi.fn();
+    const selectMode = vi.fn();
+    await expect(
+      __test__.verifyProtectedSolProSelectionForSubmit({
+        desiredModel: "GPT-5.6 Sol",
+        modelStrategy: "current",
+        thinkingTime: "extended",
+        selectModel,
+        selectMode,
+      }),
+    ).rejects.toThrow(/before every prompt submission/i);
+    expect(selectModel).not.toHaveBeenCalled();
+    expect(selectMode).not.toHaveBeenCalled();
+  });
+});
+
 describe("formatBrowserTurnTranscript", () => {
   test("keeps single-turn browser output unchanged", () => {
     expect(
@@ -250,9 +361,7 @@ describe("enableFocusEmulation", () => {
       __test__.enableFocusEmulation(client as never, logger, "remote target"),
     ).resolves.toBeUndefined();
 
-    expect(logger).toHaveBeenCalledWith(
-      "[browser] Focus emulation unavailable: not supported",
-    );
+    expect(logger).toHaveBeenCalledWith("[browser] Focus emulation unavailable: not supported");
   });
 });
 
@@ -267,9 +376,7 @@ describe("ChatGPT UI warning detection", () => {
 
   test("classifies explicit quota warnings as rate limits", () => {
     expect(__test__.classifyChatGptUiWarningText("Rate limit exceeded.")).toBe("rate_limit");
-    expect(__test__.classifyChatGptUiWarningText("You are being rate limited.")).toBe(
-      "rate_limit",
-    );
+    expect(__test__.classifyChatGptUiWarningText("You are being rate limited.")).toBe("rate_limit");
   });
 
   test("does not classify ordinary rate-limiter task titles as warnings", () => {

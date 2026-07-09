@@ -64,14 +64,14 @@ export function applyHelpStyling(program: Command, version: string, isTty: boole
 
 function renderHelpBanner(version: string, colors: HelpColors): string {
   const subtitle =
-    "Reviewed lanes: ChatGPT Pro Extended Reasoning, Fable xHigh, and Gemini 3.1 Deep Think.";
+    "Reviewed lanes: ChatGPT GPT-5.6 Sol + Pro, Fable xHigh, and Gemini 3.1 Deep Think.";
   return `${colors.banner(`🧿 oracle v${version}`)} ${colors.subtitle(`— ${subtitle}`)}\n`;
 }
 
 function renderHelpFooter(program: Command, colors: HelpColors): string {
   const tips = [
     `${colors.bullet("•")} Required: always pass a prompt AND ${colors.accent("--file …")} (directories/globs are fine); Oracle cannot see your project otherwise.`,
-    `${colors.bullet("•")} Core lanes: ChatGPT Pro Extended Reasoning via ${colors.accent("--lane chatgpt-pro")}, Fable xHigh via ${colors.accent("--lane fable-local")}, and Gemini 3.1 Deep Think via ${colors.accent("--lane gemini-deep-think")}.`,
+    `${colors.bullet("•")} Core lanes: ChatGPT GPT-5.6 Sol + Pro via ${colors.accent("--lane chatgpt-pro")}, Fable xHigh via ${colors.accent("--lane fable-local")}, and Gemini 3.1 Deep Think via ${colors.accent("--lane gemini-deep-think")}.`,
     `${colors.bullet("•")} Check the current lane/router contract first with ${colors.accent("oracle doctor lanes --json")} and ${colors.accent("oracle remote doctor --json")}.`,
     `${colors.bullet("•")} Attach lots of source (whole directories beat single files) and keep total input under ~196k tokens.`,
     `${colors.bullet("•")} Oracle starts empty—open with a short project briefing (stack, services, build steps), spell out the question and prior attempts, and why it matters; the more explanation and context you provide, the better the response will be.`,
@@ -94,7 +94,7 @@ function renderHelpFooter(program: Command, colors: HelpColors): string {
   const examples = [
     formatExample(
       `${program.name()} --lane chatgpt-pro --prompt "Review this migration plan" --file docs/plan.md`,
-      "Use the ChatGPT Pro Extended Reasoning browser lane.",
+      "Use the ChatGPT GPT-5.6 Sol + Pro browser lane.",
     ),
     formatExample(
       `${program.name()} --lane fable-local --prompt "Review this migration plan" --file docs/plan.md`,

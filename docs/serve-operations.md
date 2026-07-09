@@ -21,10 +21,10 @@ private infra repo, not here.
 **Symptom.** A run reports success (`done.ok = true`, no error) but the answer
 is a one-line teaser — a single sentence or even a bare section heading — for a
 prompt that clearly asked for a substantial, multi-section reply. Downstream
-consumers see something like *"oracle returned only a one-line teaser (~42
-tokens)."*
+consumers see something like _"oracle returned only a one-line teaser (~42
+tokens)."_
 
-**Why it happens.** ChatGPT Pro / Pro Extended "thinks" before it answers. At
+**Why it happens.** ChatGPT's GPT-5.6 Sol + Pro route can think for a long time before it answers. At
 the moment thinking ends and the answer begins, the page passes through a
 transient state where:
 
@@ -49,13 +49,13 @@ Two things make this stochastic and hard to catch:
 **How the current build defends.** Capture acceptance now, in both the
 Node-side watchdog poll loop and the in-page settle loop:
 
-- treats an observed thinking indicator as *activity* — it resets the idle
+- treats an observed thinking indicator as _activity_ — it resets the idle
   clock, so a long pause can never pre-satisfy the stability window;
 - requires a non-compact answer to hold acceptance across several consecutive
   samples once a run is in "thinking territory," so a single control flicker
   cannot win;
 - refuses to bare-accept a short fragment once a run has been waiting past the
-  compact grace window (measured from the *start* of the wait, threaded through
+  compact grace window (measured from the _start_ of the wait, threaded through
   the recovery path so no code path resets it);
 - re-confirms mid-thinking and sub-500-character captures through the watchdog,
   and **fails loud** ("did not reach stable completion") rather than returning a
@@ -122,7 +122,7 @@ account challenge / rate-limit interstitial was in play.
 ## 3. Deploying a new build — install is not live
 
 **The trap.** `npm install` changes files on disk. The running `node` process
-loaded its module graph once, at start, and keeps executing the *old* build
+loaded its module graph once, at start, and keeps executing the _old_ build
 until it is restarted. So:
 
 > Installing a tarball without restarting the service is a silent no-op deploy.

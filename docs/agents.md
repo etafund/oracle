@@ -11,7 +11,7 @@ Drop this into the project's `AGENTS.md` or `CLAUDE.md`:
 
 ```
 - Oracle bundles a prompt plus the right files for the reviewed lanes:
-  ChatGPT Pro Extended Reasoning, Fable xHigh, and Gemini 3.1 Deep Think.
+  ChatGPT GPT-5.6 Sol + Pro, Fable xHigh, and Gemini 3.1 Deep Think.
   Use when stuck, debugging hard bugs, doing architecture review, or
   cross-validating a plan.
 - Run `npx -y @steipete/oracle --help` once per session before first use.
@@ -27,7 +27,7 @@ That's enough for most agents to discover and use Oracle correctly. The patterns
 oracle bridge claude-config --local-browser > .mcp.json
 ```
 
-That writes a `.mcp.json` configured for the local browser path, so Claude Code can call `oracle.consult` and `oracle.sessions` without any API keys. Use the MCP `consult` tool with `preset: "chatgpt-pro-heavy"` for ChatGPT Pro Extended Reasoning. Add `dryRun: true` to inspect the resolved bundle before sending. MCP Fable execution is still route-blocked; the Fable xHigh lane is local CLI-owner only.
+That writes a `.mcp.json` configured for the local browser path, so Claude Code can call `oracle.consult` and `oracle.sessions` without any API keys. Use the MCP `consult` tool with `preset: "chatgpt-pro-heavy"` for GPT-5.6 Sol with checked Pro mode. Add `dryRun: true` to inspect the resolved bundle before sending. MCP Fable execution is still route-blocked; the Fable xHigh lane is local CLI-owner only.
 
 See [MCP](mcp.md) for connection details and other clients.
 
@@ -44,7 +44,7 @@ Then reference `oracle` in `CLAUDE.md`. Claude Code will load `SKILL.md` wheneve
 
 ### As a slash command
 
-Many users alias Oracle behind a custom `/consult` slash command that wraps `npx -y @steipete/oracle --engine browser …`. Pair with `--browser-tab current` to keep all consults in one ChatGPT conversation.
+Many users alias Oracle behind a custom `/consult` slash command that wraps `npx -y @steipete/oracle --lane chatgpt-pro …`. Pair with `--browser-tab current` to keep all consults in one ChatGPT conversation.
 
 ## Codex
 
@@ -87,7 +87,7 @@ oracle --render --copy -p "$TASK" --file "$RELEVANT_FILES"
 For autonomous dry-runs, inspect the resolved bundle before spending model time:
 
 ```bash
-oracle --dry-run summary --files-report --model gpt-5.5-pro -p "$TASK" --file "$RELEVANT_FILES"
+oracle --lane chatgpt-pro --dry-run summary --files-report -p "$TASK" --file "$RELEVANT_FILES"
 ```
 
 Completed runs persist answers, usage, cost, session ids, model choices, and lineage under `~/.oracle/sessions/<id>/`. Exit code is non-zero on failure.
@@ -111,7 +111,7 @@ For the most reliable shared setup: run one signed-in Chrome with remote debuggi
 
 ## Patterns that work
 
-- **Stuck → Oracle.** When the agent has been spinning on the same bug for 3+ turns, hand the failing test plus the involved files to ChatGPT Pro Extended Reasoning.
+- **Stuck → Oracle.** When the agent has been spinning on the same bug for 3+ turns, hand the failing test plus the involved files to ChatGPT GPT-5.6 Sol + Pro.
 - **Plan → Oracle → execute.** Draft the plan, ask Fable xHigh locally or Gemini 3.1 Deep Think in the browser to challenge it, then implement.
 - **Refactor → cross-check.** After a non-trivial refactor, send the diff plus the spec through a reviewed lane different from the one that wrote the diff. Catches drift fast.
 - **Followup chain.** Use `--followup <id>` to keep one Pro session alive across iterations rather than re-bundling the whole repo every time. See [Followup](followup.md).

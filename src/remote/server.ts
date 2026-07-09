@@ -251,11 +251,7 @@ export async function probeAttachTarget(params: {
       probedAt,
     };
   }
-  const ownerOk = await checkAttachTargetOwner(
-    params.profileDir,
-    port,
-    params.findRunningTarget,
-  );
+  const ownerOk = await checkAttachTargetOwner(params.profileDir, port, params.findRunningTarget);
   if (ownerOk === false) {
     return {
       ok: false,
@@ -776,7 +772,9 @@ export async function createRemoteServer(
             ...extraHeaders,
           });
         }
-        res.end(JSON.stringify(revealIdentity ? { error: code, runId, ...extra } : { error: code }));
+        res.end(
+          JSON.stringify(revealIdentity ? { error: code, runId, ...extra } : { error: code }),
+        );
       };
 
       if (!isAuthorizedBearer(req.headers.authorization, authToken)) {
@@ -1429,7 +1427,11 @@ function buildHealthResponse({
     build: getOracleBuildInfo(),
     uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
     busy: unavailable,
-    state: busy ? classifyActiveRunReadinessState(activeRun) : admitting ? "admitting" : "idle-ready",
+    state: busy
+      ? classifyActiveRunReadinessState(activeRun)
+      : admitting
+        ? "admitting"
+        : "idle-ready",
     capabilities: ARTIFACT_CAPABILITIES,
     // Integration point for the dedicated /ready endpoint: it should surface
     // these exact field names (timeoutMs, profileLockTimeoutMs,
@@ -1981,6 +1983,13 @@ async function buildRunProvenance(params: {
     modelVerified: selection?.verified ?? null,
     modelRequested: selection?.requestedModel ?? null,
     modelResolved: selection?.resolvedLabel ?? null,
+    requestedModelLabel: selection?.requestedModelLabel ?? null,
+    resolvedModelLabel: selection?.resolvedModelLabel ?? null,
+    modelLabelVerified: selection?.modelVerified ?? null,
+    requestedMode: selection?.requestedMode ?? null,
+    resolvedModeLabel: selection?.resolvedModeLabel ?? null,
+    modeVerified: selection?.modeVerified ?? null,
+    verifiedBeforePromptSubmit: selection?.verifiedBeforePromptSubmit ?? null,
     captureBindingVerified: params.bindingVerified,
     captureBindingQuality: params.bindingVerified === true ? params.bindingQuality : null,
     challengeClean,

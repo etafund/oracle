@@ -2,6 +2,7 @@ import type CDP from "chrome-remote-interface";
 import type Protocol from "devtools-protocol";
 import type {
   BrowserModelSelectionEvidence,
+  BrowserRemoteRunEvidence,
   BrowserRunWarning,
   BrowserRuntimeMetadata,
 } from "../sessionStore.js";
@@ -199,6 +200,7 @@ export interface BrowserRunResult {
   savedFiles?: SavedBrowserFile[];
   archive?: BrowserArchiveResult;
   modelSelection?: BrowserModelSelectionEvidence;
+  remoteRun?: BrowserRemoteRunEvidence;
   warnings?: BrowserRunWarning[];
   tookMs: number;
   answerTokens: number;

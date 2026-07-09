@@ -137,6 +137,20 @@ export type BrowserModelSelectionEvidenceStatus =
 export interface BrowserModelSelectionEvidence {
   requestedModel?: string | null;
   resolvedLabel?: string | null;
+  /** Exact browser-visible model label requested by the route (for example GPT-5.6 Sol). */
+  requestedModelLabel?: string | null;
+  /** Exact browser-visible model label observed in the active picker. */
+  resolvedModelLabel?: string | null;
+  /** Whether the active picker proved the requested model independently of mode/effort. */
+  modelVerified?: boolean;
+  /** Browser intelligence mode requested independently of the model (for example Pro). */
+  requestedMode?: string | null;
+  /** Exact checked/selected browser intelligence label observed in the active picker. */
+  resolvedModeLabel?: string | null;
+  /** Whether the requested intelligence mode was visibly selected. */
+  modeVerified?: boolean;
+  /** True only when the model and mode were both verified before the prompt submit boundary. */
+  verifiedBeforePromptSubmit?: boolean;
   strategy?: BrowserModelStrategy;
   status: BrowserModelSelectionEvidenceStatus;
   verified: boolean;
@@ -151,12 +165,36 @@ export interface BrowserRunWarning {
   details?: Record<string, unknown>;
 }
 
+export interface BrowserRemoteRunProvenance {
+  modelVerified: boolean | null;
+  modelRequested: string | null;
+  modelResolved: string | null;
+  requestedModelLabel?: string | null;
+  resolvedModelLabel?: string | null;
+  modelLabelVerified?: boolean | null;
+  requestedMode?: string | null;
+  resolvedModeLabel?: string | null;
+  modeVerified?: boolean | null;
+  verifiedBeforePromptSubmit?: boolean | null;
+  captureBindingVerified: boolean | null;
+  captureBindingQuality: "message-handle" | "guessed" | "conversation-only" | null;
+  challengeClean: boolean | null;
+}
+
+/** Authoritative remote terminal-event evidence persisted with the client session. */
+export interface BrowserRemoteRunEvidence {
+  runId: string | null;
+  terminalDoneOk: true;
+  provenance: BrowserRemoteRunProvenance | null;
+}
+
 export interface BrowserMetadata {
   config?: BrowserSessionConfig;
   runtime?: BrowserRuntimeMetadata;
   harvest?: BrowserHarvestMetadata;
   archive?: BrowserArchiveResult;
   modelSelection?: BrowserModelSelectionEvidence;
+  remoteRun?: BrowserRemoteRunEvidence;
   warnings?: BrowserRunWarning[];
 }
 

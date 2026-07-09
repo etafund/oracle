@@ -131,7 +131,7 @@ export const ROBOT_COMMANDS: readonly RobotCommandEntry[] = Object.freeze([
     name: "doctor-lanes",
     command: "oracle doctor lanes --json",
     purpose:
-      "Static reviewed-lane policy: ChatGPT Pro Extended Reasoning, Fable xHigh, and Gemini 3.1 Deep Think.",
+      "Static reviewed-lane policy: ChatGPT GPT-5.6 Sol + Pro, Fable xHigh, and Gemini 3.1 Deep Think.",
     paid_calls: false,
     dry_run: true,
     required_env: [],

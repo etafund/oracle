@@ -273,7 +273,7 @@ describe("config explain helper", () => {
       generated_at: NOW.toISOString(),
       effective_config: {
         engine: "browser",
-        model: "gpt-5.5-pro",
+        model: "gpt-5.6-sol",
       },
     });
     expect(jsonReport.entries.map((configEntry) => configEntry.path)).toContain("engine");

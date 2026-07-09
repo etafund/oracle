@@ -1,5 +1,6 @@
 import type { ChromeClient, BrowserLogger } from "../types.js";
 import type { ThinkingTimeLevel } from "../../oracle/types.js";
+import type { BrowserModelSelectionEvidence } from "../../sessionStore.js";
 import {
   MENU_CONTAINER_SELECTOR,
   MENU_ITEM_SELECTOR,
@@ -24,7 +25,26 @@ type ThinkingTimeOutcome = (
       status: "model-kind-not-found";
       diagnostic?: ThinkingTimePickerDiagnostic;
     }
-) & { modelKind?: string | null };
+) & {
+  label?: string | null;
+  modelKind?: string | null;
+  modelLabel?: string | null;
+  modelVerified?: boolean;
+  modeLabel?: string | null;
+  modeVerified?: boolean;
+  verifiedBeforePromptSubmit?: boolean;
+};
+
+export type BrowserModeSelectionEvidence = Pick<
+  BrowserModelSelectionEvidence,
+  | "requestedModelLabel"
+  | "resolvedModelLabel"
+  | "modelVerified"
+  | "requestedMode"
+  | "resolvedModeLabel"
+  | "modeVerified"
+  | "verifiedBeforePromptSubmit"
+>;
 
 const BROWSER_THINKING_LOG_PREFIX = "[browser] Thinking time:";
 
@@ -60,21 +80,37 @@ export async function ensureThinkingTime(
   level: ThinkingTimeLevel,
   logger: BrowserLogger,
   desiredModel?: string | null,
-) {
+): Promise<BrowserModeSelectionEvidence | undefined> {
   const result = await evaluateThinkingTimeSelection(Runtime, level, desiredModel);
   const capitalizedLevel = level.charAt(0).toUpperCase() + level.slice(1);
   const targetModelKind = inferThinkingTargetModelKind(desiredModel);
   const observedModelKind = result && "modelKind" in result ? result.modelKind : null;
   const strictProEffort =
     (targetModelKind === "pro" || observedModelKind === "pro") && level === "extended";
+  const strictGpt56SolPro = isGpt56SolModelLabel(desiredModel) && level === "extended";
+  const evidence = buildModeSelectionEvidence(result, level, desiredModel);
+  const returnedEvidence = strictGpt56SolPro ? evidence : undefined;
+
+  if (
+    strictGpt56SolPro &&
+    (!evidence.modelVerified ||
+      !evidence.modeVerified ||
+      evidence.verifiedBeforePromptSubmit !== true)
+  ) {
+    await logDomFailure(Runtime, logger, "thinking-gpt-5-6-sol-pro-unverified");
+    logPickerDiagnostic(result, logger);
+    throw new Error(
+      "Thinking time: GPT-5.6 Sol + Pro selection unverified; refusing to submit without a checked bare Pro mode paired with GPT-5.6 Sol in the same Intelligence menu.",
+    );
+  }
 
   switch (result?.status) {
     case "already-selected":
       logger(formatBrowserThinkingLog(`${result.label ?? capitalizedLevel} (already selected)`));
-      return;
+      return returnedEvidence;
     case "switched":
       logger(formatBrowserThinkingLog(result.label ?? capitalizedLevel));
-      return;
+      return returnedEvidence;
     case "chip-not-found":
     case "menu-not-found":
     case "option-not-found":
@@ -90,17 +126,19 @@ export async function ensureThinkingTime(
             : "";
       const message = `Thinking time: ${result.status.replaceAll("-", " ")}${kindHint} (requested ${capitalizedLevel})`;
       if (strictProEffort) {
-        throw new Error(`${message}; refusing to submit without confirmed Pro Extended.`);
+        throw new Error(
+          `${message}; refusing to submit without confirmed ${strictGpt56SolPro ? "GPT-5.6 Sol + Pro" : "Pro Extended"}.`,
+        );
       }
       logger(formatBrowserThinkingLog(`${message}; continuing with ChatGPT default.`));
-      return;
+      return returnedEvidence;
     }
     default: {
       await logDomFailure(Runtime, logger, "thinking-time-unknown");
       logPickerDiagnostic(result, logger);
       if (strictProEffort) {
         throw new Error(
-          `Thinking time: unknown outcome selecting ${capitalizedLevel}; refusing to submit without confirmed Pro Extended.`,
+          `Thinking time: unknown outcome selecting ${capitalizedLevel}; refusing to submit without confirmed ${strictGpt56SolPro ? "GPT-5.6 Sol + Pro" : "Pro Extended"}.`,
         );
       }
       logger(
@@ -108,9 +146,30 @@ export async function ensureThinkingTime(
           `unknown outcome selecting ${capitalizedLevel}; continuing with ChatGPT default.`,
         ),
       );
-      return;
+      return returnedEvidence;
     }
   }
+}
+
+function buildModeSelectionEvidence(
+  result: ThinkingTimeOutcome | undefined,
+  level: ThinkingTimeLevel,
+  desiredModel?: string | null,
+): BrowserModeSelectionEvidence {
+  const isGpt56Sol = isGpt56SolModelLabel(desiredModel);
+  const success = result?.status === "already-selected" || result?.status === "switched";
+  const requestedMode = isGpt56Sol && level === "extended" ? "Pro" : level;
+  return {
+    requestedModelLabel: desiredModel ?? null,
+    resolvedModelLabel: result?.modelLabel ?? null,
+    modelVerified: isGpt56Sol ? result?.modelVerified === true : undefined,
+    requestedMode,
+    resolvedModeLabel: result?.modeLabel ?? result?.label ?? null,
+    modeVerified: isGpt56Sol ? result?.modeVerified === true : success,
+    verifiedBeforePromptSubmit: isGpt56Sol
+      ? result?.verifiedBeforePromptSubmit === true
+      : undefined,
+  };
 }
 
 /**
@@ -187,6 +246,7 @@ function buildThinkingTimeExpression(
   const modelButtonLiteral = JSON.stringify(MODEL_BUTTON_SELECTOR);
   const targetLevelLiteral = JSON.stringify(level.toLowerCase());
   const targetModelKindLiteral = JSON.stringify(inferThinkingTargetModelKind(desiredModel));
+  const targetModelLabelLiteral = JSON.stringify(desiredModel ?? null);
 
   return `(async () => {
     ${buildClickDispatcher()}
@@ -196,6 +256,7 @@ function buildThinkingTimeExpression(
     const MODEL_BUTTON_SELECTOR = ${modelButtonLiteral};
     const TARGET_LEVEL = ${targetLevelLiteral};
     const TARGET_MODEL_KIND = ${targetModelKindLiteral};
+    const TARGET_MODEL_LABEL = ${targetModelLabelLiteral};
 
     // Bilingual matchers: English level token + observed Chinese variants.
     const LEVEL_TOKENS = {
@@ -222,6 +283,10 @@ function buildThinkingTimeExpression(
       .replace(/\\s+/g, ' ')
       .trim();
     const hasToken = (text, token) => normalize(text).split(' ').includes(token);
+    const TARGET_IS_GPT56_SOL = (() => {
+      const target = normalize(TARGET_MODEL_LABEL);
+      return hasToken(target, 'gpt') && hasToken(target, '5') && hasToken(target, '6') && hasToken(target, 'sol');
+    })();
     const matchesLevel = (text) => {
       const t = normalize(text);
       if (!t) return false;
@@ -584,6 +649,127 @@ function buildThinkingTimeExpression(
       closeOpenMenus();
       return result;
     };
+
+    // Current ChatGPT Pro is a two-axis selection: the active model is
+    // "GPT-5.6 Sol" and the checked Intelligence option is the bare "Pro"
+    // row. Both signals must come from the same visible Intelligence menu;
+    // subscription badges, composer pills, and detached effort menus are not
+    // proof of this route.
+    if (TARGET_IS_GPT56_SOL && TARGET_LEVEL === 'extended') {
+      const modelBtn = findModelButton();
+      if (!modelBtn) return failure('chip-not-found', {
+        modelKind: 'pro',
+        modelVerified: false,
+        modeVerified: false,
+        verifiedBeforePromptSubmit: false,
+      });
+      if (modelBtn.getAttribute?.('aria-expanded') !== 'true') {
+        dispatchClickSequence(modelBtn);
+        await sleep(INITIAL_WAIT_MS);
+      }
+
+      const intelligenceItems = (menu) => Array.from(
+        menu?.querySelectorAll?.(
+          '[role="menuitemradio"], [role="menuitem"], [role="option"], [role="radio"]',
+        ) ?? [],
+      );
+      const itemLabel = (node) =>
+        normalize(node?.textContent ?? '') || normalize(node?.getAttribute?.('aria-label') ?? '');
+      const isGpt56SolModelOption = (node) => {
+        const label = itemLabel(node);
+        return label === 'gpt 5 6 sol' || label.startsWith('gpt 5 6 sol ');
+      };
+      const isBareProOption = (node) => itemLabel(node) === 'pro';
+      const readGpt56SolProSnapshot = () => {
+        const menu = document.querySelector(INTELLIGENCE_MENU_SELECTOR);
+        if (!isVisible(menu)) return null;
+        const items = intelligenceItems(menu);
+        const modelOption = items.find(isGpt56SolModelOption) ?? null;
+        const modeOption = items.find(isBareProOption) ?? null;
+        return {
+          menu,
+          modelOption,
+          modeOption,
+          modelLabel: modelOption?.textContent?.trim?.() || null,
+          modeLabel: modeOption?.textContent?.trim?.() || null,
+          modeSelected: optionIsSelected(modeOption),
+        };
+      };
+      const verifiedGpt56SolPro = (status, snapshot) => ({
+        status,
+        label: snapshot.modeLabel,
+        modelKind: 'pro',
+        modelLabel: snapshot.modelLabel,
+        modelVerified: true,
+        modeLabel: snapshot.modeLabel,
+        modeVerified: true,
+        verifiedBeforePromptSubmit: true,
+      });
+
+      let snapshot = null;
+      const intelligenceDeadline = performance.now() + INTELLIGENCE_WAIT_MS;
+      while (performance.now() < intelligenceDeadline) {
+        snapshot = readGpt56SolProSnapshot();
+        if (snapshot) break;
+        await sleep(100);
+      }
+      if (!snapshot) return failure('menu-not-found', {
+        modelKind: 'pro',
+        modelVerified: false,
+        modeVerified: false,
+        verifiedBeforePromptSubmit: false,
+      });
+      if (!snapshot.modelOption) return failure('model-kind-not-found', {
+        modelKind: 'pro',
+        modelLabel: null,
+        modelVerified: false,
+        modeLabel: snapshot.modeLabel,
+        modeVerified: false,
+        verifiedBeforePromptSubmit: false,
+      });
+      if (!snapshot.modeOption) return failure('option-not-found', {
+        modelKind: 'pro',
+        modelLabel: snapshot.modelLabel,
+        modelVerified: true,
+        modeLabel: null,
+        modeVerified: false,
+        verifiedBeforePromptSubmit: false,
+      });
+      if (snapshot.modeSelected) {
+        closeOpenMenus();
+        return verifiedGpt56SolPro('already-selected', snapshot);
+      }
+
+      dispatchClickSequence(snapshot.modeOption);
+      await sleep(STEP_WAIT_MS);
+      let reopened = false;
+      const selectionDeadline = performance.now() + 2000;
+      while (performance.now() < selectionDeadline) {
+        snapshot = readGpt56SolProSnapshot();
+        if (!snapshot && !reopened) {
+          dispatchClickSequence(modelBtn);
+          reopened = true;
+          await sleep(INITIAL_WAIT_MS);
+          snapshot = readGpt56SolProSnapshot();
+        }
+        if (snapshot?.modelOption && snapshot?.modeOption && snapshot.modeSelected) {
+          closeOpenMenus();
+          return verifiedGpt56SolPro('switched', snapshot);
+        }
+        await sleep(100);
+      }
+      const result = failure('selection-unverified', {
+        modelKind: 'pro',
+        modelLabel: snapshot?.modelLabel ?? null,
+        modelVerified: Boolean(snapshot?.modelOption),
+        modeLabel: snapshot?.modeLabel ?? null,
+        modeVerified: false,
+        verifiedBeforePromptSubmit: false,
+      });
+      closeOpenMenus();
+      return result;
+    }
+
     const selectProEffortFromSubmenu = async () => {
       if (TARGET_MODEL_KIND !== 'pro' || (TARGET_LEVEL !== 'standard' && TARGET_LEVEL !== 'extended')) {
         return null;
@@ -924,6 +1110,7 @@ export function buildThinkingTimeExpressionForTest(
 function inferThinkingTargetModelKind(
   desiredModel?: string | null,
 ): "pro" | "thinking" | "instant" | null {
+  if (isGpt56SolModelLabel(desiredModel)) return "pro";
   const normalized = (desiredModel ?? "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
@@ -935,6 +1122,18 @@ function inferThinkingTargetModelKind(
   if (tokens.includes("thinking")) return "thinking";
   if (tokens.includes("instant")) return "instant";
   return null;
+}
+
+function isGpt56SolModelLabel(value?: string | null): boolean {
+  const tokens = (value ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(" ");
+  return (
+    tokens.includes("gpt") && tokens.includes("5") && tokens.includes("6") && tokens.includes("sol")
+  );
 }
 
 export function inferThinkingTargetModelKindForTest(

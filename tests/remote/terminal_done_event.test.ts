@@ -44,8 +44,15 @@ const MINIMAL_RESULT: BrowserRunResult = {
   answerTokens: 2,
   answerChars: 10,
   modelSelection: {
-    requestedModel: "Pro",
-    resolvedLabel: "Extended Pro",
+    requestedModel: "GPT-5.6 Sol",
+    resolvedLabel: "GPT-5.6 Sol + Pro",
+    requestedModelLabel: "GPT-5.6 Sol",
+    resolvedModelLabel: "GPT-5.6 Sol",
+    modelVerified: true,
+    requestedMode: "Pro",
+    resolvedModeLabel: "Pro",
+    modeVerified: true,
+    verifiedBeforePromptSubmit: true,
     strategy: "select",
     status: "already-selected",
     verified: true,
@@ -107,8 +114,15 @@ describe("server: terminal done event", () => {
         expect((done.result as Record<string, unknown>).answerText).toBe("the answer");
         expect(done.provenance).toEqual({
           modelVerified: true,
-          modelRequested: "Pro",
-          modelResolved: "Extended Pro",
+          modelRequested: "GPT-5.6 Sol",
+          modelResolved: "GPT-5.6 Sol + Pro",
+          requestedModelLabel: "GPT-5.6 Sol",
+          resolvedModelLabel: "GPT-5.6 Sol",
+          modelLabelVerified: true,
+          requestedMode: "Pro",
+          resolvedModeLabel: "Pro",
+          modeVerified: true,
+          verifiedBeforePromptSubmit: true,
           captureBindingVerified: true,
           captureBindingQuality: "message-handle",
           challengeClean: true,
@@ -217,7 +231,9 @@ describe("server: terminal done event", () => {
 
     test("returns null for legacy lines without a recognizable tier", () => {
       expect(
-        parseCaptureBindingVerifiedQuality("[browser] Structural capture binding verified (strict)"),
+        parseCaptureBindingVerifiedQuality(
+          "[browser] Structural capture binding verified (strict)",
+        ),
       ).toBeNull();
       expect(parseCaptureBindingVerifiedQuality("capture binding verified")).toBeNull();
     });
@@ -328,7 +344,27 @@ describe("client: terminal done enforcement", () => {
   test.skipIf(!CAN_LISTEN_LOCALHOST)("resolves only on done.ok", async () => {
     const fake = await startFakeRunServer([
       { type: "log", message: "working" },
-      { type: "done", ok: true, result: MINIMAL_RESULT },
+      {
+        type: "done",
+        ok: true,
+        runId: "run-sol-pro-1",
+        result: MINIMAL_RESULT,
+        provenance: {
+          modelVerified: true,
+          modelRequested: "GPT-5.6 Sol",
+          modelResolved: "GPT-5.6 Sol + Pro",
+          requestedModelLabel: "GPT-5.6 Sol",
+          resolvedModelLabel: "GPT-5.6 Sol",
+          modelLabelVerified: true,
+          requestedMode: "Pro",
+          resolvedModeLabel: "Pro",
+          modeVerified: true,
+          verifiedBeforePromptSubmit: true,
+          captureBindingVerified: true,
+          captureBindingQuality: "message-handle",
+          challengeClean: true,
+        },
+      },
     ]);
     try {
       const executor = createRemoteBrowserExecutor({
@@ -337,6 +373,16 @@ describe("client: terminal done enforcement", () => {
       });
       const result = await executor({ prompt: "x", config: {} });
       expect(result.answerText).toBe("the answer");
+      expect(result.remoteRun).toMatchObject({
+        runId: "run-sol-pro-1",
+        terminalDoneOk: true,
+        provenance: {
+          modelVerified: true,
+          modelLabelVerified: true,
+          modeVerified: true,
+          captureBindingQuality: "message-handle",
+        },
+      });
     } finally {
       await fake.close();
     }
@@ -544,10 +590,7 @@ function lastEvent(body: string): Record<string, unknown> {
   return events[events.length - 1]!;
 }
 
-async function rawRun(
-  port: number,
-  token: string,
-): Promise<{ statusCode: number; body: string }> {
+async function rawRun(port: number, token: string): Promise<{ statusCode: number; body: string }> {
   const payload = JSON.stringify({
     prompt: "terminal done test",
     attachments: [],

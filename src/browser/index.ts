@@ -48,7 +48,7 @@ import {
 } from "./pageActions.js";
 import { INPUT_SELECTORS } from "./constants.js";
 import { uploadAttachmentViaDataTransfer } from "./actions/remoteFileTransfer.js";
-import { ensureThinkingTime } from "./actions/thinkingTime.js";
+import { ensureThinkingTime, type BrowserModeSelectionEvidence } from "./actions/thinkingTime.js";
 import { startThinkingStatusMonitor } from "./actions/thinkingStatus.js";
 import {
   activateDeepResearch,
@@ -757,7 +757,9 @@ async function maybeArchiveCompletedConversation({
 }
 
 function isSuspiciouslyShortArchiveAnswer(answerText: string | null | undefined): boolean {
-  const normalized = String(answerText ?? "").replace(/\s+/g, " ").trim();
+  const normalized = String(answerText ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
   return normalized.length > 0 && normalized.length < 16;
 }
 
@@ -1058,6 +1060,98 @@ function buildSkippedModelSelectionEvidence(
     source: "config",
     capturedAt: new Date().toISOString(),
   };
+}
+
+function isDesiredGpt56SolModel(model: string | null | undefined): boolean {
+  if (typeof model !== "string") return false;
+  const tokens = model
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, " ")
+    .trim()
+    .split(/\s+/u);
+  return ["gpt", "5", "6", "sol"].every((token) => tokens.includes(token));
+}
+
+function mergeModeSelectionEvidence(
+  current: BrowserModelSelectionEvidence | undefined,
+  mode: NonNullable<Awaited<ReturnType<typeof ensureThinkingTime>>>,
+): BrowserModelSelectionEvidence {
+  const solProRoute =
+    isDesiredGpt56SolModel(mode.requestedModelLabel) && mode.requestedMode?.toLowerCase() === "pro";
+  const modelVerified = mode.modelVerified ?? current?.modelVerified ?? current?.verified ?? false;
+  const modeVerified = mode.modeVerified ?? false;
+  const verifiedBeforePromptSubmit = mode.verifiedBeforePromptSubmit === true;
+  const verified = solProRoute
+    ? modelVerified && modeVerified && verifiedBeforePromptSubmit
+    : (current?.verified ?? false);
+  const resolvedModelLabel = mode.resolvedModelLabel ?? current?.resolvedModelLabel ?? null;
+  const resolvedModeLabel = mode.resolvedModeLabel ?? current?.resolvedModeLabel ?? null;
+  return {
+    ...current,
+    ...mode,
+    requestedModel: current?.requestedModel ?? mode.requestedModelLabel ?? null,
+    resolvedLabel:
+      solProRoute && resolvedModelLabel && resolvedModeLabel
+        ? `${resolvedModelLabel} + ${resolvedModeLabel}`
+        : (current?.resolvedLabel ?? resolvedModelLabel),
+    modelVerified,
+    modeVerified,
+    verifiedBeforePromptSubmit,
+    strategy: current?.strategy ?? "select",
+    status: current?.status ?? "already-selected",
+    verified,
+    source: current?.source ?? "chatgpt-model-picker",
+    capturedAt: new Date().toISOString(),
+  };
+}
+
+function assertProtectedSolProEvidence(
+  desiredModel: string | null | undefined,
+  evidence: BrowserModelSelectionEvidence | undefined,
+): void {
+  if (!isDesiredGpt56SolModel(desiredModel)) return;
+  if (
+    evidence?.modelVerified === true &&
+    evidence.modeVerified === true &&
+    evidence.verifiedBeforePromptSubmit === true &&
+    evidence.verified === true
+  ) {
+    return;
+  }
+  throw new Error(
+    "GPT-5.6 Sol + Pro selection was not atomically verified before prompt submission; refusing to submit.",
+  );
+}
+
+async function verifyProtectedSolProSelectionForSubmit({
+  desiredModel,
+  modelStrategy,
+  thinkingTime,
+  selectModel,
+  selectMode,
+}: {
+  desiredModel: string | null | undefined;
+  modelStrategy: string;
+  thinkingTime: string | null | undefined;
+  selectModel: () => Promise<BrowserModelSelectionEvidence>;
+  selectMode: () => Promise<BrowserModeSelectionEvidence | undefined>;
+}): Promise<BrowserModelSelectionEvidence | undefined> {
+  if (!isDesiredGpt56SolModel(desiredModel)) return undefined;
+  if (modelStrategy !== "select" || thinkingTime !== "extended") {
+    throw new Error(
+      "GPT-5.6 Sol + Pro requires modelStrategy=select and thinkingTime=extended before every prompt submission.",
+    );
+  }
+  const modelEvidence = await selectModel();
+  const modeEvidence = await selectMode();
+  if (!modeEvidence) {
+    throw new Error(
+      "GPT-5.6 Sol + Pro mode evidence was unavailable immediately before prompt submission.",
+    );
+  }
+  const evidence = mergeModeSelectionEvidence(modelEvidence, modeEvidence);
+  assertProtectedSolProEvidence(desiredModel, evidence);
+  return evidence;
 }
 
 function isDesiredChatGptProModel(model: string | null | undefined): boolean {
@@ -1658,7 +1752,11 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     const updateConversationHint = conversationUrlMonitor.update;
     await captureRuntimeSnapshot();
     const modelStrategy = config.modelStrategy ?? DEFAULT_MODEL_STRATEGY;
-    if (config.desiredModel && modelStrategy !== "ignore" && !isResumingConversation) {
+    if (
+      config.desiredModel &&
+      modelStrategy !== "ignore" &&
+      (!isResumingConversation || isDesiredGpt56SolModel(config.desiredModel))
+    ) {
       modelSelectionEvidence = await raceWithDisconnect(
         withRetries(
           () => ensureModelSelection(Runtime, config.desiredModel as string, logger, modelStrategy),
@@ -1702,7 +1800,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     const thinkingTime = config.thinkingTime;
     if (thinkingTime && !deepResearch) {
       const thinkingTargetModel = modelStrategy === "select" ? config.desiredModel : null;
-      await raceWithDisconnect(
+      const modeSelectionEvidence = await raceWithDisconnect(
         withRetries(() => ensureThinkingTime(Runtime, thinkingTime, logger, thinkingTargetModel), {
           retries: 2,
           delayMs: 300,
@@ -1715,7 +1813,60 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           },
         }),
       );
+      if (modeSelectionEvidence) {
+        modelSelectionEvidence = mergeModeSelectionEvidence(
+          modelSelectionEvidence,
+          modeSelectionEvidence,
+        );
+        await emitRuntimeHint();
+      }
     }
+    assertProtectedSolProEvidence(config.desiredModel, modelSelectionEvidence);
+    const verifyProtectedRouteBeforeSubmit = async () => {
+      const evidence = await verifyProtectedSolProSelectionForSubmit({
+        desiredModel: config.desiredModel,
+        modelStrategy,
+        thinkingTime,
+        selectModel: () =>
+          raceWithDisconnect(
+            withRetries(
+              () => ensureModelSelection(Runtime, config.desiredModel as string, logger, "select"),
+              {
+                retries: 2,
+                delayMs: 300,
+                onRetry: (attempt, error) => {
+                  if (options.verbose) {
+                    logger(
+                      `[retry] Pre-submit model verification attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
+                    );
+                  }
+                },
+              },
+            ),
+          ),
+        selectMode: () =>
+          raceWithDisconnect(
+            withRetries(
+              () => ensureThinkingTime(Runtime, "extended", logger, config.desiredModel),
+              {
+                retries: 2,
+                delayMs: 300,
+                onRetry: (attempt, error) => {
+                  if (options.verbose) {
+                    logger(
+                      `[retry] Pre-submit Pro verification attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
+                    );
+                  }
+                },
+              },
+            ),
+          ),
+      });
+      if (evidence) {
+        modelSelectionEvidence = evidence;
+        await emitRuntimeHint();
+      }
+    };
     const profileLockTimeoutMs = manualLogin ? (config.profileLockTimeoutMs ?? 0) : 0;
     let profileLock: ProfileRunLock | null = null;
     const acquireProfileLockIfNeeded = async () => {
@@ -1794,6 +1945,11 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           `Prompt textarea ready (after Deep Research activation, ${prompt.length.toLocaleString()} chars queued)`,
         );
       }
+      // Re-read both protected-route axes at the last safe point before every
+      // submit attempt. runSubmissionWithRecovery calls submitOnce again after
+      // a reload/fallback, and follow-ups use the same closure, so neither path
+      // can inherit stale run-start evidence.
+      await verifyProtectedRouteBeforeSubmit();
       let baselineTurns = await readConversationTurnCount(Runtime, logger);
       // Learned: return baselineTurns so assistant polling can ignore earlier content.
       const providerState: Record<string, unknown> = {
@@ -3323,7 +3479,11 @@ async function runRemoteBrowserMode(
     }
 
     const modelStrategy = config.modelStrategy ?? DEFAULT_MODEL_STRATEGY;
-    if (config.desiredModel && modelStrategy !== "ignore" && !config.resumeConversationUrl) {
+    if (
+      config.desiredModel &&
+      modelStrategy !== "ignore" &&
+      (!config.resumeConversationUrl || isDesiredGpt56SolModel(config.desiredModel))
+    ) {
       modelSelectionEvidence = await raceWithAbort(
         withRetries(
           () => ensureModelSelection(Runtime, config.desiredModel as string, logger, modelStrategy),
@@ -3360,7 +3520,7 @@ async function runRemoteBrowserMode(
     const thinkingTime = config.thinkingTime;
     if (thinkingTime && !deepResearch) {
       const thinkingTargetModel = modelStrategy === "select" ? config.desiredModel : null;
-      await raceWithAbort(
+      const modeSelectionEvidence = await raceWithAbort(
         withRetries(() => ensureThinkingTime(Runtime, thinkingTime, logger, thinkingTargetModel), {
           retries: 2,
           delayMs: 300,
@@ -3373,7 +3533,60 @@ async function runRemoteBrowserMode(
           },
         }),
       );
+      if (modeSelectionEvidence) {
+        modelSelectionEvidence = mergeModeSelectionEvidence(
+          modelSelectionEvidence,
+          modeSelectionEvidence,
+        );
+        await emitRuntimeHint();
+      }
     }
+    assertProtectedSolProEvidence(config.desiredModel, modelSelectionEvidence);
+    const verifyProtectedRouteBeforeSubmit = async () => {
+      const evidence = await verifyProtectedSolProSelectionForSubmit({
+        desiredModel: config.desiredModel,
+        modelStrategy,
+        thinkingTime,
+        selectModel: () =>
+          raceWithAbort(
+            withRetries(
+              () => ensureModelSelection(Runtime, config.desiredModel as string, logger, "select"),
+              {
+                retries: 2,
+                delayMs: 300,
+                onRetry: (attempt, error) => {
+                  if (options.verbose) {
+                    logger(
+                      `[retry] Pre-submit model verification attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
+                    );
+                  }
+                },
+              },
+            ),
+          ),
+        selectMode: () =>
+          raceWithAbort(
+            withRetries(
+              () => ensureThinkingTime(Runtime, "extended", logger, config.desiredModel),
+              {
+                retries: 2,
+                delayMs: 300,
+                onRetry: (attempt, error) => {
+                  if (options.verbose) {
+                    logger(
+                      `[retry] Pre-submit Pro verification attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
+                    );
+                  }
+                },
+              },
+            ),
+          ),
+      });
+      if (evidence) {
+        modelSelectionEvidence = evidence;
+        await emitRuntimeHint();
+      }
+    };
     const submitOnce = async (prompt: string, submissionAttachments: BrowserAttachment[]) => {
       const baselineSnapshot = await readAssistantSnapshot(Runtime).catch(() => null);
       const baselineAssistantText =
@@ -3428,6 +3641,10 @@ async function runRemoteBrowserMode(
           `Prompt textarea ready (after Deep Research activation, ${prompt.length.toLocaleString()} chars queued)`,
         );
       }
+      // submitOnce is shared by the initial request, dead-composer/fallback
+      // retries, and follow-ups. Re-verify the exact model and checked Pro mode
+      // here so a reload or UI drift cannot reuse stale run-start evidence.
+      await verifyProtectedRouteBeforeSubmit();
       let baselineTurns = await readConversationTurnCount(Runtime, logger);
       const providerState: Record<string, unknown> = {
         runtime: Runtime,
@@ -4194,6 +4411,9 @@ export const __test__ = {
   resolveManualLoginWaitMs,
   closeOwnedTargetWithDeadline,
   resolveCloseOwnedRunTargetPolicy,
+  mergeModeSelectionEvidence,
+  assertProtectedSolProEvidence,
+  verifyProtectedSolProSelectionForSubmit,
   shouldCloseOwnedRunTargetAfterRun,
   shouldKeepLocalBrowserOpen,
 };

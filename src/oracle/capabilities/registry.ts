@@ -141,9 +141,9 @@ function chatgptCapability(env: Readonly<Record<string, string | undefined>>): C
     supported: true,
     status: "available",
     description:
-      "Core lane: ChatGPT Pro Extended Reasoning through browser automation with redacted evidence.",
+      "Core lane: ChatGPT GPT-5.6 Sol + Pro through browser automation with redacted evidence.",
     next_command: remotePreferred
-      ? "oracle --engine browser --model gpt-5.5-pro --browser-thinking-time extended --prompt '...'"
+      ? "oracle --lane chatgpt-pro --prompt '...'"
       : "oracle doctor chatgpt --json",
     fix_command: remotePreferred
       ? null

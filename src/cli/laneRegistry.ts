@@ -92,7 +92,7 @@ export const LANE_TEMPLATES: readonly LaneTemplate[] = [
     transportEligibility: "browser-automation-local-or-approved-remote",
     normalizedEngineOptions: {
       engine: "browser",
-      model: "gpt-5.5-pro",
+      model: "gpt-5.6-sol",
       browserThinkingTime: "extended",
       browserModelStrategy: "select",
       browserArchive: "auto",
@@ -101,8 +101,8 @@ export const LANE_TEMPLATES: readonly LaneTemplate[] = [
     refusedPatterns: ["--engine api", "--models", "--engine claude-code", "gemini-*", "fable"],
     runtimeAssertions: [
       "chatgpt_signed_in",
-      "chatgpt_pro_selector_state_verified",
-      "extended_thinking_selected_before_submit",
+      "gpt_5_6_sol_selector_state_verified",
+      "chatgpt_pro_mode_selected_before_submit",
     ],
     keyFlags: ["--lane chatgpt-pro", "--browser-thinking-time extended"],
     attachments: {

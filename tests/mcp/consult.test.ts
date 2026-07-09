@@ -41,7 +41,7 @@ describe("summarizeModelRunsForConsult", () => {
       }),
     ).toMatchObject({
       engine: "browser",
-      model: "gpt-5.5-pro",
+      model: "gpt-5.6-sol",
       browserThinkingTime: "extended",
     });
 
@@ -514,7 +514,7 @@ describe("summarizeModelRunsForConsult", () => {
           resolvedEngine: "browser",
           model: "gpt-5.5-pro",
           browser: expect.objectContaining({
-            desiredModel: "Pro",
+            desiredModel: "GPT-5.6 Sol",
             thinkingTime: "extended",
             modelStrategy: "select",
             imageOutputPath: path.join(realpathSync(home), "generated", "from-mcp.png"),
