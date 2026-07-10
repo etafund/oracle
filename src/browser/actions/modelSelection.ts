@@ -9,6 +9,7 @@ import {
 import { logDomFailure } from "../domDebug.js";
 import { buildClickDispatcher } from "./domEvents.js";
 import { delay } from "../utils.js";
+import { BrowserAutomationError } from "../../oracle/errors.js";
 
 const LEGACY_PRO_VERSION_WORD_TOKENS = ["5 4", "5 3", "5 2", "5 1", "5 0", "gpt 5 pro"] as const;
 const LEGACY_PRO_VERSION_COMPACT_TOKENS = ["gpt54", "gpt53", "gpt52", "gpt51", "gpt50"] as const;
@@ -23,6 +24,28 @@ type ModelSelectionDomResult =
     }
   | { status: "button-missing" }
   | undefined;
+
+type ModelSelectionFailureReason = "option-not-found" | "button-missing";
+
+function buildModelSelectionError(
+  message: string,
+  reason: ModelSelectionFailureReason,
+  details: Record<string, unknown> = {},
+): BrowserAutomationError {
+  return new BrowserAutomationError(message, {
+    stage: "model-selection",
+    reason,
+    ...details,
+  });
+}
+
+export function isRefreshableModelSelectionError(error: unknown): boolean {
+  return (
+    error instanceof BrowserAutomationError &&
+    error.details?.stage === "model-selection" &&
+    (error.details?.reason === "option-not-found" || error.details?.reason === "button-missing")
+  );
+}
 
 // The model/effort picker is a composer pill that React mounts a beat after the page
 // becomes interactive (~1-4s on a cold profile, e.g. cookie-sync's throwaway Chrome).
@@ -95,14 +118,22 @@ export async function ensureModelSelection(
         isTemporary && /\bpro\b/i.test(desiredModel)
           ? " You are in Temporary Chat mode; model labels may differ there. If the current Temporary Chat already shows the desired Pro mode, retry with --browser-model-strategy current; otherwise choose an available model or turn Temporary Chat off."
           : "";
-      throw new Error(
+      throw buildModelSelectionError(
         `Unable to find model option matching "${desiredModel}" in the model switcher.${availableHint}${tempHint}`,
+        "option-not-found",
+        {
+          desiredModel,
+          availableOptions: available,
+          temporaryChat: isTemporary,
+        },
       );
     }
     default: {
       await logDomFailure(Runtime, logger, "model-switcher-button");
-      throw new Error(
+      throw buildModelSelectionError(
         "Unable to locate the ChatGPT model selector button. If the desired model is already selected in the browser, retry with --browser-model-strategy current; otherwise retry with --browser-model-strategy ignore to skip model selection.",
+        "button-missing",
+        { desiredModel },
       );
     }
   }

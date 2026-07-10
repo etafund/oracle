@@ -7,7 +7,10 @@ export {
   waitForResumedConversationHydration,
   installJavaScriptDialogAutoDismissal,
 } from "./actions/navigation.js";
-export { ensureModelSelection } from "./actions/modelSelection.js";
+export {
+  ensureModelSelection,
+  isRefreshableModelSelectionError,
+} from "./actions/modelSelection.js";
 export { submitPrompt, clearPromptComposer } from "./actions/promptComposer.js";
 export {
   clearComposerAttachments,

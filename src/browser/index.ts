@@ -37,6 +37,7 @@ import {
   waitForResumedConversationHydration,
   installJavaScriptDialogAutoDismissal,
   ensureModelSelection,
+  isRefreshableModelSelectionError,
   clearPromptComposer,
   waitForAssistantResponse,
   captureAssistantMarkdown,
@@ -1062,6 +1063,38 @@ function buildSkippedModelSelectionEvidence(
   };
 }
 
+async function selectInitialModelWithRefreshRecovery<T>({
+  selectModel,
+  refreshPage,
+  allowRefresh,
+  logger,
+}: {
+  selectModel: () => Promise<T>;
+  refreshPage: () => Promise<void>;
+  allowRefresh: boolean;
+  logger: BrowserLogger;
+}): Promise<T> {
+  try {
+    return await selectModel();
+  } catch (error) {
+    if (!allowRefresh || !isRefreshableModelSelectionError(error)) {
+      throw error;
+    }
+    logger(
+      "[retry] Requested model was absent from the initial picker snapshot; hard-refreshing once before prompt submission.",
+    );
+    await refreshPage();
+    return selectModel();
+  }
+}
+
+function shouldRefreshInitialModelPicker(options: {
+  resumeConversationUrl?: string | null;
+  browserTabRef?: string | null;
+}): boolean {
+  return !options.resumeConversationUrl && !options.browserTabRef;
+}
+
 function isDesiredGpt56SolModel(model: string | null | undefined): boolean {
   if (typeof model !== "string") return false;
   const tokens = model
@@ -1757,28 +1790,51 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       modelStrategy !== "ignore" &&
       (!isResumingConversation || isDesiredGpt56SolModel(config.desiredModel))
     ) {
-      modelSelectionEvidence = await raceWithDisconnect(
-        withRetries(
-          () => ensureModelSelection(Runtime, config.desiredModel as string, logger, modelStrategy),
-          {
-            retries: 2,
-            delayMs: 300,
-            onRetry: (attempt, error) => {
-              if (options.verbose) {
-                logger(
-                  `[retry] Model picker attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
-                );
-              }
+      const selectModel = () =>
+        raceWithDisconnect(
+          withRetries(
+            () =>
+              ensureModelSelection(Runtime, config.desiredModel as string, logger, modelStrategy),
+            {
+              retries: 2,
+              delayMs: 300,
+              onRetry: (attempt, error) => {
+                if (options.verbose) {
+                  logger(
+                    `[retry] Model picker attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
+                  );
+                }
+              },
             },
-          },
-        ),
-      ).catch((error) => {
+          ),
+        );
+      modelSelectionEvidence = await selectInitialModelWithRefreshRecovery({
+        selectModel,
+        refreshPage: async () => {
+          await raceWithDisconnect(Page.reload({ ignoreCache: true }));
+          await raceWithDisconnect(ensureNotBlocked(Runtime, config.headless, logger));
+          await raceWithDisconnect(ensureLoggedIn(Runtime, logger));
+          await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+        },
+        allowRefresh: shouldRefreshInitialModelPicker(config),
+        logger,
+      }).catch((error) => {
         const base = error instanceof Error ? error.message : String(error);
         const hint =
           !manualLogin && appliedCookies === 0
             ? " No cookies were applied; log in to ChatGPT in Chrome or provide inline cookies (--browser-inline-cookies[(-file)] or ORACLE_BROWSER_COOKIES_JSON)."
             : "";
-        throw new Error(`${base}${hint}`);
+        if (!hint) {
+          throw error;
+        }
+        throw new BrowserAutomationError(
+          `${base}${hint}`,
+          {
+            stage: "model-selection",
+            reason: "session-unavailable",
+          },
+          error,
+        );
       });
       await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
       logger(
@@ -3484,22 +3540,35 @@ async function runRemoteBrowserMode(
       modelStrategy !== "ignore" &&
       (!config.resumeConversationUrl || isDesiredGpt56SolModel(config.desiredModel))
     ) {
-      modelSelectionEvidence = await raceWithAbort(
-        withRetries(
-          () => ensureModelSelection(Runtime, config.desiredModel as string, logger, modelStrategy),
-          {
-            retries: 2,
-            delayMs: 300,
-            onRetry: (attempt, error) => {
-              if (options.verbose) {
-                logger(
-                  `[retry] Model picker attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
-                );
-              }
+      const selectModel = () =>
+        raceWithAbort(
+          withRetries(
+            () =>
+              ensureModelSelection(Runtime, config.desiredModel as string, logger, modelStrategy),
+            {
+              retries: 2,
+              delayMs: 300,
+              onRetry: (attempt, error) => {
+                if (options.verbose) {
+                  logger(
+                    `[retry] Model picker attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
+                  );
+                }
+              },
             },
-          },
-        ),
-      );
+          ),
+        );
+      modelSelectionEvidence = await selectInitialModelWithRefreshRecovery({
+        selectModel,
+        refreshPage: async () => {
+          await raceWithAbort(Page.reload({ ignoreCache: true }));
+          await raceWithAbort(ensureNotBlocked(Runtime, config.headless, logger));
+          await raceWithAbort(ensureLoggedIn(Runtime, logger, { remoteSession: true }));
+          await raceWithAbort(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+        },
+        allowRefresh: shouldRefreshInitialModelPicker(config),
+        logger,
+      });
       await raceWithAbort(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
       logger(
         `Prompt textarea ready (after model switch, ${promptText.length.toLocaleString()} chars queued)`,
@@ -4414,6 +4483,8 @@ export const __test__ = {
   resolveCloseOwnedRunTargetPolicy,
   mergeModeSelectionEvidence,
   assertProtectedSolProEvidence,
+  selectInitialModelWithRefreshRecovery,
+  shouldRefreshInitialModelPicker,
   verifyProtectedSolProSelectionForSubmit,
   shouldCloseOwnedRunTargetAfterRun,
   shouldKeepLocalBrowserOpen,

@@ -17,6 +17,7 @@ import {
   shouldPreserveBrowserOnErrorForTest,
 } from "../../src/browser/index.js";
 import { resolveBrowserConfig } from "../../src/browser/config.js";
+import type { BrowserLogger } from "../../src/browser/types.js";
 import { BrowserAutomationError } from "../../src/oracle/errors.js";
 
 describe("shouldPreserveBrowserOnErrorForTest", () => {
@@ -189,6 +190,106 @@ describe("manual-login profile setup gate", () => {
 // step now always runs; ensureThinkingTime handles the already-selected case.
 
 describe("GPT-5.6 Sol + Pro evidence integration", () => {
+  test("refresh recovery is limited to Oracle-owned new-chat tabs", () => {
+    expect(__test__.shouldRefreshInitialModelPicker({})).toBe(true);
+    expect(
+      __test__.shouldRefreshInitialModelPicker({
+        resumeConversationUrl: "https://chatgpt.com/c/example",
+      }),
+    ).toBe(false);
+    expect(__test__.shouldRefreshInitialModelPicker({ browserTabRef: "current" })).toBe(false);
+    expect(
+      __test__.shouldRefreshInitialModelPicker({
+        browserTabRef: "tab-id",
+        resumeConversationUrl: null,
+      }),
+    ).toBe(false);
+  });
+
+  test("hard-refreshes once when the initial model picker snapshot lacks Sol", async () => {
+    const selectModel = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new BrowserAutomationError("Sol option missing", {
+          stage: "model-selection",
+          reason: "option-not-found",
+        }),
+      )
+      .mockResolvedValueOnce("selected");
+    const refreshPage = vi.fn(async () => undefined);
+    const loggerMock = vi.fn();
+    const logger = loggerMock as unknown as BrowserLogger;
+
+    await expect(
+      __test__.selectInitialModelWithRefreshRecovery({
+        selectModel,
+        refreshPage,
+        allowRefresh: true,
+        logger,
+      }),
+    ).resolves.toBe("selected");
+    expect(selectModel).toHaveBeenCalledTimes(2);
+    expect(refreshPage).toHaveBeenCalledTimes(1);
+    expect(loggerMock).toHaveBeenCalledWith(expect.stringMatching(/hard-refreshing once/i));
+  });
+
+  test("does not refresh resumed conversations or unrelated failures", async () => {
+    const missing = new BrowserAutomationError("Sol option missing", {
+      stage: "model-selection",
+      reason: "option-not-found",
+    });
+    const resumedRefresh = vi.fn(async () => undefined);
+    await expect(
+      __test__.selectInitialModelWithRefreshRecovery({
+        selectModel: async () => {
+          throw missing;
+        },
+        refreshPage: resumedRefresh,
+        allowRefresh: false,
+        logger: vi.fn() as unknown as BrowserLogger,
+      }),
+    ).rejects.toBe(missing);
+    expect(resumedRefresh).not.toHaveBeenCalled();
+
+    const unrelated = new BrowserAutomationError("Cloudflare", {
+      stage: "cloudflare-challenge",
+    });
+    const unrelatedRefresh = vi.fn(async () => undefined);
+    await expect(
+      __test__.selectInitialModelWithRefreshRecovery({
+        selectModel: async () => {
+          throw unrelated;
+        },
+        refreshPage: unrelatedRefresh,
+        allowRefresh: true,
+        logger: vi.fn() as unknown as BrowserLogger,
+      }),
+    ).rejects.toBe(unrelated);
+    expect(unrelatedRefresh).not.toHaveBeenCalled();
+  });
+
+  test("fails closed after the single refresh when Sol remains unavailable", async () => {
+    const missing = new BrowserAutomationError("Sol option missing", {
+      stage: "model-selection",
+      reason: "option-not-found",
+    });
+    const selectModel = vi.fn(async () => {
+      throw missing;
+    });
+    const refreshPage = vi.fn(async () => undefined);
+
+    await expect(
+      __test__.selectInitialModelWithRefreshRecovery({
+        selectModel,
+        refreshPage,
+        allowRefresh: true,
+        logger: vi.fn() as unknown as BrowserLogger,
+      }),
+    ).rejects.toBe(missing);
+    expect(selectModel).toHaveBeenCalledTimes(2);
+    expect(refreshPage).toHaveBeenCalledTimes(1);
+  });
+
   test("merges the independently verified model and Pro mode before submit", () => {
     const evidence = __test__.mergeModeSelectionEvidence(
       {

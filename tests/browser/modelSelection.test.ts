@@ -5,7 +5,9 @@ import {
   buildModelMatchersLiteralForTest,
   buildModelSelectionExpressionForTest,
   ensureModelSelection,
+  isRefreshableModelSelectionError,
 } from "../../src/browser/actions/modelSelection.js";
+import { BrowserAutomationError } from "../../src/oracle/errors.js";
 
 const expectContains = (arr: string[], value: string) => {
   expect(arr).toContain(value);
@@ -1679,11 +1681,36 @@ describe("ensureModelSelection composer-pill wait", () => {
   it("gives up once the button-wait deadline passes", async () => {
     const Runtime = makeRuntime([{ status: "button-missing" }]);
 
-    await expect(
-      ensureModelSelection(Runtime, "Pro", noopLogger, "select", {
-        buttonWaitMs: 5,
-        buttonPollMs: 1,
-      }),
-    ).rejects.toThrow(/Unable to locate the ChatGPT model selector button/);
+    const outcome = ensureModelSelection(Runtime, "Pro", noopLogger, "select", {
+      buttonWaitMs: 5,
+      buttonPollMs: 1,
+    });
+    await expect(outcome).rejects.toThrow(/Unable to locate the ChatGPT model selector button/);
+    await expect(outcome).rejects.toMatchObject({
+      details: { stage: "model-selection", reason: "button-missing" },
+    });
+  });
+
+  it("types an unavailable option so callers can perform one safe page refresh", async () => {
+    const Runtime = makeRuntime([
+      {
+        status: "option-not-found",
+        hint: { availableOptions: ["GPT-5.5", "Pro Extended"] },
+      },
+    ]);
+
+    const outcome = ensureModelSelection(Runtime, "GPT-5.6 Sol", noopLogger, "select");
+    await expect(outcome).rejects.toMatchObject({
+      details: {
+        stage: "model-selection",
+        reason: "option-not-found",
+        desiredModel: "GPT-5.6 Sol",
+        availableOptions: ["GPT-5.5", "Pro Extended"],
+      },
+    });
+    await outcome.catch((error: unknown) => {
+      expect(error).toBeInstanceOf(BrowserAutomationError);
+      expect(isRefreshableModelSelectionError(error)).toBe(true);
+    });
   });
 });
