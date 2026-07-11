@@ -248,7 +248,7 @@ export function planChatGptProSynthesisSubmission(
     commands: {
       doctor: "oracle doctor chatgpt --pro --extended-reasoning --json",
       recover_session: "oracle status --hours 24 && oracle session <id> --render",
-      run: "oracle --engine browser --model gpt-5.5-pro --browser-thinking-time heavy --json",
+      run: "oracle --lane chatgpt-pro --json",
     },
   };
 }

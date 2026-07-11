@@ -240,7 +240,7 @@ When ChatGPT returns downloadable generated images in browser mode, Oracle downl
 ```bash
 oracle --engine browser \
   --browser-manual-login \
-  --model "GPT-5.5 Pro" \
+  --model "GPT-5.6 Sol" \
   --generate-image /tmp/oracle-image.png \
   -p "Create a simple product icon on a transparent background."
 ```
@@ -257,7 +257,7 @@ Use `--browser-manual-login` when cookie decrypt is blocked (e.g., Windows app-b
 oracle --engine browser \
   --browser-manual-login \
   --browser-keep-browser \
-  --model "GPT-5.5 Pro" \
+  --model "GPT-5.6 Sol" \
   -p "Say hi"
 ```
 

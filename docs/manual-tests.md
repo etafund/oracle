@@ -350,7 +350,7 @@ Use this when you need to inspect the live ChatGPT composer (DOM state, markdown
    ```bash
    tmux new -d -s oracle-debug \\
      "pnpm run oracle -- --engine browser --browser-keep-browser \\
-      --model 'GPT-5.5 Pro' --prompt 'Debug via DevTools.'"
+      --model 'GPT-5.6 Sol' --prompt 'Debug via DevTools.'"
    ```
 
    Keeping the run in tmux prevents your shell from blocking and ensures Chrome stays open afterward.
