@@ -37,6 +37,23 @@ const NONCOMPACT_ACCEPT_CONFIRM_SAMPLES = 8;
 // point compact answers also need finished-action controls.
 const COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS = 60_000;
 
+// Watchdog poll cadence. Tight (400ms) by default so completion/challenge
+// detection stays prompt. While a thinking indicator is CONFIRMED active the
+// answer provably cannot be final yet, so the poll widens to shed CDP load on
+// multi-minute Pro thinking phases. The widened interval is applied ONLY while
+// thinkingActive, so detection after thinking ends is delayed by at most one
+// already-scheduled widened tick (<=1.5s); no acceptance/verify threshold moves.
+const WATCHDOG_POLL_INTERVAL_MS = 400;
+const WATCHDOG_THINKING_POLL_INTERVAL_MS = 1200;
+
+function watchdogPollIntervalMs(thinkingActive: boolean): number {
+  return thinkingActive ? WATCHDOG_THINKING_POLL_INTERVAL_MS : WATCHDOG_POLL_INTERVAL_MS;
+}
+
+export function watchdogPollIntervalMsForTest(thinkingActive: boolean): number {
+  return watchdogPollIntervalMs(thinkingActive);
+}
+
 function isImplausiblyShortAnswer(candidateLength: number): boolean {
   return candidateLength > 0 && candidateLength < MIN_CONFIDENT_ANSWER_LENGTH;
 }
@@ -744,16 +761,12 @@ export async function waitForAssistantResponse(
   return candidate;
 }
 
-export async function readAssistantSnapshot(
-  Runtime: ChromeClient["Runtime"],
-  minTurnIndex?: number,
-  expectedConversationId?: string,
-): Promise<AssistantSnapshot | null> {
-  const { result } = await Runtime.evaluate({
-    expression: buildAssistantSnapshotExpression(minTurnIndex, expectedConversationId),
-    returnByValue: true,
-  });
-  const value = result?.value;
+/**
+ * Apply the numeric turn-baseline filter to a raw evaluate result. Shared by the
+ * single-read snapshot path and the batched completion read so both accept/reject
+ * an out-of-range turn identically.
+ */
+function applyMinTurnFilter(value: unknown, minTurnIndex?: number): AssistantSnapshot | null {
   if (value && typeof value === "object") {
     const snapshot = value as AssistantSnapshot;
     if (typeof minTurnIndex === "number" && Number.isFinite(minTurnIndex)) {
@@ -769,6 +782,81 @@ export async function readAssistantSnapshot(
     return snapshot;
   }
   return null;
+}
+
+export async function readAssistantSnapshot(
+  Runtime: ChromeClient["Runtime"],
+  minTurnIndex?: number,
+  expectedConversationId?: string,
+): Promise<AssistantSnapshot | null> {
+  const { result } = await Runtime.evaluate({
+    expression: buildAssistantSnapshotExpression(minTurnIndex, expectedConversationId),
+    returnByValue: true,
+  });
+  return applyMinTurnFilter(result?.value, minTurnIndex);
+}
+
+/**
+ * Single expression that returns {snapshot, stopVisible, completionVisible,
+ * thinkingActive} in ONE round-trip, replacing the watchdog poll's four
+ * per-tick Runtime.evaluate calls. Each sub-probe embeds the SAME shared
+ * predicate/extractor source the split reads used (buildAssistantSnapshotExpression,
+ * buildStopButtonVisibilityPredicateJs, buildCompletionVisibleExpression,
+ * buildThinkingGatePredicateJs), evaluated in the same order, so acceptance and
+ * challenge detection are byte-identical — and strictly more consistent, since a
+ * single atomic read removes the thinking→answer skew window between the old
+ * separate round-trips.
+ */
+function buildBatchedAssistantCompletionExpression(
+  minTurnIndex?: number,
+  expectedConversationId?: string,
+): string {
+  return `(() => {
+    ${buildStopButtonVisibilityPredicateJs("isStopControlVisible")}
+    ${buildThinkingGatePredicateJs("isThinkingGateActive")}
+    const snapshot = ${buildAssistantSnapshotExpression(minTurnIndex, expectedConversationId)};
+    const stopVisible = isStopControlVisible();
+    const completionVisible = ${buildCompletionVisibleExpression()};
+    const thinkingActive = isThinkingGateActive();
+    return { snapshot, stopVisible, completionVisible, thinkingActive };
+  })()`;
+}
+
+export function buildBatchedAssistantCompletionExpressionForTest(
+  minTurnIndex?: number,
+  expectedConversationId?: string,
+): string {
+  return buildBatchedAssistantCompletionExpression(minTurnIndex, expectedConversationId);
+}
+
+async function readBatchedAssistantCompletion(
+  Runtime: ChromeClient["Runtime"],
+  minTurnIndex?: number,
+  expectedConversationId?: string,
+): Promise<{
+  snapshot: AssistantSnapshot | null;
+  stopVisible: boolean;
+  completionVisible: boolean;
+  thinkingActive: boolean;
+}> {
+  const { result } = await Runtime.evaluate({
+    expression: buildBatchedAssistantCompletionExpression(minTurnIndex, expectedConversationId),
+    returnByValue: true,
+  });
+  const value = result?.value as
+    | {
+        snapshot?: unknown;
+        stopVisible?: unknown;
+        completionVisible?: unknown;
+        thinkingActive?: unknown;
+      }
+    | undefined;
+  return {
+    snapshot: applyMinTurnFilter(value?.snapshot, minTurnIndex),
+    stopVisible: value?.stopVisible === true,
+    completionVisible: value?.completionVisible === true,
+    thinkingActive: value?.thinkingActive === true,
+  };
 }
 
 export async function captureAssistantMarkdown(
@@ -808,6 +896,24 @@ export function buildAssistantSnapshotExpressionForTest(
 
 export function buildConversationDebugExpressionForTest(): string {
   return buildConversationDebugExpression();
+}
+
+export function normalizeAssistantSnapshotForTest(
+  snapshot: {
+    text?: string;
+    html?: string;
+    messageId?: string | null;
+    turnId?: string | null;
+    turnIndex?: number | null;
+    afterLatestUser?: boolean;
+    turnComplete?: boolean;
+  } | null,
+): {
+  text: string;
+  html?: string;
+  meta: { turnId?: string | null; messageId?: string | null };
+} | null {
+  return normalizeAssistantSnapshot(snapshot);
 }
 
 export function buildMarkdownFallbackExtractorForTest(minTurnLiteral = "0"): string {
@@ -903,7 +1009,13 @@ async function parseAssistantEvaluationResult(
         : undefined;
     const text = cleanAssistantText(String((result.value as { text: unknown }).text ?? ""));
     const normalized = text.toLowerCase();
-    if (isAnswerNowPlaceholderText(normalized) || isPureThinkingStatusText(text)) {
+    const turnComplete = (result.value as { turnComplete?: unknown }).turnComplete === true;
+    // A status-word snapshot ("Reading") is a live placeholder only while the turn
+    // is unfinished; a finished turn (turnComplete) is a genuine one-word answer.
+    if (
+      isAnswerNowPlaceholderText(normalized) ||
+      (isPureThinkingStatusText(text) && !turnComplete)
+    ) {
       return null;
     }
     return { text, html, meta: { turnId, messageId } };
@@ -1063,7 +1175,11 @@ async function pollAssistantCompletion(
     if (abortSignal?.aborted) {
       return null;
     }
-    const snapshot = await readAssistantSnapshot(Runtime, minTurnIndex, expectedConversationId);
+    // ONE batched round-trip (snapshot + stop + completion + thinking) replaces
+    // the previous four Runtime.evaluate calls per tick. The sub-probes embed the
+    // same shared predicates in the same order, so acceptance is unchanged.
+    const { snapshot, stopVisible, completionVisible, thinkingActive } =
+      await readBatchedAssistantCompletion(Runtime, minTurnIndex, expectedConversationId);
     const normalized = normalizeAssistantSnapshot(snapshot);
     if (normalized) {
       const currentLength = normalized.text.length;
@@ -1074,11 +1190,6 @@ async function pollAssistantCompletion(
       } else {
         stableCycles += 1;
       }
-      const [stopVisible, completionVisible, thinkingActive] = await Promise.all([
-        isStopButtonVisible(Runtime),
-        isCompletionVisible(Runtime),
-        isThinkingActive(Runtime),
-      ]);
       if (isGeneratedImageAssistantAnswer(normalized)) {
         return normalized;
       }
@@ -1136,7 +1247,11 @@ async function pollAssistantCompletion(
       stableCycles = 0;
       acceptStreak = 0;
     }
-    await delay(400);
+    // Adaptive cadence: widen the poll only while a thinking indicator is
+    // confirmed active (the answer cannot be final yet); tighten straight back to
+    // 400ms the moment thinking clears or text grows, so detection is never
+    // delayed once thinking ends.
+    await delay(watchdogPollIntervalMs(thinkingActive));
   }
   return null;
 }
@@ -1270,7 +1385,13 @@ function normalizeAssistantSnapshot(snapshot: AssistantSnapshot | null): {
   const normalized = text.toLowerCase();
   // "Pro thinking" often renders a placeholder turn containing an "Answer now" gate.
   // Treat it as incomplete so browser mode keeps waiting for the real assistant text.
-  if (isAnswerNowPlaceholderText(normalized) || isPureThinkingStatusText(text)) {
+  // A pure status-label snapshot ("Reading") is only a placeholder while its turn
+  // is unfinished; once finished-action controls render (turnComplete) it is a
+  // genuine one-word answer and must survive.
+  if (
+    isAnswerNowPlaceholderText(normalized) ||
+    (isPureThinkingStatusText(text) && snapshot?.turnComplete !== true)
+  ) {
     return null;
   }
   // Ignore user echo turns that can show up in project view fallbacks.
@@ -1317,18 +1438,24 @@ function buildAssistantSnapshotExpression(
     const extracted = extractAssistantTurn();
     ${buildAnswerNowPlaceholderPredicateJs("isPlaceholder")}
     ${buildActiveThinkingStatusPredicateJs("isActiveThinkingStatus")}
+    // A pure thinking-status label is a LIVE placeholder only while the turn is
+    // still generating. A genuine one-word answer that happens to equal a status
+    // label ("Reading", "Working", …) renders with finished-action controls
+    // (turnComplete), so it must not be discarded as a placeholder.
+    const isBlockingThinkingStatus = (snapshot) =>
+      isActiveThinkingStatus(snapshot) && snapshot?.turnComplete !== true;
     if (
       extracted &&
       extracted.text &&
       !isPlaceholder(extracted) &&
-      !isActiveThinkingStatus(extracted)
+      !isBlockingThinkingStatus(extracted)
     ) {
       return extracted;
     }
     // Fallback for ChatGPT project view: answers can live outside conversation turns.
     const extractFallback = ${buildMarkdownFallbackExtractor("MIN_TURN_INDEX")};
     const fallback = extractFallback();
-    if (fallback && !isPlaceholder(fallback) && !isActiveThinkingStatus(fallback)) {
+    if (fallback && !isPlaceholder(fallback) && !isBlockingThinkingStatus(fallback)) {
       return fallback;
     }
     return null;
@@ -1381,6 +1508,12 @@ function buildResponseObserverExpression(
     };
     ${buildAnswerNowPlaceholderPredicateJs("isAnswerNowPlaceholder")}
     ${buildActiveThinkingStatusPredicateJs("isActiveThinkingStatus")}
+    // A pure thinking-status label is a LIVE placeholder only while the turn is
+    // still generating. A genuine one-word answer equal to a status label
+    // ("Reading", "Working", …) renders with finished-action controls
+    // (turnComplete), so it must not be discarded as a placeholder.
+    const isBlockingThinkingStatus = (snapshot) =>
+      isActiveThinkingStatus(snapshot) && snapshot?.turnComplete !== true;
 
     // Helper to detect assistant turns - must match buildAssistantExtractor logic for consistency.
     const isAssistantTurn = (node) => {
@@ -1444,7 +1577,7 @@ function buildResponseObserverExpression(
             const extractedCandidate =
               extractedRaw &&
               !isAnswerNowPlaceholder(extractedRaw) &&
-              !isActiveThinkingStatus(extractedRaw)
+              !isBlockingThinkingStatus(extractedRaw)
                 ? extractedRaw
                 : null;
             let extracted = acceptSnapshot(extractedCandidate);
@@ -1453,7 +1586,7 @@ function buildResponseObserverExpression(
               const fallbackCandidate =
                 fallbackRaw &&
                 !isAnswerNowPlaceholder(fallbackRaw) &&
-                !isActiveThinkingStatus(fallbackRaw)
+                !isBlockingThinkingStatus(fallbackRaw)
                   ? fallbackRaw
                   : null;
               extracted = acceptSnapshot(fallbackCandidate);
@@ -1555,7 +1688,7 @@ function buildResponseObserverExpression(
         const refreshedCandidate =
           refreshedRaw &&
           !isAnswerNowPlaceholder(refreshedRaw) &&
-          !isActiveThinkingStatus(refreshedRaw)
+          !isBlockingThinkingStatus(refreshedRaw)
             ? refreshedRaw
             : null;
         let refreshed = acceptSnapshot(refreshedCandidate);
@@ -1564,7 +1697,7 @@ function buildResponseObserverExpression(
           const fallbackCandidate =
             fallbackRaw &&
             !isAnswerNowPlaceholder(fallbackRaw) &&
-            !isActiveThinkingStatus(fallbackRaw)
+            !isBlockingThinkingStatus(fallbackRaw)
               ? fallbackRaw
               : null;
           refreshed = acceptSnapshot(fallbackCandidate);
@@ -1698,7 +1831,7 @@ function buildResponseObserverExpression(
     const extractedCandidate =
       extractedRaw &&
       !isAnswerNowPlaceholder(extractedRaw) &&
-      !isActiveThinkingStatus(extractedRaw)
+      !isBlockingThinkingStatus(extractedRaw)
         ? extractedRaw
         : null;
     let extracted = acceptSnapshot(extractedCandidate);
@@ -1707,7 +1840,7 @@ function buildResponseObserverExpression(
       const fallbackCandidate =
         fallbackRaw &&
         !isAnswerNowPlaceholder(fallbackRaw) &&
-        !isActiveThinkingStatus(fallbackRaw)
+        !isBlockingThinkingStatus(fallbackRaw)
           ? fallbackRaw
           : null;
       extracted = acceptSnapshot(fallbackCandidate);
@@ -1791,6 +1924,10 @@ function buildAssistantExtractor(functionName: string): string {
         continue;
       }
       const afterLatestUser = followsLatestUser(turn);
+      // Finished-action controls only render once the turn is complete. Carry
+      // this so downstream placeholder screening can tell a real one-word answer
+      // ("Reading") from the live thinking-status placeholder of the same shape.
+      const turnComplete = Boolean(turn.querySelector?.('${FINISHED_ACTIONS_SELECTOR}'));
       const messageRoot = turn.querySelector(ASSISTANT_SELECTOR) ?? turn;
       expandCollapsibles(messageRoot);
       const preferred =
@@ -1823,10 +1960,10 @@ function buildAssistantExtractor(functionName: string): string {
         /^thought for \\d+(?:\\.\\d+)?\\s*(?:s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)\\s+edit$/.test(normalizedText);
       if (generatedImages.length > 0 && imageOnlyChrome) {
         const label = generatedImages.length === 1 ? 'Generated image.' : \`Generated \${generatedImages.length} images.\`;
-        return { text: label, html: messageRoot?.innerHTML ?? html, messageId, turnId, turnIndex: index, afterLatestUser };
+        return { text: label, html: messageRoot?.innerHTML ?? html, messageId, turnId, turnIndex: index, afterLatestUser, turnComplete };
       }
       if (text.trim()) {
-        return { text, html, messageId, turnId, turnIndex: index, afterLatestUser };
+        return { text, html, messageId, turnId, turnIndex: index, afterLatestUser, turnComplete };
       }
     }
     return null;
@@ -1983,7 +2120,10 @@ function buildMarkdownFallbackExtractor(minTurnLiteral?: string): string {
       const html = node.innerHTML ?? '';
       const turnIndex = resolveTurnIndex(node);
       const afterLatestUser = isAfterLatestUserTurn(node);
-      return { text, html, messageId: null, turnId: null, turnIndex, afterLatestUser };
+      const turnContainer =
+        node.closest?.(CONVERSATION_SELECTOR) || node.closest?.('[data-message-author-role], [data-turn]');
+      const turnComplete = Boolean(turnContainer?.querySelector?.('${FINISHED_ACTIONS_SELECTOR}'));
+      return { text, html, messageId: null, turnId: null, turnIndex, afterLatestUser, turnComplete };
     }
     return null;
   })`;
@@ -2170,6 +2310,15 @@ interface AssistantSnapshot {
   turnId?: string | null;
   turnIndex?: number | null;
   afterLatestUser?: boolean;
+  /**
+   * True when the extracted turn carries finished-action controls (copy /
+   * thumbs / share). Set by the DOM extractors. Used to disambiguate a real
+   * one-word answer that equals a thinking-status label ("Reading", "Working",
+   * …) from the live status placeholder ChatGPT paints during Pro thinking:
+   * the placeholder never carries finished-action controls, so a status-word
+   * snapshot is only treated as a completed answer when this is true.
+   */
+  turnComplete?: boolean;
 }
 
 const LANGUAGE_TAGS = new Set(

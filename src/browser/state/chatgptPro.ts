@@ -396,6 +396,19 @@ function stateAfterReattach(context: ChatGptProContext): ChatGptProLegalState {
   if (context.stateBeforeReattach === "mode_verified_same_session" && !context.promptSha256) {
     return "mode_verified_same_session";
   }
+  // Post-capture reattach must be idempotent: a drop AFTER output_captured /
+  // evidence_written already has the captured output sha and evidence id in
+  // context, so regressing to response_waiting would either fail an otherwise
+  // successful (paid) run when the driver sends `finish` (finish requires
+  // evidence_written) or force a needless re-capture. Restore the exact
+  // pre-drop legal state so the FSM resumes where it left off. Earlier states
+  // (prompt_submitted / response_waiting) still resume at response_waiting.
+  if (
+    context.stateBeforeReattach === "output_captured" ||
+    context.stateBeforeReattach === "evidence_written"
+  ) {
+    return context.stateBeforeReattach;
+  }
   return "response_waiting";
 }
 

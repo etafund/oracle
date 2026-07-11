@@ -132,10 +132,23 @@ const LOGIN_WALL_PHRASES = [
   "log in or sign up",
 ] as const;
 
-function buildAccessStateProbeExpression(): string {
+export interface AccessProbeOptions {
+  /**
+   * PRE-RESULT re-probe only: exclude the assistant turns' rendered text from the
+   * body sample so the just-captured answer's own prose can never classify the
+   * live page as a challenge wall. A genuine interstitial replaces the whole page
+   * (its text is NOT inside an assistant turn), so the wall stays detectable while
+   * an answer that merely quotes challenge vocabulary no longer self-quarantines
+   * a healthy worker. Left off for the pre-run gate, which must see the full body.
+   */
+  excludeAssistantText?: boolean;
+}
+
+function buildAccessStateProbeExpression(options: AccessProbeOptions = {}): string {
   const interstitialScriptSelector = JSON.stringify(CLOUDFLARE_SCRIPT_SELECTOR);
   const interstitialTitle = JSON.stringify(CLOUDFLARE_TITLE.toLowerCase());
   const inputSelectors = JSON.stringify(INPUT_SELECTORS);
+  const excludeAssistantText = options.excludeAssistantText === true;
   // READ-ONLY by contract: no clicks, no focus, no key events, no fetches.
   return `(() => {
     const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
@@ -158,10 +171,27 @@ function buildAccessStateProbeExpression(): string {
         ? location.hostname
         : '';
     const title = typeof document.title === 'string' ? document.title : null;
-    const bodySample = normalize(document.body ? document.body.innerText : '').slice(
-      0,
-      ${BODY_SAMPLE_CHARS},
-    );
+    const excludeAssistantText = ${excludeAssistantText ? "true" : "false"};
+    const rawBodyText = document.body ? (document.body.innerText || '') : '';
+    let scopedBodyText = rawBodyText;
+    if (excludeAssistantText && document.body) {
+      // Drop the assistant turns' rendered text before sampling. A genuine wall
+      // replaces the page (its text lives outside any assistant turn), so this
+      // keeps real interstitial/security-block phrases detectable while an answer
+      // that merely quotes challenge vocabulary is removed. Read-only: the live
+      // DOM is never mutated (substrings are removed from a copied string).
+      const assistantTurns = Array.from(
+        document.querySelectorAll('[data-message-author-role="assistant"], [data-turn="assistant"]'),
+      );
+      for (const turn of assistantTurns) {
+        const turnText =
+          turn && (turn.innerText || turn.textContent) ? (turn.innerText || turn.textContent) : '';
+        if (turnText) {
+          scopedBodyText = scopedBodyText.split(turnText).join(' ');
+        }
+      }
+    }
+    const bodySample = normalize(scopedBodyText).slice(0, ${BODY_SAMPLE_CHARS});
 
     const composerNodes = ${inputSelectors}
       .map((selector) => document.querySelector(selector))
@@ -212,8 +242,8 @@ function buildAccessStateProbeExpression(): string {
   })()`;
 }
 
-export function buildAccessStateProbeExpressionForTest(): string {
-  return buildAccessStateProbeExpression();
+export function buildAccessStateProbeExpressionForTest(options: AccessProbeOptions = {}): string {
+  return buildAccessStateProbeExpression(options);
 }
 
 function coerceAccessFacts(value: unknown): BrowserAccessFacts | null {
@@ -312,11 +342,12 @@ export function classifyBrowserAccessFacts(facts: BrowserAccessFacts): BrowserAc
  */
 export async function probeBrowserAccessState(
   runtime: ChromeClient["Runtime"],
+  options: AccessProbeOptions = {},
 ): Promise<BrowserAccessReport> {
   let facts: BrowserAccessFacts | null = null;
   try {
     const { result } = await runtime.evaluate({
-      expression: buildAccessStateProbeExpression(),
+      expression: buildAccessStateProbeExpression(options),
       returnByValue: true,
     });
     facts = coerceAccessFacts(result?.value);
@@ -415,7 +446,14 @@ export async function assertPreRunAccessState(
 
 const ARTIFACT_HTML_MARKERS = ["/cdn-cgi/challenge", "challenge-platform", "__cf_chl"] as const;
 
-const ARTIFACT_TEXT_PHRASES = [...VERIFICATION_INTERSTITIAL_PHRASES, "just a moment"] as const;
+// Only phrases that unambiguously belong to a challenge wall. The generic
+// Cloudflare title "just a moment" is NOT included: it is common conversational
+// filler ("Just a moment while I think about this."), and a short benign answer
+// starting with it would otherwise strip to a tiny residue and self-quarantine
+// the worker. A genuine "Just a moment…" interstitial always co-renders the
+// verification phrases below (and the HTML challenge markers / interstitial
+// title check cover the platform page), so detection is unaffected.
+const ARTIFACT_TEXT_PHRASES = [...VERIFICATION_INTERSTITIAL_PHRASES] as const;
 
 const LOGIN_ARTIFACT_PHRASES = [...LOGIN_WALL_PHRASES, "welcome back"] as const;
 
@@ -508,7 +546,12 @@ export async function assertCapturedAnswerNotAccessArtifact(
     };
     await refuseForState("pre-result", report, logger, options);
   }
-  const report = await probeBrowserAccessState(runtime);
+  // Scope the live re-probe to the page CHROME, not the captured answer: the
+  // body sample excludes the assistant turns so an answer that merely quotes
+  // challenge vocabulary (e.g. an agent asking Oracle about CAPTCHAs) cannot
+  // quarantine a healthy signed-in worker. A real wall that replaced the page
+  // still classifies here (its text is outside any assistant turn).
+  const report = await probeBrowserAccessState(runtime, { excludeAssistantText: true });
   if (QUARANTINE_STATE_CLASSES.has(report.state) || report.state === "login_required") {
     await refuseForState("pre-result", report, logger, options);
   }

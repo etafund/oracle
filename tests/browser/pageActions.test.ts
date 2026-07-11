@@ -920,6 +920,15 @@ describe("waitForAssistantResponse", () => {
         messageId: "mid",
         turnId: "tid",
       };
+      // First snapshot read is the watchdog poller; keep it slow so the
+      // evaluation wins the race.
+      const readSnapshotValue = async () => {
+        snapshotCalls += 1;
+        if (snapshotCalls === 1) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        return payload;
+      };
       const evaluate = vi
         .fn()
         .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
@@ -927,13 +936,23 @@ describe("waitForAssistantResponse", () => {
             return { result: { type: "object", value: payload } };
           }
           const expression = String(params?.expression ?? "");
+          // The watchdog poll issues ONE batched evaluate per tick embedding the
+          // snapshot extractor plus the stop/completion/thinking probes.
+          if (expression.includes("stopVisible, completionVisible, thinkingActive")) {
+            const snapshot = await readSnapshotValue();
+            return {
+              result: {
+                value: {
+                  snapshot,
+                  stopVisible: false,
+                  completionVisible: false,
+                  thinkingActive: false,
+                },
+              },
+            };
+          }
           if (expression.includes("extractAssistantTurn")) {
-            snapshotCalls += 1;
-            // First snapshot call is the watchdog poller; keep it slow so the evaluation wins the race.
-            if (snapshotCalls === 1) {
-              await new Promise((resolve) => setTimeout(resolve, 50));
-            }
-            return { result: { value: payload } };
+            return { result: { value: await readSnapshotValue() } };
           }
           return { result: { value: false } };
         });
@@ -979,6 +998,18 @@ describe("waitForAssistantResponse", () => {
             return new Promise(() => undefined);
           }
           const expression = String(params.expression ?? "");
+          if (expression.includes("stopVisible, completionVisible, thinkingActive")) {
+            return {
+              result: {
+                value: {
+                  snapshot: Date.now() - startedAt < 5_000 ? partial : complete,
+                  stopVisible: false,
+                  completionVisible: true,
+                  thinkingActive: false,
+                },
+              },
+            };
+          }
           if (expression.includes("extractAssistantTurn")) {
             return {
               result: { value: Date.now() - startedAt < 5_000 ? partial : complete },
@@ -1021,6 +1052,13 @@ describe("waitForAssistantResponse", () => {
         turnId: "tid",
       };
       let snapshotCalls = 0;
+      const readSnapshotValue = async () => {
+        snapshotCalls += 1;
+        if (snapshotCalls === 1) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        return Date.now() - startedAt < 3_500 ? partial : complete;
+      };
       const evaluate = vi
         .fn()
         .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
@@ -1028,14 +1066,21 @@ describe("waitForAssistantResponse", () => {
             return { result: { type: "object", value: partial } };
           }
           const expression = String(params.expression ?? "");
-          if (expression.includes("extractAssistantTurn")) {
-            snapshotCalls += 1;
-            if (snapshotCalls === 1) {
-              await new Promise((resolve) => setTimeout(resolve, 50));
-            }
+          if (expression.includes("stopVisible, completionVisible, thinkingActive")) {
+            const snapshot = await readSnapshotValue();
             return {
-              result: { value: Date.now() - startedAt < 3_500 ? partial : complete },
+              result: {
+                value: {
+                  snapshot,
+                  stopVisible: false,
+                  completionVisible: Date.now() - startedAt >= 3_500,
+                  thinkingActive: false,
+                },
+              },
             };
+          }
+          if (expression.includes("extractAssistantTurn")) {
+            return { result: { value: await readSnapshotValue() } };
           }
           if (expression.includes("Find the LAST assistant turn")) {
             return { result: { value: Date.now() - startedAt >= 3_500 } };
@@ -1141,6 +1186,17 @@ describe("waitForAssistantResponse", () => {
       };
       let snapshotCalls = 0;
       let thinkingCalls = 0;
+      const readSnapshotValue = async () => {
+        snapshotCalls += 1;
+        if (snapshotCalls === 1) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        return snapshotCalls <= 6 ? teaser : full;
+      };
+      const readThinkingValue = () => {
+        thinkingCalls += 1;
+        return thinkingCalls <= 3;
+      };
       const evaluate = vi
         .fn()
         .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
@@ -1148,16 +1204,23 @@ describe("waitForAssistantResponse", () => {
             return { result: { type: "object", value: teaser } };
           }
           const expression = String(params?.expression ?? "");
+          // The batched poll reads snapshot, then completion (off the just-bumped
+          // snapshot count), then thinking — the same order the split probes ran.
+          if (expression.includes("stopVisible, completionVisible, thinkingActive")) {
+            const snapshot = await readSnapshotValue();
+            const completionVisible = snapshotCalls > 6;
+            const thinkingActive = readThinkingValue();
+            return {
+              result: {
+                value: { snapshot, stopVisible: false, completionVisible, thinkingActive },
+              },
+            };
+          }
           if (expression.includes("extractAssistantTurn")) {
-            snapshotCalls += 1;
-            if (snapshotCalls === 1) {
-              await new Promise((resolve) => setTimeout(resolve, 50));
-            }
-            return { result: { value: snapshotCalls <= 6 ? teaser : full } };
+            return { result: { value: await readSnapshotValue() } };
           }
           if (expression.includes("isThinkingGateActive")) {
-            thinkingCalls += 1;
-            return { result: { value: thinkingCalls <= 3 } };
+            return { result: { value: readThinkingValue() } };
           }
           if (expression.includes("Find the LAST assistant turn")) {
             return { result: { value: snapshotCalls > 6 } };
@@ -1325,6 +1388,13 @@ describe("waitForAssistantResponse", () => {
         turnId: "tid",
       };
       let snapshotCalls = 0;
+      const readSnapshotValue = async () => {
+        snapshotCalls += 1;
+        if (snapshotCalls === 1) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        return snapshotCalls <= 5 ? short : complete;
+      };
       const evaluate = vi
         .fn()
         .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
@@ -1332,12 +1402,21 @@ describe("waitForAssistantResponse", () => {
             return { result: { type: "object", value: short } };
           }
           const expression = String(params.expression ?? "");
+          if (expression.includes("stopVisible, completionVisible, thinkingActive")) {
+            const snapshot = await readSnapshotValue();
+            return {
+              result: {
+                value: {
+                  snapshot,
+                  stopVisible: false,
+                  completionVisible: true,
+                  thinkingActive: false,
+                },
+              },
+            };
+          }
           if (expression.includes("extractAssistantTurn")) {
-            snapshotCalls += 1;
-            if (snapshotCalls === 1) {
-              await new Promise((resolve) => setTimeout(resolve, 50));
-            }
-            return { result: { value: snapshotCalls <= 5 ? short : complete } };
+            return { result: { value: await readSnapshotValue() } };
           }
           if (expression.includes("Find the LAST assistant turn")) {
             return { result: { value: true } };
@@ -1375,6 +1454,13 @@ describe("waitForAssistantResponse", () => {
         turnId: "tid",
       };
       let snapshotCalls = 0;
+      const readSnapshotValue = async () => {
+        snapshotCalls += 1;
+        if (snapshotCalls === 1) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        return snapshotCalls <= 5 ? partial : complete;
+      };
       const evaluate = vi
         .fn()
         .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
@@ -1382,12 +1468,21 @@ describe("waitForAssistantResponse", () => {
             return { result: { type: "object", value: partial } };
           }
           const expression = String(params.expression ?? "");
+          if (expression.includes("stopVisible, completionVisible, thinkingActive")) {
+            const snapshot = await readSnapshotValue();
+            return {
+              result: {
+                value: {
+                  snapshot,
+                  stopVisible: false,
+                  completionVisible: true,
+                  thinkingActive: false,
+                },
+              },
+            };
+          }
           if (expression.includes("extractAssistantTurn")) {
-            snapshotCalls += 1;
-            if (snapshotCalls === 1) {
-              await new Promise((resolve) => setTimeout(resolve, 50));
-            }
-            return { result: { value: snapshotCalls <= 5 ? partial : complete } };
+            return { result: { value: await readSnapshotValue() } };
           }
           if (expression.includes("Find the LAST assistant turn")) {
             return { result: { value: true } };
@@ -1423,6 +1518,18 @@ describe("waitForAssistantResponse", () => {
             return { result: { type: "object", value: answer } };
           }
           const expression = String(params.expression ?? "");
+          if (expression.includes("stopVisible, completionVisible, thinkingActive")) {
+            return {
+              result: {
+                value: {
+                  snapshot: answer,
+                  stopVisible: false,
+                  completionVisible: true,
+                  thinkingActive: false,
+                },
+              },
+            };
+          }
           if (expression.includes("extractAssistantTurn")) {
             return { result: { value: answer } };
           }
@@ -1546,26 +1653,33 @@ describe("waitForAssistantResponse", () => {
   test("falls back to snapshot when observer fails", async () => {
     vi.useFakeTimers();
     try {
+      const recovered = {
+        text: "Recovered assistant response.",
+        html: "<p>Recovered assistant response.</p>",
+        messageId: "mid",
+        turnId: "tid",
+      };
       const evaluate = vi
         .fn()
         .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
           if (params?.awaitPromise) {
             throw new Error("observer failed");
           }
-          if (
-            typeof params?.expression === "string" &&
-            params.expression.includes("extractAssistantTurn")
-          ) {
+          const expression = typeof params?.expression === "string" ? params.expression : "";
+          if (expression.includes("stopVisible, completionVisible, thinkingActive")) {
             return {
               result: {
                 value: {
-                  text: "Recovered assistant response.",
-                  html: "<p>Recovered assistant response.</p>",
-                  messageId: "mid",
-                  turnId: "tid",
+                  snapshot: recovered,
+                  stopVisible: false,
+                  completionVisible: false,
+                  thinkingActive: false,
                 },
               },
             };
+          }
+          if (expression.includes("extractAssistantTurn")) {
+            return { result: { value: recovered } };
           }
           return { result: { value: null } };
         });

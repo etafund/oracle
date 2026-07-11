@@ -4,10 +4,12 @@ import {
   buildActiveThinkingStatusPredicateJsForTest,
   buildAnswerNowPlaceholderPredicateJsForTest,
   buildAssistantSnapshotExpressionForTest,
+  buildResponseObserverExpressionForTest,
   buildStopButtonVisibilityExpressionForTest,
   isFinishedAssistantSnapshotStableForTest,
   isAnswerNowPlaceholderTextForTest,
   matchesThinkingStatusLabelForTest,
+  normalizeAssistantSnapshotForTest,
   shouldAcceptStableAssistantSnapshotForTest,
   shouldConfirmAssistantCompletion,
   shouldReplaceAssistantSnapshotForTest,
@@ -416,6 +418,71 @@ describe("assistant thinking-status capture", () => {
       }),
     );
     expect(result).toBe(fixture.expected);
+  });
+});
+
+describe("finish-aware thinking-status disambiguation (status-word answers)", () => {
+  // Regression: a real one-word answer equal to a thinking-status label was
+  // dropped as a placeholder everywhere, so capture never completed and the run
+  // timed out. A finished turn (turnComplete) means it is the genuine answer.
+  const STATUS_WORD_ANSWERS = [
+    "Reading",
+    "Searching",
+    "Planning",
+    "Working",
+    "Analyzing",
+    "Reasoning",
+    "Researching",
+  ];
+
+  test("text-only status classification is unchanged (still matches these words)", () => {
+    for (const word of STATUS_WORD_ANSWERS) {
+      expect(matchesThinkingStatusLabelForTest(word)).toBe(true);
+    }
+  });
+
+  test.each(STATUS_WORD_ANSWERS)("keeps a FINISHED one-word answer %j", (word) => {
+    const kept = normalizeAssistantSnapshotForTest({ text: word, turnComplete: true });
+    expect(kept?.text).toBe(word);
+  });
+
+  test.each(STATUS_WORD_ANSWERS)("still drops the LIVE status placeholder %j", (word) => {
+    // Unfinished turn: this is the Pro-thinking placeholder, never the answer.
+    expect(normalizeAssistantSnapshotForTest({ text: word, turnComplete: false })).toBeNull();
+    // No completion signal at all (legacy snapshot shape) also stays a placeholder,
+    // so the anti-truncation guard is never weakened for older extractors.
+    expect(normalizeAssistantSnapshotForTest({ text: word })).toBeNull();
+  });
+
+  test("ordinary prose is never a status placeholder regardless of completion", () => {
+    expect(
+      normalizeAssistantSnapshotForTest({ text: "The answer is 42.", turnComplete: false })?.text,
+    ).toBe("The answer is 42.");
+  });
+
+  test("the finish gate is wired into both DOM capture paths", () => {
+    for (const expression of [
+      buildAssistantSnapshotExpressionForTest(),
+      buildResponseObserverExpressionForTest(),
+    ]) {
+      expect(expression).toContain("isBlockingThinkingStatus");
+      expect(expression).toContain("snapshot?.turnComplete !== true");
+    }
+  });
+
+  test("the composed finish gate blocks placeholders but frees finished answers", () => {
+    const composed = (snapshot: Record<string, unknown>): boolean => {
+      const predicate = buildActiveThinkingStatusPredicateJsForTest("isActiveThinkingStatus");
+      return new Script(
+        `${predicate}\n` +
+          "const isBlockingThinkingStatus = (s) => isActiveThinkingStatus(s) && s?.turnComplete !== true;\n" +
+          `isBlockingThinkingStatus(${JSON.stringify(snapshot)});`,
+      ).runInNewContext({ String }) as boolean;
+    };
+    expect(composed({ text: "Reading", turnComplete: true })).toBe(false);
+    expect(composed({ text: "Reading", turnComplete: false })).toBe(true);
+    expect(composed({ text: "Reading" })).toBe(true);
+    expect(composed({ text: "The answer is 42.", turnComplete: false })).toBe(false);
   });
 });
 

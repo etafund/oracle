@@ -377,6 +377,26 @@ describe("screenCapturedAnswerForAccessArtifacts", () => {
       screenCapturedAnswerForAccessArtifacts("Yes — use rename() for atomicity.").artifact,
     ).toBe(false);
   });
+
+  test("benign 'just a moment' filler is not a verification artifact", () => {
+    // Regression: the generic Cloudflare title lived in the text-only artifact
+    // phrase set, so a short answer that merely opened with the common filler
+    // stripped to a tiny residue and self-quarantined the worker.
+    expect(
+      screenCapturedAnswerForAccessArtifacts("Just a moment while I think about this.").artifact,
+    ).toBe(false);
+    expect(
+      screenCapturedAnswerForAccessArtifacts("Just a moment — here's the plan.").artifact,
+    ).toBe(false);
+  });
+
+  test("a genuine Cloudflare interstitial opening with 'Just a moment' is still an artifact", () => {
+    const verdict = screenCapturedAnswerForAccessArtifacts(
+      "Just a moment... Verify you are human. Checking your browser. Enable JavaScript and cookies to continue.",
+    );
+    expect(verdict.artifact).toBe(true);
+    expect(verdict.state).toBe("verification_interstitial");
+  });
 });
 
 describe("assertCapturedAnswerNotAccessArtifact (pre-result gate)", () => {
@@ -483,5 +503,109 @@ describe("no-interaction property (read-only detection)", () => {
       quarantine: { dir, accountId: "acct1" },
     });
     expect([...accessed]).toEqual(["evaluate"]);
+  });
+});
+
+describe("pre-result probe scopes challenge text away from the captured answer", () => {
+  // Regression: the pre-result live re-probe sampled the whole body INCLUDING the
+  // just-captured answer, so an answer that merely quoted challenge vocabulary
+  // (e.g. an agent asking Oracle about CAPTCHAs) classified a healthy signed-in
+  // worker as a verification interstitial and tripped the quarantine latch.
+  class ProbeElement {
+    constructor(
+      private readonly ownText = "",
+      private readonly visible = true,
+    ) {}
+    get innerText(): string {
+      return this.ownText;
+    }
+    get textContent(): string {
+      return this.ownText;
+    }
+    getAttribute(): string | null {
+      return null;
+    }
+    getBoundingClientRect(): { width: number; height: number } {
+      return { width: this.visible ? 120 : 0, height: this.visible ? 40 : 0 };
+    }
+  }
+
+  function classifyViaProbe(opts: {
+    excludeAssistantText: boolean;
+    chromeText: string;
+    answerText: string;
+  }): string {
+    const expression = buildAccessStateProbeExpressionForTest({
+      excludeAssistantText: opts.excludeAssistantText,
+    });
+    const composer = new ProbeElement("", true);
+    const account = new ProbeElement("", true);
+    const assistant = new ProbeElement(opts.answerText, true);
+    const document = {
+      title: "ChatGPT",
+      body: { innerText: `${opts.chromeText} ${opts.answerText}`.trim() },
+      querySelector: (selector: string) => {
+        if (selector.includes("challenge-platform")) return null;
+        if (selector.includes("accounts-profile-button") || selector.includes("history-item-")) {
+          return account;
+        }
+        return composer;
+      },
+      querySelectorAll: (selector: string) => {
+        if (
+          selector.includes('author-role="assistant"') ||
+          selector.includes('data-turn="assistant"')
+        ) {
+          return opts.answerText ? [assistant] : [];
+        }
+        return [];
+      },
+    };
+    const location = { href: "https://chatgpt.com/", pathname: "/", hostname: "chatgpt.com" };
+    const window = { getComputedStyle: () => ({ display: "block", visibility: "visible" }) };
+    const evaluate = new Function(
+      "document",
+      "HTMLElement",
+      "location",
+      "window",
+      `return ${expression};`,
+    );
+    const facts = evaluate(document, ProbeElement, location, window) as BrowserAccessFacts;
+    return classifyBrowserAccessFacts(facts).state;
+  }
+
+  const CHALLENGE_QUOTING_ANSWER =
+    'the phrase "verify you are human" appears on cloudflare interstitials; ' +
+    '"checking your browser" is the same family of gateway page.';
+
+  test("a healthy worker whose answer quotes challenge text stays healthy at the pre-result gate", () => {
+    expect(
+      classifyViaProbe({
+        excludeAssistantText: true,
+        chromeText: "how can i help you today?",
+        answerText: CHALLENGE_QUOTING_ANSWER,
+      }),
+    ).toBe("healthy");
+  });
+
+  test("the pre-run gate (unscoped) still flags the same body — proving detection is not weakened", () => {
+    expect(
+      classifyViaProbe({
+        excludeAssistantText: false,
+        chromeText: "how can i help you today?",
+        answerText: CHALLENGE_QUOTING_ANSWER,
+      }),
+    ).toBe("verification_interstitial");
+  });
+
+  test("a real wall that replaced the page is still caught by the scoped pre-result probe", () => {
+    // The wall's text lives in the page chrome, not inside an assistant turn.
+    expect(
+      classifyViaProbe({
+        excludeAssistantText: true,
+        chromeText: "verify you are human. checking your browser.",
+        answerText: "",
+      }),
+    ).toBe("verification_interstitial");
   });
 });

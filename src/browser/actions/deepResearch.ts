@@ -199,6 +199,37 @@ export async function waitForResearchPlanAutoConfirm(
 }
 
 /**
+ * Gate the expensive Deep Research OOPIF target scan
+ * (readDeepResearchTargetResult) so it runs only once the cheap main-page poll
+ * shows research evidence. Before the sandboxed report iframe mounts there is
+ * nothing for the target scan to read, yet every call pays a
+ * Target.setAutoAttach enable/disable cycle plus a fixed settle delay — across a
+ * 40-minute run that is tens of seconds of pure sleep and hundreds of
+ * attach/detach cycles wasted on the pre-research "waiting" phase. Once ANY
+ * evidence appears (report iframe, planning/tool activity, an active stop
+ * button, a scoped research iframe, or a research read already confirmed on a
+ * prior tick) the scan runs every tick so completion is never missed — the
+ * finished report always renders inside a large iframe, so `hasIframe` keeps the
+ * scan live through completion. Cross-tab-leak protections are unchanged: this
+ * only decides WHETHER to call readDeepResearchTargetResult, never how it scopes.
+ */
+export function shouldReadDeepResearchTarget(signals: {
+  hasIframe?: boolean;
+  researchActivity?: boolean;
+  stopVisible?: boolean;
+  hasActiveScopedResearch?: boolean;
+  observedResearchEvidence?: boolean;
+}): boolean {
+  return Boolean(
+    signals.hasIframe ||
+    signals.researchActivity ||
+    signals.stopVisible ||
+    signals.hasActiveScopedResearch ||
+    signals.observedResearchEvidence,
+  );
+}
+
+/**
  * Polls for Deep Research completion over 5-30+ minutes.
  * Returns the full response text, optional HTML, and turn metadata.
  */
@@ -269,15 +300,23 @@ export async function waitForDeepResearchCompletion(
     // (readDeepResearchTargetResult) attaches to the iframe's own CDP target and
     // walks its nested frames, so it CAN read the report. Prefer the target path
     // and fall back to the in-page frame path for legacy/inline rendering.
-    const rawTargetResult = client
-      ? ((
-          await readDeepResearchTargetResult(
-            client,
-            ignoredTargetKeys,
-            requireScopedTargetOwner ? minTurnLiteral : -1,
-          ).catch(() => null)
-        )?.read ?? null)
-      : null;
+    const shouldScanTarget = shouldReadDeepResearchTarget({
+      hasIframe: val?.hasIframe,
+      researchActivity: val?.researchActivity,
+      stopVisible: val?.stopVisible,
+      hasActiveScopedResearch: val?.hasActiveScopedResearch,
+      observedResearchEvidence,
+    });
+    const rawTargetResult =
+      client && shouldScanTarget
+        ? ((
+            await readDeepResearchTargetResult(
+              client,
+              ignoredTargetKeys,
+              requireScopedTargetOwner ? minTurnLiteral : -1,
+            ).catch(() => null)
+          )?.read ?? null)
+        : null;
     const targetResult = filterIncompleteDeepResearchRead(rawTargetResult);
     // A completed target read is authoritative. If the target read is missing or
     // only in-progress, still try the in-page frame path so an incomplete target
