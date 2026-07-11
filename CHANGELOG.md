@@ -2,6 +2,10 @@
 
 ## 0.15.3 — Unreleased
 
+### Fixed
+
+- Browser: keep hidden macOS Chrome windows rendered off-screen so trusted prompt submissions land without retaining drafts or leaking them into later runs. Fixes #298 and #312. Thanks @LeoLin990405!
+
 ## 0.15.2 — 2026-07-06
 
 ### Changed

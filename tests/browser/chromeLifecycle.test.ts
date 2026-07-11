@@ -123,6 +123,47 @@ describe("copied-profile launch flags", () => {
   });
 });
 
+describe("hidden-window launch flags", () => {
+  test("keeps macOS Chrome rendered in an off-screen window", async () => {
+    const { buildChromeFlagsForTest } = await import("../../src/browser/chromeLifecycle.js");
+    const flags = buildChromeFlagsForTest(false, undefined, true);
+
+    if (process.platform === "darwin") {
+      expect(flags).toContain("--window-position=-32000,-32000");
+    } else {
+      expect(flags).not.toContain("--window-position=-32000,-32000");
+    }
+  });
+
+  test("does not add a window position to headless Chrome", async () => {
+    const { buildChromeFlagsForTest } = await import("../../src/browser/chromeLifecycle.js");
+
+    expect(buildChromeFlagsForTest(true, undefined, true)).not.toContain(
+      "--window-position=-32000,-32000",
+    );
+  });
+
+  test("moves a running macOS Chrome window without minimizing it", async () => {
+    const { positionChromeWindowOffscreen } = await import("../../src/browser/chromeLifecycle.js");
+    const browser = {
+      getWindowForTarget: vi.fn().mockResolvedValue({ windowId: 7 }),
+      setWindowBounds: vi.fn().mockResolvedValue(undefined),
+    };
+    const logger = vi.fn();
+
+    await positionChromeWindowOffscreen({ Browser: browser } as never, logger as never);
+
+    if (process.platform === "darwin") {
+      expect(browser.setWindowBounds).toHaveBeenCalledWith({
+        windowId: 7,
+        bounds: { left: -32_000, top: -32_000, windowState: "normal" },
+      });
+    } else {
+      expect(browser.setWindowBounds).not.toHaveBeenCalled();
+    }
+  });
+});
+
 describe("connectWithNewTab", () => {
   beforeEach(() => {
     cdpMock.mockReset();

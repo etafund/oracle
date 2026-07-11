@@ -2,15 +2,11 @@ import { rm } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import os from "node:os";
 import net from "node:net";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import CDP from "chrome-remote-interface";
 import { launch, Launcher, type LaunchedChrome } from "chrome-launcher";
 import type { BrowserLogger, ResolvedBrowserConfig, ChromeClient } from "./types.js";
 import { cleanupStaleProfileState } from "./profileState.js";
 import { delay } from "./utils.js";
-
-const execFileAsync = promisify(execFile);
 
 export async function launchChrome(
   config: ResolvedBrowserConfig,
@@ -20,7 +16,11 @@ export async function launchChrome(
   const connectHost = resolveRemoteDebugHost();
   const debugBindAddress = connectHost && connectHost !== "127.0.0.1" ? "0.0.0.0" : connectHost;
   const debugPort = config.debugPort ?? parseDebugPortEnv();
-  const chromeFlags = buildChromeFlags(config.headless ?? false, debugBindAddress);
+  const chromeFlags = buildChromeFlags(
+    config.headless ?? false,
+    debugBindAddress,
+    config.hideWindow ?? false,
+  );
   const usePatchedLauncher = Boolean(connectHost && connectHost !== "127.0.0.1");
   // copy-profile reuses a copied signed-in profile whose cookies are
   // Keychain-encrypted, so it must launch with the real Keychain (not mocked):
@@ -54,6 +54,27 @@ export async function launchChrome(
   return Object.assign(launcher, { host: connectHost ?? "127.0.0.1" }) as LaunchedChrome & {
     host?: string;
   };
+}
+
+export async function positionChromeWindowOffscreen(
+  client: ChromeClient,
+  logger: BrowserLogger,
+): Promise<void> {
+  if (process.platform !== "darwin") {
+    logger("Window hiding is only supported on macOS");
+    return;
+  }
+  try {
+    const { windowId } = await client.Browser.getWindowForTarget();
+    await client.Browser.setWindowBounds({
+      windowId,
+      bounds: { left: -32_000, top: -32_000, windowState: "normal" },
+    });
+    logger("Chrome window positioned off-screen");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger(`Failed to position Chrome window off-screen: ${message}`);
+  }
 }
 
 export function registerTerminationHooks(
@@ -142,32 +163,6 @@ export function registerTerminationHooks(
       process.removeListener(signal, handleSignal);
     }
   };
-}
-
-export async function hideChromeWindow(
-  chrome: LaunchedChrome,
-  logger: BrowserLogger,
-): Promise<void> {
-  if (process.platform !== "darwin") {
-    logger("Window hiding is only supported on macOS");
-    return;
-  }
-  if (!chrome.pid) {
-    logger("Unable to hide window: missing Chrome PID");
-    return;
-  }
-  const script = `tell application "System Events"
-    try
-      set visible of (first process whose unix id is ${chrome.pid}) to false
-    end try
-  end tell`;
-  try {
-    await execFileAsync("osascript", ["-e", script]);
-    logger("Chrome window hidden (Cmd-H)");
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger(`Failed to hide Chrome window: ${message}`);
-  }
 }
 
 export async function connectToChrome(
@@ -630,7 +625,11 @@ function isBlankPageTarget(target: { type?: string; url?: string }): boolean {
   return url === "about:blank" || url === "chrome://newtab/" || url === "chrome://new-tab-page/";
 }
 
-function buildChromeFlags(headless: boolean, debugBindAddress?: string | null): string[] {
+function buildChromeFlags(
+  headless: boolean,
+  debugBindAddress?: string | null,
+  hideWindow = false,
+): string[] {
   const flags = [
     "--disable-background-networking",
     "--disable-background-timer-throttling",
@@ -662,9 +661,22 @@ function buildChromeFlags(headless: boolean, debugBindAddress?: string | null): 
 
   if (headless) {
     flags.push("--headless=new");
+  } else if (hideWindow && process.platform === "darwin") {
+    // Cmd-H stops macOS Chrome from compositing the page, which can swallow
+    // trusted CDP clicks and retain the prompt as a draft. Keeping the window
+    // off-screen avoids desktop disruption while preserving normal rendering.
+    flags.push("--window-position=-32000,-32000");
   }
 
   return flags;
+}
+
+export function buildChromeFlagsForTest(
+  headless: boolean,
+  debugBindAddress?: string | null,
+  hideWindow = false,
+): string[] {
+  return buildChromeFlags(headless, debugBindAddress, hideWindow);
 }
 
 function resolveChromeLaunchOptions(

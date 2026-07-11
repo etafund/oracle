@@ -5,8 +5,8 @@ import type { LaunchedChrome } from "chrome-launcher";
 import {
   closeTab,
   connectWithNewTab,
-  hideChromeWindow,
   launchChrome,
+  positionChromeWindowOffscreen,
   registerTerminationHooks,
 } from "./chromeLifecycle.js";
 import { resolveBrowserConfig } from "./config.js";
@@ -181,14 +181,14 @@ export async function runBrowserProjectSources(
       Promise.race([promise, disconnectPromise]);
 
     const { Network, Page, Runtime, Input, DOM, Target } = client;
-    if (!config.headless && config.hideWindow) {
-      await hideChromeWindow(chrome, logger);
-    }
     const domainEnablers = [Network.enable({}), Page.enable(), Runtime.enable()];
     if (DOM && typeof DOM.enable === "function") {
       domainEnablers.push(DOM.enable());
     }
     await Promise.all(domainEnablers);
+    if (!config.headless && config.hideWindow) {
+      await positionChromeWindowOffscreen(client, logger);
+    }
     removeDialogHandler = installJavaScriptDialogAutoDismissal(Page, logger);
     if (!manualLogin) {
       await Network.clearBrowserCookies();

@@ -16,7 +16,7 @@ import type {
 import {
   launchChrome,
   registerTerminationHooks,
-  hideChromeWindow,
+  positionChromeWindowOffscreen,
   connectToRemoteChrome,
   connectWithNewTab,
   closeTab,
@@ -1167,15 +1167,14 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       Promise.race([promise, disconnectPromise]);
     const { Network, Page, Runtime, Input, DOM, Target } = client;
 
-    if (!config.headless && config.hideWindow) {
-      await hideChromeWindow(chrome, logger);
-    }
-
     const domainEnablers = [Network.enable({}), Page.enable(), Runtime.enable()];
     if (DOM && typeof DOM.enable === "function") {
       domainEnablers.push(DOM.enable());
     }
     await Promise.all(domainEnablers);
+    if (!config.headless && config.hideWindow) {
+      await positionChromeWindowOffscreen(client, logger);
+    }
     // The send button is clicked with trusted CDP input events at viewport
     // coordinates, which ChatGPT silently drops when the window is hidden or
     // occluded. Emulate focus so the page behaves like a foreground tab.
