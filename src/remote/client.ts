@@ -1,4 +1,5 @@
 import http from "node:http";
+import { createHash } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -9,7 +10,6 @@ import type { BrowserRunResult } from "../browserMode.js";
 import type { BrowserAttachment, SavedBrowserFile } from "../browser/types.js";
 import {
   appendArtifacts,
-  computeFileSha256,
   resolveSessionArtifactsDir,
   resolveUniqueArtifactPath,
   sanitizeArtifactFilename,
@@ -113,6 +113,22 @@ export class RemoteRunFailedError extends Error {
     this.name = "RemoteRunFailedError";
     this.errorClass = options.errorClass ?? null;
     this.retryable = options.retryable ?? null;
+  }
+}
+
+/**
+ * Internal marker for a bridge artifact download that stalled and was aborted
+ * by its inactivity/overall deadline (see `downloadArtifactToFile`). Distinct
+ * from ordinary content-transfer failures (size/sha/validation mismatches),
+ * which remain non-fatal warnings: a STALLED transfer is a transport-level
+ * hang and, once the answer has already been submitted, fails the run with a
+ * typed post-submit error rather than resolving with a partial-artifact
+ * warning or hanging forever.
+ */
+class ArtifactDownloadTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ArtifactDownloadTimeoutError";
   }
 }
 
@@ -227,6 +243,11 @@ export function createRemoteBrowserExecutor({
       // runs whenever the run settles (success or failure).
       let activeRes: http.IncomingMessage | null = null;
       let removeAbortListener: (() => void) | null = null;
+      // Whether the /runs response headers have been received. The per-chunk
+      // idle watchdog (armIdleTimer) only arms after headers arrive, so the
+      // pre-header window is covered by a separate request-level timeout that
+      // this flag disarms once the 200 (or any) response begins.
+      let headersReceived = false;
 
       const clearIdleTimer = () => {
         if (idleTimer) {
@@ -264,6 +285,13 @@ export function createRemoteBrowserExecutor({
         },
         (res) => {
           activeRes = res;
+          headersReceived = true;
+          // Response has begun: hand inactivity duty to the per-chunk idle
+          // watchdog below and disable the pre-header request-level timeout so
+          // it cannot fire during a legitimate long-but-active stream.
+          if (typeof req.setTimeout === "function") {
+            req.setTimeout(0);
+          }
           if (res.statusCode !== 200) {
             collectRefusal(res)
               .then((refusal) =>
@@ -278,7 +306,15 @@ export function createRemoteBrowserExecutor({
             return;
           }
           res.setEncoding("utf8");
-          let buffer = "";
+          // Incremental NDJSON splitter (perf-io-remote#0): accumulate the
+          // trailing partial line as a list of chunks and scan only each newly
+          // arrived chunk for a newline, so building an N-byte answer (the
+          // terminal `done` event carrying the full answer, legitimately split
+          // across many TCP chunks) costs O(N) rather than O(N^2). A completed
+          // line joins the pending chunks exactly once; the pending list is
+          // never re-scanned or re-sliced per chunk.
+          const pendingChunks: string[] = [];
+          let pendingLength = 0;
           // Arm the inactivity watchdog as soon as the 200 response begins —
           // a worker that accepts the connection, sends headers, and then
           // never emits a single byte must not pin the caller forever.
@@ -306,6 +342,7 @@ export function createRemoteBrowserExecutor({
               hostname,
               port,
               token,
+              artifactInactivityTimeoutMs: streamIdleTimeoutMs,
               onResult: (result) => {
                 resolved = result;
               },
@@ -334,22 +371,33 @@ export function createRemoteBrowserExecutor({
           };
           res.on("data", (chunk: string) => {
             armIdleTimer();
-            buffer += chunk;
-            let newlineIndex = buffer.indexOf("\n");
+            let start = 0;
+            let newlineIndex = chunk.indexOf("\n");
             while (newlineIndex !== -1) {
-              const line = buffer.slice(0, newlineIndex).trim();
-              buffer = buffer.slice(newlineIndex + 1);
+              const segment = chunk.slice(start, newlineIndex);
+              const line = (
+                pendingChunks.length > 0 ? pendingChunks.join("") + segment : segment
+              ).trim();
+              pendingChunks.length = 0;
+              pendingLength = 0;
               if (line.length > 0) {
                 processLine(line);
               }
-              newlineIndex = buffer.indexOf("\n");
+              start = newlineIndex + 1;
+              newlineIndex = chunk.indexOf("\n", start);
+            }
+            if (start < chunk.length) {
+              const rest = start === 0 ? chunk : chunk.slice(start);
+              pendingChunks.push(rest);
+              pendingLength += rest.length;
             }
             // Cap the trailing (not-yet-newline-terminated) partial line: a
-            // worker that never emits a newline would otherwise grow `buffer`
-            // without bound. Checked AFTER draining complete lines above, so
-            // a burst of many small legitimate lines in one chunk never trips
-            // this — only a single line actually exceeding the cap does.
-            if (buffer.length > maxLineBytes) {
+            // worker that never emits a newline would otherwise accumulate the
+            // pending chunks without bound. Checked AFTER draining complete
+            // lines above, so a burst of many small legitimate lines in one
+            // chunk never trips this — only a single line actually exceeding
+            // the cap does.
+            if (pendingLength > maxLineBytes) {
               fail(
                 new RemoteRunFailedError(
                   `Remote run stream line exceeded the ${maxLineBytes}-byte NDJSON line cap without a ` +
@@ -368,8 +416,9 @@ export function createRemoteBrowserExecutor({
             // misclassified as truncation. Only a tail that parses as JSON is
             // flushed — an unparseable tail is genuine mid-line truncation
             // and falls through to the EOF-without-done failure below.
-            const tail = buffer.trim();
-            buffer = "";
+            const tail = pendingChunks.length > 0 ? pendingChunks.join("").trim() : "";
+            pendingChunks.length = 0;
+            pendingLength = 0;
             if (tail.length > 0 && !settled) {
               let parseable = false;
               try {
@@ -383,8 +432,36 @@ export function createRemoteBrowserExecutor({
               }
             }
             void (async () => {
-              await Promise.allSettled(transferPromises);
+              // Overall deadline (bugs-remote#0): every artifact download also
+              // has its own inactivity timeout, but if a transfer promise never
+              // settles at all, do not await it forever after the stream has
+              // ended — convert a wedged transfer into a typed post-submit
+              // failure. Scaled by the number of (serialized) transfers so a
+              // legitimate multi-artifact transfer is never pre-empted; only a
+              // truly wedged transfer (one that outlives its own inactivity
+              // timeout) trips it.
+              const deadlineMs = streamIdleTimeoutMs * (transferPromises.length + 1);
+              let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
+              const outcome = await Promise.race<"settled" | "deadline">([
+                Promise.allSettled(transferPromises).then(() => "settled" as const),
+                new Promise<"deadline">((resolveDeadline) => {
+                  deadlineTimer = setTimeout(() => resolveDeadline("deadline"), deadlineMs);
+                }),
+              ]);
+              if (deadlineTimer) {
+                clearTimeout(deadlineTimer);
+              }
               if (settled) return;
+              if (outcome === "deadline") {
+                fail(
+                  new RemoteRunFailedError(
+                    `Remote run artifact transfers did not settle within ${deadlineMs}ms after the stream ` +
+                      "ended; aborting rather than hanging on a wedged bridge artifact download.",
+                    { errorClass: "transport_interrupted_after_submit", retryable: false },
+                  ),
+                );
+                return;
+              }
               if (!doneObserved || !resolved) {
                 // EOF without a terminal done event is a FAILURE, not an
                 // answer. Post-submit conservatism: the prompt may have
@@ -406,6 +483,27 @@ export function createRemoteBrowserExecutor({
         },
       );
       req.on("error", fail);
+      // Pre-response header watchdog (bugs-remote#1): armIdleTimer only arms
+      // AFTER the 200 response begins, so a worker that accepts the TCP
+      // connection but never sends response headers would otherwise pin the
+      // caller until TCP keepalive (~2h). Bound the header-wait window here;
+      // the response callback disarms this (req.setTimeout(0)) the instant any
+      // response begins. A pre-header stall means nothing reached the account
+      // yet, so it is classified before-submit and is retryable. (Guarded for
+      // the injected requestFn test seam, whose minimal stub omits setTimeout.)
+      if (typeof req.setTimeout === "function") {
+        req.setTimeout(streamIdleTimeoutMs, () => {
+          if (settled || headersReceived) return;
+          fail(
+            new RemoteRunFailedError(
+              `Remote worker accepted the connection but sent no response headers within ${streamIdleTimeoutMs}ms; ` +
+                "aborting before submit rather than waiting indefinitely on a worker that never began responding.",
+              { errorClass: "transport_interrupted_before_submit", retryable: true },
+            ),
+          );
+          req.destroy();
+        });
+      }
       if (signal) {
         // Caller-gone abort (mirrors buildClientAbortError in
         // src/browser/index.ts for the remote lane): fail with the typed
@@ -478,6 +576,7 @@ function handleEvent(params: {
   hostname: string;
   port: number;
   token?: string;
+  artifactInactivityTimeoutMs: number;
   onResult: (result: BrowserRunResult) => void;
   onDone: () => void;
   onSubmitObserved: () => void;
@@ -533,11 +632,29 @@ function handleEvent(params: {
         descriptor: event.artifact,
         sessionId: params.options.sessionId,
         log: params.options.log,
+        inactivityTimeoutMs: params.artifactInactivityTimeoutMs,
       })
         .then((artifact) => {
           params.onArtifact(artifact);
         })
         .catch((error) => {
+          // A STALLED download (inactivity timeout) is a transport-level hang,
+          // not a content failure: after the answer has been submitted, fail
+          // the run with a typed post-submit error instead of resolving with a
+          // partial-artifact warning or hanging forever. Ordinary transfer
+          // failures (size/sha/validation mismatch, HTTP error, invalid
+          // descriptor) remain non-fatal warnings so a good paid answer is
+          // still returned.
+          if (error instanceof ArtifactDownloadTimeoutError) {
+            params.onError(
+              new RemoteRunFailedError(
+                `Bridge artifact download for ${displayFilename} stalled and was aborted (${error.message}); ` +
+                  "failing the run rather than hanging on a wedged transfer.",
+                { errorClass: "transport_interrupted_after_submit", retryable: false },
+              ),
+            );
+            return;
+          }
           const message = error instanceof Error ? error.message : String(error);
           const fallback = `Oracle captured the browser text response, but bridge artifact transfer failed for ${displayFilename}. Open the ChatGPT browser on the bridge host, download the ZIP/file shown in the current response, and copy it to a cloud-readable path. Reason: ${message}`;
           params.options.log?.(`[browser] ${fallback}`);
@@ -606,6 +723,7 @@ async function transferRemoteArtifact(params: {
   descriptor: RemoteArtifactDescriptor;
   sessionId?: string;
   log?: BrowserRunOptions["log"];
+  inactivityTimeoutMs: number;
 }): Promise<SavedBrowserFile> {
   validateRemoteArtifactDescriptor(params.descriptor);
   const sessionId = params.sessionId ?? params.descriptor.runId;
@@ -622,13 +740,14 @@ async function transferRemoteArtifact(params: {
   )}`;
 
   params.log?.(`[browser] Transferring artifact ${filename} from bridge host...`);
-  await downloadArtifactToFile({
+  const { sha256 } = await downloadArtifactToFile({
     hostname: params.hostname,
     port: params.port,
     path: artifactPath,
     token: params.token,
     targetPath: partPath,
     descriptor: params.descriptor,
+    inactivityTimeoutMs: params.inactivityTimeoutMs,
   }).catch(async (error) => {
     await rm(partPath, { force: true }).catch(() => undefined);
     throw error;
@@ -639,7 +758,9 @@ async function transferRemoteArtifact(params: {
     await rm(partPath, { force: true }).catch(() => undefined);
     throw new Error(`size mismatch (${fileStat.size} != ${params.descriptor.byteSize})`);
   }
-  const sha256 = await computeFileSha256(partPath);
+  // sha256 was computed inline while the bytes streamed through the size
+  // limiter (perf-io-remote#1), so the file is not re-read from disk purely to
+  // hash it.
   if (sha256 !== params.descriptor.sha256) {
     await rm(partPath, { force: true }).catch(() => undefined);
     throw new Error("sha256 mismatch");
@@ -681,8 +802,23 @@ async function downloadArtifactToFile(params: {
   token?: string;
   targetPath: string;
   descriptor: RemoteArtifactDescriptor;
-}): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
+  inactivityTimeoutMs: number;
+}): Promise<{ sha256: string }> {
+  return await new Promise<{ sha256: string }>((resolve, reject) => {
+    // Single-settle guard so the inactivity timeout deterministically wins over
+    // the follow-on socket 'error'/pipeline rejection that req.destroy() emits,
+    // and the caller reliably sees the typed ArtifactDownloadTimeoutError.
+    let downloadSettled = false;
+    const settleResolve = (value: { sha256: string }) => {
+      if (downloadSettled) return;
+      downloadSettled = true;
+      resolve(value);
+    };
+    const settleReject = (error: Error) => {
+      if (downloadSettled) return;
+      downloadSettled = true;
+      reject(error);
+    };
     const req = http.request(
       {
         hostname: params.hostname,
@@ -694,14 +830,14 @@ async function downloadArtifactToFile(params: {
       (res) => {
         if (res.statusCode !== 200) {
           collectError(res)
-            .then((message) => reject(new Error(message)))
-            .catch(reject);
+            .then((message) => settleReject(new Error(message)))
+            .catch(settleReject);
           return;
         }
         const headerSha = String(res.headers["x-oracle-artifact-sha256"] ?? "");
         if (headerSha && headerSha !== params.descriptor.sha256) {
           res.resume();
-          reject(new Error("artifact sha256 header mismatch"));
+          settleReject(new Error("artifact sha256 header mismatch"));
           return;
         }
         const contentLengthHeader = res.headers["content-length"];
@@ -715,10 +851,14 @@ async function downloadArtifactToFile(params: {
             contentLength !== params.descriptor.byteSize)
         ) {
           res.resume();
-          reject(new Error("artifact content-length mismatch"));
+          settleReject(new Error("artifact content-length mismatch"));
           return;
         }
         const output = createWriteStream(params.targetPath, { flags: "wx" });
+        // Hash inline as the bytes stream through the size limiter
+        // (perf-io-remote#1) so the file is never re-read from disk purely to
+        // compute its sha256.
+        const hash = createHash("sha256");
         let receivedBytes = 0;
         const limiter = new Transform({
           transform(chunk: Buffer, _encoding, callback) {
@@ -730,13 +870,35 @@ async function downloadArtifactToFile(params: {
               callback(new Error("artifact exceeded declared size"));
               return;
             }
+            hash.update(chunk);
             callback(null, chunk);
           },
         });
-        void pipeline(res, limiter, output).then(() => resolve(), reject);
+        void pipeline(res, limiter, output).then(
+          () => settleResolve({ sha256: hash.digest("hex") }),
+          settleReject,
+        );
       },
     );
-    req.on("error", reject);
+    // Inactivity timeout (bugs-remote#0): a half-open artifact connection (VM
+    // pause, mid-transfer partition, worker killed without FIN/RST) after the
+    // 200 headers would otherwise wedge the transfer — and thus the whole run —
+    // forever, since the /runs stream's own idle watchdog is already cleared by
+    // this phase. Reset on socket activity, so a legitimately slow-but-active
+    // large download is unaffected; a genuine stall aborts with a typed marker
+    // that the caller converts into a post-submit run failure. (Guarded for the
+    // requestFn test seam, though this path always uses the real http.request.)
+    if (params.inactivityTimeoutMs > 0 && typeof req.setTimeout === "function") {
+      req.setTimeout(params.inactivityTimeoutMs, () => {
+        settleReject(
+          new ArtifactDownloadTimeoutError(
+            `artifact download received no data for over ${params.inactivityTimeoutMs}ms`,
+          ),
+        );
+        req.destroy();
+      });
+    }
+    req.on("error", settleReject);
     req.end();
   });
 }

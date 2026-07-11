@@ -1,7 +1,12 @@
 import { describe, expect, test } from "vitest";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { createRemoteBrowserExecutor, RemoteRunFailedError } from "../../src/remote/client.js";
+import { setOracleHomeDirOverrideForTest } from "../../src/oracleHome.js";
+import type { RemoteArtifactDescriptor } from "../../src/remote/types.js";
 import type { BrowserRunResult } from "../../src/browserMode.js";
 
 // Stream-inactivity deadline + NDJSON line-buffer cap contract (bead
@@ -114,9 +119,7 @@ describe("client: stream-inactivity deadline and line-buffer cap", () => {
           (error: unknown) => error,
         );
         expect(failure).toBeInstanceOf(RemoteRunFailedError);
-        expect((failure as RemoteRunFailedError).message).toContain(
-          "4096-byte NDJSON line cap",
-        );
+        expect((failure as RemoteRunFailedError).message).toContain("4096-byte NDJSON line cap");
         expect((failure as RemoteRunFailedError).message).toContain("without a");
         expect((failure as RemoteRunFailedError).retryable).toBe(false);
       } finally {
@@ -159,6 +162,160 @@ describe("client: stream-inactivity deadline and line-buffer cap", () => {
     },
   );
 });
+
+// Two additional hang paths (bugs-remote#0 / #1) that the /runs stream idle
+// watchdog does NOT cover, because it is armed only between the 200 response
+// and stream end:
+//   1. a bridge ARTIFACT download that sends 200 headers and then stalls — the
+//      /runs stream has already ended and cleared its idle timer, so without a
+//      download-level timeout the terminal `await Promise.allSettled(...)`
+//      waits forever;
+//   2. a worker that accepts the /runs TCP connection but never sends response
+//      headers — the per-chunk idle watchdog never arms, so the pre-header
+//      window is unbounded.
+// Both must convert to a typed, bounded failure instead of hanging.
+describe("client: artifact-transfer and pre-header hang guards", () => {
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "a stalled artifact download fails the run with a typed post-submit timeout, not a hang",
+    async () => {
+      const home = await mkdtemp(path.join(os.tmpdir(), "oracle-artifact-stall-"));
+      setOracleHomeDirOverrideForTest(home);
+      const descriptor: RemoteArtifactDescriptor = {
+        artifactId: "art1",
+        runId: "run1",
+        kind: "file",
+        filename: "result.bin",
+        byteSize: 16,
+        sha256: "a".repeat(64),
+        sourceUrlKind: "sandbox",
+        transferStatus: "ready",
+      };
+      const fake = await startStallingArtifactServer(descriptor);
+      try {
+        const executor = createRemoteBrowserExecutor({
+          host: `127.0.0.1:${fake.port}`,
+          token: "secret",
+          streamIdleTimeoutMs: 80,
+        });
+        const startedAt = Date.now();
+        const failure = await executor({ prompt: "x", config: {} }).then(
+          () => null,
+          (error: unknown) => error,
+        );
+        const elapsedMs = Date.now() - startedAt;
+        expect(failure).toBeInstanceOf(RemoteRunFailedError);
+        expect((failure as RemoteRunFailedError).message).toMatch(/stalled|no data/i);
+        // A stalled transfer arrives AFTER the answer was submitted, so it is a
+        // non-retryable post-submit interruption (never blind-resubmitted).
+        expect((failure as RemoteRunFailedError).errorClass).toBe(
+          "transport_interrupted_after_submit",
+        );
+        expect((failure as RemoteRunFailedError).retryable).toBe(false);
+        // Bounded by the download inactivity timeout; must not hang.
+        expect(elapsedMs).toBeLessThan(5000);
+      } finally {
+        await fake.close();
+        setOracleHomeDirOverrideForTest(null);
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "a connection accepted but never given response headers aborts before submit",
+    async () => {
+      const fake = await startFakeRunServer(() => {
+        // Accept the /runs connection but never call res.writeHead: no response
+        // headers ever arrive, so the per-chunk idle watchdog never arms. The
+        // pre-header request-level timeout must fire instead of hanging.
+      });
+      try {
+        const executor = createRemoteBrowserExecutor({
+          host: `127.0.0.1:${fake.port}`,
+          token: "secret",
+          streamIdleTimeoutMs: 80,
+        });
+        const startedAt = Date.now();
+        const failure = await executor({ prompt: "x", config: {} }).then(
+          () => null,
+          (error: unknown) => error,
+        );
+        const elapsedMs = Date.now() - startedAt;
+        expect(failure).toBeInstanceOf(RemoteRunFailedError);
+        expect((failure as RemoteRunFailedError).message).toMatch(/no response headers/i);
+        // Nothing reached the account yet (no headers, no submit), so this is a
+        // retryable pre-submit transport failure.
+        expect((failure as RemoteRunFailedError).errorClass).toBe(
+          "transport_interrupted_before_submit",
+        );
+        expect((failure as RemoteRunFailedError).retryable).toBe(true);
+        expect(elapsedMs).toBeGreaterThanOrEqual(30);
+        expect(elapsedMs).toBeLessThan(5000);
+      } finally {
+        await fake.close();
+      }
+    },
+  );
+});
+
+/**
+ * Fake bridge that streams a valid `artifact-ready` + terminal `done`, then
+ * serves the artifact GET with 200 headers followed by an indefinite stall
+ * (no body bytes, never ends) — the wedged half-open transfer of bugs-remote#0.
+ */
+async function startStallingArtifactServer(
+  descriptor: RemoteArtifactDescriptor,
+): Promise<{ port: number; close: () => Promise<void> }> {
+  const artifactPath = `/runs/${encodeURIComponent(descriptor.runId)}/artifacts/${encodeURIComponent(
+    descriptor.artifactId,
+  )}`;
+  const server = http.createServer((req, res) => {
+    if (req.method === "POST" && req.url === "/runs") {
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(200, { "Content-Type": "application/x-ndjson" });
+        res.write(
+          `${JSON.stringify({ type: "log", message: "Submitted prompt via Enter key" })}\n`,
+        );
+        res.write(
+          `${JSON.stringify({ type: "artifact-ready", runId: descriptor.runId, artifact: descriptor })}\n`,
+        );
+        res.end(`${JSON.stringify({ type: "done", ok: true, result: MINIMAL_RESULT })}\n`);
+      });
+      return;
+    }
+    if (req.method === "GET" && req.url === artifactPath) {
+      res.writeHead(200, {
+        "Content-Type": "application/octet-stream",
+        "Content-Length": String(descriptor.byteSize),
+        "X-Oracle-Artifact-Sha256": descriptor.sha256,
+      });
+      // Deliberately write nothing and never end: a half-open connection that
+      // sent headers and then went silent mid-transfer.
+      res.on("error", () => {});
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("stalling artifact server did not bind");
+  }
+  return {
+    port: address.port,
+    close: async () => {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    },
+  };
+}
 
 /** Fake /runs endpoint with full manual control over response timing/writes. */
 async function startFakeRunServer(

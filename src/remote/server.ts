@@ -418,6 +418,18 @@ export function isServeModelLabelAllowed(
  */
 const DISALLOWED_SERVE_MODEL_STRATEGIES: ReadonlySet<string> = new Set(["ignore", "current"]);
 
+/**
+ * Send-confirmation marker: the account-safety boundary for run accounting is
+ * the ChatGPT submit moment, not /runs acceptance. Both submission paths
+ * (send-button click and Enter fallback) emit a "Submitted prompt via ..."
+ * line at dispatch; "clicked send button" is a defensive alias for older
+ * browser layers so a click is never misread as before-submit. Load-bearing on
+ * BOTH sides of the wire: the worker stamps submittedAt from it, and the client
+ * classifies a caller-gone abort as before/after submit from it — so it is
+ * never dropped under stream backpressure (see sendEvent).
+ */
+const SUBMIT_CONFIRMATION_LOG_PATTERN = /submitted prompt|prompt submitted|clicked send button/i;
+
 export function isServeModelStrategyAllowed(strategy: unknown): boolean {
   if (typeof strategy !== "string") {
     // Absent/undefined (and any non-string) resolves to the "select" default
@@ -1121,6 +1133,13 @@ export async function createRemoteServer(
         `[serve] Accepted run ${runId} from ${formatSocket(req)} (prompt ${payload?.prompt?.length ?? 0} chars)`,
       );
 
+      // Stream backpressure state (perf-io-remote#3): when res.write reports a
+      // full socket buffer (a slow downstream consumer), stop forwarding chatty
+      // intermediate `log` lines until the socket drains, so a slow reader plus
+      // a verbose run cannot buffer NDJSON events without bound in the worker's
+      // heap on a shared fleet box.
+      let writeBackpressured = false;
+      let drainListenerAttached = false;
       const sendEvent = (event: RemoteRunEvent) => {
         // Every emitted event counts as run progress for wedge detection,
         // whether or not the client is still connected to receive it.
@@ -1128,9 +1147,31 @@ export async function createRemoteServer(
         if (res.destroyed || res.writableEnded) {
           return;
         }
+        // Under backpressure, drop only non-essential progress `log` lines.
+        // Structural and terminal events (done/error/artifact-*/manifest) are
+        // always written, and submit-confirmation log lines are never dropped
+        // because the client classifies the account-safety boundary
+        // (before/after submit) for a caller-gone abort from them. Healthy
+        // (fast) consumers never trip this, so their behavior is unchanged.
+        if (
+          writeBackpressured &&
+          event.type === "log" &&
+          !SUBMIT_CONFIRMATION_LOG_PATTERN.test(event.message)
+        ) {
+          return;
+        }
         // Stamp the run id onto every NDJSON line so each event of a run is
         // joinable without relying on stream framing alone.
-        res.write(`${JSON.stringify({ runId, ...event })}\n`);
+        const flushed = res.write(`${JSON.stringify({ runId, ...event })}\n`);
+        if (!flushed) {
+          writeBackpressured = true;
+          if (!drainListenerAttached) {
+            drainListenerAttached = true;
+            res.on("drain", () => {
+              writeBackpressured = false;
+            });
+          }
+        }
       };
 
       let runResult: BrowserRunResult | null = null;
@@ -1152,16 +1193,10 @@ export async function createRemoteServer(
 
         const automationLogger: BrowserLogger = ((message?: string) => {
           if (typeof message === "string") {
-            // Send-confirmation marker: the account-safety boundary for run
-            // accounting is the ChatGPT submit moment, not /runs acceptance.
-            // Both submission paths (send-button click and Enter fallback)
-            // emit a "Submitted prompt via ..." line at dispatch time;
-            // "clicked send button" is kept as a defensive alias for older
-            // browser layers so a click is never misread as before-submit.
-            if (
-              submittedAt === null &&
-              /submitted prompt|prompt submitted|clicked send button/i.test(message)
-            ) {
+            // Send-confirmation marker (see SUBMIT_CONFIRMATION_LOG_PATTERN):
+            // the account-safety boundary for run accounting is the ChatGPT
+            // submit moment, not /runs acceptance.
+            if (submittedAt === null && SUBMIT_CONFIRMATION_LOG_PATTERN.test(message)) {
               submittedAt = new Date().toISOString();
               void countActiveBrowserTabLeases(attachProfileDir)
                 .then((census) => {
