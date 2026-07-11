@@ -115,7 +115,10 @@ export const LANE_TEMPLATES: readonly LaneTemplate[] = [
       cross_invocation_resume: true,
       same_invocation_multi_turn: true,
     },
-    reasoning_depth_adjustable: true,
+    // The reviewed ChatGPT Pro lane hard-forces thinkingTime=extended (its only
+    // verified intelligence mode); an explicit --browser-thinking-time is
+    // overridden, so advertising an adjustable depth would be untruthful.
+    reasoning_depth_adjustable: false,
   },
   {
     lane: "gemini-deep-think",

@@ -2,10 +2,10 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { DEFAULT_USER_CONFIG, loadUserConfig } from "../src/config.js";
+import { loadUserConfig, UserConfigParseError } from "../src/config.js";
 import { setOracleHomeDirOverrideForTest } from "../src/oracleHome.js";
 
-describe("loadUserConfig parse error warning", () => {
+describe("loadUserConfig parse error handling", () => {
   let tempDir: string;
 
   beforeEach(async () => {
@@ -18,26 +18,32 @@ describe("loadUserConfig parse error warning", () => {
     vi.restoreAllMocks();
   });
 
-  it("warns on stderr and falls back to defaults when config parsing fails", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  it("throws a fatal, actionable error (fail-closed) when the user config cannot be parsed", async () => {
     const configPath = path.join(tempDir, "config.json");
     await fs.writeFile(configPath, `{ engine: "browser", model: `, "utf8");
 
-    const result = await loadUserConfig({ env: {} as NodeJS.ProcessEnv });
-
-    expect(result.loaded).toBe(false);
-    // v0.15.0 contract: loadUserConfig always merges onto DEFAULT_USER_CONFIG (browser
-    // engine, gpt-5.5-pro, extended thinking), so a parse failure falls back to those
-    // defaults rather than an empty object.
-    expect(result.config).toEqual(DEFAULT_USER_CONFIG);
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringMatching(
-        new RegExp(
-          `^Config file at ${escapeRegExp(configPath)} had a parse error: .+; using defaults$`,
-        ),
-      ),
+    // bugs-config-lanes#1: a parse error must NOT silently fall back to
+    // DEFAULT_USER_CONFIG (browser + gpt-5.6-sol Pro), which would change the
+    // run's billing/routing invisibly to a non-interactive agent.
+    await expect(loadUserConfig({ env: {} as NodeJS.ProcessEnv })).rejects.toBeInstanceOf(
+      UserConfigParseError,
     );
+    await expect(loadUserConfig({ env: {} as NodeJS.ProcessEnv })).rejects.toThrow(
+      new RegExp(`Failed to parse the user config at ${escapeRegExp(configPath)}`),
+    );
+  });
+
+  it("carries the config path on the thrown error for actionable messaging", async () => {
+    const configPath = path.join(tempDir, "config.json");
+    await fs.writeFile(configPath, `{ engine: browser, }invalid`, "utf8");
+
+    try {
+      await loadUserConfig({ env: {} as NodeJS.ProcessEnv });
+      throw new Error("expected loadUserConfig to reject");
+    } catch (error) {
+      expect(error).toBeInstanceOf(UserConfigParseError);
+      expect((error as UserConfigParseError).configPath).toBe(configPath);
+    }
   });
 
   afterAll(() => {

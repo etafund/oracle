@@ -1,5 +1,8 @@
 import { describe, expect, test } from "vitest";
-import { shouldRequirePrompt } from "../../src/cli/promptRequirement.js";
+import {
+  shouldRequirePrompt,
+  isSuspiciousBarePositionalPrompt,
+} from "../../src/cli/promptRequirement.js";
 
 describe("shouldRequirePrompt", () => {
   test("allows status subcommand without prompt", () => {
@@ -37,5 +40,25 @@ describe("shouldRequirePrompt", () => {
       finalizeSession: "abc123",
     });
     expect(requires).toBe(false);
+  });
+});
+
+describe("isSuspiciousBarePositionalPrompt", () => {
+  test.each(["lanes", "models", "login", "statuss", "doctorr"])(
+    "treats the single-word bare positional %s as suspicious (fail-closed)",
+    (token) => {
+      expect(isSuspiciousBarePositionalPrompt(token)).toBe(true);
+    },
+  );
+
+  test("allows a multi-word prompt (contains whitespace)", () => {
+    expect(isSuspiciousBarePositionalPrompt("explain this codebase")).toBe(false);
+    expect(isSuspiciousBarePositionalPrompt("review the diff for bugs")).toBe(false);
+  });
+
+  test("ignores undefined / empty tokens", () => {
+    expect(isSuspiciousBarePositionalPrompt(undefined)).toBe(false);
+    expect(isSuspiciousBarePositionalPrompt("")).toBe(false);
+    expect(isSuspiciousBarePositionalPrompt("   ")).toBe(false);
   });
 });

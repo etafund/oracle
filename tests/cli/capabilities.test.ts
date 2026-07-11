@@ -393,7 +393,9 @@ describe("CapabilityReport — schema-pin regression test (agent-ergonomics Stag
       cross_invocation_resume: true,
       same_invocation_multi_turn: true,
     });
-    expect(chatgpt?.reasoning_depth_adjustable).toBe(true);
+    // chatgpt-pro hard-forces thinkingTime=extended (its only verified mode),
+    // so reasoning depth is NOT adjustable — the advertisement must say so.
+    expect(chatgpt?.reasoning_depth_adjustable).toBe(false);
 
     // Gemini Deep Think: attaching a file silently downgrades to the
     // unverified HTTP client (see src/gemini-web/executionMode.ts), and
@@ -429,7 +431,9 @@ describe("CapabilityReport — schema-pin regression test (agent-ergonomics Stag
   test("exit_codes matches the shared ORACLE_EXIT_CODE_DICTIONARY exactly", () => {
     const report = buildCapabilityReport({ env: EMPTY_ENV, now: FROZEN_TIME });
     expect(report.exit_codes).toEqual(ORACLE_EXIT_CODE_DICTIONARY);
-    expect(Object.keys(report.exit_codes).sort()).toEqual(["0", "1", "130", "2"].sort());
+    expect(Object.keys(report.exit_codes).sort()).toEqual(
+      ["0", "1", "2", "3", "4", "5", "6", "130"].sort(),
+    );
   });
 
   test("read_commands matches the shared CORE_READ_COMMANDS list and includes self-doc commands", () => {

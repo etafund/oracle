@@ -78,35 +78,69 @@ describe("mistyped core flag (agent-ergonomics Axiom 7a)", () => {
   });
 });
 
-describe("mistyped core command (agent-ergonomics Axiom 7c)", () => {
-  test("a bare one-word typo of 'status' is refused with a 'did you mean' hint, never auto-run", async () => {
+describe("bare single-token positional is refused fail-closed (agent-ergonomics Axiom 7c)", () => {
+  // A prompt taken from a bare positional that is a single whitespace-free
+  // token is almost always a mistyped command, not a prompt. The guard now
+  // FAILS CLOSED (exit 2) for any such token — closing the earlier fail-open
+  // hole where `oracle lanes` still launched a paid reviewed-lane run — with
+  // the Levenshtein "did you mean" as an added hint, never the gate.
+  test("a bare one-word typo of 'status' is refused (exit 2) with a 'did you mean' hint, never auto-run", async () => {
     const { code, stdout, stderr } = await runOracleFailure(["statuss"]);
     const output = `${stdout}\n${stderr}`;
 
-    expect(code).toBe(1);
+    expect(code).toBe(2);
     expect(output).toContain("'statuss' is not a recognized command");
     expect(output).toContain("Did you mean: oracle status");
-    expect(output).toContain('oracle -p "statuss"');
+    expect(output).toContain("oracle -p statuss");
     // The dangerous behavior this guards against: silently treating the
-    // typo as prompt text and launching a real reviewed-lane run.
+    // token as prompt text and launching a real reviewed-lane run.
     expect(output).not.toContain("Launching browser mode");
     expect(output).not.toContain("Session:");
   });
 
-  test("a bare one-word typo of 'doctor' is refused with a 'did you mean' hint", async () => {
+  test("a bare one-word typo of 'doctor' is refused (exit 2) with a 'did you mean' hint", async () => {
     const { code, stdout, stderr } = await runOracleFailure(["doctorr"]);
     const output = `${stdout}\n${stderr}`;
 
-    expect(code).toBe(1);
+    expect(code).toBe(2);
     expect(output).toContain("'doctorr' is not a recognized command");
     expect(output).toContain("Did you mean: oracle doctor");
   });
 
-  test("a real (non-typo) single-word prompt is not blocked by the command-typo guard", async () => {
-    // Far from every known command name (no Levenshtein-1 match), and
-    // paired with --dry-run so no live backend is ever touched.
-    const { code, stdout, stderr } = await runOracleFailure([
-      "explainability",
+  test.each(["lanes", "models", "login"])(
+    "`oracle %s` (no -p) is refused fail-closed and never starts a run",
+    async (token) => {
+      const { code, stdout, stderr } = await runOracleFailure([token]);
+      const output = `${stdout}\n${stderr}`;
+
+      expect(code).toBe(2);
+      expect(output).toContain(`oracle -p ${token}`);
+      expect(output).not.toContain("Launching browser mode");
+      expect(output).not.toContain("Session:");
+    },
+  );
+
+  test("`oracle lanes --json` is refused fail-closed (accompanying flags do not reopen the hole)", async () => {
+    const { code, stdout } = await runOracleFailure(["lanes", "--json"]);
+    const envelope = JSON.parse(stdout.trim()) as {
+      ok: boolean;
+      blocked_reason: string;
+      fix_command: string | null;
+      meta: { exit_code?: number };
+    };
+
+    expect(code).toBe(2);
+    expect(envelope.ok).toBe(false);
+    expect(envelope.blocked_reason).toBe("prompt_looks_like_command");
+    expect(envelope.fix_command).toContain("oracle -p lanes");
+    expect(envelope.meta.exit_code).toBe(2);
+  });
+
+  test("a single-word prompt passed via -p still works (the guard only gates bare positionals)", async () => {
+    // runOracle rejects on any nonzero exit, so a clean resolve proves exit 0.
+    const { stdout, stderr } = await runOracle([
+      "-p",
+      "lanes",
       "--dry-run",
       "json",
       "--lane",
@@ -114,11 +148,24 @@ describe("mistyped core command (agent-ergonomics Axiom 7c)", () => {
     ]);
     const output = `${stdout}\n${stderr}`;
 
-    expect(code).toBe(0);
     expect(output).not.toContain("is not a recognized command");
+    expect(output).not.toContain("refusing to start a run");
   });
 
-  test("--help is unaffected by the command-typo guard", async () => {
+  test("a multi-word bare positional prompt is not blocked (contains whitespace)", async () => {
+    const { stdout, stderr } = await runOracle([
+      "explain this codebase",
+      "--dry-run",
+      "json",
+      "--lane",
+      "fable-local",
+    ]);
+    const output = `${stdout}\n${stderr}`;
+
+    expect(output).not.toContain("refusing to start a run");
+  });
+
+  test("--help is unaffected by the bare-positional guard", async () => {
     const { stdout, stderr } = await runOracle(["--help"]);
     const output = `${stdout}\n${stderr}`;
 

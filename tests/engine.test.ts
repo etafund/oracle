@@ -62,6 +62,31 @@ describe("resolveEngine", () => {
     expect(engine).toBe<EngineMode>("browser");
   });
 
+  it("normalizes a mis-cased / space-padded config engine (bugs-config-lanes#4)", () => {
+    // A config engine that arrives mis-cased or padded must not slip through
+    // verbatim and misroute the run against downstream `=== "browser"` checks.
+    for (const raw of ["Browser", "browser ", " BROWSER "]) {
+      const engine = resolveEngine({
+        engine: undefined,
+        configEngine: raw as unknown as EngineMode,
+        browserFlag: false,
+        env: envWithKey,
+      });
+      expect(engine).toBe<EngineMode>("browser");
+    }
+  });
+
+  it("falls through (does not misroute) when the config engine is invalid", () => {
+    const engine = resolveEngine({
+      engine: undefined,
+      configEngine: "Browsr" as unknown as EngineMode,
+      browserFlag: false,
+      env: envWithoutKey,
+    });
+    // Invalid config engine is dropped; with no API env we default to browser.
+    expect(engine).toBe<EngineMode>("browser");
+  });
+
   it("does not let Azure env choose API before a model is known", () => {
     const env = { ...envWithoutKey, AZURE_OPENAI_ENDPOINT: "https://example.openai.azure.com/" };
     const engine = resolveEngine({ engine: undefined, browserFlag: false, env });

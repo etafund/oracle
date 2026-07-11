@@ -46,11 +46,18 @@ export function applyBrowserDefaultsFromConfig(
   options: BrowserDefaultsOptions,
   config: UserConfig,
   getSource: SourceGetter,
+  laneForcedKeys: ReadonlySet<string> = new Set(),
 ): void {
   const browser = config.browser;
   if (!browser) return;
 
   const isUnset = (key: keyof BrowserDefaultsOptions): boolean => {
+    // A value the resolved lane mandated (e.g. chatgpt-pro's extended thinking /
+    // select model strategy) must win over a user/project config default. The
+    // lane assigns these by direct object mutation, so commander's option source
+    // stays "default" and would otherwise let a config value clobber the lane's
+    // mandatory setting — the bug this guard closes.
+    if (laneForcedKeys.has(key)) return false;
     const source = getSource(key);
     return source === undefined || source === "default";
   };

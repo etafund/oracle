@@ -11,7 +11,13 @@ if (process.argv[2] === "oracle-mcp") {
   process.exit(0);
 }
 import { resolveEngine, type EngineMode, defaultWaitPreference } from "../src/cli/engine.js";
-import { shouldRequirePrompt } from "../src/cli/promptRequirement.js";
+import {
+  shouldRequirePrompt,
+  isSuspiciousBarePositionalPrompt,
+  BarePositionalPromptError,
+} from "../src/cli/promptRequirement.js";
+import { PromptValidationError } from "../src/oracle/errors.js";
+import { classifyOracleErrorClass, ORACLE_ERROR_CLASS_EXIT_CODES } from "../src/cli/exitCodes.js";
 import { resolveDashPrompt } from "../src/cli/stdin.js";
 import chalk from "chalk";
 import type { SessionMetadata, SessionMode, BrowserSessionConfig } from "../src/sessionStore.js";
@@ -476,8 +482,14 @@ applyHelpStyling(program, VERSION, isTty);
 registerCliCommands(program);
 installUnknownFlagSuggestion(program);
 program.addHelpText("after", () => formatRobotCommandHelp());
-program.hook("preAction", async (thisCommand) => {
-  if (thisCommand !== program) {
+program.hook("preAction", async (thisCommand, actionCommand) => {
+  // Only the root command's own run (a bare prompt / positional) needs the
+  // prompt resolution + fail-closed bare-positional guard below. This hook is
+  // registered on the program, so it also fires for every matched subcommand
+  // (status/session/doctor/preview/…) with thisCommand===program; gating on
+  // actionCommand===program is what tells the root run apart from a subcommand,
+  // so `oracle status` etc. are never mistaken for a bare-positional prompt.
+  if (actionCommand !== program) {
     return;
   }
   if (routingCliArgs.some((arg) => arg === "--help" || arg === "-h")) {
@@ -494,22 +506,54 @@ program.hook("preAction", async (thisCommand) => {
   // (e.g. the Gemini Deep Think root route forcing engine=browser over --mode api).
   applyHiddenAliases(opts, (key, value) => thisCommand.setOptionValueWithSource(key, value, "cli"));
   const positional = thisCommand.args?.[0] as string | undefined;
+  // Track whether the prompt came from a *bare positional* (not -p/--prompt/
+  // --prompt-file/stdin) so the fail-closed guard below can refuse a lone
+  // command-looking token. The `-` stdin sentinel is resolved by
+  // resolveDashPrompt into real content, so it is never a bare token.
+  let barePositionalToken: string | undefined;
   if (!opts.prompt && positional) {
     opts.prompt = positional;
     thisCommand.setOptionValue("prompt", positional);
+    if (positional !== "-") {
+      barePositionalToken = positional;
+    }
   }
   const resolvedPrompt = await resolveDashPrompt(opts.prompt);
   if (resolvedPrompt !== opts.prompt) {
     opts.prompt = resolvedPrompt;
     thisCommand.setOptionValue("prompt", resolvedPrompt);
+    barePositionalToken = undefined;
   }
   if (!opts.prompt && typeof opts.promptFile === "string" && opts.promptFile.trim().length > 0) {
     const promptFromFile = await readPromptFile(opts.promptFile, "utf8");
     opts.prompt = promptFromFile;
     thisCommand.setOptionValue("prompt", promptFromFile);
+    barePositionalToken = undefined;
+  }
+  // Fail-CLOSED: a bare single-token positional is almost certainly a mistyped
+  // command, not a prompt (the `oracle lanes` incident). Refuse (exit 2) rather
+  // than silently launch a paid reviewed-lane run; the Levenshtein "did you
+  // mean" is only an added hint, never the gate. A `--` operand delimiter is an
+  // explicit "treat the rest as literal operands" signal, so honor it and skip
+  // the guard.
+  const usedOperandDelimiter = routingCliArgs.includes("--");
+  if (!usedOperandDelimiter && isSuspiciousBarePositionalPrompt(barePositionalToken)) {
+    throw buildBarePositionalPromptRefusal(barePositionalToken, thisCommand);
   }
   if (shouldRequirePrompt(routingCliArgs, opts)) {
-    console.log(
+    const fixCommand = 'oracle -p "<prompt>" --lane fable-local';
+    if (isJsonModeRequested(routingCliArgs)) {
+      // Emit a single clean json_envelope (via the top-level catch) with a
+      // typed prompt_required error + fix_command, instead of writing a human
+      // line to stdout and a useless commander help envelope.
+      throw new PromptValidationError(
+        'Prompt is required. Provide it via -p "<text>" or a positional argument.',
+        { stage: "prompt_required", fixCommand, nextCommand: fixCommand },
+      );
+    }
+    // Non-JSON: keep stdout clean by routing the human hint to stderr, then
+    // show help (which also writes to stderr).
+    console.error(
       chalk.yellow(
         'Prompt is required. Provide it via --prompt "<text>" or positional [prompt], e.g.: oracle -p "<prompt>" --lane fable-local',
       ),
@@ -1143,7 +1187,12 @@ program
     parseHeartbeatOption,
     30,
   )
-  .addOption(new Option("--wait").default(undefined))
+  .addOption(
+    new Option(
+      "--wait",
+      "Block in the foreground until the run completes (default: auto — detaches for long Pro runs, blocks otherwise). Use --no-wait to force detach.",
+    ).default(undefined),
+  )
   .addOption(new Option("--no-wait").default(undefined).hideHelp())
   .showHelpAfterError("(use --help for usage)");
 
@@ -1877,13 +1926,21 @@ export function collectLaneBrowserConflictFlags(
   });
 }
 
+/**
+ * Apply a resolved lane's normalized options onto the CLI options and return
+ * the set of browser-default option keys the lane authoritatively assigned.
+ * That set is handed to `applyBrowserDefaultsFromConfig` so a user/project
+ * config default can never clobber a lane-mandated setting (e.g. chatgpt-pro's
+ * mandatory thinkingTime=extended / modelStrategy=select).
+ */
 function applyResolvedLaneCliOptions(
   options: CliOptions,
   resolvedLane: ResolvedOracleLane,
   optionUsesDefault: (name: string) => boolean,
-): void {
+): Set<string> {
   options.lane = resolvedLane.lane;
   const laneOptions = resolvedLane.normalizedEngineOptions;
+  const laneForcedBrowserKeys = new Set<string>();
   const engine = laneStringOption(laneOptions, "engine");
   if (engine) {
     options.engine = engine as EngineMode;
@@ -1892,10 +1949,16 @@ function applyResolvedLaneCliOptions(
   if (model) {
     options.model = model;
   }
-  applyStringLaneDefault(options, laneOptions, "browserThinkingTime", optionUsesDefault);
-  applyStringLaneDefault(options, laneOptions, "browserModelStrategy", optionUsesDefault);
-  applyStringLaneDefault(options, laneOptions, "browserArchive", optionUsesDefault);
-  applyStringLaneDefault(options, laneOptions, "browserAttachments", optionUsesDefault);
+  for (const name of [
+    "browserThinkingTime",
+    "browserModelStrategy",
+    "browserArchive",
+    "browserAttachments",
+  ] as const) {
+    if (applyStringLaneDefault(options, laneOptions, name, optionUsesDefault)) {
+      laneForcedBrowserKeys.add(name);
+    }
+  }
   applyStringLaneDefault(options, laneOptions, "geminiDeepThinkFallback", optionUsesDefault);
   const geminiDeepThink = laneOptions.geminiDeepThink;
   if (typeof geminiDeepThink === "boolean" && optionUsesDefault("geminiDeepThink")) {
@@ -1907,7 +1970,10 @@ function applyResolvedLaneCliOptions(
   if (resolvedLane.lane === "chatgpt-pro") {
     options.browserModelStrategy = "select";
     options.browserThinkingTime = "extended";
+    laneForcedBrowserKeys.add("browserModelStrategy");
+    laneForcedBrowserKeys.add("browserThinkingTime");
   }
+  return laneForcedBrowserKeys;
 }
 
 function applyStringLaneDefault(
@@ -1915,11 +1981,13 @@ function applyStringLaneDefault(
   laneOptions: Record<string, unknown>,
   name: keyof CliOptions,
   optionUsesDefault: (name: string) => boolean,
-): void {
+): boolean {
   const value = laneStringOption(laneOptions, String(name));
   if (value && (optionUsesDefault(String(name)) || options[name] === undefined)) {
     (options as Record<string, unknown>)[name] = value;
+    return true;
   }
+  return false;
 }
 
 function toGeminiDeepThinkFallback(value: string | undefined): "fail" | undefined {
@@ -2430,6 +2498,9 @@ async function runRootCommand(options: CliOptions): Promise<void> {
       options.finalizeSession
     );
   let resolvedLane: ResolvedOracleLane | null = null;
+  // Browser-default option keys the resolved lane authoritatively set; passed to
+  // applyBrowserDefaultsFromConfig so a config default can't clobber them.
+  let laneForcedBrowserKeys: Set<string> = new Set();
   if (applyActiveLanePolicy) {
     const lanePolicyRemoteHost = optionUsesDefault("remoteHost") ? undefined : remoteHost;
     const lanePolicyRemoteBrowser = optionUsesDefault("remoteBrowser")
@@ -2470,7 +2541,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
         "--route/--preflight are API-provider diagnostics and cannot inspect reviewed lanes. Use `oracle doctor lanes --json` or a lane dry-run instead.",
       );
     }
-    applyResolvedLaneCliOptions(options, resolvedLane, optionUsesDefault);
+    laneForcedBrowserKeys = applyResolvedLaneCliOptions(options, resolvedLane, optionUsesDefault);
   }
   // applyGeminiDeepThinkRootDefaults already coerces engine to "browser" when a
   // deep-think alias is requested, so by the time we reach this resolveApiModel
@@ -2782,7 +2853,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   const getSource = (key: keyof CliOptions) =>
     program.getOptionValueSource?.(key as string) ?? undefined;
   const { applyBrowserDefaultsFromConfig } = await import("../src/cli/browserDefaults.js");
-  applyBrowserDefaultsFromConfig(options, userConfig, getSource);
+  applyBrowserDefaultsFromConfig(options, userConfig, getSource, laneForcedBrowserKeys);
   const attachmentTimeoutEnv = process.env.ORACLE_BROWSER_ATTACHMENT_TIMEOUT?.trim();
   if (
     attachmentTimeoutEnv &&
@@ -3910,37 +3981,48 @@ function quoteArgForDisplay(value: string): string {
 }
 
 /**
- * Agent-ergonomics Axiom 7 (intent inference): a bare single-token
- * invocation that is a Levenshtein-1 typo of a known top-level CORE
- * command (e.g. `oracle statuss`) would otherwise fall through to the
- * root action's catch-all `[prompt]` positional argument and *silently
- * launch a real, potentially costly reviewed-lane run* with "statuss" as
- * the prompt text — never what an agent typing a command name meant.
- * Detected in `main()` before `program.parseAsync()` ever runs, so the
- * dangerous run never starts; this only ever *suggests* the fix (Axiom
- * 7's "never auto-run a dangerous corrected command").
+ * Agent-ergonomics Axiom 7 (intent inference): a prompt taken from a bare
+ * single-token positional (e.g. `oracle lanes`, `oracle statuss`) is almost
+ * certainly a mistyped command, not a prompt — every documented run passes its
+ * prompt via `-p`/`--prompt` and real prompts are effectively always
+ * multi-word. Left unguarded, such a token falls through to the root command's
+ * catch-all `[prompt]` argument and *silently launches a real, potentially
+ * costly reviewed-lane run*.
  *
- * Scoped deliberately narrow to avoid false-positives on real one-word
- * prompts: only a *single* bare, non-flag token with no other args at
- * all (real prompts are near-universally multi-word or passed via
- * `--prompt`/`-p` per every documented example) and only when it is
- * exactly one edit away from a known *visible* top-level command name
- * (derived live from `program.commands`, never hardcoded).
+ * This is the FAIL-CLOSED gate: the refusal fires for *any* such token (the
+ * caller has already confirmed via `isSuspiciousBarePositionalPrompt` that it
+ * came from a bare positional and is a single whitespace-free word), regardless
+ * of any accompanying flags — closing the earlier fail-open hole where
+ * `oracle lanes` (and `oracle lanes --json`, `oracle lanes --lane …`) still ran.
+ * The Levenshtein "did you mean the `<cmd>` command?" match is only an added
+ * hint layered on top, never what decides the refusal.
  */
-function detectRootCommandTypo(
-  args: readonly string[],
+function buildBarePositionalPromptRefusal(
+  token: string,
   cliProgram: Command,
-): { input: string; suggestion: string } | null {
-  if (args.length !== 1) return null;
-  const [only] = args;
-  if (!only || only.startsWith("-")) return null;
+): BarePositionalPromptError {
   const knownCommandNames = cliProgram
     .createHelp()
     .visibleCommands(cliProgram)
     .map((command) => command.name());
-  if (knownCommandNames.includes(only)) return null;
-  const suggestion = nearestByEditDistance(only, knownCommandNames, 1);
-  return suggestion ? { input: only, suggestion } : null;
+  const suggestion = nearestByEditDistance(token, knownCommandNames, 1);
+  const literalFix = `oracle -p ${quoteArgForDisplay(token)}`;
+  const lines = suggestion
+    ? [
+        `'${token}' is not a recognized command and there is no -p/--prompt — refusing to start a run.`,
+        `It is one edit away from the '${suggestion}' command. Did you mean: oracle ${suggestion}`,
+        `To send '${token}' as a literal prompt instead, pass: ${literalFix}`,
+      ]
+    : [
+        `'${token}' is a single word with no -p/--prompt — refusing to start a run in case it is a mistyped command.`,
+        `To send it as a literal prompt, pass: ${literalFix}`,
+      ];
+  return new BarePositionalPromptError(lines.join("\n"), {
+    fixCommand: literalFix,
+    nextCommand: suggestion ? `oracle ${suggestion}` : null,
+    token,
+    suggestion: suggestion ?? undefined,
+  });
 }
 
 /**
@@ -4058,20 +4140,11 @@ async function main(): Promise<void> {
     printDebugHelp("oracle");
     return;
   }
-  const commandTypo = detectRootCommandTypo(routingCliArgs, program);
-  if (commandTypo) {
-    console.error(
-      `error: '${commandTypo.input}' is not a recognized command, and no --prompt/--lane was given — ` +
-        `it's one edit away from the '${commandTypo.suggestion}' command.`,
-    );
-    console.error(`Did you mean: oracle ${commandTypo.suggestion}`);
-    console.error(
-      `If you meant to send it as a literal prompt instead, run: oracle -p "${commandTypo.input}"`,
-    );
-    console.error("(use --help for usage)");
-    process.exitCode = 1;
-    return;
-  }
+  // The bare-single-token-positional refusal now lives in the root command's
+  // preAction hook (`buildBarePositionalPromptRefusal`), where commander has
+  // already separated the positional prompt from flags — so it fails closed for
+  // `oracle lanes`, `oracle lanes --json`, `oracle lanes --lane …` alike, not
+  // only the lone-arg case a pre-parse guard could see.
   const handleSigint = (): void => {
     console.log(chalk.yellow("\nCancelled."));
     process.exitCode = 130;
@@ -4137,6 +4210,14 @@ function resolveTopLevelExitCode(error: unknown): number {
   }
   if (isRecord(error) && typeof error.exitCode === "number") {
     return error.exitCode;
+  }
+  // Machine-readable exit-code taxonomy: map a normalized error class
+  // (auth_required=3, retryable_backoff=4, timeout=5, challenge_or_drift=6) so
+  // agents can branch retry policy on the exit status. Additive — anything
+  // unclassified still lands in the generic `1` bucket.
+  const errorClass = classifyOracleErrorClass(error);
+  if (errorClass) {
+    return ORACLE_ERROR_CLASS_EXIT_CODES[errorClass];
   }
   return 1;
 }

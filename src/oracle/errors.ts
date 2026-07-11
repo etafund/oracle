@@ -1,5 +1,16 @@
-import { APIConnectionError, APIConnectionTimeoutError, APIUserAbortError } from "openai";
-import { APIError } from "openai/error";
+// Import the OpenAI error classes from the lightweight `openai/error` submodule
+// (~2ms to load: just tslib + core/error) instead of the `openai` barrel
+// (~55ms: pulls the full HTTP/streaming client). errors.ts is on the cold
+// startup path (reachable from errorEnvelope.js / routeBlockError.js, both
+// top-level bin imports), so the barrel must never be dragged in just for
+// these `instanceof` checks. The submodule re-exports the exact same class
+// objects from `core/error.js`, so `instanceof` semantics are unchanged.
+import {
+  APIConnectionError,
+  APIConnectionTimeoutError,
+  APIError,
+  APIUserAbortError,
+} from "openai/error";
 import type { OracleResponse, OracleResponseMetadata, TransportFailureReason } from "./types.js";
 import { formatElapsed } from "./format.js";
 
@@ -70,6 +81,18 @@ export class OracleTransportError extends Error {
     if (cause) {
       (this as Error & { cause?: unknown }).cause = cause;
     }
+  }
+
+  /**
+   * Process exit code for the machine-readable exit-code taxonomy
+   * (see {@link file://../cli/exitCodes.ts}). A client-side timeout or a lost
+   * connection is a distinct, retry-safe failure class (5=timeout), so agents
+   * can branch their retry policy on the exit status instead of collapsing
+   * every transport failure into the generic `1` bucket. Other reasons stay
+   * undefined and fall through to `1`, preserving prior behavior.
+   */
+  get exitCode(): number | undefined {
+    return this.reason === "client-timeout" || this.reason === "connection-lost" ? 5 : undefined;
   }
 }
 

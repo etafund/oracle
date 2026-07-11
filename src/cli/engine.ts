@@ -47,8 +47,13 @@ export function resolveEngine({
   if (envEngine) {
     return envEngine;
   }
-  if (configEngine) {
-    return configEngine;
+  // Normalize the config-file engine the same way as ORACLE_ENGINE: a
+  // mis-cased or space-padded value ("Browser", "browser ") must not slip
+  // through verbatim and misroute the run (downstream compares against exact
+  // lowercase literals). An invalid value falls through rather than misrouting.
+  const normalizedConfigEngine = normalizeEngineMode(configEngine);
+  if (normalizedConfigEngine) {
+    return normalizedConfigEngine;
   }
   return hasApiEnvironment(env) ? "api" : "browser";
 }

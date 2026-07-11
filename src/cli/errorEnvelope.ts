@@ -1,9 +1,60 @@
 import {
   asOracleUserError,
   OracleTransportError,
+  type OracleUserErrorCategory,
   type OracleUserErrorDetails,
 } from "../oracle/errors.js";
+import {
+  classifyOracleErrorClass,
+  isRetrySafeErrorClass,
+  type OracleErrorClass,
+} from "./exitCodes.js";
+import type { TransportFailureReason } from "../oracle/types.js";
 import { JSON_ENVELOPE_SCHEMA_VERSION, type JsonEnvelope } from "../oracle/v18/contracts.js";
+
+/**
+ * The closed set of normalized error codes the top-level `oracle --json` error
+ * envelope emits for operational failures, instead of leaking the free-form
+ * `OracleUserError.category` / `OracleTransportError.reason` strings (which no
+ * documented enum listed). The first four mirror {@link OracleErrorClass} /
+ * `ORACLE_EXIT_CODE_DICTIONARY` codes 3–6; the rest cover the remaining
+ * transport/input failures. Stable lane/prompt `stage` codes (e.g.
+ * `agent_lane_blocked`, `prompt_required`) and commander's `commander.*` codes
+ * pass through unchanged — they are already closed, documented sets.
+ */
+export const TOP_LEVEL_ERROR_CODES = Object.freeze([
+  "auth_required",
+  "retryable_backoff",
+  "timeout",
+  "challenge_or_drift",
+  "provider_error",
+  "cancelled",
+  "input_invalid",
+  "browser_automation_failed",
+  "run_error",
+] as const);
+
+const USER_ERROR_CATEGORY_CODES: Readonly<Record<OracleUserErrorCategory, string>> = Object.freeze({
+  "file-validation": "input_invalid",
+  "prompt-validation": "input_invalid",
+  "browser-automation": "browser_automation_failed",
+});
+
+function stableTransportCode(reason: TransportFailureReason): string {
+  switch (reason) {
+    case "client-timeout":
+    case "connection-lost":
+      return "timeout";
+    case "client-abort":
+      return "cancelled";
+    case "api-error":
+    case "model-unavailable":
+    case "unsupported-endpoint":
+      return "provider_error";
+    default:
+      return "run_error";
+  }
+}
 
 export interface TopLevelCliErrorEnvelope extends JsonEnvelope {
   status: "error";
@@ -153,26 +204,36 @@ function normalizeTopLevelError(error: unknown): NormalizedTopLevelError {
   if (userError) {
     const nextCommand = detailNextCommand ?? reuseProfileHint;
     const fixCommand = detailFixCommand ?? reuseProfileHint;
+    const errorClass = classifyOracleErrorClass(userError);
+    // A recognized recovery class (login/usage/challenge/timeout) wins so the
+    // envelope code matches the exit code; otherwise keep the error's own
+    // stable stage code (lane routes, prompt guards), and only as a last resort
+    // fall back to the closed category code — never leak the free-form
+    // `category` string as the machine-readable code.
+    const code = errorClass ?? userStage ?? USER_ERROR_CATEGORY_CODES[userError.category];
     return {
-      code: userStage ?? userError.category,
+      code,
       message: userError.message,
       help: fixCommand ?? nextCommand,
-      details: userDetails,
+      details: withRawReason(userDetails, userError.category),
       nextCommand: nextCommand ?? null,
       fixCommand: fixCommand ?? null,
-      retrySafe: false,
+      retrySafe: errorClass ? isRetrySafeErrorClass(errorClass) : false,
     };
   }
 
   if (error instanceof OracleTransportError) {
+    const errorClass: OracleErrorClass | null = classifyOracleErrorClass(error);
     return {
-      code: error.reason,
+      code: errorClass ?? stableTransportCode(error.reason),
       message: error.message,
       help: null,
-      details: { reason: error.reason },
+      details: { raw_reason: error.reason },
       nextCommand: null,
       fixCommand: null,
-      retrySafe: error.reason === "client-timeout" || error.reason === "connection-lost",
+      retrySafe: errorClass
+        ? isRetrySafeErrorClass(errorClass)
+        : error.reason === "client-timeout" || error.reason === "connection-lost",
     };
   }
 
@@ -190,6 +251,19 @@ function normalizeTopLevelError(error: unknown): NormalizedTopLevelError {
     fixCommand: null,
     retrySafe: false,
   };
+}
+
+/**
+ * Preserve the original free-form category as `details.raw_reason` so a caller
+ * that wants the pre-normalization value can still read it, while the top-level
+ * `error_code` stays drawn from the closed {@link TOP_LEVEL_ERROR_CODES} set.
+ */
+function withRawReason(
+  details: Record<string, unknown> | undefined,
+  rawReason: string,
+): Record<string, unknown> {
+  const base = details ?? {};
+  return base.raw_reason === undefined ? { ...base, raw_reason: rawReason } : base;
 }
 
 function cleanDetails(details: OracleUserErrorDetails): Record<string, unknown> {

@@ -198,4 +198,36 @@ describe("applyBrowserDefaultsFromConfig", () => {
 
     expect(options.browserManualLogin).toBe(true);
   });
+
+  test("lane-forced keys win over config defaults (chatgpt-pro extended/select survives)", () => {
+    // bugs-config-lanes#0: the lane sets these by direct mutation, so
+    // commander's source stays "default" and a config value would otherwise
+    // clobber the lane's mandatory settings. Passing the lane-forced key set
+    // makes the lane authoritative.
+    const options: BrowserDefaultsOptions = {
+      browserThinkingTime: "extended",
+      browserModelStrategy: "select",
+    };
+    const config: UserConfig = {
+      browser: {
+        thinkingTime: "heavy",
+        modelStrategy: "current",
+      },
+    };
+    const laneForced = new Set(["browserThinkingTime", "browserModelStrategy"]);
+
+    applyBrowserDefaultsFromConfig(options, config, (_key) => "default", laneForced);
+
+    expect(options.browserThinkingTime).toBe("extended");
+    expect(options.browserModelStrategy).toBe("select");
+  });
+
+  test("without lane-forced keys, a config default still applies (no regression)", () => {
+    const options: BrowserDefaultsOptions = {};
+    const config: UserConfig = { browser: { thinkingTime: "heavy" } };
+
+    applyBrowserDefaultsFromConfig(options, config, (_key) => "default");
+
+    expect(options.browserThinkingTime).toBe("heavy");
+  });
 });

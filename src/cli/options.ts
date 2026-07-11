@@ -4,6 +4,7 @@ import path from "node:path";
 import fg from "fast-glob";
 import type { ModelName, PreviewMode } from "../oracle.js";
 import { DEFAULT_MODEL, MODEL_CONFIGS } from "../oracle/config.js";
+import { nearestByEditDistance } from "./didYouMean.js";
 import { normalizeThinkingTimeLevel } from "../oracle/thinkingTime.js";
 import type { ThinkingTimeLevel } from "../oracle/types.js";
 
@@ -499,6 +500,18 @@ export function resolveApiModel(modelValue: string): ModelName {
   }
   if (normalized.includes("pro")) {
     return DEFAULT_MODEL;
+  }
+  // Reject a value that is a likely typo of a known model (one edit away, the
+  // same conservative "did you mean" bar used for flags/commands) instead of
+  // passing the raw string through to a downstream provider 404. Values with no
+  // close match still pass through as custom/OpenRouter/gateway model IDs (e.g.
+  // "instant"); slash-qualified IDs were already returned above.
+  const modelSuggestion = nearestByEditDistance(normalized, Object.keys(MODEL_CONFIGS), 1);
+  if (modelSuggestion) {
+    throw new InvalidArgumentError(
+      `Unknown --model "${modelValue}". Did you mean --model ${modelSuggestion}? ` +
+        `Use --lane for the reviewed routes, or a known model: ${Object.keys(MODEL_CONFIGS).join(", ")}.`,
+    );
   }
   // Passthrough for custom/OpenRouter model IDs.
   return normalized as ModelName;

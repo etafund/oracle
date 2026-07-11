@@ -188,11 +188,36 @@ export function applyEnvConfigOverrides(
   return next;
 }
 
+/**
+ * Thrown when an EXISTING user config (`~/.oracle/config.json`) fails to parse.
+ * Fail-closed: a parse error must never silently fall back to
+ * `DEFAULT_USER_CONFIG` (browser engine + gpt-5.6-sol Pro), which would change
+ * the run's billing/routing away from the user's configured engine/model —
+ * invisible to a non-interactive agent parsing stdout. Fix the file, then rerun.
+ */
+export class UserConfigParseError extends Error {
+  readonly configPath: string;
+
+  constructor(configPath: string, cause: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(
+      `Failed to parse the user config at ${configPath}: ${detail}. ` +
+        `Oracle will not fall back to defaults, because that would silently change ` +
+        `the engine/model (billing/routing) for this run. Fix the JSON5 syntax, then rerun.`,
+    );
+    this.name = "UserConfigParseError";
+    this.configPath = configPath;
+    if (cause) {
+      (this as Error & { cause?: unknown }).cause = cause;
+    }
+  }
+}
+
 export async function loadUserConfig(
   options: LoadUserConfigOptions = {},
 ): Promise<LoadConfigResult> {
   const userConfigPath = resolveUserConfigPath();
-  const userConfig = await readConfigFile(userConfigPath);
+  const userConfig = await readConfigFile(userConfigPath, "user");
   const projectConfigPaths =
     options.includeProject === false
       ? []
@@ -208,7 +233,7 @@ export async function loadUserConfig(
 
   let merged = mergeUserConfig(DEFAULT_USER_CONFIG, userConfig.loaded ? userConfig.config : {});
   for (const projectConfigPath of projectConfigPaths) {
-    const projectConfig = await readConfigFile(projectConfigPath);
+    const projectConfig = await readConfigFile(projectConfigPath, "project");
     if (!projectConfig.loaded) continue;
     loadedConfigs.push(projectConfig);
     merged = mergeUserConfig(merged, sanitizeProjectConfig(projectConfig.config));
@@ -227,9 +252,28 @@ export async function loadUserConfig(
   };
 }
 
-async function readConfigFile(configPath: string): Promise<ReadConfigResult> {
+async function readConfigFile(
+  configPath: string,
+  role: "user" | "project" = "user",
+): Promise<ReadConfigResult> {
+  let raw: string;
   try {
-    const raw = await fs.readFile(configPath, "utf8");
+    raw = await fs.readFile(configPath, "utf8");
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    if (code === "ENOENT") {
+      // A genuinely-missing file is fine: fall back to defaults.
+      return { config: {}, path: configPath, loaded: false };
+    }
+    // The file is not readable (ENOTDIR when the home is a sentinel like
+    // /dev/null, EACCES, …). It is effectively absent — not a malformed-but-
+    // present config — so fall back rather than hard-fail. Only a genuine PARSE
+    // error of a readable user config is fatal (see the parse catch below).
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`Config file at ${configPath} could not be read: ${message}; using defaults`);
+    return { config: {}, path: configPath, loaded: false };
+  }
+  try {
     const parsed = JSON5.parse(raw);
     if (parsed != null && (typeof parsed !== "object" || Array.isArray(parsed))) {
       console.warn(`Expected ${configPath} to contain a JSON object; using defaults`);
@@ -237,9 +281,12 @@ async function readConfigFile(configPath: string): Promise<ReadConfigResult> {
     }
     return { config: (parsed ?? {}) as UserConfig, path: configPath, loaded: true };
   } catch (error) {
-    const code = (error as { code?: string }).code;
-    if (code === "ENOENT") {
-      return { config: {}, path: configPath, loaded: false };
+    // A parse error on an EXISTING user config is fatal (fail-closed): silently
+    // reverting to DEFAULT_USER_CONFIG would change engine/model billing/routing
+    // without the (possibly non-interactive) caller ever seeing the stderr warn.
+    // Project configs keep skipping, since they only layer optional overrides.
+    if (role === "user") {
+      throw new UserConfigParseError(configPath, error);
     }
     const message = error instanceof Error ? error.message : String(error);
     console.warn(`Config file at ${configPath} had a parse error: ${message}; using defaults`);

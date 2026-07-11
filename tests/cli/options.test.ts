@@ -263,11 +263,19 @@ describe("resolveApiModel", () => {
     );
   });
 
-  test("passes through unknown names (OpenRouter/custom)", () => {
+  test("passes through unknown names (OpenRouter/custom) with no close known-model match", () => {
     expect(resolveApiModel("instant")).toBe("instant");
     expect(resolveApiModel("openai/gpt-5.4")).toBe("openai/gpt-5.4");
     expect(resolveApiModel("anthropic/claude-sonnet-4.5")).toBe("anthropic/claude-sonnet-4.5");
     expect(resolveApiModel("google/gemini-2.5-pro")).toBe("google/gemini-2.5-pro");
+  });
+
+  test("rejects a value that is a likely typo of a known model with a did-you-mean (cli-ergonomics#3)", () => {
+    // "gpt-5.7" is one edit from "gpt-5.5" and matches no alias branch, so it
+    // reaches the guard -> refuse instead of passing the typo through to a
+    // downstream provider 404.
+    expect(() => resolveApiModel("gpt-5.7")).toThrow(/Did you mean --model gpt-5\.5/);
+    expect(() => resolveApiModel("gpt-5.7")).toThrow(/Unknown --model/);
   });
 });
 
