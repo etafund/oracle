@@ -13,8 +13,44 @@ export const DEFAULT_MAX_FILE_SIZE_BYTES = 1 * 1024 * 1024; // 1 MB
  * them, unchanged). `"reject"` sniffs each accepted file for binary content
  * before decoding it and throws a `FileValidationError` naming every
  * offending file instead of silently force-decoding raw bytes as UTF-8.
+ *
+ * `"encode-media"` (bead oracle-router-8fa; stream-json lane) is `"reject"`
+ * with one carve-out: images (PNG/JPEG/GIF/WebP) and PDFs are base64-encoded
+ * into media attachments instead of being rejected, so they can ride the
+ * stream-json content-block transport. Every OTHER binary type is still
+ * rejected. The per-file size cap is enforced PRE-encode (against the raw
+ * on-disk byte count), so base64's ~+33% inflation never sneaks a file past
+ * the limit.
  */
-export type BinaryFileHandling = "allow" | "reject";
+export type BinaryFileHandling = "allow" | "reject" | "encode-media";
+
+/**
+ * How a stream-json-lane attachment carries its bytes. `undefined` (the field
+ * absent) means the historical text behavior: `content` is the file's decoded
+ * UTF-8 text. `"image"`/`"document"` mean `content` is base64 (newline-free)
+ * for an Anthropic media content block and `mediaType`/`rawByteLength` are
+ * populated.
+ */
+export type FileAttachmentKind = "image" | "document";
+
+/**
+ * `readFiles` result, a superset of {@link FileContent}. Existing callers that
+ * only read `path`/`content` are unaffected; the stream-json content-block
+ * assembler additionally reads the attachment metadata below.
+ */
+export interface AttachmentFileContent extends FileContent {
+  /** Absent for text; set for base64 media attachments (encode-media mode). */
+  attachment?: FileAttachmentKind;
+  /** MIME type of a media attachment (e.g. `image/png`, `application/pdf`). */
+  mediaType?: string;
+  /** Raw (pre-base64) byte length the per-file cap was measured against. */
+  rawByteLength?: number;
+}
+
+interface DetectedMedia {
+  attachment: FileAttachmentKind;
+  mediaType: string;
+}
 const DEFAULT_FS = fs as MinimalFsModule;
 const DEFAULT_IGNORED_DIRS = new Set([
   "node_modules",
@@ -49,7 +85,7 @@ export async function readFiles(
     readContents?: boolean;
     binaryFileHandling?: BinaryFileHandling;
   } = {},
-): Promise<FileContent[]> {
+): Promise<AttachmentFileContent[]> {
   if (!filePaths || filePaths.length === 0) {
     return [];
   }
@@ -144,7 +180,7 @@ export async function readFiles(
     );
   }
 
-  const files: FileContent[] = [];
+  const files: AttachmentFileContent[] = [];
   const binaryRejections: string[] = [];
   for (const filePath of accepted) {
     if (!readContents) {
@@ -162,6 +198,26 @@ export async function readFiles(
     // force-decoded every file as UTF-8 unconditionally, silently turning
     // binary files into garbage inlined into the prompt.
     const rawLatin1 = await fsModule.readFile(filePath, "latin1");
+    // Stream-json lane: a recognizable image/PDF is base64-encoded into a
+    // media attachment rather than rejected. Detection runs BEFORE the
+    // text-decode fallback so an all-ASCII PDF (which would round-trip as
+    // "text") is still delivered as a document block. The per-file cap was
+    // already applied to the raw on-disk size above, so encoding here never
+    // exceeds it.
+    if (binaryFileHandling === "encode-media") {
+      const media = detectMediaAttachment(rawLatin1);
+      if (media) {
+        const raw = Buffer.from(rawLatin1, "latin1");
+        files.push({
+          path: filePath,
+          content: raw.toString("base64"),
+          attachment: media.attachment,
+          mediaType: media.mediaType,
+          rawByteLength: raw.length,
+        });
+        continue;
+      }
+    }
     const decoded = decodeIfNotBinary(rawLatin1);
     if (decoded === undefined) {
       binaryRejections.push(relativePath(filePath, cwd));
@@ -171,13 +227,61 @@ export async function readFiles(
   }
 
   if (binaryRejections.length > 0) {
+    const remediation =
+      binaryFileHandling === "encode-media"
+        ? "Only text, image (PNG/JPEG/GIF/WebP), and PDF files can be attached to this lane; other binary types are not supported."
+        : "Remove them from --file, or attach a text-only excerpt instead — binary/image attachment is not supported by this lane.";
     throw new FileValidationError(
-      `The following files appear to be binary and cannot be safely attached as text:\n- ${binaryRejections.join("\n- ")}\nRemove them from --file, or attach a text-only excerpt instead — binary/image attachment is not supported by this lane.`,
+      `The following files appear to be binary and cannot be safely attached as text:\n- ${binaryRejections.join("\n- ")}\n${remediation}`,
       { files: binaryRejections },
     );
   }
 
   return files;
+}
+
+/**
+ * Content-based sniff for the stream-json lane's supported media types. Uses
+ * leading magic bytes (authoritative, extension-independent) to classify a
+ * file as an Anthropic-supported image or PDF; returns `undefined` for
+ * everything else so the caller falls through to the text/other-binary path.
+ * `rawLatin1` is the file's exact bytes read via a lossless latin1 decode.
+ */
+function detectMediaAttachment(rawLatin1: string): DetectedMedia | undefined {
+  const buf = Buffer.from(rawLatin1, "latin1");
+  if (buf.length >= 5 && buf.toString("latin1", 0, 5) === "%PDF-") {
+    return { attachment: "document", mediaType: "application/pdf" };
+  }
+  if (
+    buf.length >= 8 &&
+    buf[0] === 0x89 &&
+    buf[1] === 0x50 &&
+    buf[2] === 0x4e &&
+    buf[3] === 0x47 &&
+    buf[4] === 0x0d &&
+    buf[5] === 0x0a &&
+    buf[6] === 0x1a &&
+    buf[7] === 0x0a
+  ) {
+    return { attachment: "image", mediaType: "image/png" };
+  }
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+    return { attachment: "image", mediaType: "image/jpeg" };
+  }
+  if (buf.length >= 6) {
+    const header = buf.toString("latin1", 0, 6);
+    if (header === "GIF87a" || header === "GIF89a") {
+      return { attachment: "image", mediaType: "image/gif" };
+    }
+  }
+  if (
+    buf.length >= 12 &&
+    buf.toString("latin1", 0, 4) === "RIFF" &&
+    buf.toString("latin1", 8, 12) === "WEBP"
+  ) {
+    return { attachment: "image", mediaType: "image/webp" };
+  }
+  return undefined;
 }
 
 /**

@@ -85,6 +85,11 @@ import {
   assertClaudeCodeInlineBudget,
   resolveClaudeCodeMaxInlineBytes,
 } from "../claude-code/inlineBudget.js";
+import {
+  buildStreamJsonUserMessage,
+  isStreamJsonInputEnabled,
+  serializeStreamJsonMessage,
+} from "../claude-code/streamJsonInput.js";
 
 const isTty = process.stdout.isTTY;
 const dim = (text: string): string => (isTty ? kleur.dim(text) : text);
@@ -112,6 +117,15 @@ export interface SessionRunParams {
 export interface ClaudeCodeRunnerInput {
   sessionId: string;
   prompt: string;
+  /**
+   * Stream-json content-block transport (bead oracle-router-8fa). When set,
+   * this pre-serialized single-line NDJSON user message is written to
+   * `claude`'s stdin verbatim (one line + `.end()`) instead of the flat
+   * `prompt` string, and the command builder pairs it with
+   * `--input-format stream-json`. Absent = the historical flat-text stdin
+   * path, byte-for-byte.
+   */
+  streamJsonInput?: string;
   model: string;
   cwd: string;
   runOptions: RunOracleOptions;
@@ -236,20 +250,42 @@ export async function performSessionRun({
           startedAt: new Date().toISOString(),
         });
       }
+      // Stream-json content-block transport (bead oracle-router-8fa),
+      // default OFF. Flag on: images/PDFs are base64-encoded into media
+      // blocks (rather than rejected) and the whole turn rides a single
+      // NDJSON user message on stdin. Flag off: today's exact flat-text path.
+      const streamJsonEnabled = isStreamJsonInputEnabled(process.env);
       const files = await readFiles(runOptions.file ?? [], {
         cwd,
         maxFileSizeBytes: runOptions.maxFileSizeBytes,
         // claude-provider-map.md finding #1: never silently force-decode a
-        // binary attachment as UTF-8 garbage for this lane.
-        binaryFileHandling: "reject",
+        // binary attachment as UTF-8 garbage for this lane. The stream-json
+        // lane additionally base64-encodes image/PDF instead of rejecting
+        // them (encode-media), keeping all other binary rejected.
+        binaryFileHandling: streamJsonEnabled ? "encode-media" : "reject",
       });
-      const promptWithFiles = buildPrompt(runOptions.prompt ?? "", files, cwd);
+      const basePrompt = runOptions.prompt ?? "";
+      // The payload whose ENCODED byte length the budget must reflect: the
+      // serialized NDJSON line on the stream-json path (base64 media + JSON
+      // envelope included), or the flat combined prompt on the text path.
+      let streamJsonInput: string | undefined;
+      let promptWithFiles: string;
+      if (streamJsonEnabled) {
+        const userMessage = buildStreamJsonUserMessage(basePrompt, files, cwd);
+        streamJsonInput = serializeStreamJsonMessage(userMessage);
+        promptWithFiles = basePrompt;
+      } else {
+        promptWithFiles = buildPrompt(basePrompt, files, cwd);
+      }
       // Aggregate pre-spawn budget check (finding #1, concrete gap #2) —
       // must run before any of the claude-code-specific spawn machinery
       // (single-flight lock, executable resolution, `spawn()`) so an
       // oversized attachment bundle fails fast with an actionable error
       // instead of silently producing an arbitrarily large stdin write.
-      assertClaudeCodeInlineBudget(promptWithFiles, runOptions.claudeCode?.maxInlineBytes);
+      assertClaudeCodeInlineBudget(
+        streamJsonInput ?? promptWithFiles,
+        runOptions.claudeCode?.maxInlineBytes,
+      );
       const artifactPaths = await buildClaudeCodeArtifactPaths(sessionMeta.id);
       log(
         dim(
@@ -260,6 +296,7 @@ export async function performSessionRun({
       const result = await claudeCodeRunner({
         sessionId: sessionMeta.id,
         prompt: promptWithFiles,
+        streamJsonInput,
         model: modelForStatus ?? "fable",
         cwd,
         runOptions,
@@ -1200,6 +1237,12 @@ async function runLocalClaudeCodeSession(
     executable: executable.path,
     model: input.model,
     resumeSessionId,
+    // Emit `--input-format stream-json` exactly when this run will write an
+    // NDJSON user message on stdin (bead oracle-router-8fa). Coupling the
+    // argv to the presence of the serialized payload — rather than re-reading
+    // the env flag here — keeps the transport and the flag that selected it
+    // from ever diverging within a single run.
+    streamJsonInput: input.streamJsonInput != null,
   });
 
   // Opt-in `caam shallow-spawn` integration (caam-map.md §4). Activates ONLY
@@ -1616,7 +1659,11 @@ async function runClaudeCodeChildAttempt({
       child.once("error", reject);
       child.once("close", (exitCode, signal) => resolve({ exitCode, signal }));
       child.stdin.once("error", reject);
-      child.stdin.end(input.prompt);
+      // Stream-json path (bead oracle-router-8fa): write the single
+      // pre-serialized NDJSON user message line, then close — `-p` reads
+      // NDJSON until EOF, so one line + `.end()` is exactly one user turn.
+      // Flag off: the flat prompt string over stdin, byte-for-byte as before.
+      child.stdin.end(input.streamJsonInput ?? input.prompt);
     },
   ).finally(() => {
     process.off("SIGINT", sigintHandler);

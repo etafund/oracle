@@ -156,4 +156,43 @@ describe("Claude Code command builder", () => {
       >[0]),
     ).toThrow(/oracle -p "<prompt>" --lane fable-local/);
   });
+
+  describe("stream-json input transport flag (bead oracle-router-8fa)", () => {
+    test("flag OFF (default / explicit false) is byte-identical to the legacy argv", () => {
+      const legacy = buildClaudeCodeCommand();
+      const explicitOff = buildClaudeCodeCommand({ streamJsonInput: false });
+      expect(explicitOff.args).toEqual(legacy.args);
+      expect(legacy.args).not.toContain("--input-format");
+    });
+
+    test("flag ON inserts exactly `--input-format stream-json` and nothing else changes", () => {
+      const off = buildClaudeCodeCommand();
+      const on = buildClaudeCodeCommand({ streamJsonInput: true });
+
+      const inputFormatIndex = on.args.indexOf("--input-format");
+      expect(inputFormatIndex).toBeGreaterThan(-1);
+      expect(on.args[inputFormatIndex + 1]).toBe("stream-json");
+      // Paired immediately before the (already present) output-format pair,
+      // both required by claude for stream-json input.
+      expect(on.args[inputFormatIndex + 2]).toBe("--output-format");
+      expect(on.args[inputFormatIndex + 3]).toBe("stream-json");
+
+      // Removing just the two inserted tokens reproduces the legacy argv.
+      const withoutInputFormat = [...on.args];
+      withoutInputFormat.splice(inputFormatIndex, 2);
+      expect(withoutInputFormat).toEqual(off.args);
+    });
+
+    test("stream-json input still keeps the read-only output/permission flags", () => {
+      const { args } = buildClaudeCodeCommand({ streamJsonInput: true });
+      expect(args).toContain("-p");
+      expect(args).toContain("--verbose");
+      expect(args[args.indexOf("--permission-mode") + 1]).toBe("plan");
+      expect(args[args.indexOf("--tools") + 1]).toBe("");
+      // --input-format is no longer blocklisted, but nothing dangerous leaked in.
+      expect(args).not.toContain("--dangerously-skip-permissions");
+      expect(args).not.toContain("--continue");
+      expect(args).not.toContain("--resume");
+    });
+  });
 });

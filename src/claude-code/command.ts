@@ -21,6 +21,17 @@ export interface BuildClaudeCodeCommandOptions {
    * UUID (validated below) since it is embedded directly into argv.
    */
   resumeSessionId?: string;
+  /**
+   * Stream-json content-block attachment transport (bead oracle-router-8fa;
+   * `streamJsonInput.ts`). When `true`, the builder emits
+   * `--input-format stream-json` so the lane can write a single NDJSON user
+   * message (text + base64 image/document blocks) on stdin instead of flat
+   * text. Default (unset/`false`) keeps today's exact text-stdin argv, so the
+   * flag-off path stays byte-identical. The output half of the protocol
+   * (`--output-format stream-json --verbose`) is already emitted below, which
+   * is the only prerequisite claude enforces for stream-json input.
+   */
+  streamJsonInput?: boolean;
 }
 
 export interface ClaudeCodeCommand {
@@ -52,7 +63,6 @@ const DANGEROUS_OR_OUT_OF_SCOPE_FLAGS = new Set([
   "--dangerously-skip-permissions",
   "--allow-dangerously-skip-permissions",
   "--permission-mode=bypassPermissions",
-  "--input-format",
   "--continue",
   "--resume",
   "--fork-session",
@@ -78,6 +88,7 @@ export function buildClaudeCodeCommand(
   const effort = options.effort ?? "xhigh";
   const systemPrompt = options.systemPrompt ?? DEFAULT_CLAUDE_CODE_SYSTEM_PROMPT;
   const resumeSessionId = options.resumeSessionId?.trim();
+  const streamJsonInput = options.streamJsonInput === true;
   if (resumeSessionId && !UUID_PATTERN.test(resumeSessionId)) {
     throw new ClaudeCodeCommandError(
       "invalid_resume_session_id",
@@ -93,6 +104,12 @@ export function buildClaudeCodeCommand(
     model,
     "--effort",
     effort,
+    // Stream-json content-block input transport (bead oracle-router-8fa),
+    // emitted ONLY when the feature flag resolved by the caller is on. Left
+    // off, the argv is byte-identical to the historical text-stdin lane.
+    // claude requires `--input-format stream-json` to be paired with
+    // `--print` (the `-p` above) and `--output-format stream-json` (below).
+    ...(streamJsonInput ? ["--input-format", "stream-json"] : []),
     "--output-format",
     "stream-json",
     "--verbose",
