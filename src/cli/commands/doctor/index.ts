@@ -18,6 +18,7 @@ import {
   runClaudeCodePreflight,
   type ClaudeCodePreflightResult,
 } from "../../../claude-code/preflight.js";
+import type { ClaudeCodeSingleFlightLockPeek } from "../../sessionRunner.js";
 
 export interface DoctorCommandDeps {
   aggregate?: Partial<AggregateDoctorOptions>;
@@ -113,10 +114,7 @@ export function registerDoctorCommand(program: Command, deps: DoctorCommandDeps 
     .description("Run Oracle preflight diagnostics without submitting prompts.")
     .option("--json", "Print structured JSON.", false)
     .addOption(
-      new Option(
-        "--providers",
-        "Inspect compatibility API provider keys and route choices.",
-      )
+      new Option("--providers", "Inspect compatibility API provider keys and route choices.")
         .default(false)
         .hideHelp(),
     )
@@ -199,6 +197,12 @@ export interface RunLaneDoctorDeps {
   claudeCodePreflight?: (
     ...args: Parameters<typeof runClaudeCodePreflight>
   ) => Promise<ClaudeCodePreflightResult>;
+  /**
+   * Injectable for tests; defaults to the real read-only
+   * `peekClaudeCodeSingleFlightLocks`. Lazily imported so the heavy
+   * `sessionRunner` module graph only loads when the lane doctor actually runs.
+   */
+  peekLock?: () => Promise<ClaudeCodeSingleFlightLockPeek>;
 }
 
 export async function runLaneDoctor(
@@ -206,6 +210,12 @@ export async function runLaneDoctor(
   deps: RunLaneDoctorDeps = {},
 ): Promise<void> {
   const preflightImpl = deps.claudeCodePreflight ?? runClaudeCodePreflight;
+  const peekLockImpl =
+    deps.peekLock ??
+    (async () => {
+      const { peekClaudeCodeSingleFlightLocks } = await import("../../sessionRunner.js");
+      return peekClaudeCodeSingleFlightLocks();
+    });
   // Preflight is real, side-effect-free (no spawn, no prompt) verification
   // of the claude-code lane's executable resolution + local-owner
   // hardening + env guard — the same checks a live `fable-local` run makes,
@@ -216,6 +226,13 @@ export async function runLaneDoctor(
   // per-lane, the same way `blocked_reason`/`readiness` already are for
   // lanes that are simply not enabled.
   const claudeCodePreflight = await preflightImpl();
+  // Read-only busy-ness of the fable-local single-flight lock (finding
+  // agent-workflow-gaps#4) so an agent can check capacity BEFORE submitting a
+  // local run, the same way remote lanes expose `oracle remote slots`. Never
+  // acquires or reaps the lock — a live holder means the lane is busy; a dead
+  // holder pid is surfaced but does not mark the lane busy.
+  const singleFlightLock = await peekLockImpl();
+  const liveLockHolders = singleFlightLock.holders.filter((holder) => holder.pid_alive);
 
   const lanes = LANE_TEMPLATES.map((entry) => ({
     lane: entry.lane,
@@ -232,6 +249,7 @@ export async function runLaneDoctor(
     refused_patterns: [...entry.refusedPatterns],
     runtime_assertions: [...entry.runtimeAssertions],
     claude_code_preflight: entry.engine === "claude-code" ? claudeCodePreflight : null,
+    single_flight_lock: entry.engine === "claude-code" ? singleFlightLock : null,
   }));
   const envelope = {
     schema_version: "json_envelope.v1" as const,
@@ -264,6 +282,9 @@ export async function runLaneDoctor(
       ...claudeCodePreflight.checks
         .filter((check) => check.status === "fail")
         .map((check) => `fable-local:${check.code}:${check.message}`),
+      ...(singleFlightLock.busy
+        ? [`fable-local:single_flight_lock_busy:${liveLockHolders.length}`]
+        : []),
     ],
     commands: {
       capabilities: "oracle capabilities --json",
@@ -286,6 +307,11 @@ export async function runLaneDoctor(
       ...claudeCodePreflight.checks.map(
         (check) => `- fable-local preflight ${check.code}: ${check.status} — ${check.message}`,
       ),
+      singleFlightLock.busy
+        ? `- fable-local single-flight lock: busy (${liveLockHolders
+            .map((holder) => `session ${holder.session_id}, pid ${holder.holder_pid}`)
+            .join("; ")})`
+        : "- fable-local single-flight lock: idle",
       "Next: oracle capabilities --json",
     ].join("\n"),
   );

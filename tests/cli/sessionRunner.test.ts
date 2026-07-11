@@ -73,6 +73,7 @@ import {
 import { sendSessionNotification } from "../../src/cli/notifier.ts";
 import { getCliVersion } from "../../src/version.ts";
 import { deriveModelOutputPath } from "../../src/cli/sessionRunner.ts";
+import { peekClaudeCodeSingleFlightLocks } from "../../src/cli/sessionRunner.ts";
 import { resumeBrowserSession } from "../../src/browser/reattach.ts";
 import { setOracleHomeDirOverrideForTest } from "../../src/oracleHome.ts";
 import { buildClaudeCodeCommand } from "../../src/claude-code/command.ts";
@@ -3486,9 +3487,7 @@ describe("claude-code caam shallow-spawn integration (caam-map.md §4)", () => {
       expect(fs.readFileSync(caamMarkerPath, "utf8")).toBe("spawned\n");
 
       // Per-profile lock was used and released — not the global one.
-      expect(fs.existsSync(path.join(locksDir, "claude-code-subscription-beta.lock"))).toBe(
-        false,
-      );
+      expect(fs.existsSync(path.join(locksDir, "claude-code-subscription-beta.lock"))).toBe(false);
       expect(fs.existsSync(globalLockPath)).toBe(true);
 
       const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
@@ -3607,9 +3606,7 @@ describe("claude-code caam shallow-spawn integration (caam-map.md §4)", () => {
       // The GLOBAL lock filename was used (no profile keying) and released.
       const locksDir = path.join(fixture.oracleHome, "locks");
       expect(fs.existsSync(path.join(locksDir, "claude-code-subscription.lock"))).toBe(false);
-      expect(fs.existsSync(path.join(locksDir, "claude-code-subscription-beta.lock"))).toBe(
-        false,
-      );
+      expect(fs.existsSync(path.join(locksDir, "claude-code-subscription-beta.lock"))).toBe(false);
 
       const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
       expect(finalUpdate).toMatchObject({ status: "completed", mode: "claude-code" });
@@ -3767,7 +3764,10 @@ describe("claude-code caam rate-limit rotation (caam-ratelimit-rotation-design.m
         ["shallow-spawn", "beth", "--print-env", "--json"],
       ]);
 
-      const shallowSpawnCalls = readJsonlLog(fixture.logsDir, "shallow-spawn-calls.jsonl") as string[][];
+      const shallowSpawnCalls = readJsonlLog(
+        fixture.logsDir,
+        "shallow-spawn-calls.jsonl",
+      ) as string[][];
       expect(shallowSpawnCalls.map((argv) => argv[1])).toEqual(["beta", "beth"]);
 
       const cooldownCalls = readJsonlLog(fixture.logsDir, "cooldown-calls.jsonl") as string[][];
@@ -4073,7 +4073,10 @@ describe("claude-code caam rate-limit rotation (caam-ratelimit-rotation-design.m
         async () => {
           await performSessionRun({
             sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
-            runOptions: { prompt: "Review, cooldown write fails but rotation proceeds", model: "fable" },
+            runOptions: {
+              prompt: "Review, cooldown write fails but rotation proceeds",
+              model: "fable",
+            },
             mode: "claude-code",
             cwd: fixture.repoDir,
             log,
@@ -4197,6 +4200,135 @@ describe("claude-code caam rate-limit rotation (caam-ratelimit-rotation-design.m
       expect(adapter.rotation?.cap).toBe(1);
     } finally {
       teardownRotationFixture(fixture);
+    }
+  });
+});
+
+describe("peekClaudeCodeSingleFlightLocks", () => {
+  // A pid far above Linux's default pid_max — `process.kill(pid, 0)` reports
+  // ESRCH, i.e. no such process, so this stands in for a crashed run's stale lock.
+  const DEAD_PID = 2_147_483_647;
+
+  function setupLocksHome(): { root: string; oracleHome: string; locksDir: string } {
+    const root = fs.mkdtempSync(path.join(os.homedir(), ".oracle-lock-peek-test-"));
+    const oracleHome = path.join(root, "oracle-home");
+    const locksDir = path.join(oracleHome, "locks");
+    fs.mkdirSync(locksDir, { recursive: true, mode: 0o700 });
+    setOracleHomeDirOverrideForTest(oracleHome);
+    return { root, oracleHome, locksDir };
+  }
+
+  function writeLock(locksDir: string, fileName: string, metadata: Record<string, unknown>): void {
+    fs.writeFileSync(
+      path.join(locksDir, fileName),
+      `${JSON.stringify({
+        schema_version: "claude_code_single_flight_lock.v1",
+        ...metadata,
+      })}\n`,
+      { mode: 0o600 },
+    );
+  }
+
+  test("reports not busy when the locks directory does not exist", async () => {
+    const root = fs.mkdtempSync(path.join(os.homedir(), ".oracle-lock-peek-empty-test-"));
+    const oracleHome = path.join(root, "oracle-home");
+    setOracleHomeDirOverrideForTest(oracleHome);
+    try {
+      await expect(peekClaudeCodeSingleFlightLocks()).resolves.toEqual({
+        busy: false,
+        holders: [],
+      });
+    } finally {
+      setOracleHomeDirOverrideForTest(null);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("reports busy with holder pid + age for a lock held by a live process", async () => {
+    const { root, locksDir } = setupLocksHome();
+    try {
+      writeLock(locksDir, "claude-code-subscription.lock", {
+        session_id: "live-session",
+        pid: process.pid,
+        nonce: "live-nonce",
+        created_at: "2026-07-11T00:00:00.000Z",
+      });
+      const peek = await peekClaudeCodeSingleFlightLocks({
+        now: () => Date.parse("2026-07-11T00:00:05.000Z"),
+      });
+      expect(peek.busy).toBe(true);
+      expect(peek.holders).toEqual([
+        {
+          lock_path: path.join(locksDir, "claude-code-subscription.lock"),
+          session_id: "live-session",
+          holder_pid: process.pid,
+          pid_alive: true,
+          held_for_ms: 5_000,
+        },
+      ]);
+    } finally {
+      setOracleHomeDirOverrideForTest(null);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("surfaces a stale lock (dead holder pid) without marking the lane busy", async () => {
+    const { root, locksDir } = setupLocksHome();
+    try {
+      writeLock(locksDir, "claude-code-subscription.lock", {
+        session_id: "stale-session",
+        pid: DEAD_PID,
+        nonce: "stale-nonce",
+        created_at: "2026-07-11T00:00:00.000Z",
+      });
+      const peek = await peekClaudeCodeSingleFlightLocks();
+      expect(peek.busy).toBe(false);
+      expect(peek.holders).toHaveLength(1);
+      expect(peek.holders[0]).toMatchObject({
+        session_id: "stale-session",
+        holder_pid: DEAD_PID,
+        pid_alive: false,
+      });
+    } finally {
+      setOracleHomeDirOverrideForTest(null);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("scans caam profile-keyed locks and surfaces their profile", async () => {
+    const { root, locksDir } = setupLocksHome();
+    try {
+      writeLock(locksDir, "claude-code-subscription-beta.lock", {
+        session_id: "profile-session",
+        pid: process.pid,
+        nonce: "profile-nonce",
+        created_at: "2026-07-11T00:00:00.000Z",
+        caam_profile: "beta",
+      });
+      const peek = await peekClaudeCodeSingleFlightLocks();
+      expect(peek.busy).toBe(true);
+      expect(peek.holders).toHaveLength(1);
+      expect(peek.holders[0]).toMatchObject({
+        session_id: "profile-session",
+        pid_alive: true,
+        caam_profile: "beta",
+      });
+    } finally {
+      setOracleHomeDirOverrideForTest(null);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("ignores unrelated files and skips unparseable lock files", async () => {
+    const { root, locksDir } = setupLocksHome();
+    try {
+      fs.writeFileSync(path.join(locksDir, "unrelated.lock"), "not a claude lock\n");
+      fs.writeFileSync(path.join(locksDir, "claude-code-subscription.lock"), "{ not valid json\n");
+      const peek = await peekClaudeCodeSingleFlightLocks();
+      expect(peek).toEqual({ busy: false, holders: [] });
+    } finally {
+      setOracleHomeDirOverrideForTest(null);
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 });

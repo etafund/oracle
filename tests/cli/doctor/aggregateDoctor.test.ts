@@ -225,6 +225,7 @@ describe("aggregate doctor", () => {
               },
             ],
           }),
+          peekLock: async () => ({ busy: false, holders: [] }),
         },
       );
     } finally {
@@ -244,18 +245,97 @@ describe("aggregate doctor", () => {
           doctor_command:
             "oracle doctor chatgpt --pro --extended-reasoning --remote-browser preferred --json",
           claude_code_preflight: null,
+          single_flight_lock: null,
         }),
         expect.objectContaining({
           lane: "gemini-deep-think",
           doctor_command: "oracle doctor gemini --deep-think --remote-browser preferred --json",
           claude_code_preflight: null,
+          single_flight_lock: null,
         }),
         expect.objectContaining({
           lane: "fable-local",
           claude_code_preflight: expect.objectContaining({ ok: true }),
+          single_flight_lock: { busy: false, holders: [] },
         }),
       ]),
     );
+  });
+
+  test("lane doctor surfaces a busy fable-local single-flight lock without failing the command", async () => {
+    const output: string[] = [];
+    const originalLog = console.log;
+    console.log = (message?: unknown) => {
+      output.push(String(message ?? ""));
+    };
+    try {
+      await runLaneDoctor(
+        { json: true },
+        {
+          claudeCodePreflight: async () => ({ ok: true, checks: [] }),
+          peekLock: async () => ({
+            busy: true,
+            holders: [
+              {
+                lock_path: "/home/user/.oracle/locks/claude-code-subscription.lock",
+                session_id: "busy-session",
+                holder_pid: 4242,
+                pid_alive: true,
+                held_for_ms: 12_000,
+              },
+            ],
+          }),
+        },
+      );
+    } finally {
+      console.log = originalLog;
+    }
+    const parsed = JSON.parse(output.join("\n"));
+    // A busy lane is a normal, transient state — the command still succeeds.
+    expect(parsed.ok).toBe(true);
+    const fableLane = parsed.data.lanes.find(
+      (entry: { lane: string }) => entry.lane === "fable-local",
+    );
+    expect(fableLane.single_flight_lock).toMatchObject({
+      busy: true,
+      holders: [expect.objectContaining({ session_id: "busy-session", holder_pid: 4242 })],
+    });
+    expect(parsed.warnings).toEqual(
+      expect.arrayContaining([expect.stringContaining("fable-local:single_flight_lock_busy:1")]),
+    );
+  });
+
+  test("lane doctor human output reports the fable-local single-flight lock state", async () => {
+    const output: string[] = [];
+    const originalLog = console.log;
+    console.log = (message?: unknown) => {
+      output.push(String(message ?? ""));
+    };
+    try {
+      await runLaneDoctor(
+        {},
+        {
+          claudeCodePreflight: async () => ({ ok: true, checks: [] }),
+          peekLock: async () => ({
+            busy: true,
+            holders: [
+              {
+                lock_path: "/home/user/.oracle/locks/claude-code-subscription.lock",
+                session_id: "busy-session",
+                holder_pid: 4242,
+                pid_alive: true,
+                held_for_ms: 12_000,
+              },
+            ],
+          }),
+        },
+      );
+    } finally {
+      console.log = originalLog;
+    }
+    const text = output.join("\n");
+    expect(text).toContain("fable-local single-flight lock: busy");
+    expect(text).toContain("session busy-session, pid 4242");
   });
 
   test("lane doctor surfaces a failing claude-code preflight check without failing the command", async () => {
@@ -279,6 +359,7 @@ describe("aggregate doctor", () => {
               },
             ],
           }),
+          peekLock: async () => ({ busy: false, holders: [] }),
         },
       );
     } finally {

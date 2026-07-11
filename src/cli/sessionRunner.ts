@@ -2365,6 +2365,79 @@ function formatClaudeCodeLockBusyMessage(
   ].join("\n");
 }
 
+/** One live-or-stale Claude Code single-flight lock file (finding agent-workflow-gaps#4). */
+export interface ClaudeCodeSingleFlightLockHolder {
+  lock_path: string;
+  session_id: string;
+  holder_pid: number;
+  /**
+   * `process.kill(pid, 0)` liveness. A dead pid is a *stale* lock left by a
+   * crashed run, not a busy lane — `busy` below only counts live holders.
+   */
+  pid_alive: boolean;
+  /** Age derived from the lock's `created_at`, or null when it can't be parsed. */
+  held_for_ms: number | null;
+  /** caam shallow-spawn profile this lock is keyed on, if any (caam-map.md §4b). */
+  caam_profile?: string;
+}
+
+export interface ClaudeCodeSingleFlightLockPeek {
+  /** True iff at least one single-flight lock is currently held by a live process. */
+  busy: boolean;
+  /** Every parseable single-flight lock file found, live or stale, sorted by path. */
+  holders: ClaudeCodeSingleFlightLockHolder[];
+}
+
+/**
+ * Read-only, side-effect-free peek at the Claude Code single-flight lock(s)
+ * (finding agent-workflow-gaps#4). Reports whether the `fable-local` lane is
+ * busy — the same lock `acquireClaudeCodeSingleFlightLock` competes for —
+ * WITHOUT acquiring, creating, or reaping anything. Scans every
+ * `claude-code-subscription*.lock` in the locks dir so a caam profile-keyed
+ * lock (caam-map.md §4b) and a lock held by a foreign process mid-cleanup are
+ * both visible to an agent checking capacity before it submits.
+ */
+export async function peekClaudeCodeSingleFlightLocks(
+  options: { now?: () => number } = {},
+): Promise<ClaudeCodeSingleFlightLockPeek> {
+  const now = options.now?.() ?? Date.now();
+  const locksDir = path.join(getOracleHomeDir(), "locks");
+  let entries: string[];
+  try {
+    entries = await fs.readdir(locksDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { busy: false, holders: [] };
+    }
+    throw error;
+  }
+  const lockFiles = entries
+    .filter(
+      (name) =>
+        name === "claude-code-subscription.lock" ||
+        (name.startsWith("claude-code-subscription-") && name.endsWith(".lock")),
+    )
+    .sort();
+  const holders: ClaudeCodeSingleFlightLockHolder[] = [];
+  for (const name of lockFiles) {
+    const lockPath = path.join(locksDir, name);
+    const metadata = await readClaudeCodeSingleFlightLock(lockPath);
+    if (!metadata) {
+      continue;
+    }
+    const createdMs = Date.parse(metadata.created_at);
+    holders.push({
+      lock_path: lockPath,
+      session_id: metadata.session_id,
+      holder_pid: metadata.pid,
+      pid_alive: isProcessAlive(metadata.pid),
+      held_for_ms: Number.isFinite(createdMs) ? Math.max(0, now - createdMs) : null,
+      ...(metadata.caam_profile ? { caam_profile: metadata.caam_profile } : {}),
+    });
+  }
+  return { busy: holders.some((holder) => holder.pid_alive), holders };
+}
+
 const CLAUDE_CODE_BLOCKED_TOOL_NAMES = new Set(
   [
     "agent",
