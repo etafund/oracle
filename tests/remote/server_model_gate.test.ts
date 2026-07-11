@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import {
   createRemoteServer,
   isServeModelLabelAllowed,
+  isServeModelStrategyAllowed,
   resolveServeAllowedModelLabels,
 } from "../../src/remote/server.js";
 import type { BrowserRunResult } from "../../src/browserMode.js";
@@ -78,6 +79,23 @@ describe("serve model-label allow-list helpers", () => {
     expect(isServeModelLabelAllowed("GPT-5.5 Pro", allowed)).toBe(true);
     expect(isServeModelLabelAllowed("GPT-5.6 Sol", allowed)).toBe(true);
     expect(isServeModelLabelAllowed("GPT-5.5", allowed)).toBe(false);
+  });
+});
+
+describe("serve model-strategy allow-list helper", () => {
+  test('refuses "ignore" and "current"; admits "select" and an absent strategy', () => {
+    // "ignore" skips model selection; "current" submits on whatever model is
+    // loaded — both bypass atomic verification and fail closed (any case/space).
+    expect(isServeModelStrategyAllowed("ignore")).toBe(false);
+    expect(isServeModelStrategyAllowed("current")).toBe(false);
+    expect(isServeModelStrategyAllowed("  Ignore ")).toBe(false);
+    expect(isServeModelStrategyAllowed("CURRENT")).toBe(false);
+    // "select" is the only fleet-admissible explicit strategy.
+    expect(isServeModelStrategyAllowed("select")).toBe(true);
+    // Absent/undefined (and any non-string) defaults to "select" downstream.
+    expect(isServeModelStrategyAllowed(undefined)).toBe(true);
+    expect(isServeModelStrategyAllowed(null)).toBe(true);
+    expect(isServeModelStrategyAllowed(5)).toBe(true);
   });
 });
 
@@ -273,6 +291,146 @@ describe("serve model gate (/runs admission)", () => {
         });
         expect(refused.statusCode).toBe(422);
         expect(runs.count).toBe(2);
+      } finally {
+        await server.close();
+      }
+    },
+  );
+});
+
+describe("serve model-strategy gate (/runs admission)", () => {
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    'admits modelStrategy "select" and an absent strategy',
+    async () => {
+      const runs = { count: 0 };
+      const server = await startServer(runs);
+      try {
+        // Explicit "select" -> atomic model+mode verification, admitted.
+        const select = await sendRun(server.port, "secret", {
+          prompt: "p",
+          attachments: [],
+          browserConfig: { desiredModel: "GPT-5.6 Sol", modelStrategy: "select" },
+          options: {},
+        });
+        expect(select.statusCode).toBe(200);
+        expect(runs.count).toBe(1);
+
+        // No modelStrategy -> defaults to "select" downstream, admitted (even
+        // with the baseline "Pro" desiredModel that the label gate allows).
+        const absent = await sendRun(server.port, "secret", {
+          prompt: "p",
+          attachments: [],
+          browserConfig: { desiredModel: "Pro" },
+          options: {},
+        });
+        expect(absent.statusCode).toBe(200);
+        expect(runs.count).toBe(2);
+      } finally {
+        await server.close();
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    'refuses modelStrategy "ignore" with a typed 422 before consuming a slot',
+    async () => {
+      const runs = { count: 0 };
+      const server = await startServer(runs);
+      try {
+        // The exact bypass: a baseline "Pro" desiredModel (which the label gate
+        // MUST keep admitting) paired with "ignore" would skip model selection
+        // and submit UNVERIFIED. The strategy gate fails it closed.
+        const refused = await sendRun(server.port, "secret", {
+          prompt: "p",
+          attachments: [],
+          browserConfig: { desiredModel: "Pro", modelStrategy: "ignore" },
+          options: {},
+        });
+        expect(refused.statusCode).toBe(422);
+        const body = JSON.parse(refused.body) as Record<string, unknown>;
+        expect(body.error).toBe("model_strategy_not_allowed");
+        expect(body.errorClass).toBe("model_strategy_not_allowed");
+        expect(body.retryable).toBe(false);
+        expect(String(body.message)).toBe(
+          'this browser worker requires modelStrategy "select" (atomic model+mode verification); modelStrategy "ignore" is not allowed on the fleet',
+        );
+        expect(body.runId).toBe(refused.headers["x-oracle-run-id"]);
+        // The browser was never consulted.
+        expect(runs.count).toBe(0);
+
+        // `busy` was never consumed: the worker still admits a valid run.
+        const accepted = await sendRun(server.port, "secret", {
+          prompt: "p",
+          attachments: [],
+          browserConfig: { desiredModel: "GPT-5.6 Sol", modelStrategy: "select" },
+          options: {},
+        });
+        expect(accepted.statusCode).toBe(200);
+        expect(runs.count).toBe(1);
+      } finally {
+        await server.close();
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)('refuses modelStrategy "current" the same way', async () => {
+    const runs = { count: 0 };
+    const server = await startServer(runs);
+    try {
+      const refused = await sendRun(server.port, "secret", {
+        prompt: "p",
+        attachments: [],
+        browserConfig: { desiredModel: "GPT-5.6 Sol", modelStrategy: "current" },
+        options: {},
+      });
+      expect(refused.statusCode).toBe(422);
+      const body = JSON.parse(refused.body) as Record<string, unknown>;
+      expect(body.error).toBe("model_strategy_not_allowed");
+      expect(String(body.message)).toContain('modelStrategy "current" is not allowed on the fleet');
+      expect(runs.count).toBe(0);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "the model-strategy gate runs BEFORE attachment staging",
+    async () => {
+      const runs = { count: 0 };
+      const server = await startServer(runs);
+      try {
+        // A disallowed strategy PLUS a deliberately size-mismatched attachment
+        // (which staging would reject with attachment_size_mismatch/400). The
+        // strategy gate runs first, so the response is
+        // model_strategy_not_allowed/422 — proving no attachment is staged.
+        const refused = await sendRun(server.port, "secret", {
+          prompt: "p",
+          attachments: [
+            {
+              fileName: "notes.txt",
+              displayPath: "notes.txt",
+              sizeBytes: 5, // deliberately wrong
+              contentBase64: Buffer.from("many more than five bytes").toString("base64"),
+            },
+          ],
+          browserConfig: { desiredModel: "Pro", modelStrategy: "ignore" },
+          options: {},
+        });
+        expect(refused.statusCode).toBe(422);
+        expect((JSON.parse(refused.body) as Record<string, unknown>).error).toBe(
+          "model_strategy_not_allowed",
+        );
+        expect(runs.count).toBe(0);
+
+        // Still ready afterwards.
+        const accepted = await sendRun(server.port, "secret", {
+          prompt: "p",
+          attachments: [],
+          browserConfig: { desiredModel: "GPT-5.6 Sol", modelStrategy: "select" },
+          options: {},
+        });
+        expect(accepted.statusCode).toBe(200);
+        expect(runs.count).toBe(1);
       } finally {
         await server.close();
       }

@@ -401,6 +401,32 @@ export function isServeModelLabelAllowed(
   return isGpt56SolModelLabel(label);
 }
 
+/**
+ * Model strategies this worker refuses at /runs. `modelStrategy` is
+ * client-controllable through the payload sanitize allow-list
+ * (src/remote/payload_sanitize.ts), so a token-authenticated payload could pin
+ * "ignore" (skips model selection entirely) or "current" (submits on whatever
+ * model the shared Chrome happens to have loaded) and — paired with a baseline
+ * "Pro" desiredModel that clears the model-label gate — submit UNVERIFIED,
+ * because the downstream atomic-verification guard only fires for the Sol
+ * label. The fleet therefore requires "select" (atomic model+mode
+ * verification). Absent/undefined stays allowed: it defaults to "select"
+ * downstream (src/browser/index.ts: `config.modelStrategy ?? DEFAULT_MODEL_STRATEGY`,
+ * DEFAULT_MODEL_STRATEGY = "select" in src/browser/constants.ts). This is a
+ * MATCH, never a remap: a disallowed strategy fails closed, it is never
+ * rewritten to "select".
+ */
+const DISALLOWED_SERVE_MODEL_STRATEGIES: ReadonlySet<string> = new Set(["ignore", "current"]);
+
+export function isServeModelStrategyAllowed(strategy: unknown): boolean {
+  if (typeof strategy !== "string") {
+    // Absent/undefined (and any non-string) resolves to the "select" default
+    // downstream; only an explicit disallowed strategy string fails closed.
+    return true;
+  }
+  return !DISALLOWED_SERVE_MODEL_STRATEGIES.has(strategy.trim().toLowerCase());
+}
+
 export async function createRemoteServer(
   options: RemoteServerOptions = {},
   deps: RemoteServerDeps = {},
@@ -967,6 +993,27 @@ export async function createRemoteServer(
             errorClass: "model_not_allowed",
             retryable: false,
             message: `this browser worker serves only GPT-5.6 Sol + Pro; requested model label "${effectiveModelLabel ?? ""}" is not allowed. Drop --model (the default resolves to GPT-5.6 Sol) or use --engine api for API models.`,
+          });
+          return;
+        }
+
+        // FLEET MODEL-STRATEGY GATE (same trust boundary, evaluated BEFORE
+        // staging attachments or flipping `busy`). modelStrategy is
+        // client-controllable via the payload sanitize allow-list, so a
+        // token-authenticated payload could pin "ignore" (skip model selection
+        // outright) or "current" (submit on whatever model the shared Chrome
+        // currently has loaded) and slip past the model-label gate above with
+        // the baseline "Pro" desiredModel — submitting UNVERIFIED, since the
+        // downstream atomic-verification guard only trips for the Sol label.
+        // Require "select". Absent/undefined stays allowed (defaults to
+        // "select" downstream). No silent remap: a disallowed strategy fails
+        // closed with an actionable error.
+        const requestedModelStrategy = payload.browserConfig?.modelStrategy;
+        if (!isServeModelStrategyAllowed(requestedModelStrategy)) {
+          refuseRun(422, "model_strategy_not_allowed", {
+            errorClass: "model_strategy_not_allowed",
+            retryable: false,
+            message: `this browser worker requires modelStrategy "select" (atomic model+mode verification); modelStrategy "${String(requestedModelStrategy)}" is not allowed on the fleet`,
           });
           return;
         }
