@@ -161,7 +161,7 @@ npx -y @steipete/oracle tui
 - Performance traces: `--perf-trace` / `ORACLE_PERF_TRACE=1` writes JSON timing marks for startup, root command, first output, and exit. `--perf-trace-path` or `--perf-trace=/tmp/oracle.json` selects the path; detached API children write a session-suffixed sidecar trace.
 - AGENTS.md/CLAUDE.md:
   ```
-  - Oracle bundles a prompt plus the right files so another AI (GPT 5 Pro + more) can answer. Use when stuck/bugs/reviewing.
+  - Oracle bundles a prompt plus the right files for the reviewed lanes: ChatGPT GPT-5.6 Sol + Pro, Fable xHigh, and Gemini 3.1 Deep Think. Use when stuck, debugging, or reviewing.
   - Run `npx -y @steipete/oracle --help` once per session before first use.
   ```
 - Tip: set `browser.chatgptUrl` in config (or `--chatgpt-url`) to a dedicated ChatGPT project folder so browser runs don’t clutter your main history.
@@ -543,7 +543,7 @@ Remote browser example
 export ORACLE_REMOTE_TOKEN="<shared remote bearer token>"
 
 # Host (signed-in Chrome): launch serve
-oracle serve --host 0.0.0.0:9473 --token "$ORACLE_REMOTE_TOKEN"
+oracle serve --host 0.0.0.0 --port 9473 --token "$ORACLE_REMOTE_TOKEN"
 
 # Client: target that host
 oracle --engine browser --remote-host 192.168.1.10:9473 \

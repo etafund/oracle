@@ -21,7 +21,7 @@ Override the root with `ORACLE_HOME_DIR=/some/path`.
 ## Listing
 
 ```bash
-oracle status                  # last 20 sessions
+oracle status                  # recent sessions (last 24h, up to 100)
 oracle status --hours 168      # last week
 ```
 
