@@ -113,7 +113,11 @@ function assertResolvedModelSelection(desiredModel: string, resolvedLabel: strin
     /(?:^| )5 6(?: |$)/.test(normalizedDesired) && normalizedDesired.split(" ").includes("sol");
   if (wantsGpt56Sol) {
     const resolvedTokens = normalizedResolved.split(" ");
-    if (!/(?:^| )5 6(?: |$)/.test(normalizedResolved) || !resolvedTokens.includes("sol")) {
+    if (
+      !/(?:^| )5 6(?: |$)/.test(normalizedResolved) ||
+      !resolvedTokens.includes("sol") ||
+      resolvedTokens.includes("pro")
+    ) {
       throw new Error(
         `Model picker selected "${resolvedLabel}" while "${desiredModel}" requires GPT-5.6 Sol.`,
       );
@@ -436,6 +440,7 @@ function buildModelSelectionExpression(
         !configuredVersionLabel.includes(desiredModelVariant) &&
         !configuredVariant.includes(desiredModelVariant)
       ) return false;
+      if (desiredModelVariant === 'sol' && labelHasProWord(configuredVariant)) return false;
       if (wantsPro) return labelHasProWord(configuredVariant);
       if (wantsInstant) return configuredVariant.includes('instant');
       if (wantsThinking) {
@@ -501,6 +506,7 @@ function buildModelSelectionExpression(
       if (configuredSelectionMatchesTarget()) return true;
       const normalizedLabel = normalizeText(getButtonLabel());
       if (!normalizedLabel) return false;
+      if (desiredModelVariant === 'sol' && hasProComposerPill()) return false;
       if (wantsThinking && !wantsPro && hasProComposerPill()) return false;
       if (isTargetGpt55VisibleAlias(normalizedLabel)) return true;
       if (
@@ -560,6 +566,9 @@ function buildModelSelectionExpression(
       const signal = readComposerModelSignal();
       if (!signal) {
         return COMPOSER_SIGNAL_ALLOW_BLANK;
+      }
+      if (desiredModelVariant === 'sol' && hasProComposerPill()) {
+        return false;
       }
       if (wantsPro && labelHasLegacyProVersion(signal)) {
         return false;
@@ -827,6 +836,7 @@ function buildModelSelectionExpression(
           node?.getAttribute?.('aria-haspopup') === 'menu' ||
           node?.getAttribute?.('data-has-submenu') !== null);
       if (wantsPro && candidateHasThinking) return 0;
+      if (desiredModelVariant === 'sol' && candidateHasPro) return 0;
       if (wantsPro && candidateHasLegacyProVersion && !candidateSelectsDesiredVersion) return 0;
       if (wantsPro && !candidateHasPro && !candidateSelectsDesiredVersion) return 0;
       if (
@@ -983,6 +993,10 @@ function buildModelSelectionExpression(
       const optionVersion = versionFromLabel(normalizedText) ?? versionFromTestId(testid);
       if (desiredVersion && optionVersion !== desiredVersion) return false;
       if (desiredModelVariant && !normalizedText.includes(desiredModelVariant)) return false;
+      if (
+        desiredModelVariant === 'sol' &&
+        (labelHasProWord(normalizedText) || normalizeText(testid ?? '').includes('pro'))
+      ) return false;
       if (desiredVersion === '5-6') return true;
       const currentButtonLabel = normalizeText(getButtonLabel());
       return !labelHasProWord(currentButtonLabel) && !hasProComposerPill();
@@ -1204,7 +1218,7 @@ function buildComposerSignalMatchers(targetModel: string): ComposerSignalMatcher
     .trim();
 
   if (normalized.includes("5 6")) {
-    return { includesAny: ["5 6 sol"], excludesAny: [], allowBlank: false };
+    return { includesAny: ["5 6 sol"], excludesAny: ["pro"], allowBlank: false };
   }
   if (normalized.includes("pro")) {
     return { includesAny: ["pro"], excludesAny: ["thinking"], allowBlank: false };

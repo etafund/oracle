@@ -950,7 +950,7 @@ describe("browser model selection matchers", () => {
   it("requires an explicit GPT-5.6 composer signal", () => {
     expect(buildComposerSignalMatchersForTest("GPT-5.6 Sol")).toEqual({
       includesAny: ["5 6 sol"],
-      excludesAny: [],
+      excludesAny: ["pro"],
       allowBlank: false,
     });
   });
@@ -987,6 +987,19 @@ describe("browser model selection matchers", () => {
   it("keeps an explicit Sol request distinct from future GPT-5.6 variants", () => {
     const result = evaluateImmediateModelSelectionExpression("GPT-5.6 Sol", "GPT-5.6 Luna");
     expect(result).toBeInstanceOf(Promise);
+  });
+
+  it("keeps base Sol distinct from the Pro target", () => {
+    const inlinePro = evaluateImmediateModelSelectionExpression("GPT-5.6 Sol", "GPT-5.6 Sol Pro");
+    expect(inlinePro).toBeInstanceOf(Promise);
+
+    const separateProPill = evaluateImmediateModelSelectionExpression(
+      "GPT-5.6 Sol",
+      "GPT-5.6 Sol",
+      "5.6 Sol",
+      "Pro",
+    );
+    expect(separateProPill).toBeInstanceOf(Promise);
   });
 
   it("includes real pointer coordinates when opening version submenus", () => {
@@ -1356,6 +1369,9 @@ describe("browser model selection matchers", () => {
       /requires GPT-5\.6 Sol/,
     );
     expect(() => assertResolvedModelSelectionForTest("gpt-5.6-sol", "GPT-5.6 Luna")).toThrow(
+      /requires GPT-5\.6 Sol/,
+    );
+    expect(() => assertResolvedModelSelectionForTest("gpt-5.6-sol", "GPT-5.6 Sol Pro")).toThrow(
       /requires GPT-5\.6 Sol/,
     );
     expect(() => assertResolvedModelSelectionForTest("gpt-5.6-sol", "GPT-5.6 Sol")).not.toThrow();
