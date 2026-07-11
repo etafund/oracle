@@ -203,26 +203,38 @@ function buildChatModeProbeExpression(): string {
       const match = String(value || '').match(/\\/c\\/([a-zA-Z0-9-]+)/);
       return match?.[1] || null;
     };
+    const isStructuredWorkBadge = (node) =>
+      node instanceof HTMLElement &&
+      node.tagName === 'SPAN' &&
+      normalize(node.textContent) === 'work' &&
+      node.childElementCount === 0 &&
+      !node.hasAttribute('dir') &&
+      node.classList.contains('shrink-0') &&
+      node.parentElement?.matches('span.flex.items-center');
 
     const pathname = typeof location?.pathname === 'string' ? location.pathname : '';
     const conversationId = conversationIdFromPath(pathname);
     if (conversationId) {
-      const activeHistoryLink = Array.from(document.querySelectorAll('a[href*="/c/"]')).find((node) => {
+      const activeHistoryLinks = Array.from(document.querySelectorAll('a[href*="/c/"]')).filter((node) => {
         try {
-          const candidatePath = new URL(node.getAttribute('href') || '', location.origin).pathname;
-          return conversationIdFromPath(candidatePath) === conversationId;
+          const candidateUrl = new URL(node.getAttribute('href') || '', location.origin);
+          return candidateUrl.origin === location.origin && conversationIdFromPath(candidateUrl.pathname) === conversationId;
         } catch {
           return false;
         }
       });
-      if (activeHistoryLink) {
-        const aria = normalize(activeHistoryLink.getAttribute('aria-label'));
-        const metadata = aria.split(',').slice(1).map((part) => part.trim());
-        const hasWorkMetadata = metadata.some((part) => part === 'work' || part.startsWith('work(') || part.startsWith('work（'));
-        const hasWorkBadge = Array.from(activeHistoryLink.querySelectorAll('*')).some(
-          (node) => normalize(node.textContent) === 'work',
+      if (activeHistoryLinks.length > 0) {
+        const hasWorkBadge = activeHistoryLinks.some((link) =>
+          Array.from(link.querySelectorAll('span')).some(isStructuredWorkBadge),
         );
-        if (hasWorkMetadata || hasWorkBadge) return { status: 'work-conversation' };
+        if (hasWorkBadge) return { status: 'work-conversation' };
+
+        const ariaLabels = activeHistoryLinks
+          .map((link) => normalize(link.getAttribute('aria-label')))
+          .filter(Boolean);
+        if (ariaLabels.length === 0 || ariaLabels.some((aria) => /,\\s*work\\s*$/.test(aria))) {
+          return { status: 'conversation-unresolved' };
+        }
         return { status: 'chat-conversation' };
       }
       return { status: 'conversation-unresolved' };
@@ -252,7 +264,8 @@ export async function ensureChatMode(
   logger: BrowserLogger,
   options: { pollMs?: number; resetWorkConversation?: () => Promise<void> } = {},
 ): Promise<"chat" | "switched" | "unavailable"> {
-  const deadline = Date.now() + Math.min(Math.max(0, timeoutMs), 10_000);
+  const verificationWindowMs = Math.min(Math.max(0, timeoutMs), 10_000);
+  let deadline = Date.now() + verificationWindowMs;
   const pollMs = Math.max(0, options.pollMs ?? 200);
   let changedFromWork = false;
   let clickedChat = false;
@@ -272,20 +285,26 @@ export async function ensureChatMode(
         await delay(pollMs);
         continue;
       }
+      if (changedFromWork) break;
       return "unavailable";
     }
     if (probe?.status === "controls-absent") {
-      if (changedFromWork && Date.now() < deadline) {
-        await delay(pollMs);
-        continue;
+      if (changedFromWork) {
+        if (Date.now() < deadline) {
+          await delay(pollMs);
+          continue;
+        }
+        break;
       }
       return "unavailable";
     }
     if (probe?.status === "work-conversation") {
-      if (options.resetWorkConversation && !changedFromWork) {
+      if (changedFromWork) break;
+      if (options.resetWorkConversation) {
         logger("ChatGPT mode: Work conversation; opening a new Chat");
         await options.resetWorkConversation();
         changedFromWork = true;
+        deadline = Date.now() + verificationWindowMs;
         await delay(pollMs);
         continue;
       }
@@ -314,6 +333,7 @@ export async function ensureChatMode(
       });
       changedFromWork = true;
       clickedChat = true;
+      deadline = Date.now() + verificationWindowMs;
       await delay(pollMs);
       continue;
     }
@@ -324,7 +344,7 @@ export async function ensureChatMode(
   await logDomFailure(Runtime, logger, "chat-mode-selection");
   throw new BrowserAutomationError(
     changedFromWork
-      ? "ChatGPT remained in Work mode after Oracle selected Chat."
+      ? "Oracle could not verify Chat mode after leaving Work."
       : "ChatGPT exposed Chat/Work controls but Oracle could not verify the active mode.",
     { stage: "chat-mode-selection", details: { changedFromWork, clickedChat } },
   );

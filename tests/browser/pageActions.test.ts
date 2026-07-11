@@ -173,6 +173,97 @@ describe("ensurePromptReady", () => {
 });
 
 describe("ensureChatMode", () => {
+  class FakeChatModeElement {
+    readonly classList: { contains: (value: string) => boolean };
+
+    constructor(
+      readonly tagName: string,
+      readonly textContent: string,
+      classes: string[] = [],
+      readonly childElementCount = 0,
+      private readonly attributes: Record<string, string> = {},
+      readonly parentElement: FakeChatModeElement | null = null,
+    ) {
+      const tokens = new Set(classes);
+      this.classList = { contains: (value: string) => tokens.has(value) };
+    }
+
+    hasAttribute(name: string) {
+      return Object.hasOwn(this.attributes, name);
+    }
+
+    matches(selector: string) {
+      return (
+        selector === "span.flex.items-center" &&
+        this.tagName === "SPAN" &&
+        this.classList.contains("flex") &&
+        this.classList.contains("items-center")
+      );
+    }
+  }
+
+  const structuredWorkBadge = (
+    overrides: {
+      tagName?: string;
+      textContent?: string;
+      classes?: string[];
+      childElementCount?: number;
+      attributes?: Record<string, string>;
+      parentClasses?: string[];
+    } = {},
+  ) => {
+    const parent = new FakeChatModeElement(
+      "SPAN",
+      "",
+      overrides.parentClasses ?? ["flex", "items-center"],
+    );
+    return new FakeChatModeElement(
+      overrides.tagName ?? "SPAN",
+      overrides.textContent ?? "Work",
+      overrides.classes ?? ["shrink-0"],
+      overrides.childElementCount ?? 0,
+      overrides.attributes ?? {},
+      parent,
+    );
+  };
+
+  const runConversationModeProbe = (
+    pathname: string,
+    links: Array<{ href: string; ariaLabel?: string; descendants?: FakeChatModeElement[] }>,
+  ) => {
+    const expression = buildChatModeProbeExpressionForTest();
+    const historyLinks = links.map(({ href, ariaLabel = "", descendants = [] }) => ({
+      getAttribute: (name: string) => {
+        if (name === "href") return href;
+        if (name === "aria-label") return ariaLabel;
+        return null;
+      },
+      querySelectorAll: (selector: string) => (selector === "span" ? descendants : []),
+    }));
+    const document = {
+      querySelectorAll: (selector: string) => (selector === 'a[href*="/c/"]' ? historyLinks : []),
+    };
+    const evaluate = new Function(
+      "document",
+      "location",
+      "URL",
+      "HTMLElement",
+      `return ${expression};`,
+    ) as (
+      document: unknown,
+      location: unknown,
+      url: typeof URL,
+      htmlElement: typeof FakeChatModeElement,
+    ) => { status: string };
+
+    return evaluate(
+      document,
+      { origin: "https://chatgpt.com", pathname },
+      URL,
+      FakeChatModeElement,
+    );
+  };
+
   test("uses a trusted click to switch Work to Chat and verifies the result", async () => {
     const evaluate = vi
       .fn()
@@ -311,36 +402,147 @@ describe("ensureChatMode", () => {
     expect(input.dispatchMouseEvent).not.toHaveBeenCalled();
   });
 
-  test("classifies a Work conversation nested under a project URL by conversation id", () => {
-    const expression = buildChatModeProbeExpressionForTest();
-    const activeHistoryLink = {
-      getAttribute: (name: string) => {
-        if (name === "href") return "/c/project-work-thread";
-        if (name === "aria-label") return "Project task, Work";
-        return null;
-      },
-      querySelectorAll: () => [],
-    };
-    const document = {
-      querySelectorAll: (selector: string) =>
-        selector === 'a[href*="/c/"]' ? [activeHistoryLink] : [],
-    };
-    const evaluate = new Function("document", "location", "URL", `return ${expression};`) as (
-      document: unknown,
-      location: unknown,
-      url: typeof URL,
-    ) => { status: string };
+  test.each([
+    ["root", "/c/root-work-thread", "/c/root-work-thread", "Root task, Work"],
+    [
+      "project",
+      "/g/example/project/c/project-work-thread",
+      "/c/project-work-thread",
+      "Project task, chat in project Example, Work",
+    ],
+  ])(
+    "classifies a structured Work badge on a %s conversation URL",
+    (_kind, pathname, href, ariaLabel) => {
+      expect(
+        runConversationModeProbe(pathname, [
+          {
+            href,
+            ariaLabel,
+            descendants: [structuredWorkBadge()],
+          },
+        ]),
+      ).toEqual({ status: "work-conversation" });
+    },
+  );
 
+  test.each([
+    ["comma-containing title", "Plan, Work, and travel", []],
+    ["title exactly Work", "Work", [structuredWorkBadge({ attributes: { dir: "auto" } })]],
+    ["arbitrary exact-text descendant", "Work notes", [structuredWorkBadge({ classes: [] })]],
+    [
+      "near-miss badge with nested content",
+      "Work notes",
+      [structuredWorkBadge({ childElementCount: 1 })],
+    ],
+    [
+      "near-miss badge under an ordinary parent",
+      "Work notes",
+      [structuredWorkBadge({ parentClasses: ["flex"] })],
+    ],
+  ])("keeps an ordinary Chat conversation for a %s", (_caseName, ariaLabel, descendants) => {
     expect(
-      evaluate(
-        document,
+      runConversationModeProbe("/c/chat-thread", [
+        { href: "/c/chat-thread", ariaLabel, descendants },
+      ]),
+    ).toEqual({ status: "chat-conversation" });
+  });
+
+  test("treats a terminal aria Work suffix as hydration evidence rather than authority", () => {
+    expect(
+      runConversationModeProbe("/c/pending-thread", [
         {
-          origin: "https://chatgpt.com",
-          pathname: "/g/example/project/c/project-work-thread",
+          href: "/c/pending-thread",
+          ariaLabel: "Ordinary title ending, Work",
         },
-        URL,
-      ),
+      ]),
+    ).toEqual({ status: "conversation-unresolved" });
+  });
+
+  test("fails open after persistent aria-only ambiguity without resetting the conversation", async () => {
+    const runtime = {
+      evaluate: vi
+        .fn()
+        .mockResolvedValue({ result: { value: { status: "conversation-unresolved" } } }),
+    } as unknown as ChromeClient["Runtime"];
+    const input = { dispatchMouseEvent: vi.fn() } as unknown as ChromeClient["Input"];
+    const resetWorkConversation = vi.fn();
+
+    await expect(
+      ensureChatMode(runtime, input, 0, logger, { pollMs: 0, resetWorkConversation }),
+    ).resolves.toBe("unavailable");
+    expect(resetWorkConversation).not.toHaveBeenCalled();
+  });
+
+  test("aggregates responsive duplicates for the exact conversation id", () => {
+    expect(
+      runConversationModeProbe("/c/duplicate-thread", [
+        { href: "/c/duplicate-thread", ariaLabel: "Hydrated title" },
+        {
+          href: "/c/duplicate-thread",
+          ariaLabel: "Hydrated title, Work",
+          descendants: [structuredWorkBadge()],
+        },
+      ]),
     ).toEqual({ status: "work-conversation" });
+  });
+
+  test("ignores a matching conversation path from another origin", () => {
+    expect(
+      runConversationModeProbe("/c/same-thread", [
+        {
+          href: "https://example.test/c/same-thread",
+          ariaLabel: "External, Work",
+          descendants: [structuredWorkBadge()],
+        },
+        { href: "/c/same-thread", ariaLabel: "Local chat" },
+      ]),
+    ).toEqual({ status: "chat-conversation" });
+  });
+
+  test("fails closed when post-reset Chat verification remains unavailable", async () => {
+    const runtime = {
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({ result: { value: { status: "work-conversation" } } })
+        .mockResolvedValueOnce({ result: { value: { status: "controls-absent" } } })
+        .mockResolvedValue({ result: { value: false } }),
+    } as unknown as ChromeClient["Runtime"];
+    const input = { dispatchMouseEvent: vi.fn() } as unknown as ChromeClient["Input"];
+    const resetWorkConversation = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      ensureChatMode(runtime, input, 0, logger, { pollMs: 0, resetWorkConversation }),
+    ).rejects.toThrow(/could not verify Chat mode after leaving Work/i);
+    expect(resetWorkConversation).toHaveBeenCalledOnce();
+  });
+
+  test("allocates a fresh verification window after resetting a Work conversation", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(0);
+      const runtime = {
+        evaluate: vi
+          .fn()
+          .mockResolvedValueOnce({ result: { value: { status: "work-conversation" } } })
+          .mockResolvedValueOnce({ result: { value: { status: "conversation-unresolved" } } })
+          .mockResolvedValueOnce({ result: { value: { status: "chat-selected" } } }),
+      } as unknown as ChromeClient["Runtime"];
+      const input = { dispatchMouseEvent: vi.fn() } as unknown as ChromeClient["Input"];
+      const resetWorkConversation = vi.fn().mockImplementation(async () => {
+        vi.setSystemTime(1_000);
+      });
+
+      const result = ensureChatMode(runtime, input, 1_000, logger, {
+        pollMs: 1,
+        resetWorkConversation,
+      });
+      await vi.runAllTimersAsync();
+
+      await expect(result).resolves.toBe("switched");
+      expect(runtime.evaluate).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("scopes detection to exact mode radios and the active conversation metadata", () => {
@@ -349,7 +551,11 @@ describe("ensureChatMode", () => {
     expect(expression).toContain("normalize(node.textContent) === 'chat'");
     expect(expression).toContain("normalize(node.textContent) === 'work'");
     expect(expression).toContain('a[href*="/c/"]');
-    expect(expression).toContain("conversationIdFromPath(candidatePath) === conversationId");
+    expect(expression).toContain("candidateUrl.origin === location.origin");
+    expect(expression).toContain(
+      "conversationIdFromPath(candidateUrl.pathname) === conversationId",
+    );
+    expect(expression).toContain("node.classList.contains('shrink-0')");
     expect(expression).not.toContain("document.body.innerText");
   });
 });
