@@ -1,8 +1,8 @@
 import chalk from "chalk";
 import { render as renderMarkdown } from "markdansi";
-import { bundledLanguages, bundledThemes, createHighlighter, type BundledTheme } from "shiki";
+import type { BundledTheme } from "shiki";
 
-type ShikiHighlighter = Awaited<ReturnType<typeof createHighlighter>>;
+type ShikiHighlighter = Awaited<ReturnType<typeof import("shiki").createHighlighter>>;
 
 const DEFAULT_THEME: BundledTheme = "github-dark";
 const HIGHLIGHT_LANGS = ["ts", "tsx", "js", "jsx", "json", "swift"] as const;
@@ -19,23 +19,28 @@ const SUPPORTED_LANG_ALIASES: Record<string, HighlightLang> = {
   swift: "swift",
 };
 
-const shikiPromise = createHighlighter({
-  themes: [bundledThemes[DEFAULT_THEME]],
-  langs: HIGHLIGHT_LANGS.map((lang) => bundledLanguages[lang]),
-});
-
 let shiki: ShikiHighlighter | null = null;
-void shikiPromise
-  .then((instance) => {
-    shiki = instance;
-  })
-  .catch(() => {
-    shiki = null;
-  });
+let shikiPromise: Promise<ShikiHighlighter> | null = null;
+
+// Load shiki + the oniguruma WASM engine lazily. Instantiating the highlighter
+// at module top-level made every invocation — including --help/status and all
+// non-TTY agent runs — pay ~185ms to import shiki and compile the regex WASM,
+// even though highlighting is only ever applied on a TTY. Defer it to the first
+// render so cold paths that never highlight pay nothing.
+function createShikiHighlighter(): Promise<ShikiHighlighter> {
+  return import("shiki").then(({ bundledLanguages, bundledThemes, createHighlighter }) =>
+    createHighlighter({
+      themes: [bundledThemes[DEFAULT_THEME]],
+      langs: HIGHLIGHT_LANGS.map((lang) => bundledLanguages[lang]),
+    }),
+  );
+}
 
 export async function ensureShikiReady(): Promise<void> {
   if (shiki) return;
+  if (!process.stdout.isTTY) return;
   try {
+    shikiPromise ??= createShikiHighlighter();
     shiki = await shikiPromise;
   } catch {
     shiki = null;

@@ -1,4 +1,3 @@
-import notifier from "toasted-notifier";
 import { spawn } from "node:child_process";
 import { formatUSD, formatNumber } from "../oracle/format.js";
 import { MODEL_CONFIGS } from "../oracle/config.js";
@@ -67,6 +66,15 @@ export function deriveNotificationSettingsFromMetadata(
   });
 }
 
+/**
+ * Lazily import toasted-notifier. Loading the desktop-notification package at
+ * module top-level cost ~34ms on every CLI invocation even though notifications
+ * only fire after a run finishes, so defer the import to the actual notify call.
+ */
+async function loadNotifier(): Promise<(typeof import("toasted-notifier"))["default"]> {
+  return (await import("toasted-notifier")).default;
+}
+
 export async function sendSessionNotification(
   payload: NotificationContent,
   settings: NotificationSettings,
@@ -86,6 +94,7 @@ export async function sendSessionNotification(
     }
     if (!(await shouldSkipToastedNotifier())) {
       // Fallback to toasted-notifier (cross-platform). macAppIconOption() is only honored on macOS.
+      const notifier = await loadNotifier();
       await notifier.notify({
         title,
         message,
@@ -98,6 +107,7 @@ export async function sendSessionNotification(
       const repaired = await repairMacNotifier(log);
       if (repaired) {
         try {
+          const notifier = await loadNotifier();
           await notifier.notify({ title, message, sound: settings.sound, ...macAppIconOption() });
           return;
         } catch (retryError) {

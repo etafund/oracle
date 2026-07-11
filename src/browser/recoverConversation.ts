@@ -1,4 +1,4 @@
-import { launch, type LaunchedChrome } from "chrome-launcher";
+import type { LaunchedChrome } from "chrome-launcher";
 import type { SessionMetadata } from "../sessionStore.js";
 import type { BrowserLogger } from "./types.js";
 import { defaultManualLoginProfileDir } from "./manualLoginProfile.js";
@@ -71,6 +71,9 @@ export async function recoverConversationTab(
     `[browser] Recovery: relaunching Chrome with profile ${userDataDir} and navigating to ${url}`,
   );
 
+  // Load chrome-launcher (and its chrome-finder child-process probing) only when
+  // actually relaunching Chrome, so reachable-but-unused cold paths pay nothing.
+  const { launch } = await import("chrome-launcher");
   const chrome = await launch({
     chromeFlags: [
       "--no-first-run",

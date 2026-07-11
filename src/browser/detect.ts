@@ -2,7 +2,6 @@ import fs from "node:fs/promises";
 import type { Dirent, Stats } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Launcher } from "chrome-launcher";
 
 export type AttachRunningBrowserFamily = "chrome" | "chromium" | "edge" | "brave";
 
@@ -31,6 +30,10 @@ export async function detectChromeBinary(): Promise<{ path: string | null }> {
     }
   }
 
+  // Load chrome-launcher lazily: its chrome-finder probing only matters when we
+  // actually need to locate a Chrome binary, not on cold paths that import this
+  // module for its pure path helpers.
+  const { Launcher } = await import("chrome-launcher");
   const launcherDetected = Launcher.getFirstInstallation();
   if (launcherDetected) {
     return { path: launcherDetected };

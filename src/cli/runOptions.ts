@@ -9,7 +9,7 @@ import {
   resolveApiModel,
   normalizeBaseUrl,
 } from "./options.js";
-import { resolveGeminiModelId } from "../oracle/gemini.js";
+import { resolveGeminiModelId } from "../oracle/geminiModels.js";
 import { resolveOverriddenApiModel } from "../oracle/modelResolver.js";
 import { PromptValidationError } from "../oracle/errors.js";
 import { normalizeChatGptModelForBrowser } from "./browserConfig.js";

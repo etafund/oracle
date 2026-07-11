@@ -34,7 +34,7 @@ import { startHeartbeat } from "../heartbeat.js";
 import { buildTimedRunProgressEvent } from "./v18/run_progress.js";
 import { startOscProgress } from "./oscProgress.js";
 import { createFsAdapter } from "./fsAdapter.js";
-import { resolveGeminiModelId } from "./gemini.js";
+import { resolveGeminiModelId } from "./geminiModels.js";
 import { resolveClaudeModelId } from "./claude.js";
 import { renderMarkdownAnsi } from "../cli/markdownRenderer.js";
 import { createMarkdownStreamer } from "markdansi";

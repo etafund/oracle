@@ -2,14 +2,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { BrowserBundleFormat, FileSection, RunOracleOptions } from "../oracle.js";
-import {
-  readFiles,
-  createFileSections,
-  FileValidationError,
-  MODEL_CONFIGS,
-  TOKENIZER_OPTIONS,
-  formatFileSections,
-} from "../oracle.js";
+import { MODEL_CONFIGS, TOKENIZER_OPTIONS } from "../oracle/config.js";
+import { readFiles, createFileSections } from "../oracle/files.js";
+import { FileValidationError } from "../oracle/errors.js";
+import { formatFileSections } from "../oracle/markdown.js";
 import { isKnownModel } from "../oracle/modelResolver.js";
 import { buildPromptMarkdown } from "../oracle/promptAssembly.js";
 import type { BrowserAttachment } from "./types.js";

@@ -5,12 +5,21 @@ import net from "node:net";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import CDP from "chrome-remote-interface";
-import { launch, Launcher, type LaunchedChrome } from "chrome-launcher";
+import type { LaunchedChrome, Launcher } from "chrome-launcher";
 import type { BrowserLogger, ResolvedBrowserConfig, ChromeClient } from "./types.js";
 import { cleanupStaleProfileState } from "./profileState.js";
 import { delay } from "./utils.js";
 
 const execFileAsync = promisify(execFile);
+
+// Load chrome-launcher (and its chrome-finder child-process/fs probing,
+// lighthouse-logger and is-wsl deps) lazily so importing this module for its
+// pure connection/tab helpers on a cold path never eagerly pulls the launcher.
+let chromeLauncherPromise: Promise<typeof import("chrome-launcher")> | null = null;
+function loadChromeLauncher(): Promise<typeof import("chrome-launcher")> {
+  chromeLauncherPromise ??= import("chrome-launcher");
+  return chromeLauncherPromise;
+}
 
 export async function launchChrome(
   config: ResolvedBrowserConfig,
@@ -30,7 +39,12 @@ export async function launchChrome(
   if (usingCopiedProfile && config.chromeProfile) {
     chromeFlags.push(`--profile-directory=${config.chromeProfile}`);
   }
-  const launchOptions = resolveChromeLaunchOptions(chromeFlags, usingCopiedProfile);
+  const { launch, Launcher } = await loadChromeLauncher();
+  const launchOptions = resolveChromeLaunchOptions(
+    chromeFlags,
+    usingCopiedProfile,
+    Launcher.defaultFlags(),
+  );
   const launcher = usePatchedLauncher
     ? await launchWithCustomHost({
         chromeFlags: launchOptions.chromeFlags,
@@ -809,12 +823,15 @@ function buildChromeFlags(headless: boolean, debugBindAddress?: string | null): 
 function resolveChromeLaunchOptions(
   chromeFlags: string[],
   usingCopiedProfile: boolean,
+  // chrome-launcher's default flags, resolved lazily by the caller so this pure
+  // function never needs to statically import the (heavy) launcher module.
+  defaultFlags: string[] = [],
 ): { chromeFlags: string[]; ignoreDefaultFlags: boolean } {
   if (!usingCopiedProfile) {
     return { chromeFlags, ignoreDefaultFlags: false };
   }
   return {
-    chromeFlags: [...Launcher.defaultFlags(), ...chromeFlags].filter(
+    chromeFlags: [...defaultFlags, ...chromeFlags].filter(
       (flag) => flag !== "--use-mock-keychain" && flag !== "--password-store=basic",
     ),
     ignoreDefaultFlags: true,
@@ -887,6 +904,7 @@ async function launchWithCustomHost({
   requestedPort?: number;
   ignoreDefaultFlags?: boolean;
 }): Promise<LaunchedChrome & { host?: string }> {
+  const { Launcher } = await loadChromeLauncher();
   const launcher = new Launcher({
     chromePath: chromePath ?? undefined,
     chromeFlags,
