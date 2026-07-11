@@ -26,6 +26,7 @@ import {
   type BuildSessionListOptions,
   type SessionListEnvelopeResult,
 } from "./sessionListJson.js";
+import { runSessionJson, type RunSessionJsonResult } from "./sessionJson.js";
 
 export interface StatusOptions extends OptionValues {
   hours: number;
@@ -75,6 +76,7 @@ interface SessionCommandDependencies {
     options: BuildSessionArtifactIndexOptions,
   ) => Promise<SessionArtifactIndex>;
   runSessionListJson: (options?: BuildSessionListOptions) => Promise<SessionListEnvelopeResult>;
+  runSessionJson: (sessionId: string) => Promise<RunSessionJsonResult>;
 }
 
 const defaultDependencies: SessionCommandDependencies = {
@@ -87,6 +89,7 @@ const defaultDependencies: SessionCommandDependencies = {
   getSessionPaths: (sessionId) => sessionStore.getPaths(sessionId),
   buildSessionArtifactIndex,
   runSessionListJson: (options) => runSessionListJson(options),
+  runSessionJson: (sessionId) => runSessionJson(sessionId),
 };
 
 const SESSION_OPTION_KEYS = new Set([
@@ -272,6 +275,18 @@ export async function handleSessionCommand(
       showExamples,
       modelFilter: sessionOptions.model,
     });
+    return;
+  }
+  // Single-session machine-readable status: `oracle session <id> --json`
+  // emits one oracle_session.v1 envelope instead of streaming human markdown
+  // (closes machine-output#4). Kept ahead of the attach path so --json never
+  // falls through to the unstructured reattach stream.
+  const jsonRequested = Boolean(sessionOptions.json || allOptions.json);
+  if (jsonRequested) {
+    const result = await deps.runSessionJson(sessionId);
+    if (!result.found) {
+      process.exitCode = 1;
+    }
     return;
   }
   // Surface any root-level flags that were provided but are ignored when attaching to a session.

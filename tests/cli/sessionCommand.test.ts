@@ -51,6 +51,7 @@ function createDeps() {
     getSessionPaths: vi.fn(),
     buildSessionArtifactIndex: vi.fn(),
     runSessionListJson: vi.fn(),
+    runSessionJson: vi.fn().mockResolvedValue({ found: true }),
   };
 }
 
@@ -99,6 +100,25 @@ describe("handleSessionCommand", () => {
       "abc",
       expect.objectContaining({ renderMarkdown: false }),
     );
+  });
+
+  test("emits single-session JSON (not attach) when an id is provided with --json", async () => {
+    const command = createCommandWithOptions({ hours: 24, limit: 10, all: false, json: true });
+    const deps = createDeps();
+    await handleSessionCommand("abc", command, deps);
+    expect(deps.runSessionJson).toHaveBeenCalledWith("abc");
+    expect(deps.attachSession).not.toHaveBeenCalled();
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  test("sets exit 1 when session <id> --json cannot find the session", async () => {
+    const command = createCommandWithOptions({ hours: 24, limit: 10, all: false, json: true });
+    const deps = createDeps();
+    deps.runSessionJson.mockResolvedValue({ found: false });
+    await handleSessionCommand("missing", command, deps);
+    expect(deps.runSessionJson).toHaveBeenCalledWith("missing");
+    expect(deps.attachSession).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
   });
 
   test("ignores unrelated root-only flags and logs a note when attaching by id", async () => {

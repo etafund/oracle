@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   createBrowserLease,
+  readBrowserLease,
   releaseBrowserLease,
   type BrowserLeaseStoreOptions,
 } from "./leases.js";
@@ -331,4 +332,78 @@ async function notifyLeaseHook(hook: () => void | Promise<void> | undefined): Pr
   } catch {
     // Lease hooks are observers; they must not strand or mask provider cleanup.
   }
+}
+
+// ─── session-scoped lease release (oracle cancel teardown) ──────────────────
+//
+// Every browser lease provider is a single-active-lease-per-profile lock
+// keyed by provider name; a live run stamps the owning `remote_session_id`
+// onto the record. `oracle cancel <id>` needs to hand that lock back so a
+// killed controller does not strand the profile/tab slot. This reads each
+// provider's current lease and, when it is the one this session holds,
+// releases it through the same locked mutation path the normal run uses.
+
+/** The browser lease providers Oracle takes leases against. */
+const BROWSER_LEASE_PROVIDERS: readonly BrowserLeaseProvider[] = ["chatgpt", "gemini"];
+
+/** Outcome of releasing (or finding no) session-held lease for one provider. */
+export interface ReleasedSessionLease {
+  provider: BrowserLeaseProvider;
+  lease_id: string;
+  status: "released" | "release_failed" | "not_held";
+  release_error?: string;
+}
+
+export interface ReleaseSessionBrowserLeasesOptions extends BrowserLeaseStoreOptions {
+  /** Restrict the scan to these providers (defaults to all). */
+  providers?: readonly BrowserLeaseProvider[];
+}
+
+/**
+ * Release any active browser lease held for `sessionId`. Never throws:
+ * the cancel teardown must mark a session cancelled even if a dangling
+ * lease can't be released, so failures are reported in the result instead
+ * of propagating. A provider whose current lease belongs to a different
+ * session (or none) is skipped without a `not_held` entry.
+ */
+export async function releaseSessionBrowserLeases(
+  sessionId: string,
+  options: ReleaseSessionBrowserLeasesOptions = {},
+): Promise<ReleasedSessionLease[]> {
+  const providers = options.providers ?? BROWSER_LEASE_PROVIDERS;
+  const results: ReleasedSessionLease[] = [];
+  for (const provider of providers) {
+    let read: Awaited<ReturnType<typeof readBrowserLease>>;
+    try {
+      read = await readBrowserLease(provider, options);
+    } catch {
+      continue;
+    }
+    if (read.state === "missing" || read.state === "corrupt") {
+      continue;
+    }
+    const record = read.record;
+    if (!record || record.remote_session_id !== sessionId) {
+      continue;
+    }
+    if (read.state === "released") {
+      results.push({ provider, lease_id: record.lease_id, status: "not_held" });
+      continue;
+    }
+    try {
+      const released = await releaseBrowserLease(
+        { provider, profileIdHash: record.profile_id_hash, leaseId: record.lease_id },
+        options,
+      );
+      results.push({ provider, lease_id: released.lease_id, status: "released" });
+    } catch (error) {
+      results.push({
+        provider,
+        lease_id: record.lease_id,
+        status: "release_failed",
+        release_error: stringifyError(error),
+      });
+    }
+  }
+  return results;
 }

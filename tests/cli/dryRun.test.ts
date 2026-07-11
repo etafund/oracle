@@ -55,6 +55,10 @@ describe("runDryRunSummary", () => {
       expect(joined).toContain("claude-code-stdout.raw");
       expect(joined).toContain("Read-only policy: permissionMode=plan; toolMode=none");
       expect(joined).toContain("File Token Usage");
+      // agent-workflow-gaps#3: per-lane duration band + billing note.
+      expect(joined).toContain("Estimated duration (fable-local");
+      expect(joined).toContain("Billing:");
+      expect(joined).toContain("subscription");
     } finally {
       if (originalKey === undefined) {
         delete process.env.ANTHROPIC_API_KEY;
@@ -62,6 +66,26 @@ describe("runDryRunSummary", () => {
         process.env.ANTHROPIC_API_KEY = originalKey;
       }
     }
+  });
+
+  test("api dry-run shows an estimated input cost and a per-token billing note", async () => {
+    const log = vi.fn();
+    await runDryRunSummary(
+      {
+        engine: "api",
+        runOptions: { prompt: "Explain", model: "gpt-5.1", file: ["notes.md"] },
+        cwd: "/repo",
+        version: "1.2.3",
+        log,
+      },
+      {
+        readFilesImpl: async () => [{ path: "/repo/notes.md", content: "some api context here" }],
+      },
+    );
+    const joined = log.mock.calls.flat().join("\n");
+    expect(joined).toContain("Estimated duration (api");
+    expect(joined).toContain("Estimated input cost ~$");
+    expect(joined).toContain("output/reasoning cost is unknown");
   });
 
   test("surfaces a failing claude-code executable preflight check", async () => {

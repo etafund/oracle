@@ -4,6 +4,7 @@ import {
   isRetrySafeErrorClass,
   ORACLE_ERROR_CLASS_EXIT_CODES,
   ORACLE_EXIT_CODE_DICTIONARY,
+  ORACLE_WAIT_TIMEOUT_EXIT_CODE,
 } from "../../src/cli/exitCodes.js";
 import { OracleTransportError } from "../../src/oracle/errors.js";
 
@@ -17,6 +18,12 @@ describe("ORACLE_EXIT_CODE_DICTIONARY", () => {
     expect(ORACLE_EXIT_CODE_DICTIONARY["4"]).toContain("retryable_backoff");
     expect(ORACLE_EXIT_CODE_DICTIONARY["5"]).toContain("timeout");
     expect(ORACLE_EXIT_CODE_DICTIONARY["6"]).toContain("challenge_or_drift");
+  });
+
+  test("documents the wait_timeout exit code 7 and pins its constant", () => {
+    expect(ORACLE_WAIT_TIMEOUT_EXIT_CODE).toBe(7);
+    expect(ORACLE_EXIT_CODE_DICTIONARY["7"]).toContain("wait_timeout");
+    expect(ORACLE_EXIT_CODE_DICTIONARY["7"]).toContain("oracle wait");
   });
 
   test("nonzero-means-fail is preserved (0 is the only success code)", () => {

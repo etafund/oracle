@@ -13,6 +13,7 @@ vi.mock("../../src/sessionStore.ts", () => ({
 
 import {
   ORACLE_SESSION_LIST_SCHEMA_VERSION,
+  SESSION_STATUS_VALUES,
   buildSessionListEntry,
   buildSessionListEnvelope,
   buildSessionListPayload,
@@ -66,11 +67,17 @@ describe("buildSessionListEntry", () => {
 
   test("falls back updatedAt to startedAt, then createdAt, when completedAt is absent", () => {
     const running = buildSessionListEntry(
-      meta({ id: "sess-2", createdAt: "2026-07-01T00:00:00.000Z", startedAt: "2026-07-01T00:00:01.000Z" }),
+      meta({
+        id: "sess-2",
+        createdAt: "2026-07-01T00:00:00.000Z",
+        startedAt: "2026-07-01T00:00:01.000Z",
+      }),
     );
     expect(running.updatedAt).toBe("2026-07-01T00:00:01.000Z");
 
-    const pending = buildSessionListEntry(meta({ id: "sess-3", createdAt: "2026-07-01T00:00:00.000Z" }));
+    const pending = buildSessionListEntry(
+      meta({ id: "sess-3", createdAt: "2026-07-01T00:00:00.000Z" }),
+    );
     expect(pending.updatedAt).toBe("2026-07-01T00:00:00.000Z");
   });
 
@@ -112,7 +119,11 @@ describe("buildSessionListPayload", () => {
     const metas = [
       meta({ id: "a", model: "claude-opus-4" }),
       meta({ id: "b", model: "gpt-5" }),
-      meta({ id: "c", model: undefined, models: [{ model: "claude-opus-4", status: "completed" }] }),
+      meta({
+        id: "c",
+        model: undefined,
+        models: [{ model: "claude-opus-4", status: "completed" }],
+      }),
     ];
     sessionStoreMock.listSessions.mockResolvedValue(metas);
     sessionStoreMock.filterSessions.mockReturnValue({ entries: metas, truncated: false, total: 3 });
@@ -213,5 +224,19 @@ describe("oracle_session_list.v1 payload — schema-pin regression test", () => 
 
   test("schema_version literal is stable", () => {
     expect(ORACLE_SESSION_LIST_SCHEMA_VERSION).toBe("oracle_session_list.v1");
+  });
+
+  test("status is the closed enum (machine-output#5), re-exported from the list surface", () => {
+    expect([...SESSION_STATUS_VALUES]).toEqual([
+      "pending",
+      "running",
+      "completed",
+      "partial",
+      "error",
+      "cancelled",
+    ]);
+    // every entry status is a member of the advertised closed set
+    const entry = buildSessionListEntry(meta({ id: "a", status: "cancelled" }));
+    expect(SESSION_STATUS_VALUES).toContain(entry.status);
   });
 });

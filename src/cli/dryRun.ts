@@ -12,6 +12,7 @@ import {
   type FileContent,
   type FileTokenStats,
 } from "../oracle.js";
+import { describeLaneRunEstimate, type LaneRunEstimate } from "../oracle/config.js";
 import { isKnownModel } from "../oracle/modelResolver.js";
 import { assembleBrowserPrompt, type BrowserPromptArtifacts } from "../browser/prompt.js";
 import type { BrowserAttachment } from "../browser/types.js";
@@ -25,7 +26,10 @@ import {
   redactedClaudeCodeCommand,
 } from "../claude-code/command.js";
 import { findBlockedClaudeCodeEnvironmentSources } from "../claude-code/envGuard.js";
-import { runClaudeCodePreflight, type ClaudeCodePreflightResult } from "../claude-code/preflight.js";
+import {
+  runClaudeCodePreflight,
+  type ClaudeCodePreflightResult,
+} from "../claude-code/preflight.js";
 import { assertClaudeCodeInlineBudget } from "../claude-code/inlineBudget.js";
 
 interface DryRunDeps {
@@ -108,6 +112,7 @@ async function runClaudeCodeDryRun(
   const model = runOptions.model ?? "fable";
   const headerLine = `[dry-run] Oracle (${version}) would run Claude Code local mode (${model}) with ~${estimatedInputTokens.toLocaleString()} tokens and ${files.length} files.`;
   log(styleLine(headerLine, "cyan"));
+  logLaneRunEstimate("claude-code", model, log, "dry-run");
   await logClaudeCodeDryRunPlan({ runOptions, log, deps });
   if (files.length === 0) {
     log(styleLine("[dry-run] No files matched the provided --file patterns.", "dim"));
@@ -156,6 +161,10 @@ async function runApiDryRun(
   );
   const headerLine = `[dry-run] Oracle (${version}) would call ${runOptions.model} with ~${estimatedInputTokens.toLocaleString()} tokens and ${files.length} files.`;
   log(styleLine(headerLine, "cyan"));
+  const estimatedInputCostUsd = modelConfig.pricing
+    ? modelConfig.pricing.inputPerToken * estimatedInputTokens
+    : undefined;
+  logLaneRunEstimate("api", runOptions.model, log, "dry-run", estimatedInputCostUsd);
   logDryRunPlan({ engine: "api", runOptions, log });
   if (files.length === 0) {
     log(styleLine("[dry-run] No files matched the provided --file patterns.", "dim"));
@@ -193,6 +202,7 @@ async function runBrowserDryRun(
   const suffix = buildTokenEstimateSuffix(artifacts);
   const headerLine = `[dry-run] Oracle (${version}) would launch browser mode (${runOptions.model}) with ~${artifacts.estimatedInputTokens.toLocaleString()} tokens${suffix}.`;
   log(styleLine(headerLine, "cyan"));
+  logLaneRunEstimate("browser", runOptions.model, log, "dry-run");
   logDryRunPlan({ engine: "browser", runOptions, browserConfig, log });
   logBrowserControlPlan(browserConfig, log, "dry-run");
   logBrowserFollowUpSummary(runOptions.browserFollowUps, log, "dry-run");
@@ -288,6 +298,7 @@ export async function runBrowserPreview(
   const suffix = buildTokenEstimateSuffix(artifacts);
   const headerLine = `[preview] Oracle (${version}) browser mode (${runOptions.model}) with ~${artifacts.estimatedInputTokens.toLocaleString()} tokens${suffix}.`;
   log(styleLine(headerLine, "cyan"));
+  const laneEstimate = logLaneRunEstimate("browser", runOptions.model, log, "preview");
   logDryRunPlan({ engine: "browser", runOptions, browserConfig, log, label: "preview" });
   logBrowserControlPlan(browserConfig, log, "preview");
   logBrowserFollowUpSummary(runOptions.browserFollowUps, log, "preview");
@@ -304,6 +315,12 @@ export async function runBrowserPreview(
       browserFollowUps: runOptions.browserFollowUps ?? [],
       bundled: artifacts.bundled,
       composerText: artifacts.composerText,
+      costEstimate: {
+        lane: laneEstimate.lane,
+        typicalDuration: laneEstimate.typicalDuration,
+        perTokenBilled: laneEstimate.perTokenBilled,
+        billingNote: laneEstimate.billingNote,
+      },
       dryRun: true,
       engine: "browser" as const,
       generatedAt: DRY_RUN_TIMESTAMP,
@@ -568,6 +585,39 @@ function sortJsonValue(value: unknown): unknown {
       }
       return acc;
     }, {});
+}
+
+function formatUsd(value: number): string {
+  if (value <= 0) return "$0.00";
+  if (value < 0.01) return `$${value.toFixed(6)}`;
+  return `$${value.toFixed(4)}`;
+}
+
+/**
+ * Emit the per-lane duration band + billing note (and, for api runs, an
+ * input-only cost estimate) so a dry-run tells an agent roughly how long
+ * and how costly a run will be before it commits (agent-workflow-gaps#3).
+ */
+function logLaneRunEstimate(
+  engine: "api" | "browser" | "claude-code",
+  model: string | undefined,
+  log: (message: string) => void,
+  label: string,
+  estimatedInputCostUsd?: number,
+): LaneRunEstimate {
+  const estimate = describeLaneRunEstimate(engine, model);
+  log(
+    styleLine(
+      `[${label}] Estimated duration (${estimate.lane}): ${estimate.typicalDuration}.`,
+      "dim",
+    ),
+  );
+  const billingLine =
+    estimate.perTokenBilled && typeof estimatedInputCostUsd === "number"
+      ? `[${label}] Billing: ${estimate.billingNote} Estimated input cost ~${formatUsd(estimatedInputCostUsd)}.`
+      : `[${label}] Billing: ${estimate.billingNote}`;
+  log(styleLine(billingLine, "dim"));
+  return estimate;
 }
 
 function styleLine(message: string, style: "bold" | "cyan" | "dim"): string {

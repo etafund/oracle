@@ -119,6 +119,22 @@ import { isFableModel, resolveLanePolicy, type ResolvedOracleLane } from "../src
 import { LaneRouteBlockError, VALID_LANES, closestLane } from "../src/cli/routeBlockError.js";
 import { nearestByEditDistance } from "../src/cli/didYouMean.js";
 
+// Standard EPIPE handling, wired before anything writes. When Oracle output
+// is piped into a consumer that closes the read end early (`oracle --help |
+// head`, `oracle status --json | jq '.[0]'`), the next write raises an
+// unhandled 'error' EPIPE on the stream and Node dumps a full stack trace
+// with a nonzero exit. Agents pipe Oracle into head/grep/jq constantly, so
+// treat a broken downstream pipe as a clean, silent exit 0; rethrow any other
+// stream error so genuine write failures still surface.
+for (const stream of [process.stdout, process.stderr] as const) {
+  stream.on("error", (error: NodeJS.ErrnoException) => {
+    if (error.code === "EPIPE") {
+      process.exit(0);
+    }
+    throw error;
+  });
+}
+
 interface CliOptions extends OptionValues {
   prompt?: string;
   message?: string;
@@ -1652,6 +1668,20 @@ program
       return;
     }
     if (sessionId) {
+      const jsonRequested = Boolean(
+        statusOptions.json || (command.optsWithGlobals?.() as StatusOptions | undefined)?.json,
+      );
+      if (jsonRequested) {
+        // `oracle status <id> --json` emits one oracle_session.v1 envelope
+        // instead of streaming human markdown (closes machine-output#4),
+        // matching `oracle session <id> --json`.
+        const { runSessionJson } = await import("../src/cli/sessionJson.js");
+        const result = await runSessionJson(sessionId);
+        if (!result.found) {
+          process.exitCode = 1;
+        }
+        return;
+      }
       const autoRender =
         !command.getOptionValueSource?.("render") &&
         !command.getOptionValueSource?.("renderMarkdown")
@@ -1747,6 +1777,51 @@ program
       await runFollowUpCommand(parentSessionId, positionalPrompt, options);
     },
   );
+
+program
+  .command("wait <id>")
+  .description(
+    "Block until a session reaches a terminal state, or --timeout-seconds elapses. Exits 0 on success, the failure taxonomy (3-6) on a classified failure, 1 on a generic failure, and 7 (wait_timeout) if the deadline passes while still in flight.",
+  )
+  .addOption(
+    new Option(
+      "--timeout-seconds <n>",
+      "Give up after N seconds and exit 7 (wait_timeout) if the session is still running (default: wait indefinitely).",
+    ).argParser(parseIntOption),
+  )
+  .option(
+    "--json",
+    "Emit one oracle_session.v1 envelope on stdout at the end; progress lines move to stderr.",
+    false,
+  )
+  .action(async (sessionId: string, _options: unknown, cmd: Command) => {
+    const opts = cmd.opts<{ timeoutSeconds?: number; json?: boolean }>();
+    const json = Boolean(opts.json || program.opts<{ json?: boolean }>().json);
+    const { runWaitCommand } = await import("../src/cli/sessionWait.js");
+    const exitCode = await runWaitCommand(sessionId, {
+      timeoutSeconds: opts.timeoutSeconds,
+      json,
+    });
+    process.exitCode = exitCode;
+  });
+
+program
+  .command("cancel <id>")
+  .description(
+    "Abort an in-flight or detached session: stop its controller process, release any lease it holds, and mark it cancelled. Idempotent — a no-op that exits 0 on an already-terminal session.",
+  )
+  .option(
+    "--json",
+    "Emit one oracle_session.v1 envelope describing the resulting session on stdout; progress lines move to stderr.",
+    false,
+  )
+  .action(async (sessionId: string, _options: unknown, cmd: Command) => {
+    const opts = cmd.opts<{ json?: boolean }>();
+    const json = Boolean(opts.json || program.opts<{ json?: boolean }>().json);
+    const { runCancelCommand } = await import("../src/cli/sessionCancel.js");
+    const exitCode = await runCancelCommand(sessionId, { json });
+    process.exitCode = exitCode;
+  });
 
 function buildRunOptions(
   options: ResolvedCliOptions,

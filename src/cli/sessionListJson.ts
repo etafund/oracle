@@ -18,21 +18,32 @@
 import path from "node:path";
 
 import { V18_BUNDLE_VERSION, createEnvelope, type JsonEnvelope } from "../oracle/v18/index.js";
-import type { SessionMetadata } from "../sessionManager.js";
+import type { SessionMetadata, SessionStatus } from "../sessionManager.js";
 import { sessionStore } from "../sessionStore.js";
+import { coerceSessionStatus } from "./sessionStatus.js";
 
 export const ORACLE_SESSION_LIST_SCHEMA_VERSION = "oracle_session_list.v1" as const;
 
-/** One session summary entry in the `oracle_session_list.v1` payload. */
+/**
+ * One session summary entry in the `oracle_session_list.v1` payload.
+ *
+ * `status` is the closed {@link SessionStatus} union (its exact runtime
+ * value set is {@link SESSION_STATUS_VALUES}), NOT an open `string`, so a
+ * robot caller polling this surface knows the finite set to switch on and
+ * which values are terminal vs in-flight (see `sessionStatus.ts`).
+ */
 export interface SessionListEntry {
   readonly id: string;
   readonly lane: string | null;
   readonly model: string | null;
-  readonly status: string;
+  readonly status: SessionStatus;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly artifactsPath: string;
 }
+
+/** Re-exported so JSON callers importing the list surface get the enum too. */
+export { SESSION_STATUS_VALUES } from "./sessionStatus.js";
 
 export interface SessionListPayload {
   readonly schema_version: typeof ORACLE_SESSION_LIST_SCHEMA_VERSION;
@@ -73,7 +84,7 @@ export function buildSessionListEntry(metadata: SessionMetadata): SessionListEnt
     id: metadata.id,
     lane: metadata.lane ?? null,
     model: metadata.model ?? null,
-    status: metadata.status,
+    status: coerceSessionStatus(metadata.status),
     createdAt: metadata.createdAt,
     updatedAt: metadata.completedAt ?? metadata.startedAt ?? metadata.createdAt,
     artifactsPath: path.join(sessionStore.sessionsDir(), metadata.id),

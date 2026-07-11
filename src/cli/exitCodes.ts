@@ -23,11 +23,20 @@ export const ORACLE_EXIT_CODE_DICTIONARY = Object.freeze({
   "4": "retryable_backoff — a transient capacity/lock condition (provider_usage_limit / remote_browser_unavailable / browser_lock_timeout). Safe to retry after a backoff.",
   "5": "timeout — the run exceeded its deadline or the connection dropped before completion (client-timeout / connection-lost). Safe to retry.",
   "6": "challenge_or_drift — the automation hit a human-verification challenge or a suspected UI drift (ui_drift_suspected / cloudflare-challenge). Complete the check or re-run; not silently retry-safe.",
+  "7": "wait_timeout — `oracle wait <id>` reached its --timeout-seconds deadline before the session became terminal. The run is still in flight (not failed); poll again or wait longer. Safe to retry.",
   "130":
     "cancelled — the run was interrupted with SIGINT (Ctrl-C) before it finished. Safe to retry.",
 } as const);
 
 export type OracleExitCodeKey = keyof typeof ORACLE_EXIT_CODE_DICTIONARY;
+
+/**
+ * Exit code `oracle wait <id>` returns when it hits its --timeout-seconds
+ * deadline before the session reaches a terminal state. Distinct from the
+ * failure taxonomy (3–6): the run has NOT failed, it is simply still in
+ * flight, so a caller can safely poll again. See dictionary key "7".
+ */
+export const ORACLE_WAIT_TIMEOUT_EXIT_CODE = 7 as const;
 
 export const ORACLE_EXIT_CODE_KEYS: readonly OracleExitCodeKey[] = Object.freeze(
   Object.keys(ORACLE_EXIT_CODE_DICTIONARY) as OracleExitCodeKey[],

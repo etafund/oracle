@@ -17,6 +17,13 @@ import {
 import { AGENT_LANE_POLICY_VERSION } from "@src/cli/laneRegistry.ts";
 import { ORACLE_EXIT_CODE_DICTIONARY } from "@src/cli/exitCodes.ts";
 import { CORE_READ_COMMANDS } from "@src/cli/coreReadCommands.ts";
+import {
+  IN_FLIGHT_SESSION_STATUSES,
+  SESSION_STATUS_VALUES,
+  TERMINAL_SESSION_STATUSES,
+} from "@src/cli/sessionStatus.ts";
+import { ORACLE_SESSION_SCHEMA_VERSION } from "@src/cli/sessionJson.ts";
+import { ORACLE_SESSION_LIST_SCHEMA_VERSION } from "@src/cli/sessionListJson.ts";
 
 const FROZEN_TIME = new Date("2026-05-13T00:00:00.000Z");
 const EMPTY_ENV: Record<string, string | undefined> = Object.freeze({});
@@ -329,6 +336,7 @@ describe("CapabilityReport — schema-pin regression test (agent-ergonomics Stag
     "read_commands",
     "run_action",
     "schema_version",
+    "session_contracts",
     "tty",
   ].sort();
 
@@ -432,8 +440,10 @@ describe("CapabilityReport — schema-pin regression test (agent-ergonomics Stag
     const report = buildCapabilityReport({ env: EMPTY_ENV, now: FROZEN_TIME });
     expect(report.exit_codes).toEqual(ORACLE_EXIT_CODE_DICTIONARY);
     expect(Object.keys(report.exit_codes).sort()).toEqual(
-      ["0", "1", "2", "3", "4", "5", "6", "130"].sort(),
+      ["0", "1", "2", "3", "4", "5", "6", "7", "130"].sort(),
     );
+    // Exit 7 is the `oracle wait` deadline code.
+    expect(report.exit_codes["7"]).toContain("wait_timeout");
   });
 
   test("read_commands matches the shared CORE_READ_COMMANDS list and includes self-doc commands", () => {
@@ -452,5 +462,24 @@ describe("CapabilityReport — schema-pin regression test (agent-ergonomics Stag
     expect(() => jsonEnvelopeSchema.parse(envelope)).not.toThrow();
     const data = envelope.data as Record<string, unknown>;
     expect(Object.keys(data).sort()).toEqual(EXPECTED_TOP_LEVEL_KEYS);
+  });
+
+  test("session_contracts advertises the closed status enum and both JSON schema versions", () => {
+    const report = buildCapabilityReport({ env: EMPTY_ENV, now: FROZEN_TIME });
+    const contracts = report.session_contracts;
+    // Schema-version literals in the registry must match their contract modules.
+    expect(contracts.session_schema_version).toBe(ORACLE_SESSION_SCHEMA_VERSION);
+    expect(contracts.session_list_schema_version).toBe(ORACLE_SESSION_LIST_SCHEMA_VERSION);
+    // Closed status enum + terminal/in-flight partition, sourced from sessionStatus.ts.
+    expect([...contracts.status_values]).toEqual([...SESSION_STATUS_VALUES]);
+    expect([...contracts.terminal_statuses]).toEqual([...TERMINAL_SESSION_STATUSES]);
+    expect([...contracts.in_flight_statuses]).toEqual([...IN_FLIGHT_SESSION_STATUSES]);
+    // Every terminal + in-flight status is a member of the full enum, and the
+    // two partitions cover it exactly.
+    expect([...contracts.terminal_statuses, ...contracts.in_flight_statuses].sort()).toEqual(
+      [...SESSION_STATUS_VALUES].sort(),
+    );
+    expect(contracts.commands.wait_json).toBe("oracle wait <id> --json");
+    expect(contracts.commands.cancel).toBe("oracle cancel <id>");
   });
 });

@@ -31,8 +31,38 @@ import {
 } from "../../cli/laneRegistry.js";
 import { ORACLE_EXIT_CODE_DICTIONARY } from "../../cli/exitCodes.js";
 import { CORE_READ_COMMANDS } from "../../cli/coreReadCommands.js";
+import {
+  IN_FLIGHT_SESSION_STATUSES,
+  SESSION_STATUS_VALUES,
+  TERMINAL_SESSION_STATUSES,
+} from "../../cli/sessionStatus.js";
 
 export const ORACLE_CAPABILITIES_SCHEMA_VERSION = "oracle_capabilities.v1" as const;
+
+/**
+ * Session status/JSON contracts, advertised in the capability report so a
+ * robot caller can discover the finite `SessionMetadata.status` set — and
+ * which values are terminal vs still in flight — plus the single-session
+ * (`oracle_session.v1`) and list (`oracle_session_list.v1`) JSON schema
+ * versions, without scraping. The status enum's single source of truth is
+ * `src/cli/sessionStatus.ts`; the two schema-version literals are pinned
+ * against their contract modules by tests/cli/capabilities.test.ts (kept as
+ * literals here so the cold-path registry never imports the session store).
+ */
+export const ORACLE_SESSION_CONTRACTS = Object.freeze({
+  session_schema_version: "oracle_session.v1",
+  session_list_schema_version: "oracle_session_list.v1",
+  status_values: SESSION_STATUS_VALUES,
+  terminal_statuses: TERMINAL_SESSION_STATUSES,
+  in_flight_statuses: IN_FLIGHT_SESSION_STATUSES,
+  commands: Object.freeze({
+    session_json: "oracle session <id> --json",
+    status_json: "oracle status <id> --json",
+    list_json: "oracle status --json",
+    wait_json: "oracle wait <id> --json",
+    cancel: "oracle cancel <id>",
+  }),
+} as const);
 
 export type CapabilityId =
   | "chatgpt_pro_browser"
@@ -109,6 +139,8 @@ export interface CapabilityReport {
   readonly exit_codes: typeof ORACLE_EXIT_CODE_DICTIONARY;
   /** Core read-only commands beyond `capabilities` itself. */
   readonly read_commands: typeof CORE_READ_COMMANDS;
+  /** Closed session status enum + single-session/list JSON schema versions. */
+  readonly session_contracts: typeof ORACLE_SESSION_CONTRACTS;
 }
 
 export interface BuildCapabilityReportInput {
@@ -431,6 +463,7 @@ export function buildCapabilityReport(input: BuildCapabilityReportInput): Capabi
     lanes_policy_version: AGENT_LANE_POLICY_VERSION,
     exit_codes: ORACLE_EXIT_CODE_DICTIONARY,
     read_commands: CORE_READ_COMMANDS,
+    session_contracts: ORACLE_SESSION_CONTRACTS,
     // Reference: env var names callers can hand off for credentials.
     // Listed here for the benefit of robot callers; never the values.
     ...({

@@ -269,3 +269,64 @@ export const DEFAULT_SYSTEM_PROMPT = [
 ].join(" ");
 
 export const TOKENIZER_OPTIONS = { allowedSpecial: "all" } as const;
+
+/** A per-lane run estimate surfaced by `--dry-run` so an agent can budget. */
+export interface LaneRunEstimate {
+  /** Route label for display. */
+  readonly lane: string;
+  /** Typical wall-clock duration band for a run on this route. */
+  readonly typicalDuration: string;
+  /** True when the route incurs per-token API billing (vs subscription-metered). */
+  readonly perTokenBilled: boolean;
+  /** One-line billing note for pre-run budgeting. */
+  readonly billingNote: string;
+}
+
+/**
+ * Describe the typical duration band and billing model for a run on a
+ * given engine/lane, so `oracle --dry-run` can tell an agent roughly how
+ * long and how costly a run will be before it commits (closes
+ * agent-workflow-gaps#3). Deliberately coarse, honest bands — not a
+ * promise: browser Pro/Deep Think runs are subscription-metered and can
+ * take many minutes; api runs bill per token (input cost is estimable
+ * pre-run, output cost is not).
+ */
+export function describeLaneRunEstimate(
+  engine: "api" | "browser" | "claude-code",
+  model?: string,
+): LaneRunEstimate {
+  if (engine === "claude-code") {
+    return {
+      lane: "fable-local (Claude Code subscription CLI)",
+      typicalDuration: "~1-10 min (xhigh effort; longer for large contexts)",
+      perTokenBilled: false,
+      billingNote:
+        "Runs through your local Claude Code subscription (no Oracle/API per-token charge); consumes subscription usage.",
+    };
+  }
+  if (engine === "browser") {
+    if ((model ?? "").toLowerCase().includes("gemini")) {
+      return {
+        lane: "gemini-deep-think (browser)",
+        typicalDuration: "~3-10 min (Deep Think reasoning)",
+        perTokenBilled: false,
+        billingNote:
+          "Uses your interactive Gemini subscription session (no per-token API charge); consumes subscription quota.",
+      };
+    }
+    return {
+      lane: "chatgpt-pro (browser)",
+      typicalDuration: "~5-15 min typical, up to ~60 min for hard Pro runs",
+      perTokenBilled: false,
+      billingNote:
+        "Uses your interactive ChatGPT Pro subscription session (no per-token API charge); consumes subscription quota and can run for many minutes.",
+    };
+  }
+  return {
+    lane: "api",
+    typicalDuration: "~30 s-3 min (varies by model and reasoning effort)",
+    perTokenBilled: true,
+    billingNote:
+      "Billed per token at the model's API rate; the estimated input cost is input-only — output/reasoning cost is unknown until the run completes.",
+  };
+}

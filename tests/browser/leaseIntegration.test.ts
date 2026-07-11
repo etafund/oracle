@@ -5,10 +5,11 @@ import { describe, expect, test, vi } from "vitest";
 import {
   createLeasedBrowserExecutor,
   deriveBrowserLeaseProfileHash,
+  releaseSessionBrowserLeases,
   runBrowserWithLease,
   type BrowserExecutor,
 } from "../../src/browser/leaseIntegration.js";
-import { readBrowserLease } from "../../src/browser/leases.js";
+import { createBrowserLease, readBrowserLease } from "../../src/browser/leases.js";
 import { runLeasedProviderDomFlow } from "../../src/browser/providers/leaseProvider.js";
 import type { ProviderDomAdapter } from "../../src/browser/providerDomFlow.js";
 import type { BrowserRunOptions, BrowserRunResult } from "../../src/browser/types.js";
@@ -365,5 +366,49 @@ describe("browser lease integration", () => {
         "chatgpt",
       ),
     ).not.toBe(hash);
+  });
+});
+
+describe("releaseSessionBrowserLeases (oracle cancel teardown)", () => {
+  test("releases the lease a session holds and reports it", async () => {
+    await withLeaseDir(async (leaseDir) => {
+      await createBrowserLease(
+        { provider: "chatgpt", profileIdHash: PROFILE_A, remoteSessionId: "sess-1" },
+        { leaseDir },
+      );
+      const released = await releaseSessionBrowserLeases("sess-1", { leaseDir });
+      expect(released).toEqual([
+        expect.objectContaining({ provider: "chatgpt", status: "released" }),
+      ]);
+      const after = await readBrowserLease("chatgpt", {
+        leaseDir,
+        expectedProfileIdHash: PROFILE_A,
+      });
+      expect(after.state).toBe("released");
+    });
+  });
+
+  test("leaves a lease held by a different session untouched", async () => {
+    await withLeaseDir(async (leaseDir) => {
+      await createBrowserLease(
+        { provider: "chatgpt", profileIdHash: PROFILE_A, remoteSessionId: "sess-1" },
+        { leaseDir },
+      );
+      const released = await releaseSessionBrowserLeases("some-other-session", { leaseDir });
+      expect(released).toEqual([]);
+      const after = await readBrowserLease("chatgpt", {
+        leaseDir,
+        expectedProfileIdHash: PROFILE_A,
+        isProcessAlive: () => true,
+      });
+      expect(after.state).toBe("active");
+    });
+  });
+
+  test("is a safe no-op when no lease exists for any provider", async () => {
+    await withLeaseDir(async (leaseDir) => {
+      const released = await releaseSessionBrowserLeases("sess-1", { leaseDir });
+      expect(released).toEqual([]);
+    });
   });
 });
