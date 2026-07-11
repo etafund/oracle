@@ -73,6 +73,13 @@ describe("remote payload sanitization", () => {
     "server does not pass client cookies or host-local paths to runBrowser",
     async () => {
       let capturedConfig: Record<string, unknown> | null = null;
+      // This test exercises secret-stripping sanitization, not the serve model
+      // gate; admit the malicious payload's (legacy) desiredModel via the
+      // allow-list override so the run reaches runBrowser and its sanitized
+      // config can be inspected. The model gate itself is covered by
+      // tests/remote/server_model_gate.test.ts.
+      const savedAllowedLabels = process.env.ORACLE_SERVE_ALLOWED_MODEL_LABELS;
+      process.env.ORACLE_SERVE_ALLOWED_MODEL_LABELS = "gpt-5.5-pro";
       const server = await createRemoteServer(
         {
           host: "127.0.0.1",
@@ -100,6 +107,11 @@ describe("remote payload sanitization", () => {
         expect(response.body).toContain('"type":"done"');
       } finally {
         await server.close();
+        if (savedAllowedLabels === undefined) {
+          delete process.env.ORACLE_SERVE_ALLOWED_MODEL_LABELS;
+        } else {
+          process.env.ORACLE_SERVE_ALLOWED_MODEL_LABELS = savedAllowedLabels;
+        }
       }
 
       expect(capturedConfig).toMatchObject({

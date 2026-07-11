@@ -1124,7 +1124,7 @@ function inferThinkingTargetModelKind(
   return null;
 }
 
-function isGpt56SolModelLabel(value?: string | null): boolean {
+export function isGpt56SolModelLabel(value?: string | null): boolean {
   const tokens = (value ?? "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")

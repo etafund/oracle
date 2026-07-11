@@ -291,7 +291,7 @@ describe("remote browser service", () => {
         {
           prompt: "hold-open",
           attachments: [],
-          browserConfig: { desiredModel: "gpt-5.5-pro" },
+          browserConfig: { desiredModel: "GPT-5.6 Sol" },
           options: { sessionId: "session-1" },
         },
         "secret",
@@ -316,7 +316,7 @@ describe("remote browser service", () => {
             clientConnected: true,
             promptChars: "hold-open".length,
             sessionId: "session-1",
-            desiredModel: "gpt-5.5-pro",
+            desiredModel: "GPT-5.6 Sol",
           },
         });
         expect(typeof busyHealth.json?.activeRun).toBe("object");

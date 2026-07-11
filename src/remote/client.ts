@@ -25,6 +25,7 @@ import {
 } from "./types.js";
 import { parseHostPort } from "../bridge/connection.js";
 import { computePromptSha256 } from "../browser/actions/captureBinding.js";
+import { isGpt56SolModelLabel } from "../browser/actions/thinkingTime.js";
 import { serializeRemoteRunPayloadForWire } from "./payload_sanitize.js";
 
 interface RemoteExecutorOptions {
@@ -145,6 +146,25 @@ export function createRemoteBrowserExecutor({
         errorClass: "transport_interrupted_before_submit",
         retryable: true,
       });
+    }
+    // FLEET-BOUND MODEL GATE (defense-in-depth; the worker is authoritative).
+    // This executor is instantiated ONLY behind a resolved remote host
+    // (src/mcp/tools/consult.ts and bin/oracle-cli.ts wire it exclusively for
+    // fleet runs), so every request here is fleet-bound. The browser fleet
+    // serves ONLY GPT-5.6 Sol + Pro, so an EXPLICIT non-Sol model label is
+    // rejected here — before any attachment file is read or any connection is
+    // opened — with the same actionable error the worker returns. An
+    // absent/empty label is left to the worker's baseline (no silent remap).
+    const desiredModelLabel = options.config?.desiredModel;
+    if (
+      typeof desiredModelLabel === "string" &&
+      desiredModelLabel.trim().length > 0 &&
+      !isGpt56SolModelLabel(desiredModelLabel)
+    ) {
+      throw new RemoteRunFailedError(
+        `this browser worker serves only GPT-5.6 Sol + Pro; requested model label "${desiredModelLabel}" is not allowed. Drop --model (the default resolves to GPT-5.6 Sol) or use --engine api for API models.`,
+        { errorClass: "model_not_allowed", retryable: false },
+      );
     }
     let fallbackSubmission = options.fallbackSubmission;
     if (fallbackSubmission && !isPromptFallbackOptInEnabled()) {
@@ -816,8 +836,17 @@ function collectRefusal(
       const fallback = `Remote host responded with status ${res.statusCode}`;
       try {
         const parsed = JSON.parse(raw) as Record<string, unknown>;
+        // Prefer the worker's actionable `message` (e.g. the model-not-allowed
+        // guidance) over the terse `error` code so callers surface the fix, not
+        // just the class name. Falls back to the code, then the status line.
+        const message =
+          typeof parsed.message === "string" && parsed.message.length > 0
+            ? parsed.message
+            : typeof parsed.error === "string"
+              ? parsed.error
+              : fallback;
         resolve({
-          message: typeof parsed.error === "string" ? parsed.error : fallback,
+          message,
           errorClass: typeof parsed.errorClass === "string" ? parsed.errorClass : null,
           retryable: typeof parsed.retryable === "boolean" ? parsed.retryable : null,
         });

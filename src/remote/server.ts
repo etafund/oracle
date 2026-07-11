@@ -40,6 +40,7 @@ import {
 import { normalizeChatgptUrl } from "../browser/utils.js";
 import { resolveBrowserConfig } from "../browser/config.js";
 import { getBrowserCleanupTaint, type BrowserCleanupTaint } from "../browser/index.js";
+import { isGpt56SolModelLabel } from "../browser/actions/thinkingTime.js";
 import type { SubmittedMessageBindingQuality } from "../browser/actions/captureBinding.js";
 import { countActiveBrowserTabLeases } from "../browser/tabLeaseRegistry.js";
 import {
@@ -348,6 +349,58 @@ async function checkAttachTargetOwner(
   }
 }
 
+/**
+ * Baseline-derived allow-list of browser model LABELS this worker will admit
+ * at /runs. The default is the worker's OWN baseline desiredModel label (so a
+ * future non-ChatGPT worker admits its own baseline without a code change);
+ * ORACLE_SERVE_ALLOWED_MODEL_LABELS overrides it with an explicit
+ * comma-separated list of exact labels. Resolved once at server creation, from
+ * the same process env the rest of the serve config reads.
+ */
+export function resolveServeAllowedModelLabels(
+  baselineLabel: string | null | undefined,
+  env: NodeJS.ProcessEnv,
+): string[] {
+  const raw = env.ORACLE_SERVE_ALLOWED_MODEL_LABELS;
+  if (typeof raw === "string" && raw.trim().length > 0) {
+    const labels = raw
+      .split(",")
+      .map((label) => label.trim())
+      .filter((label) => label.length > 0);
+    if (labels.length > 0) {
+      return labels;
+    }
+  }
+  return typeof baselineLabel === "string" && baselineLabel.trim().length > 0
+    ? [baselineLabel]
+    : [];
+}
+
+/**
+ * Whether an effective desired model label is admissible for this worker. A
+ * label is admitted when it matches the baseline-derived allow-list
+ * (case-insensitive, trimmed) OR when it denotes the current ChatGPT fleet
+ * model: up-to-date clients send the model label "GPT-5.6 Sol", while the
+ * ChatGPT baseline desiredModel is the bare mode label "Pro" — both denote the
+ * same served target (GPT-5.6 Sol + Pro). Every legacy Pro label (e.g.
+ * "GPT-5.5 Pro", "GPT-5.4 Pro") and any arbitrary label falls through to a
+ * fail-closed refusal. This is a MATCH, never a remap: the requested label is
+ * never rewritten to a served one.
+ */
+export function isServeModelLabelAllowed(
+  label: string | null | undefined,
+  allowedLabels: string[],
+): boolean {
+  const normalized = (label ?? "").trim().toLowerCase();
+  if (normalized.length === 0) {
+    return false;
+  }
+  if (allowedLabels.some((allowed) => allowed.trim().toLowerCase() === normalized)) {
+    return true;
+  }
+  return isGpt56SolModelLabel(label);
+}
+
 export async function createRemoteServer(
   options: RemoteServerOptions = {},
   deps: RemoteServerDeps = {},
@@ -375,6 +428,15 @@ export async function createRemoteServer(
     maxConcurrentTabs: baselineBrowserConfig.maxConcurrentTabs,
   };
   assertFleetSafeServeBrowserConfig(effectiveRunConfig);
+
+  // Fleet trust boundary: the set of browser model labels this worker will
+  // admit. Baseline-derived (this worker's own desiredModel) so a future
+  // non-ChatGPT worker enforces its own baseline without a code change;
+  // ORACLE_SERVE_ALLOWED_MODEL_LABELS overrides with explicit exact labels.
+  const serveAllowedModelLabels = resolveServeAllowedModelLabels(
+    baselineBrowserConfig.desiredModel,
+    process.env,
+  );
 
   // Attach-only / fail-closed substrate probing. Manual-login serve shares
   // one operator-owned Chrome between workers, so it is attach-only by
@@ -886,6 +948,26 @@ export async function createRemoteServer(
           } else {
             refuseRun(400, "invalid_request");
           }
+          return;
+        }
+
+        // FLEET MODEL GATE (authoritative trust boundary). Validate the
+        // effective desired model label BEFORE staging attachments or flipping
+        // `busy`, so a disallowed model is refused without consuming a browser
+        // slot or touching the filesystem. The effective label is the payload's
+        // desiredModel, falling back to this worker's baseline. No silent
+        // remap/alias: a disallowed label fails closed with an actionable error.
+        const effectiveModelLabel =
+          typeof payload.browserConfig?.desiredModel === "string" &&
+          payload.browserConfig.desiredModel.trim().length > 0
+            ? payload.browserConfig.desiredModel
+            : baselineBrowserConfig.desiredModel;
+        if (!isServeModelLabelAllowed(effectiveModelLabel, serveAllowedModelLabels)) {
+          refuseRun(422, "model_not_allowed", {
+            errorClass: "model_not_allowed",
+            retryable: false,
+            message: `this browser worker serves only GPT-5.6 Sol + Pro; requested model label "${effectiveModelLabel ?? ""}" is not allowed. Drop --model (the default resolves to GPT-5.6 Sol) or use --engine api for API models.`,
+          });
           return;
         }
 

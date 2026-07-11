@@ -19,7 +19,10 @@ describe("remote client payload sanitizer", () => {
       prompt: "CHECK_CLIENT_SANITIZE",
       config: {
         url: "https://chatgpt.com/",
-        desiredModel: "gpt-5.5-pro",
+        // Served-model label: survives the client fleet gate so this test
+        // exercises the wire allowlist (not the model gate). See
+        // tests/remote/client_model_gate.test.ts for the gate itself.
+        desiredModel: "GPT-5.6 Sol",
         modelStrategy: "select",
         timeoutMs: 90_000,
         inputTimeoutMs: 12_000,
@@ -57,7 +60,7 @@ describe("remote client payload sanitizer", () => {
     const raw = body();
     expect(raw, "request body was not captured").not.toBeNull();
     expect(raw).toContain("CHECK_CLIENT_SANITIZE");
-    expect(raw).toContain("gpt-5.5-pro");
+    expect(raw).toContain("GPT-5.6 Sol");
     expect(raw).not.toContain("client-cookie-secret");
     expect(raw).not.toContain("client-inline-cookie-source");
     expect(raw).not.toContain("/Users/client/Chrome");
@@ -71,7 +74,7 @@ describe("remote client payload sanitizer", () => {
     const browserConfig = payload.browserConfig as Record<string, unknown>;
     expect(browserConfig).toMatchObject({
       url: "https://chatgpt.com/",
-      desiredModel: "gpt-5.5-pro",
+      desiredModel: "GPT-5.6 Sol",
       modelStrategy: "select",
       timeoutMs: 90_000,
       inputTimeoutMs: 12_000,
