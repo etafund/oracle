@@ -34,6 +34,20 @@ export const TOP_LEVEL_ERROR_CODES = Object.freeze([
   "run_error",
 ] as const);
 
+/**
+ * Version tag for the closed top-level error-code vocabulary. `v2` marks the
+ * migration that replaced the free-form `OracleUserError.category` /
+ * `OracleTransportError.reason` strings with the closed {@link
+ * TOP_LEVEL_ERROR_CODES} set (v1 was the historical, undocumented free-form
+ * vocabulary). It rides on the error envelope's `meta` so a consumer can detect
+ * that the machine-readable `code` / `blocked_reason` vocabulary changed without
+ * diffing every code. The STRUCTURAL envelope contract (`json_envelope.v1`) is
+ * unchanged — only the code vocabulary moved — so `schema_version` deliberately
+ * stays put; bumping the shared literal would falsely signal a shape change to
+ * every success/MCP envelope that reuses it.
+ */
+export const TOP_LEVEL_ERROR_CODES_VERSION = "top_level_error_codes.v2" as const;
+
 const USER_ERROR_CATEGORY_CODES: Readonly<Record<OracleUserErrorCategory, string>> = Object.freeze({
   "file-validation": "input_invalid",
   "prompt-validation": "input_invalid",
@@ -160,6 +174,7 @@ export function buildTopLevelCliErrorEnvelope({
       command,
       generated_at: generatedAt,
       exit_code: exitCode,
+      error_codes_version: TOP_LEVEL_ERROR_CODES_VERSION,
     },
     blocked_reason: normalized.code,
     next_command: normalized.nextCommand,
@@ -228,7 +243,9 @@ function normalizeTopLevelError(error: unknown): NormalizedTopLevelError {
       code: errorClass ?? stableTransportCode(error.reason),
       message: error.message,
       help: null,
-      details: { raw_reason: error.reason },
+      // Keep the pre-v2 `details.reason` alongside `raw_reason` so a consumer
+      // still keyed on `reason` keeps a migration path (see withRawReason).
+      details: { reason: error.reason, raw_reason: error.reason },
       nextCommand: null,
       fixCommand: null,
       retrySafe: errorClass
@@ -257,13 +274,24 @@ function normalizeTopLevelError(error: unknown): NormalizedTopLevelError {
  * Preserve the original free-form category as `details.raw_reason` so a caller
  * that wants the pre-normalization value can still read it, while the top-level
  * `error_code` stays drawn from the closed {@link TOP_LEVEL_ERROR_CODES} set.
+ *
+ * The closed-code migration also renamed `details.reason` → `details.raw_reason`,
+ * which silently broke consumers still keyed on `details.reason`. Keep BOTH
+ * populated (identical values) so those consumers retain a migration path; the
+ * `error_codes_version` bump on `meta` advertises that the code vocabulary moved.
  */
 function withRawReason(
   details: Record<string, unknown> | undefined,
   rawReason: string,
 ): Record<string, unknown> {
-  const base = details ?? {};
-  return base.raw_reason === undefined ? { ...base, raw_reason: rawReason } : base;
+  const next: Record<string, unknown> = { ...(details ?? {}) };
+  if (next.raw_reason === undefined) {
+    next.raw_reason = rawReason;
+  }
+  if (next.reason === undefined) {
+    next.reason = rawReason;
+  }
+  return next;
 }
 
 function cleanDetails(details: OracleUserErrorDetails): Record<string, unknown> {

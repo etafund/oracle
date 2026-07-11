@@ -510,7 +510,8 @@ export function resolveApiModel(modelValue: string): ModelName {
   if (modelSuggestion) {
     throw new InvalidArgumentError(
       `Unknown --model "${modelValue}". Did you mean --model ${modelSuggestion}? ` +
-        `Use --lane for the reviewed routes, or a known model: ${Object.keys(MODEL_CONFIGS).join(", ")}.`,
+        `Use --lane for the reviewed routes, or a known model: ${Object.keys(MODEL_CONFIGS).join(", ")}. ` +
+        `To force a custom/gateway model that is one edit from a known name, qualify it with a provider prefix (e.g. "openrouter/<id>").`,
     );
   }
   // Passthrough for custom/OpenRouter model IDs.

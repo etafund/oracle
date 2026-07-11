@@ -20,7 +20,7 @@ export interface RemoteStatusCliOptions {
 }
 
 export async function runRemoteStatus(options: RemoteStatusCliOptions): Promise<void> {
-  const { config: userConfig } = await loadUserConfig();
+  const { config: userConfig } = await loadUserConfig({ degradeOnUserConfigError: true });
   const resolved = resolveRemoteServiceConfig({
     cliHost: undefined,
     cliToken: undefined,

@@ -32,7 +32,7 @@ const SLOT_HOSTS_ENV = "ORACLE_REMOTE_SLOT_HOSTS";
 
 export async function runRemoteSlots(options: RemoteSlotsCliOptions): Promise<void> {
   const timeoutMs = typeof options.timeout === "number" ? options.timeout : undefined;
-  const { config: userConfig } = await loadUserConfig();
+  const { config: userConfig } = await loadUserConfig({ degradeOnUserConfigError: true });
   const resolved = resolveRemoteServiceConfig({
     cliHost: undefined,
     cliToken: undefined,

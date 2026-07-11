@@ -223,6 +223,15 @@ export function createRemoteBrowserExecutor({
       const transferredFiles: SavedBrowserFile[] = [];
       const transferFailures: string[] = [];
       const transferPromises: Promise<void>[] = [];
+      // Shared byte-progress accumulator across every bridge artifact download,
+      // bumped as bytes stream through each download's size limiter. The
+      // post-stream overall-transfer deadline (see `res.on("end")` below) is
+      // PROGRESS-AWARE: it resets whenever this advances, so a healthy,
+      // actively-streaming large artifact (e.g. a deep-research ZIP over a slow
+      // link) is never aborted by a fixed wall-clock cap while bytes are still
+      // flowing — only a genuinely wedged transfer (no bytes for a full idle
+      // window) trips it.
+      const transferProgress = { bytes: 0 };
       let artifactTransferQueue = Promise.resolve();
       let settled = false;
       let resolved: BrowserRunResult | null = null;
@@ -363,6 +372,9 @@ export function createRemoteBrowserExecutor({
                 artifactTransferQueue = queued.catch(() => undefined);
                 return queued;
               },
+              onTransferProgress: (bytes) => {
+                transferProgress.bytes += bytes;
+              },
               onError: fail,
             });
             if (transferPromise) {
@@ -436,16 +448,46 @@ export function createRemoteBrowserExecutor({
               // has its own inactivity timeout, but if a transfer promise never
               // settles at all, do not await it forever after the stream has
               // ended — convert a wedged transfer into a typed post-submit
-              // failure. Scaled by the number of (serialized) transfers so a
-              // legitimate multi-artifact transfer is never pre-empted; only a
-              // truly wedged transfer (one that outlives its own inactivity
-              // timeout) trips it.
-              const deadlineMs = streamIdleTimeoutMs * (transferPromises.length + 1);
+              // failure. PROGRESS-AWARE (not a fixed wall-clock cap): the
+              // watchdog fires only when NO transfer has delivered a single byte
+              // for a full `noProgressWindowMs` window, and resets on every
+              // transferred byte. A healthy, actively-streaming large artifact
+              // that legitimately outlasts any fixed multiple of the idle
+              // timeout is therefore never aborted while bytes are still
+              // flowing; only a genuinely wedged transfer (one that also
+              // outlives its own per-download inactivity timeout) trips it.
+              // The window is deliberately 2x the per-download inactivity
+              // timeout: a genuinely stalled download is caught FIRST by its own
+              // (earlier) inactivity watchdog, which fails the run with the
+              // precise typed ArtifactDownloadTimeoutError; this outer deadline
+              // is purely the backstop for a transfer promise that never settles
+              // at all (e.g. inactivity watchdog disabled), so it must not race
+              // the per-download one.
+              const noProgressWindowMs = streamIdleTimeoutMs * 2;
               let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
               const outcome = await Promise.race<"settled" | "deadline">([
                 Promise.allSettled(transferPromises).then(() => "settled" as const),
                 new Promise<"deadline">((resolveDeadline) => {
-                  deadlineTimer = setTimeout(() => resolveDeadline("deadline"), deadlineMs);
+                  // No transfers in flight → nothing to guard; never arm the
+                  // watchdog (allSettled([]) settles immediately).
+                  if (transferPromises.length === 0) {
+                    return;
+                  }
+                  let lastBytes = transferProgress.bytes;
+                  const scheduleCheck = () => {
+                    deadlineTimer = setTimeout(() => {
+                      if (settled) return;
+                      if (transferProgress.bytes > lastBytes) {
+                        // Byte progress since the last check → a healthy active
+                        // transfer. Reset the window instead of aborting.
+                        lastBytes = transferProgress.bytes;
+                        scheduleCheck();
+                        return;
+                      }
+                      resolveDeadline("deadline");
+                    }, noProgressWindowMs);
+                  };
+                  scheduleCheck();
                 }),
               ]);
               if (deadlineTimer) {
@@ -455,8 +497,10 @@ export function createRemoteBrowserExecutor({
               if (outcome === "deadline") {
                 fail(
                   new RemoteRunFailedError(
-                    `Remote run artifact transfers did not settle within ${deadlineMs}ms after the stream ` +
-                      "ended; aborting rather than hanging on a wedged bridge artifact download.",
+                    `Remote run artifact transfers made no progress for over ${noProgressWindowMs}ms after the ` +
+                      "stream ended; aborting rather than hanging on a wedged bridge artifact download. This is a " +
+                      "no-progress deadline (reset on every transferred byte), not a fixed cap, so a slow-but-active " +
+                      "large transfer is unaffected.",
                     { errorClass: "transport_interrupted_after_submit", retryable: false },
                   ),
                 );
@@ -583,6 +627,7 @@ function handleEvent(params: {
   onArtifact: (artifact: SavedBrowserFile) => void;
   onArtifactFailure: (message: string) => void;
   enqueueArtifactTransfer: (transfer: () => Promise<void>) => Promise<void>;
+  onTransferProgress: (bytes: number) => void;
   onError: (error: Error) => void;
 }): Promise<void> | null {
   let event: RemoteRunEvent;
@@ -633,6 +678,7 @@ function handleEvent(params: {
         sessionId: params.options.sessionId,
         log: params.options.log,
         inactivityTimeoutMs: params.artifactInactivityTimeoutMs,
+        onProgress: params.onTransferProgress,
       })
         .then((artifact) => {
           params.onArtifact(artifact);
@@ -724,6 +770,7 @@ async function transferRemoteArtifact(params: {
   sessionId?: string;
   log?: BrowserRunOptions["log"];
   inactivityTimeoutMs: number;
+  onProgress?: (bytes: number) => void;
 }): Promise<SavedBrowserFile> {
   validateRemoteArtifactDescriptor(params.descriptor);
   const sessionId = params.sessionId ?? params.descriptor.runId;
@@ -748,6 +795,7 @@ async function transferRemoteArtifact(params: {
     targetPath: partPath,
     descriptor: params.descriptor,
     inactivityTimeoutMs: params.inactivityTimeoutMs,
+    onProgress: params.onProgress,
   }).catch(async (error) => {
     await rm(partPath, { force: true }).catch(() => undefined);
     throw error;
@@ -803,6 +851,7 @@ async function downloadArtifactToFile(params: {
   targetPath: string;
   descriptor: RemoteArtifactDescriptor;
   inactivityTimeoutMs: number;
+  onProgress?: (bytes: number) => void;
 }): Promise<{ sha256: string }> {
   return await new Promise<{ sha256: string }>((resolve, reject) => {
     // Single-settle guard so the inactivity timeout deterministically wins over
@@ -871,6 +920,11 @@ async function downloadArtifactToFile(params: {
               return;
             }
             hash.update(chunk);
+            // Report byte progress so the /runs executor's progress-aware
+            // overall-transfer deadline resets while this download is actively
+            // streaming (a healthy slow-but-flowing large transfer must never
+            // trip a fixed wall-clock cap).
+            params.onProgress?.(chunk.length);
             callback(null, chunk);
           },
         });

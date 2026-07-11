@@ -24,7 +24,7 @@ export async function runProviderDoctor(options: ProviderDoctorCliOptions): Prom
     return;
   }
 
-  const { config: userConfig } = await loadUserConfig();
+  const { config: userConfig } = await loadUserConfig({ degradeOnUserConfigError: true });
   const providerMode = resolveProviderMode(options);
   const azure = resolveAzureOptions(options, userConfig);
   const models = resolveModels(options, userConfig);

@@ -20,8 +20,8 @@ export const ORACLE_EXIT_CODE_DICTIONARY = Object.freeze({
   "1": "user_error — invalid input, a failed validation, a guardrail refusal (e.g. ANTHROPIC_API_KEY present for --lane fable-local, an unsafe local-owner check), or an unrecoverable provider/run error. This is the default bucket: any thrown error without a more specific exit code lands here.",
   "2": "lane_route_blocked — the request violates the reviewed-lane policy (agent_lane_blocked) or a bare positional was refused as a likely mistyped command. The JSON error envelope's blocked_reason/next_command/fix_command name the exact fix; no backend was started.",
   "3": "auth_required — the provider needs a fresh sign-in before it can run (provider_login_required / remote_browser_auth_failed / remote_browser_token_missing). Re-authenticate, then retry.",
-  "4": "retryable_backoff — a transient capacity/lock condition (provider_usage_limit / remote_browser_unavailable / browser_lock_timeout). Safe to retry after a backoff.",
-  "5": "timeout — the run exceeded its deadline or the connection dropped before completion (client-timeout / connection-lost). Safe to retry.",
+  "4": "retryable_backoff — a transient capacity/lock condition (provider_usage_limit / remote_browser_unavailable / browser_lock_timeout). Retry after a backoff; on the API lane, retrying a request the provider already accepted can re-bill, so back off rather than retry immediately.",
+  "5": "timeout — the run exceeded its deadline or the connection dropped before completion (client-timeout / connection-lost). Usually retry-safe, but on the API lane a timed-out request may have already completed provider-side, so a blind retry can duplicate the provider charge — retry idempotently or verify before re-running.",
   "6": "challenge_or_drift — the automation hit a human-verification challenge or a suspected UI drift (ui_drift_suspected / cloudflare-challenge). Complete the check or re-run; not silently retry-safe.",
   "7": "wait_timeout — `oracle wait <id>` reached its --timeout-seconds deadline before the session became terminal. The run is still in flight (not failed); poll again or wait longer. Safe to retry.",
   "130":
@@ -81,9 +81,18 @@ export function isRetrySafeErrorClass(cls: OracleErrorClass): boolean {
 
 // Recovery-code / transport-reason / browser-stage tokens grouped by class.
 // Tokens are matched case-insensitively against every string signal an error
-// exposes (its `.reason`/`.code`/`.error_code`/`.blocked_reason`, the same keys
-// under `.details`, and `.details.stage`). New tokens are additive: an
-// unrecognized error still lands in the generic `1` bucket.
+// exposes (its `.reason`/`.code`/`.error_code`/`.blocked_reason`/`.errorClass`,
+// the same keys under `.details`, and `.details.stage`). New tokens are
+// additive: an unrecognized error still lands in the generic `1` bucket.
+//
+// Remote-lane note (RemoteRunFailedError.errorClass, src/remote/client.ts):
+// only the RETRYABLE, PRE-SUBMIT fleet classes are mapped here so a remote
+// failure that is safe to retry no longer collapses into the generic `1`
+// bucket. The NON-retryable, post-submit classes
+// (`transport_interrupted_after_submit`, `integrity_*`, `account_quarantine`)
+// are DELIBERATELY absent: a run whose prompt may already have reached the
+// paid account must stay exit `1` (never advertised as retry-safe), matching
+// the client's own retry truth table.
 const TOKENS_BY_CLASS: Readonly<Record<OracleErrorClass, readonly string[]>> = Object.freeze({
   auth_required: [
     "provider_login_required",
@@ -96,8 +105,18 @@ const TOKENS_BY_CLASS: Readonly<Record<OracleErrorClass, readonly string[]>> = O
     "usage_limit",
     "remote_browser_unavailable",
     "browser_lock_timeout",
+    // Fleet worker refused the run before accepting it (409 busy); the caller
+    // is safe to retry elsewhere after a backoff.
+    "capacity_busy",
   ],
-  timeout: ["client-timeout", "connection-lost", "connection_lost"],
+  timeout: [
+    "client-timeout",
+    "connection-lost",
+    "connection_lost",
+    // Fleet transport dropped BEFORE the prompt reached the account; nothing
+    // was submitted, so a retry cannot duplicate a paid run.
+    "transport_interrupted_before_submit",
+  ],
   challenge_or_drift: ["ui_drift_suspected", "cloudflare-challenge", "challenge-gate"],
 });
 
@@ -110,7 +129,7 @@ function collectErrorTokens(error: unknown): string[] {
   const tokens: string[] = [];
   const pushFrom = (record: Record<string, unknown> | undefined): void => {
     if (!record) return;
-    for (const key of ["reason", "code", "error_code", "blocked_reason", "stage"]) {
+    for (const key of ["reason", "code", "error_code", "blocked_reason", "stage", "errorClass"]) {
       const value = record[key];
       if (typeof value === "string" && value.length > 0) {
         tokens.push(value.toLowerCase());

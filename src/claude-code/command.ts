@@ -136,6 +136,7 @@ export function buildClaudeCodeCommand(
     "",
   ];
 
+  assertInputFormatOnlyFromFlag(args, streamJsonInput);
   assertNoDangerousFlags(args);
 
   return {
@@ -158,6 +159,24 @@ function rejectRawPassThroughOptions(options: BuildClaudeCodeCommandOptions): vo
         `Claude Code local mode owns the full argv; raw pass-through option "${key}" is not allowed. Use the reviewed lane's own flags instead: oracle -p "<prompt>" --lane fable-local (run \`oracle doctor lanes --json\` to see exactly which argv it builds).`,
       );
     }
+  }
+}
+
+// `--input-format` is emitted ONLY by the streamJsonInput flag path above, and
+// is deliberately NOT on DANGEROUS_OR_OUT_OF_SCOPE_FLAGS (that set is asserted
+// against the builder's own argv, which legitimately carries the flag when the
+// transport is on). This builder already owns the full argv — raw pass-through
+// options are rejected outright (rejectRawPassThroughOptions) and caam only
+// prepends a wrapper — so no external/config arg can inject `--input-format`
+// today. This invariant makes that guarantee explicit and fail-closed: the flag
+// can never appear on the OFF path, so a future extra-args wiring can't silently
+// smuggle `--input-format stream-json` in while Oracle writes flat text on stdin.
+function assertInputFormatOnlyFromFlag(args: string[], streamJsonInput: boolean): void {
+  if (!streamJsonInput && args.includes("--input-format")) {
+    throw new ClaudeCodeCommandError(
+      "unexpected_input_format_flag",
+      'Claude Code command builder produced "--input-format" without the stream-json input transport enabled (internal invariant violation, not a user-fixable input). Please report this as an Oracle bug.',
+    );
   }
 }
 

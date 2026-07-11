@@ -88,51 +88,64 @@ export async function sendSessionNotification(
   const title = `Oracle${ORACLE_EMOJI} finished`;
   const message = buildMessage(payload, sanitizePreview(answerPreview));
 
+  // A completed (possibly paid) run must never be lost to a notification
+  // failure — e.g. the lazily-imported toasted-notifier throwing on a pruned
+  // optional dependency at notify time. This outer guard makes "notify never
+  // throws" a structural guarantee, regardless of which inner branch runs.
   try {
-    if (await tryMacNativeNotifier(title, message, settings)) {
-      return;
-    }
-    if (!(await shouldSkipToastedNotifier())) {
-      // Fallback to toasted-notifier (cross-platform). macAppIconOption() is only honored on macOS.
-      const notifier = await loadNotifier();
-      await notifier.notify({
-        title,
-        message,
-        sound: settings.sound,
-      });
-      return;
-    }
-  } catch (error) {
-    if (isMacExecError(error)) {
-      const repaired = await repairMacNotifier(log);
-      if (repaired) {
-        try {
-          const notifier = await loadNotifier();
-          await notifier.notify({ title, message, sound: settings.sound, ...macAppIconOption() });
-          return;
-        } catch (retryError) {
-          const reason = describeNotifierError(retryError);
-          log(`(notify skipped after retry: ${reason})`);
-          return;
+    try {
+      if (await tryMacNativeNotifier(title, message, settings)) {
+        return;
+      }
+      if (!(await shouldSkipToastedNotifier())) {
+        // Fallback to toasted-notifier (cross-platform). macAppIconOption() is only honored on macOS.
+        const notifier = await loadNotifier();
+        await notifier.notify({
+          title,
+          message,
+          sound: settings.sound,
+        });
+        return;
+      }
+    } catch (error) {
+      if (isMacExecError(error)) {
+        const repaired = await repairMacNotifier(log);
+        if (repaired) {
+          try {
+            const notifier = await loadNotifier();
+            await notifier.notify({ title, message, sound: settings.sound, ...macAppIconOption() });
+            return;
+          } catch (retryError) {
+            const reason = describeNotifierError(retryError);
+            log(`(notify skipped after retry: ${reason})`);
+            return;
+          }
         }
       }
-    }
-    if (isMacBadCpuError(error)) {
+      if (isMacBadCpuError(error)) {
+        const reason = describeNotifierError(error);
+        log(`(notify skipped: ${reason})`);
+        return;
+      }
       const reason = describeNotifierError(error);
       log(`(notify skipped: ${reason})`);
-      return;
     }
-    const reason = describeNotifierError(error);
-    log(`(notify skipped: ${reason})`);
-  }
-  // Last-resort macOS fallback: AppleScript alert (simple, noisy, but works when helpers are blocked).
-  if (process.platform === "darwin") {
+    // Last-resort macOS fallback: AppleScript alert (simple, noisy, but works when helpers are blocked).
+    if (process.platform === "darwin") {
+      try {
+        await sendOsascriptAlert(title, message, log);
+        return;
+      } catch (scriptError) {
+        const reason = describeNotifierError(scriptError);
+        log(`(notify skipped: osascript fallback failed: ${reason})`);
+      }
+    }
+  } catch (unexpectedError) {
+    // Never let a notification failure escape a finished run.
     try {
-      await sendOsascriptAlert(title, message, log);
-      return;
-    } catch (scriptError) {
-      const reason = describeNotifierError(scriptError);
-      log(`(notify skipped: osascript fallback failed: ${reason})`);
+      log(`(notify skipped: ${describeNotifierError(unexpectedError)})`);
+    } catch {
+      // Logging itself must not throw out of the notifier.
     }
   }
 }

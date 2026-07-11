@@ -423,6 +423,28 @@ describe("summarizeModelRunsForConsult", () => {
     });
   });
 
+  test("chatgpt-pro-heavy preset thinking time (extended) wins over a conflicting config default (P1-4)", () => {
+    // The preset materializes browserThinkingTime="extended" (see the
+    // applyConsultPreset test above); buildConsultBrowserConfig then keeps that
+    // explicit preset value over userConfig.browser.thinkingTime, so an MCP
+    // preset consult is never downgraded from the intended Pro thinking budget
+    // by a user/project config. Verified end-to-end against the real MCP server
+    // at the wire, too.
+    const presetInput = applyConsultPreset({
+      preset: "chatgpt-pro-heavy",
+      prompt: "review this plan",
+      files: [],
+    });
+    const config = buildConsultBrowserConfig({
+      userConfig: { browser: { thinkingTime: "light" } },
+      env: {},
+      runModel: presetInput.model ?? "gpt-5.6-sol",
+      inputModel: presetInput.model,
+      browserThinkingTime: presetInput.browserThinkingTime,
+    });
+    expect(config.thinkingTime).toBe("extended");
+  });
+
   test("summarizes resolved browser dry-runs for agent callers", () => {
     const resolved = buildConsultDryRunResolved({
       resolvedEngine: "browser",

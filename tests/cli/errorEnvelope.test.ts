@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   buildTopLevelCliErrorEnvelope,
   TOP_LEVEL_ERROR_CODES,
+  TOP_LEVEL_ERROR_CODES_VERSION,
 } from "../../src/cli/errorEnvelope.js";
 import {
   BrowserAutomationError,
@@ -19,9 +20,22 @@ describe("normalizeTopLevelError closed code set (machine-output#3)", () => {
     expect(envelope.error.code).toBe("timeout");
     expect(envelope.blocked_reason).toBe("timeout");
     expect(envelope.retry_safe).toBe(true);
-    // The raw reason is preserved for callers that want it.
+    // The raw reason is preserved for callers that want it, and the pre-v2
+    // `details.reason` is kept alongside it so a consumer still keyed on
+    // `reason` retains a migration path.
     expect(envelope.error.details?.raw_reason).toBe("client-timeout");
+    expect(envelope.error.details?.reason).toBe("client-timeout");
     expect(TOP_LEVEL_ERROR_CODES).toContain(envelope.error.code);
+  });
+
+  test("the error envelope advertises the bumped error-code vocabulary version on meta", () => {
+    const envelope = envelopeFor(new OracleTransportError("client-timeout", "timed out"), 5);
+    // The closed-code migration is a breaking vocabulary change; the version tag
+    // lets a consumer detect it without diffing every code. The structural
+    // envelope contract (json_envelope.v1) is unchanged.
+    expect(envelope.meta.error_codes_version).toBe(TOP_LEVEL_ERROR_CODES_VERSION);
+    expect(TOP_LEVEL_ERROR_CODES_VERSION).toBe("top_level_error_codes.v2");
+    expect(envelope.schema_version).toBe("json_envelope.v1");
   });
 
   test("provider/api transport errors map to the closed `provider_error` code", () => {
@@ -36,6 +50,8 @@ describe("normalizeTopLevelError closed code set (machine-output#3)", () => {
     expect(envelope.error.code).not.toBe("browser-automation");
     expect(envelope.error.code).toBe("browser_automation_failed");
     expect(envelope.error.details?.raw_reason).toBe("browser-automation");
+    // Back-compat: `details.reason` keeps carrying the free-form category too.
+    expect(envelope.error.details?.reason).toBe("browser-automation");
   });
 
   test("a recognized recovery code is normalized into the shared class (matches the exit code)", () => {

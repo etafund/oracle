@@ -70,7 +70,7 @@ export async function runBridgeDoctor(
     path: configPath,
     paths: configPaths,
     loaded: userConfigLoaded,
-  } = await loadUserConfig();
+  } = await loadUserConfig({ degradeOnUserConfigError: true });
   const version = getCliVersion();
   const projectConfigPaths = configPaths.filter((entry) => entry !== configPath);
 

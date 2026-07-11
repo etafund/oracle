@@ -20,7 +20,7 @@ export interface RemoteDoctorCliOptions {
 }
 
 export async function runRemoteDoctor(options: RemoteDoctorCliOptions): Promise<void> {
-  const { config: userConfig } = await loadUserConfig();
+  const { config: userConfig } = await loadUserConfig({ degradeOnUserConfigError: true });
   const resolved = resolveRemoteServiceConfig({
     cliHost: undefined,
     cliToken: undefined,

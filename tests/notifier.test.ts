@@ -130,4 +130,29 @@ describe("resolveNotificationSettings", () => {
     expect(call?.sound).toBe(false);
     expect(log).not.toHaveBeenCalled();
   });
+
+  it("never throws when the notifier fails at notify time (a paid answer must survive)", async () => {
+    // P2-7: the lazy toasted-notifier import (or its notify) can now throw at
+    // notify time; that must be logged and swallowed, never propagated out of a
+    // finished (possibly paid) run.
+    delete process.env.VITEST;
+    delete process.env.VITEST_WORKER_ID;
+    delete process.env.JEST_WORKER_ID;
+    process.env.NODE_ENV = "development";
+    process.env.ORACLE_DISABLE_NOTIFICATIONS = "0";
+    vi.spyOn(process, "platform", "get").mockReturnValue("linux" as NodeJS.Platform);
+
+    const { notifier } = await getMocks();
+    notifier.notify.mockRejectedValueOnce(new Error("toasted-notifier failed to load/notify"));
+    const log = vi.fn();
+
+    await expect(
+      sendSessionNotification(
+        { sessionId: "sess-2", mode: "api" } as NotificationContent,
+        { enabled: true, sound: false },
+        log,
+      ),
+    ).resolves.toBeUndefined();
+    expect(log).toHaveBeenCalled();
+  });
 });

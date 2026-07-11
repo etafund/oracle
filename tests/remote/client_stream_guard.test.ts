@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { createRemoteBrowserExecutor, RemoteRunFailedError } from "../../src/remote/client.js";
@@ -256,6 +257,71 @@ describe("client: artifact-transfer and pre-header hang guards", () => {
       }
     },
   );
+
+  // Progress-aware overall-transfer deadline (P1-1): the post-stream deadline
+  // that guards a never-settling transfer promise must key off BYTE PROGRESS,
+  // not a fixed wall-clock multiple of the idle timeout. A healthy, actively-
+  // streaming large artifact whose total transfer time legitimately exceeds any
+  // fixed cap (here ~6 chunks * 40ms = ~240ms, well past the old
+  // streamIdleTimeoutMs*(n+1) = 120ms cap) must SURVIVE and deliver its bytes,
+  // because each inter-chunk gap (~40ms) is comfortably inside the idle window
+  // (60ms) and resets the deadline. Only a genuinely stalled transfer (covered
+  // by the test above) still fails.
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "a slow-but-progressing artifact download survives past the old fixed deadline",
+    async () => {
+      const home = await mkdtemp(path.join(os.tmpdir(), "oracle-artifact-slow-"));
+      setOracleHomeDirOverrideForTest(home);
+      // 24 bytes streamed as 6 * 4-byte chunks; sha256/byteSize must match so
+      // the transfer validates and completes (a failed validation would mask
+      // the deadline behavior under test).
+      const content = Buffer.from("abcdefghijklmnopqrstuvwx", "utf8");
+      const descriptor: RemoteArtifactDescriptor = {
+        artifactId: "art-slow",
+        runId: "run-slow",
+        kind: "file",
+        filename: "result.bin",
+        byteSize: content.length,
+        sha256: createHash("sha256").update(content).digest("hex"),
+        sourceUrlKind: "sandbox",
+        transferStatus: "ready",
+      };
+      const fake = await startSlowProgressingArtifactServer({
+        descriptor,
+        content,
+        chunkCount: 6,
+        gapMs: 40,
+      });
+      try {
+        const executor = createRemoteBrowserExecutor({
+          host: `127.0.0.1:${fake.port}`,
+          token: "secret",
+          // Old cap would have been 60 * (1 + 1) = 120ms; the transfer takes
+          // ~240ms of ACTIVE streaming, so a fixed cap would wrongly abort it.
+          streamIdleTimeoutMs: 60,
+        });
+        const startedAt = Date.now();
+        const result = await executor({ prompt: "x", config: {}, sessionId: descriptor.runId });
+        const elapsedMs = Date.now() - startedAt;
+        // The run completed with its answer, and the slow artifact was
+        // transferred (not aborted by the outer deadline).
+        expect(result.answerText).toBe("the answer");
+        expect(result.savedFiles?.some((f) => f.sourceUrl === "bridge-artifact")).toBe(true);
+        // No transfer-failure warning was recorded.
+        expect(
+          (result.warnings ?? []).some((w) => w.code === "remote-artifact-transfer-failed"),
+        ).toBe(false);
+        // It genuinely outlived the old fixed cap (120ms) — proving the deadline
+        // is now progress-aware, not a fixed wall-clock race.
+        expect(elapsedMs).toBeGreaterThan(120);
+        expect(elapsedMs).toBeLessThan(5000);
+      } finally {
+        await fake.close();
+        setOracleHomeDirOverrideForTest(null);
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 /**
@@ -305,6 +371,85 @@ async function startStallingArtifactServer(
   const address = server.address();
   if (!address || typeof address === "string") {
     throw new Error("stalling artifact server did not bind");
+  }
+  return {
+    port: address.port,
+    close: async () => {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    },
+  };
+}
+
+/**
+ * Fake bridge that streams a valid `artifact-ready` + terminal `done`, then
+ * serves the artifact GET as a SLOW BUT STEADY transfer: `chunkCount` chunks of
+ * the content, each separated by `gapMs`, so the transfer is always making byte
+ * progress but its total duration exceeds the old fixed overall-transfer cap.
+ * Exercises the progress-aware deadline (P1-1): a healthy slow transfer must
+ * complete, not be aborted.
+ */
+async function startSlowProgressingArtifactServer(params: {
+  descriptor: RemoteArtifactDescriptor;
+  content: Buffer;
+  chunkCount: number;
+  gapMs: number;
+}): Promise<{ port: number; close: () => Promise<void> }> {
+  const { descriptor, content, chunkCount, gapMs } = params;
+  const artifactPath = `/runs/${encodeURIComponent(descriptor.runId)}/artifacts/${encodeURIComponent(
+    descriptor.artifactId,
+  )}`;
+  const chunkSize = Math.ceil(content.length / chunkCount);
+  const server = http.createServer((req, res) => {
+    if (req.method === "POST" && req.url === "/runs") {
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(200, { "Content-Type": "application/x-ndjson" });
+        res.write(
+          `${JSON.stringify({ type: "log", message: "Submitted prompt via Enter key" })}\n`,
+        );
+        res.write(
+          `${JSON.stringify({ type: "artifact-ready", runId: descriptor.runId, artifact: descriptor })}\n`,
+        );
+        res.end(`${JSON.stringify({ type: "done", ok: true, result: MINIMAL_RESULT })}\n`);
+      });
+      return;
+    }
+    if (req.method === "GET" && req.url === artifactPath) {
+      res.writeHead(200, {
+        "Content-Type": "application/octet-stream",
+        "Content-Length": String(descriptor.byteSize),
+        "X-Oracle-Artifact-Sha256": descriptor.sha256,
+      });
+      res.on("error", () => {});
+      let offset = 0;
+      const interval = setInterval(() => {
+        if (res.writableEnded || res.destroyed) {
+          clearInterval(interval);
+          return;
+        }
+        const next = content.subarray(offset, offset + chunkSize);
+        offset += next.length;
+        res.write(next);
+        if (offset >= content.length) {
+          clearInterval(interval);
+          res.end();
+        }
+      }, gapMs);
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("slow progressing artifact server did not bind");
   }
   return {
     port: address.port,

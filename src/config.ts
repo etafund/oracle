@@ -143,6 +143,16 @@ export interface LoadUserConfigOptions {
   cwd?: string;
   includeProject?: boolean;
   env?: NodeJS.ProcessEnv;
+  /**
+   * Read-only surfaces (status/session/doctor/capabilities/robot-docs) set this
+   * so a broken user config degrades to defaults with a loud stderr warning
+   * instead of hard-failing: an inspection command must stay usable even when
+   * the config it reports on is unparseable ({@link UserConfigParseError}) or
+   * unreadable ({@link UserConfigUnreadableError}). Run-starting paths MUST
+   * leave this false (the default) so a mis-set engine/model can never silently
+   * change this run's billing/routing.
+   */
+  degradeOnUserConfigError?: boolean;
 }
 
 interface ReadConfigResult {
@@ -213,11 +223,60 @@ export class UserConfigParseError extends Error {
   }
 }
 
+/**
+ * Thrown when an EXISTING user config (`~/.oracle/config.json`) is present but
+ * cannot be READ (EACCES/EPERM) — a permissions problem, not a missing file.
+ * Fail-closed for the same reason as {@link UserConfigParseError}: silently
+ * reverting to `DEFAULT_USER_CONFIG` (browser engine + gpt-5.6-sol Pro) would
+ * change this run's engine/model — its billing and routing — without a
+ * (possibly non-interactive) caller ever seeing the stderr warning. Only the
+ * user role is fatal here; benign-absent codes (ENOENT/ENOTDIR, e.g. a
+ * `/dev/null` sentinel home) still fall back to defaults. Fix the file
+ * permissions, then rerun.
+ */
+export class UserConfigUnreadableError extends Error {
+  readonly configPath: string;
+
+  constructor(configPath: string, cause: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(
+      `The user config at ${configPath} exists but could not be read: ${detail}. ` +
+        `Oracle will not fall back to defaults, because that would silently change ` +
+        `the engine/model (billing/routing) for this run. Fix the file permissions so ` +
+        `your user can read it (e.g. chmod 600 ${configPath}), then rerun.`,
+    );
+    this.name = "UserConfigUnreadableError";
+    this.configPath = configPath;
+    if (cause) {
+      (this as Error & { cause?: unknown }).cause = cause;
+    }
+  }
+}
+
 export async function loadUserConfig(
   options: LoadUserConfigOptions = {},
 ): Promise<LoadConfigResult> {
   const userConfigPath = resolveUserConfigPath();
-  const userConfig = await readConfigFile(userConfigPath, "user");
+  let userConfig: ReadConfigResult;
+  try {
+    userConfig = await readConfigFile(userConfigPath, "user");
+  } catch (error) {
+    // Read-only inspection commands degrade to defaults (loudly) so they stay
+    // usable when the very config they'd report on is broken. Run-starting
+    // paths never pass the flag, so they keep the fail-closed throw.
+    if (
+      options.degradeOnUserConfigError &&
+      (error instanceof UserConfigParseError || error instanceof UserConfigUnreadableError)
+    ) {
+      console.warn(
+        `WARNING: ${error.message} Continuing with built-in defaults for this read-only ` +
+          `command; run/consult commands will still refuse until you fix it.`,
+      );
+      userConfig = { config: {}, path: userConfigPath, loaded: false };
+    } else {
+      throw error;
+    }
+  }
   const projectConfigPaths =
     options.includeProject === false
       ? []
@@ -261,14 +320,22 @@ async function readConfigFile(
     raw = await fs.readFile(configPath, "utf8");
   } catch (error) {
     const code = (error as { code?: string }).code;
-    if (code === "ENOENT") {
-      // A genuinely-missing file is fine: fall back to defaults.
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      // Benign-absent: a genuinely-missing file (ENOENT), or a sentinel home
+      // like /dev/null that makes `<home>/config.json` an ENOTDIR path. Neither
+      // is a present-but-unreadable config, so fall back to defaults.
       return { config: {}, path: configPath, loaded: false };
     }
-    // The file is not readable (ENOTDIR when the home is a sentinel like
-    // /dev/null, EACCES, …). It is effectively absent — not a malformed-but-
-    // present config — so fall back rather than hard-fail. Only a genuine PARSE
-    // error of a readable user config is fatal (see the parse catch below).
+    if (role === "user" && (code === "EACCES" || code === "EPERM")) {
+      // A present-but-unreadable USER config is fail-closed, exactly like a
+      // parse error: silently reverting to DEFAULT_USER_CONFIG (browser +
+      // gpt-5.6-sol Pro) would change this run's engine/model — its billing and
+      // routing — without the (possibly non-interactive) caller ever seeing a
+      // warning. The file exists; the user simply cannot read it.
+      throw new UserConfigUnreadableError(configPath, error);
+    }
+    // Any other read failure (a skippable project config, or a non-permission
+    // error) stays a soft fallback: it only layers optional overrides.
     const message = error instanceof Error ? error.message : String(error);
     console.warn(`Config file at ${configPath} could not be read: ${message}; using defaults`);
     return { config: {}, path: configPath, loaded: false };
