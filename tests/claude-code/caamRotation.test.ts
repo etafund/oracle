@@ -57,10 +57,10 @@ function fakeExecFileSequence(responses: FakeResponse[]): {
 
 describe("runCaamCooldownSet (caam cooldown set claude/<profile>)", () => {
   test("succeeds on exit 0 and never parses stdout text for its verdict", async () => {
-    const { impl, calls } = fakeExecFileSequence([{ stdout: "Recorded cooldown for claude/arthur until ...\n" }]);
+    const { impl, calls } = fakeExecFileSequence([{ stdout: "Recorded cooldown for claude/beta until ...\n" }]);
 
     await expect(
-      runCaamCooldownSet("/opt/caam", "claude", "arthur", 60, "session sess-1: rate_limit pattern 'rate limit'", {
+      runCaamCooldownSet("/opt/caam", "claude", "beta", 60, "session sess-1: rate_limit pattern 'rate limit'", {
         execFileImpl: impl,
       }),
     ).resolves.toBeUndefined();
@@ -70,7 +70,7 @@ describe("runCaamCooldownSet (caam cooldown set claude/<profile>)", () => {
         "/opt/caam",
         "cooldown",
         "set",
-        "claude/arthur",
+        "claude/beta",
         "--minutes",
         "60",
         "--notes",
@@ -85,10 +85,10 @@ describe("runCaamCooldownSet (caam cooldown set claude/<profile>)", () => {
     ]);
 
     await expect(
-      runCaamCooldownSet("/opt/caam", "claude", "arthur", 60, "note", { execFileImpl: impl }),
+      runCaamCooldownSet("/opt/caam", "claude", "beta", 60, "note", { execFileImpl: impl }),
     ).rejects.toThrow(CaamRotationError);
     await expect(
-      runCaamCooldownSet("/opt/caam", "claude", "arthur", 60, "note", { execFileImpl: impl }),
+      runCaamCooldownSet("/opt/caam", "claude", "beta", 60, "note", { execFileImpl: impl }),
     ).rejects.toThrow(/db unavailable/);
   });
 });
@@ -183,7 +183,7 @@ describe("runCaamRobotStatus (caam robot status claude)", () => {
                 id: "claude",
                 profiles: [
                   {
-                    name: "arthur",
+                    name: "beta",
                     active: true,
                     health: { status: "healthy", expires_in: "23h" },
                     cooldown: { active: false },
@@ -221,7 +221,7 @@ describe("runCaamRobotStatus (caam robot status claude)", () => {
     expect(outcome.success).toBe(true);
     if (outcome.success) {
       expect(outcome.data.providers[0].profiles.map((profile) => profile.name)).toEqual([
-        "arthur",
+        "beta",
         "beth",
       ]);
       expect(outcome.data.providers[0].profiles[1].cooldown).toMatchObject({

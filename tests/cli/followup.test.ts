@@ -267,13 +267,13 @@ describe("Claude Code (Fable lane) follow-up resolution — claude-provider-map.
   });
 
   test("resolves a resumable claude-code session to its stored --session-id and profile", async () => {
-    const metadata = claudeCodeMetadata({ caam_profile: "arthur" });
+    const metadata = claudeCodeMetadata({ caam_profile: "beta" });
     const store = { readSession: vi.fn(async () => metadata) };
 
     await expect(resolveClaudeCodeFollowupReference("fable-parent", store)).resolves.toEqual({
       sessionId: "fable-parent",
       resumeSessionId: "5b1a2c3d-4e5f-6789-abcd-ef0123456789",
-      caamProfile: "arthur",
+      caamProfile: "beta",
       model: "fable",
     });
   });
@@ -320,8 +320,8 @@ describe("Claude Code (Fable lane) follow-up resolution — claude-provider-map.
     expect(() =>
       assertClaudeCodeFollowupProfileMatches({
         parentSessionId: "fable-parent",
-        parentProfile: "arthur",
-        childProfile: "arthur",
+        parentProfile: "beta",
+        childProfile: "beta",
       }),
     ).not.toThrow();
     expect(() =>
@@ -337,7 +337,7 @@ describe("Claude Code (Fable lane) follow-up resolution — claude-provider-map.
     expect(() =>
       assertClaudeCodeFollowupProfileMatches({
         parentSessionId: "fable-parent",
-        parentProfile: "arthur",
+        parentProfile: "beta",
         childProfile: "bob",
       }),
     ).toThrow(/SAME caam profile/);
@@ -357,7 +357,7 @@ describe("Claude Code (Fable lane) follow-up resolution — claude-provider-map.
     expect(() =>
       assertClaudeCodeFollowupProfileMatches({
         parentSessionId: "fable-parent",
-        parentProfile: "arthur",
+        parentProfile: "beta",
         childProfile: undefined,
       }),
     ).toThrow(/SAME caam profile/);
@@ -371,22 +371,22 @@ describe("Claude Code (Fable lane) follow-up resolution — claude-provider-map.
     expect(() =>
       assertClaudeCodeFollowupProfileMatchesRun({
         parentSessionId: "fable-parent",
-        parentProfile: "arthur",
+        parentProfile: "beta",
         runOptions: { claudeCode: { caamProfile: "bob" } },
-        env: { ORACLE_CLAUDE_CODE_CAAM_PROFILE: "arthur" },
+        env: { ORACLE_CLAUDE_CODE_CAAM_PROFILE: "beta" },
       }),
     ).toThrow(/SAME caam profile/);
   });
 
   test("assertClaudeCodeFollowupProfileMatchesRun: config-key form takes precedence over the env form (matching config key passes despite a mismatched env var)", () => {
     // Mirrors sessionRunner.ts exactly: resolveClaudeCodeCaamProfile prefers
-    // the config-key form, so the run WILL use "arthur" here — the guard
+    // the config-key form, so the run WILL use "beta" here — the guard
     // must agree and pass.
     expect(() =>
       assertClaudeCodeFollowupProfileMatchesRun({
         parentSessionId: "fable-parent",
-        parentProfile: "arthur",
-        runOptions: { claudeCode: { caamProfile: "arthur" } },
+        parentProfile: "beta",
+        runOptions: { claudeCode: { caamProfile: "beta" } },
         env: { ORACLE_CLAUDE_CODE_CAAM_PROFILE: "bob" },
       }),
     ).not.toThrow();
@@ -396,15 +396,15 @@ describe("Claude Code (Fable lane) follow-up resolution — claude-provider-map.
     expect(() =>
       assertClaudeCodeFollowupProfileMatchesRun({
         parentSessionId: "fable-parent",
-        parentProfile: "arthur",
+        parentProfile: "beta",
         runOptions: { claudeCode: undefined },
-        env: { ORACLE_CLAUDE_CODE_CAAM_PROFILE: "arthur" },
+        env: { ORACLE_CLAUDE_CODE_CAAM_PROFILE: "beta" },
       }),
     ).not.toThrow();
     expect(() =>
       assertClaudeCodeFollowupProfileMatchesRun({
         parentSessionId: "fable-parent",
-        parentProfile: "arthur",
+        parentProfile: "beta",
         runOptions: { claudeCode: undefined },
         env: { ORACLE_CLAUDE_CODE_CAAM_PROFILE: "bob" },
       }),
@@ -423,7 +423,7 @@ describe("Claude Code (Fable lane) follow-up resolution — claude-provider-map.
     expect(() =>
       assertClaudeCodeFollowupProfileMatchesRun({
         parentSessionId: "fable-parent",
-        parentProfile: "arthur",
+        parentProfile: "beta",
         runOptions: { claudeCode: undefined },
         env: {},
       }),

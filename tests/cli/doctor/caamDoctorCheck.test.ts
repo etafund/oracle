@@ -79,7 +79,7 @@ describe("runCaamDoctorCheck (oracle doctor caam health/cooldown visibility)", (
                 id: "claude",
                 profiles: [
                   {
-                    name: "arthur",
+                    name: "beta",
                     active: true,
                     health: { status: "healthy", expires_in: "23h" },
                     cooldown: { active: false },
@@ -101,7 +101,7 @@ describe("runCaamDoctorCheck (oracle doctor caam health/cooldown visibility)", (
     ]);
 
     const result = await runCaamDoctorCheck({
-      env: { [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "arthur" },
+      env: { [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "beta" },
       execFileImpl: impl,
       resolveCaamExecutableImpl: fakeResolveCaamExecutable(),
     });
@@ -121,7 +121,7 @@ describe("runCaamDoctorCheck (oracle doctor caam health/cooldown visibility)", (
                 id: "claude",
                 profiles: [
                   {
-                    name: "arthur",
+                    name: "beta",
                     active: true,
                     health: { status: "healthy" },
                     cooldown: {
@@ -147,7 +147,7 @@ describe("runCaamDoctorCheck (oracle doctor caam health/cooldown visibility)", (
     ]);
 
     const result = await runCaamDoctorCheck({
-      env: { [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "arthur" },
+      env: { [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "beta" },
       execFileImpl: impl,
       resolveCaamExecutableImpl: fakeResolveCaamExecutable(),
     });
@@ -169,7 +169,7 @@ describe("runCaamDoctorCheck (oracle doctor caam health/cooldown visibility)", (
                 id: "claude",
                 profiles: [
                   {
-                    name: "arthur",
+                    name: "beta",
                     active: true,
                     health: { status: "critical", reason: "token expired", error_count_1h: 3 },
                     cooldown: { active: false },
@@ -191,7 +191,7 @@ describe("runCaamDoctorCheck (oracle doctor caam health/cooldown visibility)", (
     ]);
 
     const result = await runCaamDoctorCheck({
-      env: { [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "arthur" },
+      env: { [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "beta" },
       execFileImpl: impl,
       resolveCaamExecutableImpl: fakeResolveCaamExecutable(),
     });
@@ -222,7 +222,7 @@ describe("runCaamDoctorCheck (oracle doctor caam health/cooldown visibility)", (
     ]);
 
     const result = await runCaamDoctorCheck({
-      env: { [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "arthur" },
+      env: { [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "beta" },
       execFileImpl: impl,
       resolveCaamExecutableImpl: fakeResolveCaamExecutable(),
     });
@@ -243,7 +243,7 @@ describe("runCaamDoctorCheck (oracle doctor caam health/cooldown visibility)", (
     ]);
 
     const result = await runCaamDoctorCheck({
-      env: { [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "arthur" },
+      env: { [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "beta" },
       execFileImpl: impl,
       resolveCaamExecutableImpl: fakeResolveCaamExecutable(),
     });
@@ -257,7 +257,7 @@ describe("runCaamDoctorCheck (oracle doctor caam health/cooldown visibility)", (
     const { impl } = fakeExecFileSequence([{ exitCode: 1, stdout: "", stderr: "unknown command" }]);
 
     const result = await runCaamDoctorCheck({
-      env: { [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "arthur" },
+      env: { [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "beta" },
       execFileImpl: impl,
       resolveCaamExecutableImpl: fakeResolveCaamExecutable(),
     });
@@ -268,7 +268,7 @@ describe("runCaamDoctorCheck (oracle doctor caam health/cooldown visibility)", (
 
   test("degrades to warn (never fail) when the caam executable itself cannot be resolved", async () => {
     const result = await runCaamDoctorCheck({
-      env: { [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "arthur" },
+      env: { [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "beta" },
       resolveCaamExecutableImpl: async () => {
         throw new CaamExecutableError("not_found");
       },

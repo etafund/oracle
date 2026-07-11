@@ -28,8 +28,8 @@ const PRO_PREAMBLE_COMPLETION_STABLE_MS = 5 * 60_000;
 // before a non-compact answer is returned. At the thinking→answer transition
 // the finished-action controls can flicker visible for a single sample while
 // the thinking indicator is mid-teardown; one coincidental sample must never
-// be enough to archive a stale preamble as the final answer (fetaos incident
-// 2026-07-05: 203-char teaser accepted after a >60s Pro Extended pause).
+// be enough to archive a stale preamble as the final answer (downstream
+// incident 2026-07-05: 203-char teaser accepted after a >60s Pro Extended pause).
 const NONCOMPACT_ACCEPT_CONFIRM_SAMPLES = 8;
 // After this much elapsed wait, a compact (<40 char) answer on bare
 // stop-button absence is almost always a paused thinking stream (e.g. the

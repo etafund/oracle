@@ -94,12 +94,12 @@ describe("Claude Code env guard", () => {
   test("allowlists ORACLE_CLAUDE_CODE_CAAM_PROFILE as an argv-derived value, not a secret", () => {
     const prepared = prepareClaudeCodeEnvironment({
       PATH: "/usr/bin",
-      ORACLE_CLAUDE_CODE_CAAM_PROFILE: "arthur",
+      ORACLE_CLAUDE_CODE_CAAM_PROFILE: "beta",
     });
 
     expect(prepared.childEnv).toEqual({
       PATH: "/usr/bin",
-      ORACLE_CLAUDE_CODE_CAAM_PROFILE: "arthur",
+      ORACLE_CLAUDE_CODE_CAAM_PROFILE: "beta",
     });
   });
 
@@ -107,7 +107,7 @@ describe("Claude Code env guard", () => {
     expect(() =>
       prepareClaudeCodeEnvironment({
         PATH: "/usr/bin",
-        ORACLE_CLAUDE_CODE_CAAM_PROFILE: "arthur",
+        ORACLE_CLAUDE_CODE_CAAM_PROFILE: "beta",
         ANTHROPIC_API_KEY: "sk-ant-secret",
       }),
     ).toThrow(ClaudeCodeEnvGuardError);

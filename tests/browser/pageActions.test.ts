@@ -1121,7 +1121,7 @@ describe("waitForAssistantResponse", () => {
     }
   });
 
-  // Regression (fetaos incident 2026-07-05): at the thinking→answer transition
+  // Regression (downstream incident 2026-07-05): at the thinking→answer transition
   // the stop button and finished-action controls can BOTH be hidden while a
   // thinking indicator is still live. The post-race guard used to return the
   // stale mid-thinking preamble untouched from that state; it must instead

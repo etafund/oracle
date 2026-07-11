@@ -14,7 +14,7 @@ describe("caam shallow-spawn outer command builder", () => {
 
     const command = buildCaamShallowSpawnCommand({
       caamExecutable: "/opt/caam",
-      profile: "arthur",
+      profile: "beta",
       base: "/home/user/.oracle/claude-code-shallow-homes",
       inner,
     });
@@ -22,7 +22,7 @@ describe("caam shallow-spawn outer command builder", () => {
     expect(command.file).toBe("/opt/caam");
     expect(command.args).toEqual([
       "shallow-spawn",
-      "arthur",
+      "beta",
       "--base",
       "/home/user/.oracle/claude-code-shallow-homes",
       "--",
@@ -50,7 +50,7 @@ describe("caam shallow-spawn outer command builder", () => {
   });
 
   test("accepts safe profile identifiers (alnum, dash, underscore)", () => {
-    for (const goodProfile of ["arthur", "oracle-slot-0", "profile_1", "A1"]) {
+    for (const goodProfile of ["beta", "oracle-slot-0", "profile_1", "A1"]) {
       expect(validateCaamProfileName(goodProfile)).toBe(goodProfile);
     }
   });
@@ -65,9 +65,9 @@ describe("resolveClaudeCodeCaamProfile — opt-in activation knob", () => {
   test("reads the env var when no explicit config key is given", () => {
     expect(
       resolveClaudeCodeCaamProfile(undefined, {
-        [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "arthur",
+        [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "beta",
       }),
-    ).toBe("arthur");
+    ).toBe("beta");
   });
 
   test("an explicit config-key override wins over the env var", () => {

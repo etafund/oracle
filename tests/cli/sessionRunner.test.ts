@@ -3445,7 +3445,7 @@ describe("claude-code caam shallow-spawn integration (caam-map.md §4)", () => {
         {
           ...blockedClaudeCodeEnvDefaults,
           PATH: `${fixture.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
-          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "arthur",
+          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "beta",
         },
         async () => {
           await performSessionRun({
@@ -3463,10 +3463,10 @@ describe("claude-code caam shallow-spawn integration (caam-map.md §4)", () => {
 
       // Doctor pre-flight ran read-only, scoped to the right profile, before the spawn.
       const doctorArgv = JSON.parse(fs.readFileSync(doctorInvocationArgvPath, "utf8")) as string[];
-      expect(doctorArgv).toEqual(["shallow-spawn", "arthur", "--print-env", "--json"]);
+      expect(doctorArgv).toEqual(["shallow-spawn", "beta", "--print-env", "--json"]);
 
       // The outer command is exactly:
-      //   caam shallow-spawn arthur --base <oracleHome>/claude-code-shallow-homes -- <claude> <inner argv...>
+      //   caam shallow-spawn beta --base <oracleHome>/claude-code-shallow-homes -- <claude> <inner argv...>
       // where the inner argv is byte-for-byte buildClaudeCodeCommand()'s
       // own output — untouched by the caam wrapper (caam-map.md §4a).
       const shallowSpawnArgv = JSON.parse(
@@ -3475,7 +3475,7 @@ describe("claude-code caam shallow-spawn integration (caam-map.md §4)", () => {
       const expectedInner = buildClaudeCodeCommand({ executable: claudePath, model: "fable" });
       expect(shallowSpawnArgv).toEqual([
         "shallow-spawn",
-        "arthur",
+        "beta",
         "--base",
         path.join(fixture.oracleHome, "claude-code-shallow-homes"),
         "--",
@@ -3486,7 +3486,7 @@ describe("claude-code caam shallow-spawn integration (caam-map.md §4)", () => {
       expect(fs.readFileSync(caamMarkerPath, "utf8")).toBe("spawned\n");
 
       // Per-profile lock was used and released — not the global one.
-      expect(fs.existsSync(path.join(locksDir, "claude-code-subscription-arthur.lock"))).toBe(
+      expect(fs.existsSync(path.join(locksDir, "claude-code-subscription-beta.lock"))).toBe(
         false,
       );
       expect(fs.existsSync(globalLockPath)).toBe(true);
@@ -3521,12 +3521,12 @@ describe("claude-code caam shallow-spawn integration (caam-map.md §4)", () => {
 
       const locksDir = path.join(fixture.oracleHome, "locks");
       fs.mkdirSync(locksDir, { recursive: true, mode: 0o700 });
-      const profileLockPath = path.join(locksDir, "claude-code-subscription-arthur.lock");
+      const profileLockPath = path.join(locksDir, "claude-code-subscription-beta.lock");
       fs.writeFileSync(
         profileLockPath,
         `${JSON.stringify({
           schema_version: "claude_code_single_flight_lock.v1",
-          session_id: "busy-arthur-session",
+          session_id: "busy-beta-session",
           pid: process.pid,
           nonce: "busy-lock",
           created_at: "2026-07-02T00:00:00.000Z",
@@ -3538,7 +3538,7 @@ describe("claude-code caam shallow-spawn integration (caam-map.md §4)", () => {
         {
           ...blockedClaudeCodeEnvDefaults,
           PATH: `${fixture.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
-          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "arthur",
+          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "beta",
         },
         async () => {
           await expect(
@@ -3551,7 +3551,7 @@ describe("claude-code caam shallow-spawn integration (caam-map.md §4)", () => {
               write,
               version: cliVersion,
             }),
-          ).rejects.toThrow(/already running in session busy-arthur-session/);
+          ).rejects.toThrow(/already running in session busy-beta-session/);
         },
       );
 
@@ -3581,7 +3581,7 @@ describe("claude-code caam shallow-spawn integration (caam-map.md §4)", () => {
         {
           ...blockedClaudeCodeEnvDefaults,
           PATH: `${fixture.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
-          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "arthur",
+          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "beta",
         },
         async () => {
           await performSessionRun({
@@ -3607,7 +3607,7 @@ describe("claude-code caam shallow-spawn integration (caam-map.md §4)", () => {
       // The GLOBAL lock filename was used (no profile keying) and released.
       const locksDir = path.join(fixture.oracleHome, "locks");
       expect(fs.existsSync(path.join(locksDir, "claude-code-subscription.lock"))).toBe(false);
-      expect(fs.existsSync(path.join(locksDir, "claude-code-subscription-arthur.lock"))).toBe(
+      expect(fs.existsSync(path.join(locksDir, "claude-code-subscription-beta.lock"))).toBe(
         false,
       );
 
@@ -3736,7 +3736,7 @@ describe("claude-code caam rate-limit rotation (caam-ratelimit-rotation-design.m
         binDir: fixture.binDir,
         logsDir: fixture.logsDir,
         profileStdoutEvents: {
-          arthur: [fakeClaudeCodeInitEvent(), rateLimitResultEvent("Claude AI usage limit reached")],
+          beta: [fakeClaudeCodeInitEvent(), rateLimitResultEvent("Claude AI usage limit reached")],
         },
         robotNextResponses: [{ json: { success: true, data: { profile: "beth" } } }],
       });
@@ -3745,7 +3745,7 @@ describe("claude-code caam rate-limit rotation (caam-ratelimit-rotation-design.m
         {
           ...blockedClaudeCodeEnvDefaults,
           PATH: `${fixture.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
-          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "arthur",
+          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "beta",
         },
         async () => {
           await performSessionRun({
@@ -3763,16 +3763,16 @@ describe("claude-code caam rate-limit rotation (caam-ratelimit-rotation-design.m
 
       const doctorCalls = readJsonlLog(fixture.logsDir, "doctor-calls.jsonl");
       expect(doctorCalls).toEqual([
-        ["shallow-spawn", "arthur", "--print-env", "--json"],
+        ["shallow-spawn", "beta", "--print-env", "--json"],
         ["shallow-spawn", "beth", "--print-env", "--json"],
       ]);
 
       const shallowSpawnCalls = readJsonlLog(fixture.logsDir, "shallow-spawn-calls.jsonl") as string[][];
-      expect(shallowSpawnCalls.map((argv) => argv[1])).toEqual(["arthur", "beth"]);
+      expect(shallowSpawnCalls.map((argv) => argv[1])).toEqual(["beta", "beth"]);
 
       const cooldownCalls = readJsonlLog(fixture.logsDir, "cooldown-calls.jsonl") as string[][];
       expect(cooldownCalls).toHaveLength(1);
-      expect(cooldownCalls[0].slice(0, 4)).toEqual(["cooldown", "set", "claude/arthur", "--minutes"]);
+      expect(cooldownCalls[0].slice(0, 4)).toEqual(["cooldown", "set", "claude/beta", "--minutes"]);
       expect(cooldownCalls[0]).toContain("60");
       expect(cooldownCalls[0].at(-1)).toContain("rate_limit pattern");
 
@@ -3780,13 +3780,13 @@ describe("claude-code caam rate-limit rotation (caam-ratelimit-rotation-design.m
       expect(robotNextCalls).toEqual([["robot", "next", "claude", "--strategy", "smart"]]);
       expect(robotNextCalls[0]).not.toContain("--include-cooldown");
 
-      expect(fs.existsSync(path.join(fixture.logsDir, "markers", "arthur.marker"))).toBe(true);
+      expect(fs.existsSync(path.join(fixture.logsDir, "markers", "beta.marker"))).toBe(true);
       expect(fs.existsSync(path.join(fixture.logsDir, "markers", "beth.marker"))).toBe(true);
 
       // Both per-profile locks were released — not held simultaneously past
       // their own attempt.
       const locksDir = path.join(fixture.oracleHome, "locks");
-      expect(fs.existsSync(path.join(locksDir, "claude-code-subscription-arthur.lock"))).toBe(false);
+      expect(fs.existsSync(path.join(locksDir, "claude-code-subscription-beta.lock"))).toBe(false);
       expect(fs.existsSync(path.join(locksDir, "claude-code-subscription-beth.lock"))).toBe(false);
 
       const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
@@ -3801,7 +3801,7 @@ describe("claude-code caam rate-limit rotation (caam-ratelimit-rotation-design.m
         };
       };
       expect(adapter.rotation?.attempts).toEqual([
-        expect.objectContaining({ profile: "arthur", outcome: "rate_limited" }),
+        expect.objectContaining({ profile: "beta", outcome: "rate_limited" }),
         expect.objectContaining({ profile: "beth", outcome: "success" }),
       ]);
       expect(adapter.rotation?.final_profile).toBe("beth");
@@ -3821,7 +3821,7 @@ describe("claude-code caam rate-limit rotation (caam-ratelimit-rotation-design.m
         binDir: fixture.binDir,
         logsDir: fixture.logsDir,
         profileStdoutEvents: {
-          arthur: [
+          beta: [
             fakeClaudeCodeInitEvent(),
             rateLimitResultEvent("authentication failed, please log in again"),
           ],
@@ -3833,7 +3833,7 @@ describe("claude-code caam rate-limit rotation (caam-ratelimit-rotation-design.m
         {
           ...blockedClaudeCodeEnvDefaults,
           PATH: `${fixture.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
-          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "arthur",
+          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "beta",
         },
         async () => {
           await expect(
@@ -3920,7 +3920,7 @@ describe("claude-code caam rate-limit rotation (caam-ratelimit-rotation-design.m
         binDir: fixture.binDir,
         logsDir: fixture.logsDir,
         profileStdoutEvents: {
-          arthur: [
+          beta: [
             fakeClaudeCodeInitEvent(),
             benignSuccessResultEvent(
               "Implemented a token-bucket rate limiter that returns 429 when the quota is exceeded; unauthorized requests get 403.",
@@ -3938,7 +3938,7 @@ describe("claude-code caam rate-limit rotation (caam-ratelimit-rotation-design.m
         {
           ...blockedClaudeCodeEnvDefaults,
           PATH: `${fixture.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
-          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "arthur",
+          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "beta",
         },
         async () => {
           await performSessionRun({
@@ -3976,9 +3976,9 @@ describe("claude-code caam rate-limit rotation (caam-ratelimit-rotation-design.m
         };
       };
       expect(adapter.rotation?.attempts).toEqual([
-        expect.objectContaining({ profile: "arthur", outcome: "success" }),
+        expect.objectContaining({ profile: "beta", outcome: "success" }),
       ]);
-      expect(adapter.rotation?.final_profile).toBe("arthur");
+      expect(adapter.rotation?.final_profile).toBe("beta");
       expect(adapter.rotation?.rotations_used).toBe(0);
       expect(adapter.rotation?.exhausted).toBe(false);
     } finally {
@@ -3995,7 +3995,7 @@ describe("claude-code caam rate-limit rotation (caam-ratelimit-rotation-design.m
         binDir: fixture.binDir,
         logsDir: fixture.logsDir,
         profileStdoutEvents: {
-          arthur: [fakeClaudeCodeInitEvent(), rateLimitResultEvent("429 too many requests")],
+          beta: [fakeClaudeCodeInitEvent(), rateLimitResultEvent("429 too many requests")],
         },
         robotNextResponses: [
           {
@@ -4012,7 +4012,7 @@ describe("claude-code caam rate-limit rotation (caam-ratelimit-rotation-design.m
         {
           ...blockedClaudeCodeEnvDefaults,
           PATH: `${fixture.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
-          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "arthur",
+          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "beta",
         },
         async () => {
           await expect(
@@ -4058,7 +4058,7 @@ describe("claude-code caam rate-limit rotation (caam-ratelimit-rotation-design.m
         binDir: fixture.binDir,
         logsDir: fixture.logsDir,
         profileStdoutEvents: {
-          arthur: [fakeClaudeCodeInitEvent(), rateLimitResultEvent("usage limit reached")],
+          beta: [fakeClaudeCodeInitEvent(), rateLimitResultEvent("usage limit reached")],
         },
         cooldownResponses: [{ exitCode: 1, stderr: "Error: cooldown db unavailable\n" }],
         robotNextResponses: [{ json: { success: true, data: { profile: "beth" } } }],
@@ -4068,7 +4068,7 @@ describe("claude-code caam rate-limit rotation (caam-ratelimit-rotation-design.m
         {
           ...blockedClaudeCodeEnvDefaults,
           PATH: `${fixture.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
-          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "arthur",
+          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "beta",
         },
         async () => {
           await performSessionRun({
@@ -4104,16 +4104,16 @@ describe("claude-code caam rate-limit rotation (caam-ratelimit-rotation-design.m
         binDir: fixture.binDir,
         logsDir: fixture.logsDir,
         profileStdoutEvents: {
-          arthur: [fakeClaudeCodeInitEvent(), rateLimitResultEvent("usage limit reached")],
+          beta: [fakeClaudeCodeInitEvent(), rateLimitResultEvent("usage limit reached")],
         },
-        robotNextResponses: [{ json: { success: true, data: { profile: "arthur" } } }],
+        robotNextResponses: [{ json: { success: true, data: { profile: "beta" } } }],
       });
 
       await withExactEnv(
         {
           ...blockedClaudeCodeEnvDefaults,
           PATH: `${fixture.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
-          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "arthur",
+          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "beta",
         },
         async () => {
           await expect(
@@ -4155,7 +4155,7 @@ describe("claude-code caam rate-limit rotation (caam-ratelimit-rotation-design.m
         binDir: fixture.binDir,
         logsDir: fixture.logsDir,
         profileStdoutEvents: {
-          arthur: [fakeClaudeCodeInitEvent(), rateLimitResultEvent("rate limit on arthur")],
+          beta: [fakeClaudeCodeInitEvent(), rateLimitResultEvent("rate limit on beta")],
           beth: [fakeClaudeCodeInitEvent(), rateLimitResultEvent("rate limit on beth")],
         },
         robotNextResponses: [{ json: { success: true, data: { profile: "beth" } } }],
@@ -4165,7 +4165,7 @@ describe("claude-code caam rate-limit rotation (caam-ratelimit-rotation-design.m
         {
           ...blockedClaudeCodeEnvDefaults,
           PATH: `${fixture.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
-          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "arthur",
+          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "beta",
           [ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS_ENV_VAR]: "1",
         },
         async () => {
@@ -4184,7 +4184,7 @@ describe("claude-code caam rate-limit rotation (caam-ratelimit-rotation-design.m
         },
       );
 
-      // Original (arthur) + exactly 1 rotation (beth) — the cap stops there.
+      // Original (beta) + exactly 1 rotation (beth) — the cap stops there.
       expect(readJsonlLog(fixture.logsDir, "shallow-spawn-calls.jsonl")).toHaveLength(2);
       expect(readJsonlLog(fixture.logsDir, "robot-next-calls.jsonl")).toHaveLength(1);
 
