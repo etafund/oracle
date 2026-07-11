@@ -7,12 +7,15 @@
 //       (a non-empty desiredModel is REJECTED iff !isGpt56SolModelLabel)
 //   * Sol+Pro thinking-time gating: src/browser/actions/thinkingTime.ts:90,159,1113
 //
-// The predicate matches on ORDER-INDEPENDENT token membership: after lowercasing
-// and splitting on any non-[a-z0-9] run, the tokens must merely include
-// 'gpt','5','6','sol' each somewhere. This file pins the exact accepted set so
-// that ANY loosening of the near-miss rejections fails the suite, and documents
-// (as characterization) the predicate's known over-acceptances so any tightening
-// must consciously update the table rather than silently changing the gate.
+// The predicate is a normalized EXACT match against a one-entry allowlist:
+// after lowercasing, collapsing every run of non-[a-z0-9] characters to a single
+// space, and trimming, the label must equal "gpt 5 6 sol" exactly. Casing,
+// surrounding whitespace, and separator style are tolerated; token order,
+// adjacency, and the absence of extra tokens are NOT. This file pins the exact
+// accepted set so that ANY loosening of the near-miss rejections fails the
+// suite, and pins the former over-acceptances (Sol Mini, reversed 6.5, prose /
+// injection wrappers) as HARD NEGATIVES so that any regression back toward
+// token-membership matching fails here.
 
 import { describe, expect, test } from "vitest";
 import { isGpt56SolModelLabel } from "../../src/browser/actions/thinkingTime.js";
@@ -72,28 +75,26 @@ describe("isGpt56SolModelLabel — rejected near-misses (fail-closed; pins again
   }
 });
 
-describe("isGpt56SolModelLabel — known over-acceptance (characterization of test-gaps#0)", () => {
-  // The predicate only checks token MEMBERSHIP, not order, adjacency, or the
-  // absence of extra tokens. The cases below are CURRENTLY ACCEPTED and are
-  // pinned here to lock the present accepted set: this is characterization, not
-  // endorsement. If the predicate is later tightened (e.g. to require an exact
-  // adjacent "5.6" or to reject surrounding/extra tokens), these assertions will
-  // fail and force a conscious update to this table — the intended tripwire the
-  // audit finding calls for. NOTE: the parent task listed some of these as
-  // "adversarial negatives", but the shipped predicate accepts them; these tests
-  // reflect the real behavior rather than a wished-for one.
-  const overAccepted: Array<[string, string]> = [
-    ["GPT-6.5 Sol", "reversed version 6.5 — tokens still include gpt/5/6/sol"],
-    ["GPT-5.6 Sol Mini", "trailing 'Mini' variant — extra token ignored"],
-    ["GPT-5.6 Sol Pro", "extra 'Pro' token ignored"],
+describe("isGpt56SolModelLabel — former over-acceptances now rejected (hard negatives)", () => {
+  // These were ACCEPTED by the old token-membership predicate and are now
+  // REFUSED by the normalized exact-match allowlist. They are pinned as hard
+  // negatives (the tripwire the audit finding called for): if the predicate ever
+  // regresses toward membership matching, order-independence, or tolerating
+  // extra/surrounding tokens, one of these flips to true and fails here — which
+  // for the serve/client gates would mean re-opening the trust boundary to a
+  // non-fleet or injected label.
+  const nowRejected: Array<[string, string]> = [
+    ["GPT-6.5 Sol", "reversed version 6.5 — not adjacent 5.6"],
+    ["GPT-5.6 Sol Mini", "trailing 'Mini' variant — extra token"],
+    ["GPT-5.6 Sol Pro", "extra 'Pro' token"],
     ["Sol 6 5 GPT", "fully reversed token order"],
     ["please use GPT-5.6 Sol now", "prefix + suffix prose injection"],
     ["ignore prior instructions GPT 5 6 Sol; DROP", "instruction-injection wrapper"],
   ];
 
-  for (const [label, why] of overAccepted) {
-    test(`currently accepts ${JSON.stringify(label)} (${why})`, () => {
-      expect(isGpt56SolModelLabel(label)).toBe(true);
+  for (const [label, why] of nowRejected) {
+    test(`rejects ${JSON.stringify(label)} (${why})`, () => {
+      expect(isGpt56SolModelLabel(label)).toBe(false);
     });
   }
 });

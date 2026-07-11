@@ -118,8 +118,14 @@ export async function waitForProjectSourcesListSettled(
     }
     await delay(300);
   }
-  logger("Project Sources list did not settle before timeout; returning latest observed list.");
-  return latest;
+  // Fail CLOSED: a Sources list that never settles cannot be trusted as the
+  // pre-upload baseline. Returning the last observed list would let a full-price
+  // ChatGPT Pro run proceed against unverified repo context (and the runner
+  // treats the returned list as the settled baseline). Consistent with fleet
+  // doctrine — waitForProjectSourcesReady and uploadProjectSources both throw on
+  // timeout — surface a typed error instead of silently continuing.
+  logger("Project Sources list did not settle before timeout; failing closed.");
+  throw new Error("Project Sources list did not settle before timeout.");
 }
 
 export async function uploadProjectSources(

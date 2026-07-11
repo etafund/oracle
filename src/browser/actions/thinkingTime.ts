@@ -283,10 +283,12 @@ function buildThinkingTimeExpression(
       .replace(/\\s+/g, ' ')
       .trim();
     const hasToken = (text, token) => normalize(text).split(' ').includes(token);
-    const TARGET_IS_GPT56_SOL = (() => {
-      const target = normalize(TARGET_MODEL_LABEL);
-      return hasToken(target, 'gpt') && hasToken(target, '5') && hasToken(target, '6') && hasToken(target, 'sol');
-    })();
+    // Normalized EXACT match against the sole served label — mirrors the
+    // isGpt56SolModelLabel gate so the in-page Sol+Pro two-axis path and the
+    // serve/client label gates agree on what "GPT-5.6 Sol" is. Token membership
+    // would over-accept 'GPT-5.6 Sol Mini', reversed 'GPT-6.5 Sol', and prose
+    // wrappers; exact match refuses them.
+    const TARGET_IS_GPT56_SOL = normalize(TARGET_MODEL_LABEL) === 'gpt 5 6 sol';
     const matchesLevel = (text) => {
       const t = normalize(text);
       if (!t) return false;
@@ -1111,11 +1113,7 @@ function inferThinkingTargetModelKind(
   desiredModel?: string | null,
 ): "pro" | "thinking" | "instant" | null {
   if (isGpt56SolModelLabel(desiredModel)) return "pro";
-  const normalized = (desiredModel ?? "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  const normalized = normalizeModelLabel(desiredModel);
   if (!normalized) return null;
   const tokens = normalized.split(" ");
   if (tokens.includes("pro")) return "pro";
@@ -1124,16 +1122,33 @@ function inferThinkingTargetModelKind(
   return null;
 }
 
-export function isGpt56SolModelLabel(value?: string | null): boolean {
-  const tokens = (value ?? "")
+// Normalize a model label for exact-match gating: lowercase, collapse every run
+// of non-[a-z0-9] characters to a single space, and trim. This tolerates the
+// formatting variance the fleet legitimately sends (casing, surrounding
+// whitespace, and separator style — space / hyphen / dot / underscore /
+// non-breaking hyphen all fold to the same shape) while preserving token order,
+// adjacency, and the absence of extra tokens.
+function normalizeModelLabel(value?: string | null): string {
+  return (value ?? "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .replace(/\s+/g, " ")
-    .trim()
-    .split(" ");
-  return (
-    tokens.includes("gpt") && tokens.includes("5") && tokens.includes("6") && tokens.includes("sol")
-  );
+    .trim();
+}
+
+// The fleet serves exactly one model. Gating is a normalized EXACT match against
+// this allowlist — never token membership — so reordered version digits
+// ("GPT-6.5 Sol"), trailing variants ("GPT-5.6 Sol Mini"), extra tokens
+// ("GPT-5.6 Sol Pro"), and prose / instruction-injection wrappers around the
+// tokens are all refused. This predicate backs BOTH fleet money-path gates
+// (serve /runs admission fallback in src/remote/server.ts + the client fleet
+// pre-connect gate in src/remote/client.ts) plus the Sol+Pro
+// verify-before-submit gating in this module, so any loosening here widens the
+// trust boundary. See tests/browser/modelLabelGate.test.ts.
+const GPT_5_6_SOL_LABEL_ALLOWLIST: ReadonlySet<string> = new Set(["gpt 5 6 sol"]);
+
+export function isGpt56SolModelLabel(value?: string | null): boolean {
+  return GPT_5_6_SOL_LABEL_ALLOWLIST.has(normalizeModelLabel(value));
 }
 
 export function inferThinkingTargetModelKindForTest(

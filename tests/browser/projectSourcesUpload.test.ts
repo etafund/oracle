@@ -151,11 +151,12 @@ describe("waitForProjectSourcesListSettled", () => {
     useRealTime();
   });
 
-  test("fails open on a list that never settles: returns latest observed and logs", async () => {
-    // Truthful characterization: waitForProjectSourcesListSettled does NOT throw
-    // on a never-settling list — it logs and returns the latest observed list.
-    // The upstream runner treats this returned list as the settled baseline, so
-    // this fail-OPEN behavior is what a regression would need to preserve.
+  test("fails closed on a list that never settles: throws after the deadline and logs", async () => {
+    // Fleet doctrine: a Sources list that never settles cannot be trusted as the
+    // pre-upload baseline, so the helper fails CLOSED — it logs and THROWS a
+    // typed error rather than returning a half-observed list the runner would
+    // treat as settled. A regression back to fail-open (returning `latest`) must
+    // fail here.
     useFakeTime();
     const logger = makeLogger();
     let n = 0;
@@ -166,10 +167,9 @@ describe("waitForProjectSourcesListSettled", () => {
       },
     });
     const promise = waitForProjectSourcesListSettled(runtime, 5_000, logger);
+    const assertion = expect(promise).rejects.toThrow(/did not settle before timeout/i);
     await vi.advanceTimersByTimeAsync(6_000);
-    const result = await promise;
-    expect(result).toHaveLength(1);
-    expect(result[0]?.name).toMatch(/^changing-/);
+    await assertion;
     expect(logger).toHaveBeenCalledWith(expect.stringMatching(/did not settle/i));
     useRealTime();
   });

@@ -1,4 +1,9 @@
-import { APIConnectionError, APIConnectionTimeoutError } from "openai";
+// Import the OpenAI error classes from the lightweight `openai/error` submodule
+// (just tslib + core/error) instead of the `openai` barrel (which drags in the
+// full HTTP/streaming client), matching the pattern in src/oracle/errors.ts.
+// The submodule re-exports the exact same class objects, so `instanceof` is
+// unchanged.
+import { APIConnectionError, APIConnectionTimeoutError } from "openai/error";
 import chalk from "chalk";
 import { formatElapsed } from "./format.js";
 import { startHeartbeat } from "../heartbeat.js";

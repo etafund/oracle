@@ -49,7 +49,11 @@ import {
 } from "./pageActions.js";
 import { INPUT_SELECTORS } from "./constants.js";
 import { uploadAttachmentViaDataTransfer } from "./actions/remoteFileTransfer.js";
-import { ensureThinkingTime, type BrowserModeSelectionEvidence } from "./actions/thinkingTime.js";
+import {
+  ensureThinkingTime,
+  isGpt56SolModelLabel,
+  type BrowserModeSelectionEvidence,
+} from "./actions/thinkingTime.js";
 import { startThinkingStatusMonitor } from "./actions/thinkingStatus.js";
 import {
   activateDeepResearch,
@@ -1095,14 +1099,11 @@ function shouldRefreshInitialModelPicker(options: {
   return !options.resumeConversationUrl && !options.browserTabRef;
 }
 
+// Single source of truth for the "is this the served GPT-5.6 Sol label" gate:
+// delegate to isGpt56SolModelLabel (normalized exact-match allowlist) so this
+// Sol+Pro protection gate and the serve/client fleet gates can never diverge.
 function isDesiredGpt56SolModel(model: string | null | undefined): boolean {
-  if (typeof model !== "string") return false;
-  const tokens = model
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/gu, " ")
-    .trim()
-    .split(/\s+/u);
-  return ["gpt", "5", "6", "sol"].every((token) => tokens.includes(token));
+  return isGpt56SolModelLabel(model);
 }
 
 function mergeModeSelectionEvidence(
@@ -2223,6 +2224,13 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       stopThinkingMonitor?.();
       stopThinkingMonitor = startThinkingStatusMonitor(Runtime, logger, {
         intervalMs: options.heartbeatIntervalMs,
+        // Structured run_progress.v1 liveness rides on the same heartbeat ticks,
+        // gated by ORACLE_RUN_PROGRESS_JSON and written to stderr (stdout stays
+        // reserved for the final --json envelope).
+        runProgress: {
+          runId: options.sessionId ?? "browser",
+          timeoutMs: config.timeoutMs,
+        },
       });
       try {
         return await operation();
@@ -3899,6 +3907,13 @@ async function runRemoteBrowserMode(
       stopThinkingMonitor?.();
       stopThinkingMonitor = startThinkingStatusMonitor(Runtime, logger, {
         intervalMs: options.heartbeatIntervalMs,
+        // Structured run_progress.v1 liveness rides on the same heartbeat ticks,
+        // gated by ORACLE_RUN_PROGRESS_JSON and written to stderr (stdout stays
+        // reserved for the final --json envelope).
+        runProgress: {
+          runId: options.sessionId ?? "browser",
+          timeoutMs: config.timeoutMs,
+        },
       });
       try {
         return await operation();

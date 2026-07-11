@@ -1,6 +1,12 @@
 import type { BrowserLogger, ChromeClient } from "../types.js";
 import { formatElapsed } from "../../oracle/format.js";
 import {
+  buildRunProgressEvent,
+  progressPercentFromElapsed,
+  type RunProgressState,
+} from "../../oracle/v18/run_progress.js";
+import type { RunProgress } from "../../oracle/v18/index.js";
+import {
   ASSISTANT_ROLE_SELECTOR,
   CONVERSATION_TURN_SELECTOR,
   STOP_BUTTON_SELECTORS,
@@ -19,6 +25,14 @@ export interface ThinkingStatusSnapshot {
 interface ThinkingStatusMonitorOptions {
   intervalMs?: number;
   now?: () => number;
+  /**
+   * Optional structured `run_progress.v1` emission for the browser lane. When
+   * enabled (see {@link ThinkingStatusRunProgressOptions.enabled}), each
+   * heartbeat tick also emits one run_progress NDJSON line — the same schema
+   * the API lane emits — to a stderr sink, so a `--json` / detached poller gets
+   * a machine-readable liveness signal instead of only prose.
+   */
+  runProgress?: ThinkingStatusRunProgressOptions;
 }
 
 export function startThinkingStatusMonitor(
@@ -31,6 +45,7 @@ export function startThinkingStatusMonitor(
     return () => {};
   }
   const now = options.now ?? Date.now;
+  const runProgress = resolveThinkingRunProgress(options.runProgress);
   let stopped = false;
   let pending = false;
   let lastFingerprint: string | null = null;
@@ -48,6 +63,7 @@ export function startThinkingStatusMonitor(
         return;
       }
       const tickAt = now();
+      let unchangedMs = 0;
       if (snapshot) {
         const fingerprint = buildThinkingStatusFingerprint(snapshot);
         if (fingerprint !== lastFingerprint) {
@@ -57,9 +73,24 @@ export function startThinkingStatusMonitor(
         if (stopped) {
           return;
         }
-        logger(formatThinkingLog(startedAt, tickAt, snapshot, "", tickAt - lastChangedAt));
+        unchangedMs = tickAt - lastChangedAt;
+        logger(formatThinkingLog(startedAt, tickAt, snapshot, "", unchangedMs));
       } else {
         logger(formatThinkingWaitingLog(startedAt, tickAt));
+      }
+      if (runProgress && !stopped) {
+        runProgress.emit(
+          JSON.stringify(
+            buildBrowserThinkingRunProgress({
+              runId: runProgress.runId,
+              phase: runProgress.phase,
+              elapsedMs: tickAt - startedAt,
+              timeoutMs: runProgress.timeoutMs,
+              snapshot,
+              unchangedMs,
+            }),
+          ),
+        );
       }
     } catch {
       // ignore DOM polling errors
@@ -75,6 +106,138 @@ export function startThinkingStatusMonitor(
     }
     stopped = true;
     clearInterval(interval);
+  };
+}
+
+// ─── run_progress.v1 emission adapter (browser lane) ─────────────────────────
+//
+// The browser lanes historically emitted only prose heartbeat lines, so a
+// 5–60 min ChatGPT Pro run is a black box to an agent polling for liveness.
+// This adapter maps the same monitor signals (UI %, elapsed, status label,
+// stale-hint, phase) into the documented `run_progress.v1` schema, gated by the
+// same env flag the API lane reads (ORACLE_RUN_PROGRESS_JSON=1) and written to
+// stderr so stdout stays reserved for the final envelope in --json mode.
+
+/** Coarse browser-lane phase; drives current_stage and the progress state. */
+export type BrowserRunProgressPhase = "submit" | "verify" | "thinking" | "capture";
+
+export interface BrowserThinkingProgressTick {
+  /** run_progress `run_id` — the session id in practice. */
+  readonly runId: string;
+  /** Coarse phase; drives current_stage + state. Defaults to "thinking". */
+  readonly phase?: BrowserRunProgressPhase;
+  /** Monotonic elapsed time since the wait started, in ms. */
+  readonly elapsedMs: number;
+  /** Overall run timeout; used for elapsed-based percent when no UI % exists. */
+  readonly timeoutMs?: number;
+  /** Latest thinking-status snapshot, or null when none was detected yet. */
+  readonly snapshot: ThinkingStatusSnapshot | null;
+  /** ms since the snapshot fingerprint last changed (stale-hint source). */
+  readonly unchangedMs?: number;
+  /** Injected clock for a deterministic `last_event_at` in tests. */
+  readonly now?: Date;
+}
+
+const BROWSER_RUN_PROGRESS_PROFILE = "browser";
+
+function browserPhaseState(phase: BrowserRunProgressPhase): RunProgressState {
+  return phase === "thinking" ? "thinking" : "running";
+}
+
+/**
+ * Build one `run_progress.v1` event from a browser thinking-status tick. Pure
+ * and deterministic given `now`, so the emission adapter can be unit-tested by
+ * feeding fake ticks and asserting the resulting NDJSON.
+ */
+export function buildBrowserThinkingRunProgress(tick: BrowserThinkingProgressTick): RunProgress {
+  const phase = tick.phase ?? "thinking";
+  const snapshot = tick.snapshot;
+  const uiPercent =
+    snapshot &&
+    typeof snapshot.progressPercent === "number" &&
+    Number.isFinite(snapshot.progressPercent)
+      ? Math.max(0, Math.min(100, Math.round(snapshot.progressPercent)))
+      : null;
+  const progressPercent = uiPercent ?? progressPercentFromElapsed(tick.elapsedMs, tick.timeoutMs);
+  const unchangedMs = Math.max(0, tick.unchangedMs ?? 0);
+  const staleHint = unchangedMs >= THINKING_STALE_HINT_MS;
+  const statusLabel = snapshot?.message ?? (snapshot ? "active" : "waiting");
+  const elapsedText = formatElapsed(Math.max(0, tick.elapsedMs));
+  const userVisibleMessage = snapshot
+    ? `ChatGPT ${phase} — ${elapsedText} elapsed${
+        uiPercent != null ? `, ${uiPercent}% UI progress` : ""
+      }${staleHint ? " (stale: no UI progress change)" : ""}.`
+    : `Waiting for ChatGPT response — ${elapsedText} elapsed; no thinking status detected yet.`;
+  return buildRunProgressEvent({
+    run_id: tick.runId,
+    profile: BROWSER_RUN_PROGRESS_PROFILE,
+    state: browserPhaseState(phase),
+    current_stage: `browser_${phase}`,
+    progress_percent: progressPercent,
+    user_visible_message: userVisibleMessage,
+    now: tick.now,
+    extras: {
+      lane: "browser",
+      elapsed_ms: Math.max(0, Math.round(tick.elapsedMs)),
+      ui_progress_percent: uiPercent,
+      status_label: statusLabel,
+      source: snapshot?.source ?? null,
+      stale_hint: staleHint,
+    },
+  });
+}
+
+/** NDJSON sink for run_progress lines. Defaults to a single stderr write. */
+export type RunProgressLineSink = (line: string) => void;
+
+function defaultRunProgressSink(line: string): void {
+  // stderr only: stdout is reserved for the final --json envelope.
+  process.stderr.write(`${line}\n`);
+}
+
+export interface ThinkingStatusRunProgressOptions {
+  /** run_progress `run_id` (session id in practice). */
+  readonly runId: string;
+  /** Overall run timeout for the elapsed-based percent fallback. */
+  readonly timeoutMs?: number;
+  /** Coarse phase; defaults to "thinking". */
+  readonly phase?: BrowserRunProgressPhase;
+  /**
+   * Force emission on/off. When omitted, resolves from
+   * `ORACLE_RUN_PROGRESS_JSON==="1"` — the same env-flag path the API lane uses.
+   */
+  readonly enabled?: boolean;
+  /** NDJSON sink; defaults to process.stderr (stdout stays clean). */
+  readonly emit?: RunProgressLineSink;
+}
+
+interface ResolvedThinkingRunProgress {
+  readonly runId: string;
+  readonly timeoutMs?: number;
+  readonly phase: BrowserRunProgressPhase;
+  readonly emit: RunProgressLineSink;
+}
+
+/** Whether the browser lane should emit run_progress.v1 events, from env. */
+export function shouldEmitBrowserRunProgress(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.ORACLE_RUN_PROGRESS_JSON === "1";
+}
+
+function resolveThinkingRunProgress(
+  options: ThinkingStatusRunProgressOptions | undefined,
+): ResolvedThinkingRunProgress | null {
+  if (!options) {
+    return null;
+  }
+  const enabled = options.enabled ?? shouldEmitBrowserRunProgress();
+  if (!enabled) {
+    return null;
+  }
+  return {
+    runId: options.runId,
+    timeoutMs: options.timeoutMs,
+    phase: options.phase ?? "thinking",
+    emit: options.emit ?? defaultRunProgressSink,
   };
 }
 
