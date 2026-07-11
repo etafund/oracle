@@ -30,39 +30,24 @@ function readPositiveIntEnv(name: string, fallback: number): number {
 // Terminal-completion gate. A turn is finalized only on POSITIVE proof it is done — never on
 // the mere "stop control absent + text stable" inference, which a settled GPT-5.5 Pro preamble
 // satisfies during the brief gap before it enters its thinking/tool phase.
-//   proofA: the finished-action bar is present for barConfirmCycles consecutive quiet cycles
-//           (debounces the transient mid-thinking action-bar flash). A debounced bar is the
-//           strongest positive signal, so it is NOT vetoed by thinking activity.
-//   proofB: a generous continuous-quiet window with no strong activity or changing weak sidecar
-//           evidence — the fallback that recovers an answer whose action-bar selector drifted.
-// Any text growth, a visible stop control, or active thinking resets the quiet clock, so a
-// preamble cannot reach the terminal state: it is held until the reasoning phase ends and the
-// real answer streams (then proofA/proofB fire on the real answer). Tunable via env for live
-// calibration without a rebuild.
+// The finished-action bar must be present for barConfirmCycles consecutive stable cycles. This
+// debounces the transient mid-thinking action-bar flash, binds completion to the sampled turn,
+// and never treats elapsed quiet as proof: selector drift fails closed instead of finalizing a
+// stable preamble. Tunable via env for live calibration without a rebuild.
 export interface TerminalGateConfig {
   barConfirmCycles: number;
-  quietMs: number;
   minStableMs: number;
-  // Below this length, the quiet fallback (proofB) is NOT trusted: an implausibly short
-  // capture must be proven by the action bar (proofA), else it is refused (fail fast). This
-  // preserves the #293 guard against finalizing a 1-2 token mid-stream stub.
-  minAnswerLen: number;
 }
 
 const TERMINAL_GATE_CONFIG: TerminalGateConfig = {
   barConfirmCycles: readPositiveIntEnv("ORACLE_BAR_CONFIRM_CYCLES", 3),
-  quietMs: readPositiveIntEnv("ORACLE_TERMINAL_QUIET_MS", 12_000),
   minStableMs: readPositiveIntEnv("ORACLE_TERMINAL_MIN_STABLE_MS", 1_200),
-  minAnswerLen: MIN_CONFIDENT_ANSWER_LENGTH,
 };
 
 export interface TerminalGateState {
   lastKey: string;
   lastChangeAt: number;
-  lastDisturbanceAt: number;
   barStableCycles: number;
-  lastWeakKey: string;
-  lastWeakChangeAt: number;
   seen: boolean;
 }
 
@@ -75,21 +60,16 @@ export interface TerminalSample {
   contentKey: string;
   stopVisible: boolean;
   barVisible: boolean;
-  thinkingActive: boolean;
   // Strong signals prove live work (stop/shimmer/aria-busy/status/progress). Weak activity is
   // limited to a heuristic sidecar match that can linger after completion.
   strongThinkingActive: boolean;
-  thinkingKey?: string;
 }
 
 export function createTerminalGateState(now: number): TerminalGateState {
   return {
     lastKey: "",
     lastChangeAt: now,
-    lastDisturbanceAt: now,
     barStableCycles: 0,
-    lastWeakKey: "",
-    lastWeakChangeAt: now,
     seen: false,
   };
 }
@@ -103,12 +83,6 @@ export function classifyTurnTerminal(
 ): { state: TerminalGateState; terminal: boolean } {
   const changed = !state.seen || sample.contentKey !== state.lastKey;
   const lastChangeAt = changed ? sample.now : state.lastChangeAt;
-  const weakActive = sample.thinkingActive && !sample.strongThinkingActive;
-  const weakKey = weakActive ? (sample.thinkingKey ?? "unknown-weak-activity") : "";
-  const weakChanged = weakActive && weakKey !== state.lastWeakKey;
-  const lastWeakChangeAt = weakChanged ? sample.now : state.lastWeakChangeAt;
-  const disturbed = changed || sample.stopVisible || sample.strongThinkingActive || weakChanged;
-  const lastDisturbanceAt = disturbed ? sample.now : state.lastDisturbanceAt;
   // proofA debounce: weak/stale sidecar evidence may be overridden, but strong live activity
   // must reset the debounce. It also resets on ANY content change so a bar that appears while
   // the answer is still rendering (the transient-bar / first-tokens race) cannot finalize.
@@ -119,39 +93,22 @@ export function classifyTurnTerminal(
   const next: TerminalGateState = {
     lastKey: sample.contentKey,
     lastChangeAt,
-    lastDisturbanceAt,
     barStableCycles,
-    lastWeakKey: weakKey,
-    lastWeakChangeAt,
     seen: true,
   };
 
   let terminal = false;
   if (!sample.stopVisible && sample.len > 0) {
-    const quietMs = sample.now - lastDisturbanceAt;
     const stableMs = sample.now - lastChangeAt;
-    // proofA — debounced action bar AND content stable for a minimum time. The time-stability
+    // Debounced action bar AND content stable for a minimum time. The time-stability
     // requirement guards the documented race where finished-action controls surface while only
     // the first tokens have rendered. Weak sidecar evidence cannot hang a finished turn, but
     // strong live activity vetoes this proof and restarts its debounce.
-    const barProof =
+    terminal =
       sample.barVisible &&
       !sample.strongThinkingActive &&
       barStableCycles >= config.barConfirmCycles &&
       stableMs >= config.minStableMs;
-    // proofB — generous quiet with no strong activity. Changing weak sidecar evidence keeps
-    // resetting the window; static weak evidence must age for at least a minute so a stale
-    // mounted panel cannot veto selector-drift recovery forever. Implausibly short captures
-    // remain action-bar-only.
-    const weakEvidenceAged =
-      !weakActive || sample.now - lastWeakChangeAt >= Math.max(config.quietMs * 5, 60_000);
-    const quietProof =
-      !sample.strongThinkingActive &&
-      weakEvidenceAged &&
-      sample.len >= config.minAnswerLen &&
-      stableMs >= config.minStableMs &&
-      quietMs >= config.quietMs;
-    terminal = barProof || quietProof;
   }
   return { state: next, terminal };
 }
@@ -675,8 +632,7 @@ async function pollAssistantCompletion(
     const snapshot = await readAssistantSnapshot(Runtime, minTurnIndex, expectedConversationId);
     const normalized = normalizeAssistantSnapshot(snapshot);
     if (normalized) {
-      // Generated-image answers stream no text and mount no action bar; accept immediately
-      // (kept BEFORE the terminal gate so they never wait out the quiet window).
+      // Generated-image answers stream no text and mount no action bar; accept immediately.
       if (isGeneratedImageAssistantAnswer(normalized)) {
         return normalized;
       }
@@ -695,9 +651,7 @@ async function pollAssistantCompletion(
           contentKey: `${normalized.meta.messageId ?? normalized.meta.turnId ?? ""}::${normalized.text}`,
           stopVisible,
           barVisible,
-          thinkingActive: thinkingActivity.active,
           strongThinkingActive: thinkingActivity.strong,
-          thinkingKey: thinkingActivity.key,
         },
         TERMINAL_GATE_CONFIG,
       );
@@ -707,7 +661,7 @@ async function pollAssistantCompletion(
       }
     } else {
       // The turn disappeared/reset (navigation, re-render): restart the gate so a stale
-      // quiet streak cannot carry over onto a fresh turn.
+      // action-bar debounce cannot carry over onto a fresh turn.
       gate = createTerminalGateState(Date.now());
     }
     await delay(400);
@@ -819,9 +773,14 @@ function buildCompletionVisibilityExpression(
 
 async function isCompletionVisible(
   Runtime: ChromeClient["Runtime"],
-  meta: { turnId?: string | null; messageId?: string | null },
+  meta: {
+    turnId?: string | null;
+    messageId?: string | null;
+    completionVisible?: boolean;
+  },
   minTurnIndex?: number,
 ): Promise<boolean> {
+  if (hasScopedCompletionProof(meta)) return true;
   try {
     const { result } = await Runtime.evaluate({
       expression: buildCompletionVisibilityExpression(meta, minTurnIndex),
@@ -833,12 +792,20 @@ async function isCompletionVisible(
   }
 }
 
+export function hasScopedCompletionProof(meta: { completionVisible?: boolean }): boolean {
+  return meta.completionVisible === true;
+}
+
 export const buildCompletionVisibilityExpressionForTest = buildCompletionVisibilityExpression;
 
 function normalizeAssistantSnapshot(snapshot: AssistantSnapshot | null): {
   text: string;
   html?: string;
-  meta: { turnId?: string | null; messageId?: string | null };
+  meta: {
+    turnId?: string | null;
+    messageId?: string | null;
+    completionVisible?: boolean;
+  };
 } | null {
   const text = snapshot?.text ? cleanAssistantText(snapshot.text) : "";
   if (!text.trim()) {
@@ -857,7 +824,11 @@ function normalizeAssistantSnapshot(snapshot: AssistantSnapshot | null): {
   return {
     text,
     html: snapshot?.html ?? undefined,
-    meta: { turnId: snapshot?.turnId ?? undefined, messageId: snapshot?.messageId ?? undefined },
+    meta: {
+      turnId: snapshot?.turnId ?? undefined,
+      messageId: snapshot?.messageId ?? undefined,
+      ...(snapshot?.completionVisible === true ? { completionVisible: true } : {}),
+    },
   };
 }
 
@@ -1398,7 +1369,14 @@ function buildMarkdownFallbackExtractor(minTurnLiteral?: string): string {
       if (isUserEcho(text)) continue;
       const html = node.innerHTML ?? '';
       const turnIndex = resolveTurnIndex(node);
-      return { text, html, messageId: null, turnId: null, turnIndex };
+      return {
+        text,
+        html,
+        messageId: null,
+        turnId: null,
+        turnIndex,
+        completionVisible: actionMarkdowns.includes(node),
+      };
     }
     return null;
   })`;
@@ -1584,6 +1562,7 @@ interface AssistantSnapshot {
   messageId?: string | null;
   turnId?: string | null;
   turnIndex?: number | null;
+  completionVisible?: boolean;
 }
 
 const LANGUAGE_TAGS = new Set(

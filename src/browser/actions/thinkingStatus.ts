@@ -484,7 +484,7 @@ function buildThinkingActivityPredicateJs(fnName: string, detailed: boolean): st
   const conversationLiteral = JSON.stringify(CONVERSATION_TURN_SELECTOR);
   const assistantLiteral = JSON.stringify(ASSISTANT_ROLE_SELECTOR);
   const strong = detailed ? "{ active: true, strong: true }" : "true";
-  const weak = detailed ? "{ active: true, strong: false, key: sidecarText }" : "true";
+  const weak = detailed ? "{ active: true, strong: false }" : "true";
   const idle = detailed ? "{ active: false, strong: false }" : "false";
   return `const ${fnName} = () => {
     const STOP_SELECTOR = ${stopLiteral};
@@ -642,7 +642,6 @@ function buildThinkingActivityPredicateJs(fnName: string, detailed: boolean): st
       // A text-only sidecar match is intentionally weak: completed turns can retain a mounted
       // reasoning panel whose shape/text heuristics still look active. The terminal gate may
       // override only this weak evidence after a stable, debounced finished-action bar.
-      const sidecarText = norm(node.textContent) || norm(node.getAttribute?.('aria-label'));
       if (rightSide && looksLikeThinking(node)) return ${weak};
     }
     return ${idle};
@@ -656,7 +655,6 @@ export function buildThinkingActivePredicateJs(fnName: string): string {
 export interface ThinkingActivity {
   active: boolean;
   strong: boolean;
-  key?: string;
 }
 
 export function buildThinkingActivityDetailsPredicateJs(fnName: string): string {
@@ -675,11 +673,7 @@ export async function readThinkingActivity(
       returnByValue: true,
     });
     const value = result?.value as Partial<ThinkingActivity> | undefined;
-    return {
-      active: Boolean(value?.active),
-      strong: Boolean(value?.strong),
-      key: typeof value?.key === "string" ? value.key : undefined,
-    };
+    return { active: Boolean(value?.active), strong: Boolean(value?.strong) };
   } catch {
     return { active: false, strong: false };
   }

@@ -4,9 +4,11 @@ import {
   buildActiveThinkingStatusPredicateJsForTest,
   buildAssistantSnapshotExpressionForTest,
   buildCompletionVisibilityExpressionForTest,
+  buildMarkdownFallbackExtractorForTest,
   buildStopButtonVisibilityExpressionForTest,
   classifyTurnTerminal,
   createTerminalGateState,
+  hasScopedCompletionProof,
   matchesThinkingStatusLabelForTest,
   type TerminalGateConfig,
   type TerminalSample,
@@ -230,14 +232,22 @@ describe("completion action correlation", () => {
       false,
     );
   });
+
+  test("accepts completion controls scoped by the fallback extractor", () => {
+    expect(hasScopedCompletionProof({ completionVisible: true })).toBe(true);
+    expect(hasScopedCompletionProof({})).toBe(false);
+  });
+
+  test("fallback snapshots carry only node-scoped completion evidence", () => {
+    const expression = buildMarkdownFallbackExtractorForTest("1");
+    expect(expression).toContain("completionVisible: actionMarkdowns.includes(node)");
+  });
 });
 
 describe("classifyTurnTerminal", () => {
   const config: TerminalGateConfig = {
     barConfirmCycles: 3,
-    quietMs: 1_000,
     minStableMs: 200,
-    minAnswerLen: 16,
   };
 
   // Drive the pure classifier over a sequence of samples (each 400ms apart by default),
@@ -259,9 +269,7 @@ describe("classifyTurnTerminal", () => {
         contentKey: partial.contentKey ?? String(partial.len),
         stopVisible: partial.stopVisible ?? false,
         barVisible: partial.barVisible ?? false,
-        thinkingActive: partial.thinkingActive ?? false,
         strongThinkingActive: partial.strongThinkingActive ?? false,
-        thinkingKey: partial.thinkingKey,
       };
       const result = classifyTurnTerminal(state, sample, cfg);
       state = result.state;
@@ -285,8 +293,7 @@ describe("classifyTurnTerminal", () => {
     // settle gap: stop gone, no bar, no thinking yet (the exact window the bug exploited)
     for (let i = 0; i < 2; i++) samples.push({ len: 150 });
     // thinking phase mounts (connector/reasoning)
-    for (let i = 0; i < 10; i++)
-      samples.push({ len: 150, thinkingActive: true, strongThinkingActive: true });
+    for (let i = 0; i < 10; i++) samples.push({ len: 150, strongThinkingActive: true });
     // real answer streams after thinking, bar appears and debounces
     samples.push({ len: 600, stopVisible: true });
     samples.push({ len: 900, stopVisible: true });
@@ -315,10 +322,10 @@ describe("classifyTurnTerminal", () => {
   test("proofA fires even if weak stale-sidecar evidence lingers", () => {
     const out = runGate([
       { len: 800, stopVisible: true },
-      { len: 800, barVisible: true, thinkingActive: true },
-      { len: 800, barVisible: true, thinkingActive: true },
-      { len: 800, barVisible: true, thinkingActive: true },
-      { len: 800, barVisible: true, thinkingActive: true },
+      { len: 800, barVisible: true },
+      { len: 800, barVisible: true },
+      { len: 800, barVisible: true },
+      { len: 800, barVisible: true },
     ]);
     // Weak activity can be a stale mounted sidecar; the debounced bar may override it.
     expect(out.at(-1)).toBe(true);
@@ -332,7 +339,6 @@ describe("classifyTurnTerminal", () => {
       samples.push({
         len: 800,
         barVisible: true,
-        thinkingActive: true,
         strongThinkingActive: true,
       });
     }
@@ -369,18 +375,16 @@ describe("classifyTurnTerminal", () => {
     expect(out.some(Boolean)).toBe(false);
   });
 
-  test("proofB: a bar-drifted answer finalizes after the quiet window with no thinking", () => {
+  test("does not finalize stable text without correlated completion controls", () => {
     const samples: Array<Partial<TerminalSample> & { len: number }> = [
       { len: 800, stopVisible: true },
     ];
-    // stop gone, no bar (selector drift), no thinking: quiet accrues at 400ms/cycle.
     for (let i = 0; i < 8; i++) samples.push({ len: 800 });
     const out = runGate(samples);
-    // quietMs must reach 1000ms (config) -> terminal by ~cycle 3 after streaming stopped.
-    expect(out.some(Boolean)).toBe(true);
+    expect(out.some(Boolean)).toBe(false);
   });
 
-  test("proofB is withheld for an implausibly short capture (must be proven by the bar)", () => {
+  test("an implausibly short capture still requires correlated completion controls", () => {
     const samples: Array<Partial<TerminalSample> & { len: number }> = [{ len: 1 }];
     for (let i = 0; i < 20; i++) samples.push({ len: 1 }); // stable "I", quiet, no bar/thinking
     const out = runGate(samples);
@@ -397,46 +401,14 @@ describe("classifyTurnTerminal", () => {
     expect(out.at(-1)).toBe(true);
   });
 
-  test("proofB does not fire while thinking stays active", () => {
-    const samples: Array<Partial<TerminalSample> & { len: number }> = [
-      { len: 800, stopVisible: true },
-    ];
-    for (let i = 0; i < 20; i++)
-      samples.push({ len: 800, thinkingActive: true, strongThinkingActive: true });
-    const out = runGate(samples);
-    expect(out.some(Boolean)).toBe(false);
-  });
-
-  test("proofB eventually recovers from static weak sidecar evidence", () => {
-    const samples: Array<Partial<TerminalSample> & { len: number }> = [
-      { len: 800, stopVisible: true },
-    ];
-    for (let i = 0; i < 8; i++)
-      samples.push({ len: 800, thinkingActive: true, thinkingKey: "reasoning" });
-    const out = runGate(samples, config, 10_000);
-    expect(out.at(-1)).toBe(true);
-  });
-
-  test("proofB keeps waiting while weak sidecar content changes", () => {
-    const samples: Array<Partial<TerminalSample> & { len: number }> = [
-      { len: 800, stopVisible: true },
-    ];
-    for (let i = 0; i < 8; i++)
-      samples.push({ len: 800, thinkingActive: true, thinkingKey: `trace-${i}` });
-    const out = runGate(samples, config, 10_000);
-    expect(out.some(Boolean)).toBe(false);
-  });
-
-  test("text growth resets the quiet clock (no premature finalize mid-stream)", () => {
-    // A mid-stream pause shorter than the quiet window, then more text -> not terminal at the pause.
+  test("text growth resets the action-bar debounce", () => {
     const out = runGate([
-      { len: 100, stopVisible: false },
-      { len: 100 }, // 400ms quiet
-      { len: 100 }, // 800ms quiet (< 1000ms)
-      { len: 200 }, // grew -> resets quiet
-      { len: 200 },
+      { len: 100, barVisible: true },
+      { len: 100, barVisible: true },
+      { len: 200, barVisible: true },
+      { len: 200, barVisible: true },
     ]);
-    expect(out.slice(0, 4).some(Boolean)).toBe(false);
+    expect(out.some(Boolean)).toBe(false);
   });
 });
 
@@ -659,7 +631,6 @@ describe("thinking-active completion veto", () => {
     expect(evalThinkingActivityDetails({ panel })).toEqual({
       active: true,
       strong: false,
-      key: "reasoning",
     });
   });
 
