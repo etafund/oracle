@@ -16,6 +16,13 @@
 #   3. it hits /health and asserts the LIVE build.commit matches what was
 #      shipped AND that uptimeSeconds is tiny (proving a real restart, not a
 #      stale process). If either check fails, the script exits non-zero.
+#   4. once the new build is proven LIVE, it refreshes the on-box fleet
+#      manifest.json `oracle_commit` field to the just-deployed commit, so the
+#      recorded manifest can never lag the running binary (oracle-router-6z8:
+#      the on-box manifest previously kept a stale shipping-gate commit while
+#      the binary rolled forward). Value-only, format-preserving, atomic; if the
+#      manifest is absent or the refresh hiccups, the (already successful) binary
+#      deploy is NOT rolled back — the skew is just reported loudly.
 #
 # It supports both real fleet layouts, via flags (nothing is baked in):
 #   * templated multi-lane user units, e.g. oracle-serve@9473.service
@@ -44,8 +51,12 @@ REMOTE_STAGE_DIR="/tmp"      # where the tarball lands before install
 JOURNAL_WINDOW="-6 hours"    # journalctl --since window for the idle guard
 RESTART_SLEEP="2"            # seconds to wait after restart before is-active
 MAX_UPTIME="120"             # uptimeSeconds must be below this to prove restart
+# Literal tilde on purpose: expanded against the REMOTE $HOME on the box.
+# shellcheck disable=SC2088
+MANIFEST_PATH="~/.config/oracle-fleet/manifest.json"  # on-box fleet manifest to refresh
 DRY_RUN=""
 SKIP_IDLE=""
+SKIP_MANIFEST_REFRESH=""     # if set, do NOT refresh the on-box manifest oracle_commit
 
 declare -a SERVICES=()
 declare -a HEALTH_PORTS=()
@@ -98,6 +109,11 @@ OPTIONS:
   --archive-prefix <name>  Base name for the durable ~/<prefix>-<ver>-<sha>.tgz
                            archive. Defaults to the tarball's own package name.
   --remote-stage-dir <dir> Remote dir to scp the tarball into.  (default: $REMOTE_STAGE_DIR)
+  --manifest-path <path>   On-box fleet manifest.json whose oracle_commit is
+                           refreshed to the deployed commit after a successful
+                           verify.                          (default: $MANIFEST_PATH)
+  --skip-manifest-refresh  Do NOT refresh the on-box manifest oracle_commit
+                           (leaves it as-is even after a successful deploy).
   --since <window>         journalctl --since window for the idle guard.
                                                             (default: "$JOURNAL_WINDOW")
   --restart-sleep <sec>    Pause after restart before is-active.  (default: $RESTART_SLEEP)
@@ -151,6 +167,8 @@ while [ $# -gt 0 ]; do
     --expected-commit) EXPECTED_COMMIT="${2:?"--expected-commit needs a value"}"; shift 2 ;;
     --archive-prefix) ARCHIVE_PREFIX="${2:?"--archive-prefix needs a value"}"; shift 2 ;;
     --remote-stage-dir) REMOTE_STAGE_DIR="${2:?"--remote-stage-dir needs a value"}"; shift 2 ;;
+    --manifest-path) MANIFEST_PATH="${2:?"--manifest-path needs a value"}"; shift 2 ;;
+    --skip-manifest-refresh) SKIP_MANIFEST_REFRESH="1"; shift ;;
     --since) JOURNAL_WINDOW="${2:?"--since needs a value"}"; shift 2 ;;
     --restart-sleep) RESTART_SLEEP="${2:?"--restart-sleep needs a value"}"; shift 2 ;;
     --max-uptime) MAX_UPTIME="${2:?"--max-uptime needs a value"}"; shift 2 ;;
@@ -403,6 +421,58 @@ fi
 REMOTE
 )"
 
+# Refresh ONLY the on-box manifest's oracle_commit value, in place, atomically,
+# preserving the file's exact formatting. Runs on the box (which has python3 but
+# no jq). Exits 0 (with a message) if the manifest is absent — a missing manifest
+# must not fail an already-successful binary deploy. Exits non-zero only on a
+# real error (bad commit, malformed manifest, write failure).
+REMOTE_MANIFEST_REFRESH_SCRIPT="$(cat <<'REMOTE'
+set -euo pipefail
+manifest="$1"; commit="$2"
+expand_tilde() { case "$1" in "~/"*) printf '%s/%s' "$HOME" "${1#\~/}" ;; *) printf '%s' "$1" ;; esac; }
+manifest="$(expand_tilde "$manifest")"
+if [ ! -f "$manifest" ]; then
+  echo "manifest absent on remote ($manifest); nothing to refresh"
+  exit 0
+fi
+command -v python3 >/dev/null 2>&1 || { echo "python3 not found on remote; cannot refresh manifest oracle_commit" >&2; exit 1; }
+python3 - "$manifest" "$commit" <<'PY'
+import json, os, re, sys, tempfile
+path, commit = sys.argv[1], sys.argv[2]
+if not re.fullmatch(r"[0-9a-f]{7,40}", commit or ""):
+    sys.stderr.write("refuse: commit %r is not 7-40 lowercase hex\n" % commit)
+    sys.exit(1)
+with open(path, "r", encoding="utf-8") as fh:
+    text = fh.read()
+old = re.search(r'"oracle_commit"\s*:\s*"([0-9a-fA-F]*)"', text)
+new_text, n = re.subn(r'("oracle_commit"\s*:\s*")[0-9a-fA-F]*(")',
+                      lambda m: m.group(1) + commit + m.group(2), text, count=1)
+if n != 1:
+    sys.stderr.write("refuse: expected exactly one oracle_commit field, found %d\n" % n)
+    sys.exit(1)
+json.loads(new_text)  # the result MUST remain valid JSON
+d = os.path.dirname(path) or "."
+fd, tmp = tempfile.mkstemp(dir=d, prefix=".manifest.", suffix=".tmp")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(new_text)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, path)
+except BaseException:
+    try:
+        os.remove(tmp)
+    except OSError:
+        pass
+    raise
+prev = old.group(1) if old else "?"
+if prev == commit:
+    print("manifest oracle_commit already %s (no change)" % commit)
+else:
+    print("manifest oracle_commit refreshed: %s -> %s" % (prev, commit))
+PY
+REMOTE
+)"
+
 # --------------------------------------------------------------------------- #
 # Local commit-match helper (prefix match either direction: short vs full).
 # --------------------------------------------------------------------------- #
@@ -522,6 +592,23 @@ for port in "${HEALTH_PORTS[@]}"; do
     OVERALL_FAIL=1
   fi
 done
+
+# --------------------------------------------------------------------------- #
+# 5b) Refresh the on-box manifest oracle_commit to the just-proven-live commit,
+#     so the recorded manifest can never lag the running binary (oracle-router-
+#     6z8). Only after a clean verify (never refresh a manifest for a deploy that
+#     did not go live); a refresh problem is a loud WARNING, not a rollback —
+#     the binary is already live. Under --dry-run this only prints the command.
+# --------------------------------------------------------------------------- #
+if [ -z "$SKIP_MANIFEST_REFRESH" ] && { [ -n "$DRY_RUN" ] || [ "$OVERALL_FAIL" -eq 0 ]; }; then
+  MANIFEST_COMMIT="${SHIP_COMMIT:-$EXPECTED_COMMIT}"
+  if ! run_step "Manifest: refresh on-box ${MANIFEST_PATH} oracle_commit -> ${MANIFEST_COMMIT}" \
+      "$REMOTE_MANIFEST_REFRESH_SCRIPT" "$MANIFEST_PATH" "$MANIFEST_COMMIT"; then
+    warn "manifest refresh reported a problem on $HOST; the binary deploy already succeeded — reconcile ${MANIFEST_PATH} oracle_commit=${MANIFEST_COMMIT} by hand"
+  fi
+elif [ -z "$SKIP_MANIFEST_REFRESH" ]; then
+  warn "skipping manifest oracle_commit refresh because verification did not pass"
+fi
 
 # --------------------------------------------------------------------------- #
 # 6) Summary
