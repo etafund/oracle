@@ -232,6 +232,7 @@ interface CliOptions extends OptionValues {
   verbose?: boolean;
   debugHelp?: boolean;
   heartbeat?: number;
+  runProgress?: boolean;
   status?: boolean;
   dryRun?: boolean;
   route?: boolean;
@@ -705,6 +706,12 @@ program
     new Option(
       "--json",
       "Emit a json_envelope.v1 result on stdout instead of human-readable output, for both success and error outcomes.",
+    ).default(false),
+  )
+  .addOption(
+    new Option(
+      "--run-progress",
+      "Emit run_progress.v1 NDJSON to stderr while a run waits (API lane heartbeats plus browser-lane thinking + phase markers). Also enabled by ORACLE_RUN_PROGRESS_JSON=1.",
     ).default(false),
   )
   .addOption(
@@ -1910,6 +1917,10 @@ function buildRunOptions(
     verbose: overrides.verbose ?? options.verbose,
     heartbeatIntervalMs:
       overrides.heartbeatIntervalMs ?? resolveHeartbeatIntervalMs(options.heartbeat),
+    // `--run-progress` flag OR ORACLE_RUN_PROGRESS_JSON=1 enables run_progress.v1
+    // emission; the env fallback lives in the API/browser lanes so passing the
+    // flag value straight through preserves the env-only path when it is unset.
+    runProgress: overrides.runProgress ?? options.runProgress,
     browserAttachments:
       overrides.browserAttachments ??
       (options.browserAttachments as "auto" | "never" | "always" | undefined) ??

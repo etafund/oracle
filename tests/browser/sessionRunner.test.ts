@@ -86,6 +86,78 @@ describe("runBrowserSessionExecution", () => {
     expect(log).toHaveBeenCalled();
   });
 
+  test("forwards runProgress (the --run-progress knob) from runOptions to executeBrowser", async () => {
+    const executeBrowser = vi.fn(async () => ({
+      answerText: "ok",
+      answerMarkdown: "ok",
+      tookMs: 1000,
+      answerTokens: 12,
+      answerChars: 20,
+    }));
+
+    await runBrowserSessionExecution(
+      {
+        runOptions: { ...baseRunOptions, runProgress: true },
+        browserConfig: {},
+        cwd: "/repo",
+        log: vi.fn(),
+      },
+      {
+        assemblePrompt: async () => ({
+          markdown: "prompt",
+          composerText: "prompt",
+          estimatedInputTokens: 42,
+          attachments: [],
+          inlineFileCount: 0,
+          tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: "auto",
+          attachmentMode: "inline",
+          fallback: null,
+        }),
+        executeBrowser,
+      },
+    );
+
+    expect(executeBrowser).toHaveBeenCalledWith(expect.objectContaining({ runProgress: true }));
+  });
+
+  test("leaves runProgress undefined for executeBrowser when the flag/env are unset", async () => {
+    const executeBrowser = vi.fn(async () => ({
+      answerText: "ok",
+      answerMarkdown: "ok",
+      tookMs: 1000,
+      answerTokens: 12,
+      answerChars: 20,
+    }));
+
+    await runBrowserSessionExecution(
+      {
+        runOptions: baseRunOptions,
+        browserConfig: {},
+        cwd: "/repo",
+        log: vi.fn(),
+      },
+      {
+        assemblePrompt: async () => ({
+          markdown: "prompt",
+          composerText: "prompt",
+          estimatedInputTokens: 42,
+          attachments: [],
+          inlineFileCount: 0,
+          tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: "auto",
+          attachmentMode: "inline",
+          fallback: null,
+        }),
+        executeBrowser,
+      },
+    );
+
+    expect(executeBrowser).toHaveBeenCalledWith(
+      expect.objectContaining({ runProgress: undefined }),
+    );
+  });
+
   test("passes browser resume conversation URL to executeBrowser", async () => {
     const executeBrowser = vi.fn(async () => ({
       answerText: "ok",

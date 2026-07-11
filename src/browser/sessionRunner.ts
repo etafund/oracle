@@ -243,6 +243,7 @@ export async function runBrowserSessionExecution(
       config: executionBrowserConfig,
       log: automationLogger,
       heartbeatIntervalMs: runOptions.heartbeatIntervalMs,
+      runProgress: runOptions.runProgress,
       verbose: runOptions.verbose,
       sessionId: runOptions.sessionId,
       generateImagePath: runOptions.generateImage,

@@ -54,7 +54,12 @@ import {
   isGpt56SolModelLabel,
   type BrowserModeSelectionEvidence,
 } from "./actions/thinkingTime.js";
-import { startThinkingStatusMonitor } from "./actions/thinkingStatus.js";
+import {
+  emitBrowserRunProgressMarker,
+  shouldEmitBrowserRunProgress,
+  startThinkingStatusMonitor,
+  type BrowserRunProgressMarker,
+} from "./actions/thinkingStatus.js";
 import {
   activateDeepResearch,
   captureDeepResearchTargetKeys,
@@ -1333,6 +1338,23 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     await emitRuntimeHint();
     void conversationUrlMonitor?.schedule("post-submit", config.timeoutMs ?? 120_000);
   };
+  // Event-emission only: one-shot run_progress.v1 markers at lifecycle
+  // boundaries, gated by the same knob as the heartbeat monitor (the
+  // `--run-progress` flag OR ORACLE_RUN_PROGRESS_JSON). Every emission is
+  // internally guarded so a sink failure can never throw into the run path.
+  const runProgressEnabled = options.runProgress === true || shouldEmitBrowserRunProgress();
+  const emitRunProgressMarker = (marker: BrowserRunProgressMarker): void => {
+    emitBrowserRunProgressMarker(marker, {
+      runId: options.sessionId ?? "browser",
+      enabled: runProgressEnabled,
+      onError: (error) =>
+        logger(
+          `[browser] run_progress marker (${marker}) emission failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        ),
+    });
+  };
   if (config.debug || process.env.CHATGPT_DEVTOOLS_TRACE === "1") {
     logger(
       `[browser-mode] config: ${JSON.stringify({
@@ -2007,6 +2029,8 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       // a reload/fallback, and follow-ups use the same closure, so neither path
       // can inherit stale run-start evidence.
       await verifyProtectedRouteBeforeSubmit();
+      // Sol+Pro route verified before submit (the gate did not throw).
+      emitRunProgressMarker("model_verified");
       let baselineTurns = await readConversationTurnCount(Runtime, logger);
       // Learned: return baselineTurns so assistant polling can ignore earlier content.
       const providerState: Record<string, unknown> = {
@@ -2031,6 +2055,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         deepResearch && client
           ? await captureDeepResearchTargetBaseline(client, logger)
           : undefined;
+      emitRunProgressMarker("submitting");
       await runProviderSubmissionFlow(chatgptDomProvider, {
         prompt,
         evaluate: async () => undefined,
@@ -2039,6 +2064,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         state: providerState,
       });
       await markPromptSubmitted();
+      emitRunProgressMarker("prompt_committed");
       const providerBaselineTurns = providerState.baselineTurns;
       if (typeof providerBaselineTurns === "number" && Number.isFinite(providerBaselineTurns)) {
         baselineTurns = providerBaselineTurns;
@@ -2127,6 +2153,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       );
       await updateConversationHint("post-deep-research", 15_000).catch(() => false);
       runStatus = "complete";
+      emitRunProgressMarker("done");
       const durationMs = Date.now() - startedAt;
       const tokens = estimateTokenCount(researchResult.text);
       const reportArtifact = await saveOptionalArtifact(
@@ -2230,6 +2257,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         runProgress: {
           runId: options.sessionId ?? "browser",
           timeoutMs: config.timeoutMs,
+          enabled: runProgressEnabled,
         },
       });
       try {
@@ -2324,6 +2352,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       let turnAnswer: AssistantAnswer;
       try {
         await updateConversationHint("assistant-wait", 15_000).catch(() => false);
+        emitRunProgressMarker("response_waiting");
         turnAnswer = await waitWithThinkingMonitor(() =>
           raceWithDisconnect(
             waitForAssistantOrGeneratedImageResponse({
@@ -2410,6 +2439,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       }
       let turnAnswerText = turnAnswer.text;
       const turnAnswerHtml = turnAnswer.html ?? "";
+      emitRunProgressMarker("capturing");
       const copiedMarkdown = await raceWithDisconnect(
         withRetries(
           async () => {
@@ -2687,6 +2717,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         fileArtifacts.savedFiles.length === fileArtifacts.fileCount,
     });
     runStatus = "complete";
+    emitRunProgressMarker("done");
     const durationMs = Date.now() - startedAt;
     const answerChars = answerText.length;
     const answerTokens = estimateTokenCount(answerMarkdown);
@@ -3377,6 +3408,23 @@ async function runRemoteBrowserMode(
     await emitRuntimeHint();
     void conversationUrlMonitor?.schedule("post-submit", config.timeoutMs ?? 120_000);
   };
+  // Event-emission only: one-shot run_progress.v1 markers at lifecycle
+  // boundaries, gated by the same knob as the heartbeat monitor (the
+  // `--run-progress` flag OR ORACLE_RUN_PROGRESS_JSON). Every emission is
+  // internally guarded so a sink failure can never throw into the run path.
+  const runProgressEnabled = options.runProgress === true || shouldEmitBrowserRunProgress();
+  const emitRunProgressMarker = (marker: BrowserRunProgressMarker): void => {
+    emitBrowserRunProgressMarker(marker, {
+      runId: options.sessionId ?? "browser",
+      enabled: runProgressEnabled,
+      onError: (error) =>
+        logger(
+          `[browser] run_progress marker (${marker}) emission failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        ),
+    });
+  };
   const startedAt = Date.now();
   let answerText = "";
   let answerMarkdown = "";
@@ -3722,6 +3770,8 @@ async function runRemoteBrowserMode(
       // retries, and follow-ups. Re-verify the exact model and checked Pro mode
       // here so a reload or UI drift cannot reuse stale run-start evidence.
       await verifyProtectedRouteBeforeSubmit();
+      // Sol+Pro route verified before submit (the gate did not throw).
+      emitRunProgressMarker("model_verified");
       let baselineTurns = await readConversationTurnCount(Runtime, logger);
       const providerState: Record<string, unknown> = {
         runtime: Runtime,
@@ -3745,6 +3795,7 @@ async function runRemoteBrowserMode(
         deepResearch && client
           ? await captureDeepResearchTargetBaseline(client, logger)
           : undefined;
+      emitRunProgressMarker("submitting");
       await runProviderSubmissionFlow(chatgptDomProvider, {
         prompt,
         evaluate: async () => undefined,
@@ -3753,6 +3804,7 @@ async function runRemoteBrowserMode(
         state: providerState,
       });
       await markPromptSubmitted();
+      emitRunProgressMarker("prompt_committed");
       const providerBaselineTurns = providerState.baselineTurns;
       if (typeof providerBaselineTurns === "number" && Number.isFinite(providerBaselineTurns)) {
         baselineTurns = providerBaselineTurns;
@@ -3846,6 +3898,7 @@ async function runRemoteBrowserMode(
         requiredArtifactsSaved: Boolean(reportArtifact && transcriptArtifact),
       });
       runStatus = "complete";
+      emitRunProgressMarker("done");
       return {
         answerText: researchResult.text,
         answerMarkdown: researchResult.text,
@@ -3913,6 +3966,7 @@ async function runRemoteBrowserMode(
         runProgress: {
           runId: options.sessionId ?? "browser",
           timeoutMs: config.timeoutMs,
+          enabled: runProgressEnabled,
         },
       });
       try {
@@ -4007,6 +4061,7 @@ async function runRemoteBrowserMode(
       let turnAnswer: AssistantAnswer;
       try {
         await activeConversationUrlMonitor.update("assistant-wait", 15_000).catch(() => false);
+        emitRunProgressMarker("response_waiting");
         turnAnswer = await waitWithThinkingMonitor(() =>
           raceWithAbort(
             waitForAssistantOrGeneratedImageResponse({
@@ -4094,6 +4149,7 @@ async function runRemoteBrowserMode(
       let turnAnswerText = turnAnswer.text;
       const turnAnswerHtml = turnAnswer.html ?? "";
 
+      emitRunProgressMarker("capturing");
       const copiedMarkdown = await raceWithAbort(
         withRetries(
           async () => {
@@ -4370,6 +4426,7 @@ async function runRemoteBrowserMode(
     const answerTokens = estimateTokenCount(answerMarkdown);
 
     runStatus = "complete";
+    emitRunProgressMarker("done");
     return {
       answerText,
       answerMarkdown,

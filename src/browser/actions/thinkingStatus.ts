@@ -241,6 +241,117 @@ function resolveThinkingRunProgress(
   };
 }
 
+// ─── one-shot run_progress.v1 phase markers (browser lane) ───────────────────
+//
+// The heartbeat monitor above emits a periodic `thinking` liveness tick. These
+// markers are the complementary one-shot events fired at the lifecycle
+// boundaries a polling agent actually cares about — the prompt going out, the
+// Sol+Pro route being verified before submit, the prompt being committed, the
+// wait beginning, capture starting, and terminal success. Each marker is a
+// single NDJSON line through the same sink, and every emission is wrapped so a
+// sink failure can NEVER throw into the production submit/verify/capture path.
+
+/** One-shot lifecycle boundary reported as a single run_progress.v1 event. */
+export type BrowserRunProgressMarker =
+  | "submitting"
+  | "model_verified"
+  | "prompt_committed"
+  | "response_waiting"
+  | "capturing"
+  | "done";
+
+interface BrowserRunProgressMarkerSpec {
+  readonly state: RunProgressState;
+  readonly message: string;
+}
+
+const BROWSER_RUN_PROGRESS_MARKERS: Record<BrowserRunProgressMarker, BrowserRunProgressMarkerSpec> =
+  {
+    submitting: { state: "running", message: "submitting prompt to ChatGPT." },
+    model_verified: { state: "running", message: "model + Pro mode verified before submit." },
+    prompt_committed: { state: "running", message: "prompt committed." },
+    response_waiting: { state: "thinking", message: "waiting for the ChatGPT response." },
+    capturing: { state: "running", message: "capturing the ChatGPT response." },
+    done: { state: "completed", message: "run completed." },
+  };
+
+export interface BrowserRunProgressMarkerInput {
+  /** run_progress `run_id` (session id in practice). */
+  readonly runId: string;
+  /** Lifecycle boundary being crossed. */
+  readonly marker: BrowserRunProgressMarker;
+  /** Injected clock for a deterministic `last_event_at` in tests. */
+  readonly now?: Date;
+}
+
+/**
+ * Build one `run_progress.v1` event for a lifecycle boundary. Pure and
+ * deterministic given `now`, so marker emission can be unit-tested by asserting
+ * the resulting NDJSON without a live run.
+ */
+export function buildBrowserRunProgressMarker(input: BrowserRunProgressMarkerInput): RunProgress {
+  const spec = BROWSER_RUN_PROGRESS_MARKERS[input.marker];
+  return buildRunProgressEvent({
+    run_id: input.runId,
+    profile: BROWSER_RUN_PROGRESS_PROFILE,
+    state: spec.state,
+    current_stage: `browser_${input.marker}`,
+    user_visible_message: `ChatGPT ${input.marker.replace(/_/g, " ")} — ${spec.message}`,
+    now: input.now,
+    extras: {
+      lane: "browser",
+      marker: input.marker,
+      phase_marker: true,
+    },
+  });
+}
+
+export interface EmitBrowserRunProgressMarkerOptions {
+  /** run_progress `run_id` (session id in practice). */
+  readonly runId: string;
+  /**
+   * Force emission on/off. When omitted, resolves from
+   * `ORACLE_RUN_PROGRESS_JSON==="1"` — the same env-flag path the API lane uses.
+   */
+  readonly enabled?: boolean;
+  /** NDJSON sink; defaults to process.stderr (stdout stays clean). */
+  readonly emit?: RunProgressLineSink;
+  /** Debug hook invoked (never rethrows) when the build or sink fails. */
+  readonly onError?: (error: unknown) => void;
+  /** Injected clock for a deterministic `last_event_at` in tests. */
+  readonly now?: Date;
+}
+
+/**
+ * Emit a single lifecycle marker as one run_progress.v1 NDJSON line. Every
+ * failure path — the enable check, the event build, and the sink write — is
+ * swallowed so a broken sink can never interrupt the run; the optional
+ * `onError` hook (also guarded) surfaces the failure for debug logging only.
+ */
+export function emitBrowserRunProgressMarker(
+  marker: BrowserRunProgressMarker,
+  options: EmitBrowserRunProgressMarkerOptions,
+): void {
+  try {
+    const enabled = options.enabled ?? shouldEmitBrowserRunProgress();
+    if (!enabled) {
+      return;
+    }
+    const line = JSON.stringify(
+      buildBrowserRunProgressMarker({ runId: options.runId, marker, now: options.now }),
+    );
+    (options.emit ?? defaultRunProgressSink)(line);
+  } catch (error) {
+    // A run_progress sink failure must NEVER propagate into the production
+    // submit/verify/capture path. Swallow it; hand it to the debug hook only.
+    try {
+      options.onError?.(error);
+    } catch {
+      // even the debug hook must not throw back into the run path
+    }
+  }
+}
+
 export function formatThinkingLog(
   startedAt: number,
   now: number,

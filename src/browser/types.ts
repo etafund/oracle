@@ -144,6 +144,13 @@ export interface BrowserRunOptions {
   log?: BrowserLogger;
   heartbeatIntervalMs?: number;
   verbose?: boolean;
+  /**
+   * Force `run_progress.v1` NDJSON emission for this browser run (the same knob
+   * the CLI `--run-progress` flag sets). When true, the thinking-status monitor
+   * and lifecycle phase markers emit even if `ORACLE_RUN_PROGRESS_JSON` is
+   * unset; the env flag still enables emission on its own when this is omitted.
+   */
+  runProgress?: boolean;
   /** Session id used for cross-process browser slot diagnostics. */
   sessionId?: string;
   /** Browser-only image generation output path. */
