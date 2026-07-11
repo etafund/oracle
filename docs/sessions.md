@@ -85,6 +85,35 @@ oracle --engine browser \
 
 See [Browser Mode](browser-mode.md) for the full set.
 
+## Machine-readable status and the async loop
+
+`oracle session <id>` streams the human transcript, but agents want a stable, parseable snapshot. Add `--json` to any single-session read to get one `oracle_session.v1` envelope instead:
+
+```bash
+oracle session <id> --json     # one oracle_session.v1 envelope
+oracle status <id> --json      # identical output (status is an alias for reading one session)
+```
+
+The payload carries the closed `status` enum (`pending`, `running`, `completed`, `partial`, `error`, `cancelled`), a `terminal` flag, the `exit_code` a waiter would receive (`null` while still in flight), `usage`, timestamps, `output_file`, `final_answer_path` (Fable), and a structured `error` when the run failed.
+
+To block on a run without an unbounded reattach, use `oracle wait`:
+
+```bash
+oracle wait <id> --json                        # block until terminal, then print the envelope
+oracle wait <id> --timeout-seconds 900 --json  # bound the wait; exit 7 if still running
+```
+
+`oracle wait` polls with exponential backoff (no busy-spin) and exits `0` on success, `3`–`6` for a classified terminal failure, `1` for a generic failure, or `7` (`wait_timeout`) when the deadline passes while the run is still in flight — exit 7 means "not done yet," so poll again rather than treating it as a failure. In `--json` mode progress lines move to stderr so stdout stays a single clean envelope.
+
+To abort a wrong or expensive run, use `oracle cancel`:
+
+```bash
+oracle cancel <id>             # stop the controller, release its browser lease, mark cancelled
+oracle cancel <id> --json      # same, but emit the resulting oracle_session.v1 envelope
+```
+
+`cancel` stops the stored controller process (SIGTERM, then SIGKILL after a short grace), releases any browser tab lease the session still holds, and marks it `cancelled`. It is idempotent: on an already-terminal session it changes nothing and exits `0`. See [Agents](agents.md#async-workflow-submit-poll-fetch-recover) for the full submit → poll → fetch → recover loop and the exit-code taxonomy.
+
 ## Restart
 
 ```bash

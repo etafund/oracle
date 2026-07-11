@@ -8,6 +8,12 @@ Current agent-facing lanes are ChatGPT GPT-5.6 Sol + Pro, Fable xHigh, and Gemin
 
 Claude Code can call `oracle-mcp` and ask a subscription-backed ChatGPT browser session for a second opinion. Use the `chatgpt-pro-heavy` preset when you want a compact MCP request that targets `GPT-5.6 Sol` with separately verified checked `Pro` mode. The preset is intentionally boring at the API layer: it is a shortcut for existing browser-mode fields, not a new API model id.
 
+## Input validation and cost safety
+
+Every tool's input schema is **strict**: the advertised `inputSchema` is the enforced schema, built with `z.strictObject`, so unknown or mistyped keys are rejected instead of being silently stripped. The rejection message names the offending key and its closest valid neighbour ("Unknown input key `dry_run`. Did you mean `dryRun`?"). This closes the paid-run trap where a dropped safety flag like a mistyped `dryRun` would let a real, billed ChatGPT Pro run start in place of the intended preview.
+
+Paid tools advertise their cost and duration up front. The descriptions for `consult`, `chatgpt_image`, and `follow_up` state that a browser GPT-5.6 Sol + Pro turn is a real, billed run that can take 5–60 minutes, and they steer agents to send `dryRun:true` first (on the tools that support it) to preview the resolved request before spending. `follow_up` has no `dryRun`; preview configuration with a `consult` `dryRun:true` call instead.
+
 ## Tools
 
 ### `chatgpt_image`

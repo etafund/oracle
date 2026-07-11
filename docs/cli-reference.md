@@ -7,22 +7,25 @@ This is the curated cheatsheet. The authoritative source is always `oracle --hel
 
 ## Commands
 
-| Command                        | What it does                                                                                                                    |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| `oracle [flags] -p "<prompt>"` | Run a consult.                                                                                                                  |
-| `oracle status`                | List recent sessions (see [Sessions](sessions.md)).                                                                             |
-| `oracle session <id>`          | Replay or block on a stored session.                                                                                            |
-| `oracle restart <id>`          | Re-run with the same prompt + files. `--json` emits one `oracle_session_action.v1` launch receipt (progress moves to stderr).   |
-| `oracle docs check`            | Check documented flags against CLI help metadata.                                                                               |
-| `oracle doctor lanes --json`   | Print the reviewed lane policy without launching browsers or models.                                                            |
-| `oracle serve`                 | Run the remote browser host (see [Browser Mode](browser-mode.md)).                                                              |
-| `oracle remote doctor`         | Probe the configured remote endpoint (TCP + `/health`). `--json` emits a `remote_browser_endpoint.v1` envelope.                 |
-| `oracle remote status`         | Print the resolved remote endpoint config without touching the network. `--json` for machine-readable output.                   |
-| `oracle remote attach`         | Probe attach readiness against a caller-supplied host. Use `--host <h:p> --token-env <ENV>` so the token never appears in argv. |
-| `oracle bridge doctor --json`  | Same `remote_browser_endpoint.v1` envelope as `oracle remote doctor`, plus bridge-specific connectivity checks.                 |
-| `oracle bridge claude-config`  | Emit a `.mcp.json` for Claude Code (see [MCP](mcp.md)).                                                                         |
-| `oracle tui`                   | Interactive TUI (humans only).                                                                                                  |
-| `oracle-mcp`                   | Stdio MCP server entrypoint.                                                                                                    |
+| Command                        | What it does                                                                                                                       |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `oracle [flags] -p "<prompt>"` | Run a consult.                                                                                                                     |
+| `oracle status`                | List recent sessions (see [Sessions](sessions.md)).                                                                                |
+| `oracle session <id>`          | Replay a stored session. Add `--json` for one `oracle_session.v1` envelope instead of the human transcript.                        |
+| `oracle status <id> --json`    | Same `oracle_session.v1` envelope as `oracle session <id> --json` (read one session, machine-readable).                            |
+| `oracle wait <id>`             | Block until a session is terminal; `--timeout-seconds <n>` bounds it (exit 7 = still running). `--json` emits `oracle_session.v1`. |
+| `oracle cancel <id>`           | Abort an in-flight/detached run (stops the controller, releases its lease, marks it `cancelled`). Idempotent; exit 0 on terminal.  |
+| `oracle restart <id>`          | Re-run with the same prompt + files. `--json` emits one `oracle_session_action.v1` launch receipt (progress moves to stderr).      |
+| `oracle docs check`            | Check documented flags against CLI help metadata.                                                                                  |
+| `oracle doctor lanes --json`   | Print the reviewed lane policy without launching browsers or models.                                                               |
+| `oracle serve`                 | Run the remote browser host (see [Browser Mode](browser-mode.md)).                                                                 |
+| `oracle remote doctor`         | Probe the configured remote endpoint (TCP + `/health`). `--json` emits a `remote_browser_endpoint.v1` envelope.                    |
+| `oracle remote status`         | Print the resolved remote endpoint config without touching the network. `--json` for machine-readable output.                      |
+| `oracle remote attach`         | Probe attach readiness against a caller-supplied host. Use `--host <h:p> --token-env <ENV>` so the token never appears in argv.    |
+| `oracle bridge doctor --json`  | Same `remote_browser_endpoint.v1` envelope as `oracle remote doctor`, plus bridge-specific connectivity checks.                    |
+| `oracle bridge claude-config`  | Emit a `.mcp.json` for Claude Code (see [MCP](mcp.md)).                                                                            |
+| `oracle tui`                   | Interactive TUI (humans only).                                                                                                     |
+| `oracle-mcp`                   | Stdio MCP server entrypoint.                                                                                                       |
 
 ## Core consult flags
 
@@ -71,23 +74,28 @@ MCP `consult` already recognizes `lane:"fable-local"` and `engine:"claude-code"`
 
 ## Run control
 
-| Flag                                       | Purpose                                                                                |
-| ------------------------------------------ | -------------------------------------------------------------------------------------- |
-| `--wait`                                   | Block on background API runs.                                                          |
-| `--timeout <seconds\|duration\|auto>`      | Overall API deadline. `auto` = 60m for Pro, 120s otherwise; accepts values like `10m`. |
-| `--background`, `--no-background`          | Force Responses API background mode on/off.                                            |
-| `--http-timeout <ms\|s\|m\|h>`             | Override the HTTP client timeout; explicit `--timeout` values are reused when omitted. |
-| `--allow-partial`, `--partial <mode>`      | Accept partial multi-model success when mode is `ok`; default mode is `fail`.          |
-| `--preflight`                              | Check redacted provider readiness for requested API model(s), then exit.               |
-| `--perf-trace`, `--perf-trace-path <path>` | Write CLI startup / first-output timing trace JSON.                                    |
-| `--heartbeat <seconds>`                    | Emit progress heartbeats; browser mode reports thinking-sidecar liveness.              |
+| Flag                                       | Purpose                                                                                                                                 |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `--wait`                                   | Block on background API runs.                                                                                                           |
+| `--timeout-seconds <n>`                    | On `oracle wait <id>`: give up after N seconds and exit 7 (`wait_timeout`) if the session is still running. Default: wait indefinitely. |
+| `--timeout <seconds\|duration\|auto>`      | Overall API deadline. `auto` = 60m for Pro, 120s otherwise; accepts values like `10m`.                                                  |
+| `--background`, `--no-background`          | Force Responses API background mode on/off.                                                                                             |
+| `--http-timeout <ms\|s\|m\|h>`             | Override the HTTP client timeout; explicit `--timeout` values are reused when omitted.                                                  |
+| `--allow-partial`, `--partial <mode>`      | Accept partial multi-model success when mode is `ok`; default mode is `fail`.                                                           |
+| `--preflight`                              | Check redacted provider readiness for requested API model(s), then exit.                                                                |
+| `--perf-trace`, `--perf-trace-path <path>` | Write CLI startup / first-output timing trace JSON.                                                                                     |
+| `--heartbeat <seconds>`                    | Emit progress heartbeats; browser mode reports thinking-sidecar liveness.                                                               |
 
 Notes:
 
 - `--dry-run` is mutually exclusive with `--render` / `--render-markdown`; choose the preview or rendered bundle path.
-- Missing root prompts exit nonzero after help so scripts fail closed.
+- Missing root prompts exit nonzero after help so scripts fail closed. A bare single-word positional (e.g. `oracle lanes`) is refused fail-closed with exit 2 as a likely mistyped command, so it can never launch a paid run — quote a real prompt or use `-p`.
 - Ctrl-C exits foreground API runs with code 130. Browser runs still keep their cleanup / reattach path.
 - `--perf-trace=/tmp/oracle.json` is accepted in addition to `--perf-trace-path`; `ORACLE_PERF_TRACE=1` writes a local `.oracle-perf-…json` file.
+
+### Exit codes
+
+A stable contract, also advertised by `oracle capabilities --json` and echoed as `exit_code` in `oracle_session.v1`: `0` success · `1` user/generic error (includes a cancelled run) · `2` lane-route-blocked or a refused bare positional · `3` auth_required · `4` retryable_backoff · `5` timeout · `6` challenge_or_drift · `7` wait_timeout (`oracle wait` deadline; run still in flight) · `130` SIGINT. Safe to retry unattended: `4`, `5`, `7`, `130`; `3` needs a re-auth first; `1`/`2`/`6` need the caller to fix something. Full table in [Agents](agents.md#exit-code-taxonomy).
 
 ## Compatibility API endpoints
 
@@ -159,19 +167,21 @@ See [Browser Mode](browser-mode.md) for usage.
 
 ## Environment variables
 
-| Var                                 | Effect                                                                                                      |
-| ----------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `OPENAI_API_KEY`                    | Enables OpenAI API mode.                                                                                    |
-| `AZURE_OPENAI_API_KEY` etc.         | Enables Azure mode (paired with endpoint / deployment).                                                     |
-| `GEMINI_API_KEY`                    | Enables Gemini API mode.                                                                                    |
-| `ANTHROPIC_API_KEY`                 | Enables Claude API mode for Anthropic API models; local Claude Code mode refuses when this name is present. |
-| `OPENROUTER_API_KEY`                | Enables OpenRouter ids.                                                                                     |
-| `ORACLE_HOME_DIR`                   | Override `~/.oracle/` root.                                                                                 |
-| `ORACLE_MAX_FILE_SIZE_BYTES`        | Per-file size cap (default 1 MB).                                                                           |
-| `ORACLE_BROWSER_COOKIES_JSON`       | Inline ChatGPT cookies (JSON / base64).                                                                     |
-| `ORACLE_BROWSER_COOKIES_FILE`       | Path to cookies JSON.                                                                                       |
-| `ORACLE_BROWSER_ATTACHMENT_TIMEOUT` | Attachment upload/readiness timeout for browser mode.                                                       |
-| `ORACLE_CHATGPT_ACCOUNT_EMAIL`      | Exact saved account for the Welcome back picker.                                                            |
+| Var                                    | Effect                                                                                                                                                             |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `OPENAI_API_KEY`                       | Enables OpenAI API mode.                                                                                                                                           |
+| `AZURE_OPENAI_API_KEY` etc.            | Enables Azure mode (paired with endpoint / deployment).                                                                                                            |
+| `GEMINI_API_KEY`                       | Enables Gemini API mode.                                                                                                                                           |
+| `ANTHROPIC_API_KEY`                    | Enables Claude API mode for Anthropic API models; local Claude Code mode refuses when this name is present.                                                        |
+| `OPENROUTER_API_KEY`                   | Enables OpenRouter ids.                                                                                                                                            |
+| `ORACLE_HOME_DIR`                      | Override `~/.oracle/` root.                                                                                                                                        |
+| `ORACLE_MAX_FILE_SIZE_BYTES`           | Per-file size cap (default 1 MB).                                                                                                                                  |
+| `ORACLE_BROWSER_COOKIES_JSON`          | Inline ChatGPT cookies (JSON / base64).                                                                                                                            |
+| `ORACLE_BROWSER_COOKIES_FILE`          | Path to cookies JSON.                                                                                                                                              |
+| `ORACLE_BROWSER_ATTACHMENT_TIMEOUT`    | Attachment upload/readiness timeout for browser mode.                                                                                                              |
+| `ORACLE_CHATGPT_ACCOUNT_EMAIL`         | Exact saved account for the Welcome back picker.                                                                                                                   |
+| `ORACLE_RUN_PROGRESS_JSON`             | `=1` streams `run_progress.v1` NDJSON progress events on stderr for long browser/API runs (default off).                                                           |
+| `ORACLE_CLAUDE_CODE_STREAM_JSON_INPUT` | `=1`/`true`/`yes`/`on` switches the `fable-local` lane to stream-json stdin (base64 image/PDF blocks; 32 MB encoded budget). Default off keeps the flat-text path. |
 
 ## See also
 

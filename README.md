@@ -159,10 +159,14 @@ npx -y @steipete/oracle tui
 - Project Sources: `oracle project-sources list|add --chatgpt-url <project-url>` manages the Project Sources tab in ChatGPT browser mode. v1 is append-only (`list`, `add`, `--dry-run`) so agents can share explicit project context without deleting or replacing user sources.
 - Fast failure: root runs without a prompt exit nonzero after printing help; `--dry-run` conflicts with `--render` / `--render-markdown`; foreground API runs exit 130 on Ctrl-C while browser cleanup and session recovery still run.
 - Performance traces: `--perf-trace` / `ORACLE_PERF_TRACE=1` writes JSON timing marks for startup, root command, first output, and exit. `--perf-trace-path` or `--perf-trace=/tmp/oracle.json` selects the path; detached API children write a session-suffixed sidecar trace.
-- AGENTS.md/CLAUDE.md:
+- AGENTS.md/CLAUDE.md (paste-ready agent contract — teaches the full submit → poll → fetch → recover loop):
   ```
-  - Oracle bundles a prompt plus the right files for the reviewed lanes: ChatGPT GPT-5.6 Sol + Pro, Fable xHigh, and Gemini 3.1 Deep Think. Use when stuck, debugging, or reviewing.
+  - Oracle bundles a prompt plus the right files for a reviewed lane (ChatGPT GPT-5.6 Sol + Pro, Fable xHigh, Gemini 3.1 Deep Think) and returns a second opinion. Use when stuck, debugging, or reviewing.
   - Run `npx -y @steipete/oracle --help` once per session before first use.
+  - Submit: always pass the prompt with -p and context with --file. Never a bare positional — a single-word positional is refused with exit 2; quote a real prompt or use -p. Long Pro runs detach and print a session id.
+  - Poll: `oracle wait <id> --json` blocks until the session is terminal and prints one oracle_session.v1 envelope (progress on stderr). Bound it with --timeout-seconds N; exit 7 = still running, so poll again. For live progress on long browser runs, set ORACLE_RUN_PROGRESS_JSON=1 to stream run_progress.v1 NDJSON on stderr.
+  - Fetch: `oracle session <id> --json` returns the oracle_session.v1 envelope any time (status, exit_code, usage, output_file, final_answer_path).
+  - Recover: `oracle cancel <id>` aborts a wrong or expensive run (idempotent; exits 0 on an already-terminal session). Retry by exit code: 0 ok; 4/5/7 retry-safe (backoff or re-poll); 3 re-auth then retry; 6 challenge/drift (resolve, don't blindly retry); 1/2 fix input first; 130 = Ctrl-C.
   ```
 - Tip: set `browser.chatgptUrl` in config (or `--chatgpt-url`) to a dedicated ChatGPT project folder so browser runs don’t clutter your main history.
 
@@ -332,6 +336,29 @@ Agent self-doc primitives — also visible in default `--help` (Axioms 8/9/10: t
 | `oracle capabilities [--json]` | Stable JSON contract: run action, 3 lanes + key flags, exit codes, read commands | No                |
 | `oracle robot-docs [--json]`   | The same contract as a `robot_surface.v1` command registry                       | No                |
 | `oracle robot-docs guide`      | Paste-ready, < 80-line agent handbook (plain text, leads with the 3 lanes)       | No                |
+
+Async run control & read surfaces — also in default `--help`; how an agent submits once, then polls, fetches, and recovers a long detached run (all JSON-first, no provider calls):
+
+| Command / flag                                             | What it does                                                                                | Calls a provider? |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ----------------- |
+| `oracle wait <id> [--timeout-seconds <n>] [--json]`        | Block until the session is terminal; `--timeout-seconds` bounds it (exit 7 = still running) | No                |
+| `oracle cancel <id> [--json]`                              | Abort a wrong/expensive run; idempotent (exit 0 on an already-terminal session)             | No                |
+| `oracle session <id> --json` / `oracle status <id> --json` | One `oracle_session.v1` envelope (status, `exit_code`, usage, output/artifact paths)        | No                |
+| `oracle doctor lanes --json`                               | Reviewed lane policy + fable-local `single_flight_lock` busy probe (check capacity first)   | No                |
+
+Exit-code taxonomy (the same dictionary `oracle capabilities --json` advertises; `oracle_session.v1` echoes it as `exit_code`):
+
+| Code | Meaning            | Retry policy                                           |
+| ---- | ------------------ | ------------------------------------------------------ |
+| 0    | success            | done                                                   |
+| 1    | user_error         | fix the input / guardrail; not retry-safe              |
+| 2    | lane_route_blocked | includes a refused bare positional; fix the command    |
+| 3    | auth_required      | re-authenticate, then retry                            |
+| 4    | retryable_backoff  | retry-safe after a backoff                             |
+| 5    | timeout            | retry-safe                                             |
+| 6    | challenge_or_drift | resolve the challenge / drift, do not blindly retry    |
+| 7    | wait_timeout       | run still in flight; safe to poll again or wait longer |
+| 130  | cancelled (SIGINT) | safe to retry                                          |
 
 Advanced & compatibility — hidden from default `--help` (still fully runnable; run `oracle --help --verbose` to list them from your installed build):
 
@@ -554,6 +581,11 @@ oracle --engine browser --browser-inline-cookies-file ~/.oracle/cookies.json -p 
 ```
 
 Remote browser hosts and the companion router (`<router-repo>`) are transport for ChatGPT GPT-5.6 Sol + Pro and Gemini 3.1 Deep Think browser lanes. Fable xHigh stays local-only through `--lane fable-local`.
+
+Agent environment toggles (opt-in, off by default):
+
+- `ORACLE_RUN_PROGRESS_JSON=1` — stream `run_progress.v1` NDJSON progress events on **stderr** for long browser (and API) runs, so an agent polling a multi-minute Pro run has a machine-readable liveness signal. stdout stays reserved for the final `--json` envelope; progress lines never carry reasoning text.
+- `ORACLE_CLAUDE_CODE_STREAM_JSON_INPUT=1` — switch the Fable xHigh (`--lane fable-local`) lane to the stream-json content-block stdin transport, which base64-encodes image/PDF attachments into Anthropic content blocks instead of rejecting them. Default off keeps the historical flat-text path byte-for-byte; the encoded payload is held to a 32 MB budget.
 
 Session management
 

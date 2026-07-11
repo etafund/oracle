@@ -39,6 +39,7 @@ oracle --followup <id> -p "Re-evaluate with this new context" --file "src/**/*.t
 - **Recoverable checks.** `doctor lanes --json`, `doctor chatgpt --pro --extended-reasoning --json`, `doctor gemini --deep-think --json`, and `remote doctor --json` make readiness and routing failures machine-readable.
 - **Followups + lineage.** Continue from any stored session id or `resp_…` response id; `oracle status` shows parent/child trees.
 - **Sessions you can replay.** Every run is stored under `~/.oracle/sessions/<id>/`. Reattach to long browser runs without re-spending tokens.
+- **Async run control.** Submit once, then poll with `oracle wait <id> --json`, fetch the `oracle_session.v1` status any time with `oracle session <id> --json`, and abort with `oracle cancel <id>` — machine-readable, with a stable exit-code contract.
 - **Built for coding agents.** Use it from Claude Code, Codex, Cursor, or any MCP host via `oracle-mcp`. Plain stdout JSON envelopes for scripting.
 - **Bundles, not chats.** Globs + excludes + size guards + `--files-report` so you know exactly what is shipped to the model.
 - **Traceable startup.** `--perf-trace` records startup and first-output timing when agent handoffs need performance proof.
