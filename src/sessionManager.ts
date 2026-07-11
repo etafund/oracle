@@ -883,7 +883,11 @@ export async function initializeSession(
     },
   };
   await ensureDir(modelsDir(sessionId));
-  await fs.writeFile(metaPath(sessionId), JSON.stringify(metadata, null, 2), "utf8");
+  // Honor the module's tmp-file + rename invariant on creation too, so a
+  // concurrent reader (`oracle status --json`) or a crash mid-write never
+  // observes a torn meta.json / model JSON that would drop the session
+  // from listings.
+  await atomicWriteFileUtf8(metaPath(sessionId), JSON.stringify(metadata, null, 2));
   await Promise.all(
     (modelList.length > 0 ? modelList : [metadata.model ?? DEFAULT_MODEL]).map(
       async (modelName) => {
@@ -895,7 +899,7 @@ export async function initializeSession(
           evidence,
           log: { path: path.relative(sessionDir(sessionId), logFilePath) },
         };
-        await fs.writeFile(jsonPath, JSON.stringify(modelRecord, null, 2), "utf8");
+        await atomicWriteFileUtf8(jsonPath, JSON.stringify(modelRecord, null, 2));
         await fs.writeFile(logFilePath, "", "utf8");
       },
     ),
@@ -933,6 +937,18 @@ export async function readSessionMetadata(sessionId: string): Promise<SessionMet
 //      session --live` harvests), re-read and re-merge instead of
 //      blindly overwriting the fresher state; fail loud after
 //      repeated conflicts instead of silently reverting.
+//
+//   3. Cross-process advisory lock (an O_EXCL sentinel lockfile next
+//      to meta.json) held across the re-stat + rename critical
+//      section. The fingerprint re-check and the rename are two
+//      separate syscalls, so a cooperating writer in another process
+//      could otherwise land its own rename in the sub-millisecond
+//      window between them. Holding the sentinel only around that
+//      tiny section keeps hold time near a single stat+rename while
+//      closing the residual TOCTOU window for cooperating writers;
+//      a crashed holder is reclaimed by PID-liveness / staleness, and
+//      an uncontended lock never blocks. This narrows — but, against a
+//      non-cooperating raw writer, cannot fully guarantee — atomicity.
 //
 // Writes themselves are tmp-file + rename so readers (and crashes)
 // never observe a torn meta.json.
@@ -999,6 +1015,74 @@ async function atomicWriteFileUtf8(filePath: string, contents: string): Promise<
   }
 }
 
+// ─── Cross-process advisory lock for the meta.json critical section ───────────
+//
+// An O_EXCL sentinel lockfile next to meta.json, held only around the
+// re-stat + rename in updateSessionMetadata so a cooperating writer in
+// another process cannot slip a rename between our fingerprint re-check
+// and our own rename. Hold time is ~one stat + one rename. A crashed
+// holder is reclaimed (dead PID or stale mtime); an uncontended lock is
+// acquired on the first open with no timers. If the lock cannot be
+// acquired within the bounded wait we proceed best-effort (never worse
+// than the fingerprint-only guard).
+const META_LOCK_STALE_MS = 10_000;
+const META_LOCK_POLL_MS = 5;
+const META_LOCK_MAX_WAIT_MS = 2_000;
+
+function metaLockPath(sessionId: string): string {
+  return `${metaPath(sessionId)}.lock`;
+}
+
+async function metaLockIsStale(lockPath: string): Promise<boolean> {
+  try {
+    const [stats, raw] = await Promise.all([
+      fs.stat(lockPath),
+      fs.readFile(lockPath, "utf8").catch(() => ""),
+    ]);
+    const ownerPid = Number.parseInt(raw.trim(), 10);
+    if (Number.isInteger(ownerPid) && ownerPid > 0 && !isProcessAlive(ownerPid)) {
+      return true;
+    }
+    return Date.now() - stats.mtimeMs > META_LOCK_STALE_MS;
+  } catch {
+    // Lock vanished between the failed open and this check — reclaimable.
+    return true;
+  }
+}
+
+async function acquireMetaLock(lockPath: string): Promise<boolean> {
+  const deadline = Date.now() + META_LOCK_MAX_WAIT_MS;
+  for (;;) {
+    try {
+      const handle = await fs.open(lockPath, "wx");
+      try {
+        await handle.writeFile(`${process.pid}`);
+      } finally {
+        await handle.close();
+      }
+      return true;
+    } catch (error) {
+      if (!isAlreadyExistsError(error)) {
+        // Missing parent dir or other unexpected error: skip the lock and
+        // fall back to the fingerprint-only guard rather than failing.
+        return false;
+      }
+      if (await metaLockIsStale(lockPath)) {
+        await fs.rm(lockPath, { force: true }).catch(() => undefined);
+        continue;
+      }
+      if (Date.now() >= deadline) {
+        return false;
+      }
+      await wait(META_LOCK_POLL_MS);
+    }
+  }
+}
+
+async function releaseMetaLock(lockPath: string): Promise<void> {
+  await fs.rm(lockPath, { force: true }).catch(() => undefined);
+}
+
 /**
  * Compute a metadata patch from the freshest on-disk state. Called under
  * the per-session lock (and re-called after an optimistic-concurrency
@@ -1006,7 +1090,9 @@ async function atomicWriteFileUtf8(filePath: string, contents: string): Promise<
  * and must NOT call back into updateSessionMetadata / updateModelRunMetadata
  * for the same session.
  */
-export type SessionMetadataUpdater = (current: SessionMetadata) => Partial<SessionMetadata>;
+export type SessionMetadataUpdater = (
+  current: SessionMetadata,
+) => Partial<SessionMetadata> | Promise<Partial<SessionMetadata>>;
 
 const MAX_METADATA_UPDATE_ATTEMPTS = 5;
 
@@ -1016,24 +1102,36 @@ export async function updateSessionMetadata(
 ): Promise<SessionMetadata> {
   return withSessionMetadataLock(sessionId, async () => {
     const targetPath = metaPath(sessionId);
+    const lockPath = metaLockPath(sessionId);
     for (let attempt = 1; attempt <= MAX_METADATA_UPDATE_ATTEMPTS; attempt += 1) {
       const readFingerprint = await statMetadataFingerprint(targetPath);
       const existing =
         (await readModernSessionMetadata(sessionId, { reconcile: false, persist: false })) ??
         (await readLegacySessionMetadata(sessionId, { reconcile: false, persist: false })) ??
         ({ id: sessionId } as SessionMetadata);
-      const patch = typeof updates === "function" ? updates(existing) : updates;
+      const patch = typeof updates === "function" ? await updates(existing) : updates;
       const next = normalizeTerminalModelRuns({ ...existing, ...patch });
-      // Optimistic-concurrency guard: if another process replaced
-      // meta.json since we read it, our merge base is stale — writing it
-      // would silently revert the fresher fields (e.g. a terminal status
-      // written by the session's runner). Re-read and re-merge instead.
-      const writeFingerprint = await statMetadataFingerprint(targetPath);
-      if (!metadataFingerprintsEqual(readFingerprint, writeFingerprint)) {
-        continue;
+      // Hold the cross-process sentinel across the re-stat + rename so a
+      // cooperating writer in another process cannot land its rename in
+      // the window between our fingerprint check and persistSessionMetadata's
+      // own rename.
+      const locked = await acquireMetaLock(lockPath);
+      try {
+        // Optimistic-concurrency guard: if another process replaced
+        // meta.json since we read it, our merge base is stale — writing it
+        // would silently revert the fresher fields (e.g. a terminal status
+        // written by the session's runner). Re-read and re-merge instead.
+        const writeFingerprint = await statMetadataFingerprint(targetPath);
+        if (!metadataFingerprintsEqual(readFingerprint, writeFingerprint)) {
+          continue;
+        }
+        await persistSessionMetadata(next.metadata, next.modelRunsChanged);
+        return next.metadata;
+      } finally {
+        if (locked) {
+          await releaseMetaLock(lockPath);
+        }
       }
-      await persistSessionMetadata(next.metadata, next.modelRunsChanged);
-      return next.metadata;
     }
     throw new Error(
       `Session "${sessionId}" metadata kept changing concurrently; aborting update after ${MAX_METADATA_UPDATE_ATTEMPTS} attempts instead of overwriting newer state.`,
@@ -1088,13 +1186,28 @@ async function reconcileSessionMetadata(
   meta: SessionMetadata,
   { persist }: { persist: boolean },
 ): Promise<SessionMetadata> {
-  const runtimeChecked = await markDeadBrowser(meta, { persist });
-  const zombieChecked = await markZombie(runtimeChecked, { persist });
+  const deadPatch = await deadBrowserPatch(meta);
+  const runtimeChecked: SessionMetadata = deadPatch ? { ...meta, ...deadPatch } : meta;
+  const zPatch = await zombiePatch(runtimeChecked);
+  const zombieChecked: SessionMetadata = zPatch ? { ...runtimeChecked, ...zPatch } : runtimeChecked;
   const normalized = normalizeTerminalModelRuns(zombieChecked);
-  if (persist && normalized.modelRunsChanged) {
-    await persistSessionMetadata(normalized.metadata, true);
+  const statusChanged = Boolean(deadPatch || zPatch);
+  if (!persist || (!statusChanged && !normalized.modelRunsChanged)) {
+    return normalized.metadata;
   }
-  return normalized.metadata;
+  // Persist reconciliation through the same in-process lock + cross-process
+  // guard as every other writer instead of a raw atomicWriteFileUtf8. A
+  // reader process (`oracle status` / `session list`) used to clobber a
+  // concurrently-completing runner's terminal state here. The updater
+  // recomputes the downgrade against the freshest on-disk state, so if the
+  // runner already moved the session out of 'running' we apply an empty
+  // patch and leave its fresher fields (and model rows) intact.
+  return updateSessionMetadata(meta.id, async (current) => {
+    const freshDead = await deadBrowserPatch(current);
+    const afterDead: SessionMetadata = freshDead ? { ...current, ...freshDead } : current;
+    const freshZombie = await zombiePatch(afterDead);
+    return { ...(freshDead ?? {}), ...(freshZombie ?? {}) };
+  });
 }
 
 function isSessionMetadataRecord(value: unknown): value is SessionMetadata {
@@ -1209,18 +1322,52 @@ export function createSessionLogWriter(sessionId: string, model?: string): Sessi
   return { stream, logLine, writeChunk, logPath: targetPath };
 }
 
+const SESSION_LIST_CONCURRENCY = 8;
+
+/**
+ * Map `items` through `worker` with at most `concurrency` in flight,
+ * returning results in input order. Session dirs are independent (each has
+ * its own per-session lock), so their reads/reconciles overlap safely.
+ */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const limit = Math.max(1, Math.min(concurrency, items.length));
+  const runners = Array.from({ length: limit }, async () => {
+    for (;;) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= items.length) {
+        return;
+      }
+      results[index] = await worker(items[index], index);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
 export async function listSessionsMetadata(): Promise<SessionMetadata[]> {
   await ensureSessionStorage();
   const entries = await fs.readdir(getSessionsDir()).catch(() => []);
-  const metas: SessionMetadata[] = [];
-  for (const entry of entries) {
-    let meta = await readRawSessionMetadata(entry);
-    if (meta) {
-      // Keep stored metadata consistent with status reconciliation done by `oracle status`.
-      meta = await reconcileSessionMetadata(meta, { persist: true });
-      metas.push(meta);
+  // Read/reconcile independent session dirs with bounded concurrency so
+  // `oracle status` / `oracle session list` latency does not grow linearly
+  // with accumulated history. Reconcile persistence still flows through the
+  // per-session lock + optimistic-concurrency guard, so overlapping reads
+  // never clobber a live run.
+  const reconciled = await mapWithConcurrency(entries, SESSION_LIST_CONCURRENCY, async (entry) => {
+    const meta = await readRawSessionMetadata(entry);
+    if (!meta) {
+      return null;
     }
-  }
+    // Keep stored metadata consistent with status reconciliation done by `oracle status`.
+    return reconcileSessionMetadata(meta, { persist: true });
+  });
+  const metas = reconciled.filter((meta): meta is SessionMetadata => meta !== null);
   return metas.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 }
 
@@ -1324,6 +1471,12 @@ export interface SessionCleanupResult {
   remaining: number;
   /** Sessions removed (or, with dryRun, sessions that would be removed). */
   sessions: SessionCleanupCandidate[];
+  /**
+   * Count of live (still-running) sessions skipped to avoid deleting an
+   * in-flight run's artifacts mid-run. Optional so existing callers that
+   * construct this result without it keep type-checking.
+   */
+  skippedActive?: number;
 }
 
 async function directorySizeBytes(dir: string): Promise<number | undefined> {
@@ -1360,10 +1513,14 @@ export async function deleteSessionsOlderThan({
   }
   const cutoff = includeAll ? Number.NEGATIVE_INFINITY : Date.now() - hours * 60 * 60 * 1000;
   const sessions: SessionCleanupCandidate[] = [];
+  let skippedActive = 0;
 
   for (const entry of entries) {
     const dir = sessionDir(entry);
     let createdMs: number | undefined;
+    // readSessionMetadata reconciles status, so a dead browser run / stale
+    // zombie is already 'error' here; only a genuinely in-flight run stays
+    // 'running'.
     const meta = await readSessionMetadata(entry);
     if (meta?.createdAt) {
       const parsed = Date.parse(meta.createdAt);
@@ -1380,6 +1537,17 @@ export async function deleteSessionsOlderThan({
       }
     }
     if (includeAll || (createdMs !== undefined && createdMs < cutoff)) {
+      // Liveness guard: never delete an in-flight run out from under its
+      // process (its later log/meta writes would break). A windowed clear
+      // (`--clear --hours N`, including `--hours 0`) skips live sessions;
+      // the explicit full wipe (`--all`, gated behind --yes) is honored.
+      if (!includeAll && meta && (await isSessionLive(meta))) {
+        skippedActive += 1;
+        process.stderr.write(
+          `Skipping session "${entry}": still running (skipped to avoid deleting an in-flight run).\n`,
+        );
+        continue;
+      }
       const sizeBytes = await directorySizeBytes(dir);
       if (!dryRun) {
         await fs.rm(dir, { recursive: true, force: true });
@@ -1390,7 +1558,7 @@ export async function deleteSessionsOlderThan({
 
   const deleted = dryRun ? 0 : sessions.length;
   const remaining = Math.max(entries.length - deleted, 0);
-  return { deleted, remaining, sessions };
+  return { deleted, remaining, sessions, skippedActive };
 }
 
 export async function wait(ms: number): Promise<void> {
@@ -1425,12 +1593,15 @@ export async function getSessionPaths(sessionId: string): Promise<{
   return { dir, metadata, log, request };
 }
 
-async function markZombie(
-  meta: SessionMetadata,
-  { persist }: { persist: boolean },
-): Promise<SessionMetadata> {
+// Pure reconciliation probes: each returns the status-downgrade patch its
+// staleness check warrants, or null when the session should be left alone.
+// They perform NO writes — persistence is routed through
+// updateSessionMetadata by reconcileSessionMetadata so the lock + OCC guard
+// (and terminal model-row propagation) apply uniformly.
+
+async function zombiePatch(meta: SessionMetadata): Promise<Partial<SessionMetadata> | null> {
   if (!(await isZombie(meta))) {
-    return meta;
+    return null;
   }
   if (BROWSER_SESSION_MODES.has(meta.mode as SessionMode)) {
     const runtime = meta.browser?.runtime;
@@ -1444,36 +1615,28 @@ async function markZombie(
         signals.push(await isPortOpen(host, runtime.chromePort));
       }
       if (signals.some(Boolean)) {
-        return meta;
+        return null;
       }
     }
   }
   const maxAgeMs = resolveZombieMaxAgeMs(meta);
-  const updated: SessionMetadata = {
-    ...meta,
+  return {
     status: "error",
     errorMessage: `Session marked as zombie (> ${formatElapsed(maxAgeMs)} stale)`,
     completedAt: new Date().toISOString(),
   };
-  if (persist) {
-    await atomicWriteFileUtf8(metaPath(meta.id), JSON.stringify(updated, null, 2));
-  }
-  return updated;
 }
 
-async function markDeadBrowser(
-  meta: SessionMetadata,
-  { persist }: { persist: boolean },
-): Promise<SessionMetadata> {
+async function deadBrowserPatch(meta: SessionMetadata): Promise<Partial<SessionMetadata> | null> {
   if (
     !RUNNING_SESSION_STATUSES.has(meta.status) ||
     !BROWSER_SESSION_MODES.has(meta.mode as SessionMode)
   ) {
-    return meta;
+    return null;
   }
   const runtime = meta.browser?.runtime;
   if (!runtime) {
-    return meta;
+    return null;
   }
   const signals: boolean[] = [];
   if (runtime.chromePid) {
@@ -1484,7 +1647,7 @@ async function markDeadBrowser(
     signals.push(await isPortOpen(host, runtime.chromePort));
   }
   if (signals.length === 0 || signals.some(Boolean)) {
-    return meta;
+    return null;
   }
   const response = meta.response
     ? {
@@ -1493,17 +1656,45 @@ async function markDeadBrowser(
         incompleteReason: meta.response.incompleteReason ?? "chrome-disconnected",
       }
     : { status: "error", incompleteReason: "chrome-disconnected" };
-  const updated: SessionMetadata = {
-    ...meta,
+  return {
     status: "error",
     errorMessage: "Browser session ended (Chrome is no longer reachable)",
     completedAt: new Date().toISOString(),
     response,
   };
-  if (persist) {
-    await atomicWriteFileUtf8(metaPath(meta.id), JSON.stringify(updated, null, 2));
+}
+
+/**
+ * True when a session is still genuinely in flight: reconciliation has
+ * already downgraded dead browser runs and stale zombies to a terminal
+ * status, so a still-'running' status is authoritative. Where we hold
+ * browser runtime handles we re-confirm liveness with the same signals
+ * markZombie/markDeadBrowser use, so an in-flight run is never pruned.
+ */
+async function isSessionLive(meta: SessionMetadata): Promise<boolean> {
+  if (!RUNNING_SESSION_STATUSES.has(meta.status)) {
+    return false;
   }
-  return updated;
+  if (BROWSER_SESSION_MODES.has(meta.mode as SessionMode)) {
+    const runtime = meta.browser?.runtime;
+    if (runtime) {
+      const signals: boolean[] = [];
+      if (runtime.controllerPid) {
+        signals.push(isProcessAlive(runtime.controllerPid));
+      }
+      if (runtime.chromePid) {
+        signals.push(isProcessAlive(runtime.chromePid));
+      }
+      if (runtime.chromePort) {
+        const host = runtime.chromeHost ?? "127.0.0.1";
+        signals.push(await isPortOpen(host, runtime.chromePort));
+      }
+      if (signals.length > 0) {
+        return signals.some(Boolean);
+      }
+    }
+  }
+  return true;
 }
 
 async function isZombie(meta: SessionMetadata): Promise<boolean> {
