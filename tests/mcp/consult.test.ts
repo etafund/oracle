@@ -5,12 +5,12 @@ import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { z } from "zod";
 import type { SessionModelRun } from "../../src/sessionStore.js";
-import { consultInputSchema } from "../../src/mcp/types.ts";
 import { setOracleHomeDirOverrideForTest } from "../../src/oracleHome.js";
 import { applyConsultPreset } from "../../src/mcp/consultPresets.ts";
 import {
   buildConsultBrowserConfig,
   buildConsultDryRunResolved,
+  consultInputSchema,
   formatConsultDryRunResolved,
   registerConsultTool,
   summarizeArtifactsForConsult,
@@ -109,10 +109,10 @@ describe("summarizeModelRunsForConsult", () => {
   });
 
   test("keeps the registered MCP input schema JSON-schema compatible", () => {
-    let inputSchema: z.ZodRawShape | undefined;
+    let inputSchema: z.ZodType | undefined;
     registerConsultTool({
       registerTool: (_name: string, def: unknown) => {
-        inputSchema = (def as { inputSchema: z.ZodRawShape }).inputSchema;
+        inputSchema = (def as { inputSchema: z.ZodType }).inputSchema;
       },
       server: {
         sendLoggingMessage: async () => undefined,
@@ -120,7 +120,13 @@ describe("summarizeModelRunsForConsult", () => {
     } as unknown as Parameters<typeof registerConsultTool>[0]);
 
     expect(inputSchema).toBeDefined();
-    expect(() => z.toJSONSchema(z.object(inputSchema!))).not.toThrow();
+    // The registered schema is a strict object (rejects unknown keys) with an input-side
+    // transform, matching how the MCP SDK emits JSON Schema for tool discovery.
+    expect(() => z.toJSONSchema(inputSchema!, { io: "input" })).not.toThrow();
+    const jsonSchema = z.toJSONSchema(inputSchema!, { io: "input" }) as {
+      additionalProperties?: unknown;
+    };
+    expect(jsonSchema.additionalProperties).toBe(false);
   });
 
   test("route-blocks MCP fable-local before session/backend side effects", async () => {
@@ -662,6 +668,38 @@ describe("summarizeModelRunsForConsult", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0]?.text).toContain("run_in_background");
+  });
+
+  test("rejects a mistyped dryRun key naming the closest valid key", async () => {
+    const handlers: Array<(input: unknown) => Promise<unknown>> = [];
+    registerConsultTool({
+      registerTool: (_name: string, _def: unknown, fn: (input: unknown) => Promise<unknown>) => {
+        handlers.push(fn);
+      },
+      server: {
+        sendLoggingMessage: async () => undefined,
+      },
+    } as unknown as Parameters<typeof registerConsultTool>[0]);
+    const handler = handlers[0];
+    if (!handler) throw new Error("handler not registered");
+
+    // A mistyped safety flag must fail closed instead of silently dropping and starting a
+    // real, paid run: dry_run is rejected and pointed at dryRun.
+    const result = (await handler({
+      engine: "browser",
+      model: "gpt-5.5-pro",
+      prompt: "review this",
+      files: [],
+      dry_run: true,
+    })) as {
+      isError?: boolean;
+      content: Array<{ type: "text"; text: string }>;
+    };
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain("dry_run");
+    expect(result.content[0]?.text).toContain("dryRun");
+    expect(performSessionRun).not.toHaveBeenCalled();
   });
 
   test("keeps browser MCP consults blocking by default", async () => {

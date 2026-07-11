@@ -49,7 +49,7 @@ describe("chatgpt_image MCP tool", () => {
   });
 
   test("keeps the registered input schema discoverable and normalizes thinking aliases", async () => {
-    let inputSchema: z.ZodRawShape | undefined;
+    let inputSchema: z.ZodType | undefined;
     let handler: ((input: unknown) => Promise<unknown>) | undefined;
     registerChatGptImageTool({
       registerTool: (
@@ -57,7 +57,7 @@ describe("chatgpt_image MCP tool", () => {
         def: unknown,
         registeredHandler: (input: unknown) => Promise<unknown>,
       ) => {
-        inputSchema = (def as { inputSchema: z.ZodRawShape }).inputSchema;
+        inputSchema = (def as { inputSchema: z.ZodType }).inputSchema;
         handler = registeredHandler;
       },
       server: {
@@ -66,7 +66,9 @@ describe("chatgpt_image MCP tool", () => {
     } as unknown as Parameters<typeof registerChatGptImageTool>[0]);
 
     expect(inputSchema).toBeDefined();
-    expect(() => z.toJSONSchema(z.object(inputSchema!))).not.toThrow();
+    // Strict object with an input-side transform: emit JSON Schema the same way the MCP
+    // SDK does (input side of the pipe).
+    expect(() => z.toJSONSchema(inputSchema!, { io: "input" })).not.toThrow();
     const result = (await handler?.({
       dryRun: true,
       prompt: "Create a small product mockup.",

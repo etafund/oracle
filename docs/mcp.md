@@ -68,6 +68,21 @@ For generated images, pass an explicit `generateImage` path. That opt-in is impo
 
 The MCP response includes `structuredContent.images[]` with the saved file path, MIME type, size, dimensions, and ChatGPT file id when available. Signed source/download URLs remain internal.
 
+### `follow_up`
+
+- Inputs: `parentSessionId` (required id/slug of a stored browser session), `prompt` (required), `slug?: string` (child session slug), `wait?: boolean` (wait briefly before returning; the child stays detached), `noRecover?: boolean` (require a live matching ChatGPT tab; do not relaunch/recover Chrome).
+- Behavior: continues an existing stored ChatGPT browser conversation with one more prompt in the same thread, as a detached child session. This is the cheap continuation path — it reuses the prior conversation context instead of re-bundling and re-uploading files through a fresh `consult`. Poll the child in-band with the `sessions` tool (`id`, `detail:true`); the returned text and `structuredContent` carry the child session id, parent id, status, and a log tail.
+- Cost/time: each follow-up still starts a real, billed ChatGPT Pro turn that can take 5–60 minutes. There is no `dryRun`; use `consult` with `dryRun:true` to preview configuration before spending.
+- Prompt-only in v1: `files` is intentionally not accepted (the strict schema rejects it as an unknown key). To attach files, start a new `consult`.
+
+```json
+{
+  "parentSessionId": "gpt-review-plan",
+  "prompt": "Challenge your recommendation, then give the final decision.",
+  "wait": true
+}
+```
+
 ### `sessions`
 
 - Inputs: `{id?, hours?, limit?, includeAll?, detail?}` mirroring `oracle status` / `oracle session`.

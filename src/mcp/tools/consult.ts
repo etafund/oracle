@@ -117,8 +117,8 @@ import {
   CONSULT_ENGINES,
   CONSULT_LANES,
   CONSULT_PRESETS,
-  browserThinkingTimeRawSchema,
-  consultInputSchema,
+  browserThinkingTimeInputSchema,
+  strictToolSchema,
 } from "../types.js";
 import { applyConsultPreset } from "../consultPresets.js";
 import { loadUserConfig, type UserConfig } from "../../config.js";
@@ -168,7 +168,7 @@ const consultInputShape = {
     .string()
     .optional()
     .describe(
-      'Browser-only: explicit ChatGPT UI label to select (overrides model mapping). Example: "GPT-5.2 Thinking".',
+      'Browser-only: explicit ChatGPT UI label to select (overrides model mapping). Example: "GPT-5.6 Sol".',
     ),
   browserAttachments: z
     .enum(["auto", "never", "always"])
@@ -186,7 +186,7 @@ const consultInputShape = {
     .describe(
       'Browser-only: bundle upload format when browserBundleFiles is true or auto-bundling is needed. Defaults to "auto"; "auto" uses ZIP when bundled inputs include raw/binary files.',
     ),
-  browserThinkingTime: browserThinkingTimeRawSchema
+  browserThinkingTime: browserThinkingTimeInputSchema
     .optional()
     .describe("Browser-only: set ChatGPT thinking time when supported by the chosen model."),
   browserModelStrategy: z
@@ -240,13 +240,19 @@ const consultInputShape = {
       "Preview the resolved Oracle run without creating a session or touching the browser.",
     ),
   run_in_background: z
-    .boolean()
+    .never({
+      error:
+        "Oracle consult does not accept run_in_background. Use browserDetached:true for an explicit detached browser consult.",
+    })
     .optional()
     .describe(
       "Unsupported compatibility trap: do not pass this field. Use browserDetached:true for explicit detached browser consults.",
     ),
   runInBackground: z
-    .boolean()
+    .never({
+      error:
+        "Oracle consult does not accept runInBackground. Use browserDetached:true for an explicit detached browser consult.",
+    })
     .optional()
     .describe(
       "Unsupported compatibility trap: do not pass this field. Use browserDetached:true for explicit detached browser consults.",
@@ -260,6 +266,12 @@ const consultInputShape = {
     .optional()
     .describe("Optional human-friendly session id (used for later `oracle sessions` lookups)."),
 } satisfies z.ZodRawShape;
+
+// Single source of truth: the advertised shape above is also the enforced schema, so
+// the two can never drift. `strictToolSchema` makes it reject unknown/typo'd keys
+// (the fail-closed paid-run guard).
+export const consultInputSchema = strictToolSchema(consultInputShape);
+export type ConsultInput = z.infer<typeof consultInputSchema>;
 
 const consultModelSummaryShape = z.object({
   model: z.string(),
@@ -291,19 +303,30 @@ const consultModelSummaryShape = z.object({
   logPath: z.string().optional(),
 });
 
+// Single source of truth for the artifact-kind enum: the keys must exactly cover
+// SessionArtifact["kind"]. `satisfies Record<SessionArtifact["kind"], true>` fails the
+// build if the upstream union gains, loses, or renames a kind, so a drifted output
+// schema can never reject (and discard) an already-paid consult result.
+const SESSION_ARTIFACT_KIND_TABLE = {
+  transcript: true,
+  "deep-research-report": true,
+  image: true,
+  file: true,
+  "claude-code-stdout-raw": true,
+  "claude-code-stderr-raw": true,
+  "claude-code-events-normalized": true,
+  "claude-code-final": true,
+  "claude-code-progress": true,
+  "claude-code-adapter": true,
+} as const satisfies Record<SessionArtifact["kind"], true>;
+
+const SESSION_ARTIFACT_KINDS = Object.keys(SESSION_ARTIFACT_KIND_TABLE) as [
+  SessionArtifact["kind"],
+  ...SessionArtifact["kind"][],
+];
+
 const consultArtifactSummaryShape = z.object({
-  kind: z.enum([
-    "transcript",
-    "deep-research-report",
-    "image",
-    "file",
-    "claude-code-stdout-raw",
-    "claude-code-stderr-raw",
-    "claude-code-events-normalized",
-    "claude-code-final",
-    "claude-code-progress",
-    "claude-code-adapter",
-  ]),
+  kind: z.enum(SESSION_ARTIFACT_KINDS),
   path: z.string(),
   label: z.string().optional(),
   mimeType: z.string().optional(),
@@ -778,7 +801,7 @@ function formatMcpLaneRouteBlock(block: McpLaneRouteBlock): string {
     "No session, browser, API request, worker, or local Claude Code subprocess was started.",
     "Local Claude Code review is CLI-only in this hidden alpha.",
     'For existing ChatGPT browser MCP consults, use preset:"chatgpt-pro-heavy" or explicit engine:"browser" fields.',
-    `Machine-readable contract: ${block.capabilitiesCommand}`,
+    "Machine-readable route-block details are in this result's structuredContent.error.",
   ];
   return lines.join("\n");
 }
@@ -1127,9 +1150,7 @@ export async function runConsultTool(
     const summary = running
       ? [
           `Session ${sessionMeta.id} (${finalMeta.status})`,
-          "Detached browser worker is still running; inspect with `oracle session " +
-            `${sessionMeta.id} --render` +
-            "` or use `oracle-await` after MCP client timeout.",
+          `Detached browser worker is still running; poll it in-band with the sessions MCP tool (id:"${sessionMeta.id}", detail:true) after an MCP client timeout.`,
         ].join("\n")
       : `Session ${sessionMeta.id} (${finalMeta.status})`;
     const logTail = await readSessionLogTail(sessionMeta.id, 4000);
@@ -1163,9 +1184,8 @@ export function registerConsultTool(server: McpServer, deps: ConsultToolDeps = {
     {
       title: "Run an oracle session",
       description:
-        'Run an Oracle session (API or ChatGPT browser automation). Use `files` to attach project context. If `engine` is omitted, Oracle follows CLI defaults: config/ORACLE_ENGINE first, then API when OPENAI_API_KEY is set, otherwise browser. Browser GPT-5.6 Sol + Pro consults can take many minutes; use `dryRun:true` first when configuring an agent and inspect `sessions`/`oracle status` before retrying. Browser manual-login uses a private Oracle Chrome profile separate from the user\'s normal Chrome; dry-run output includes first-time setup guidance when that path is active. For browser-based image/file uploads, set `browserAttachments:"always"`. For ChatGPT image generation, set `generateImage` to enable the same image wait/download path as CLI --generate-image and read returned paths from `images`. Browser consults can include `browserFollowUps` for a multi-turn ChatGPT review in one conversation. Sessions are stored under `ORACLE_HOME_DIR` (shared with the CLI).',
-      // Cast to any to satisfy SDK typings across differing Zod versions.
-      inputSchema: consultInputShape,
+        'Run an Oracle session (API or ChatGPT browser automation). COST/TIME: a browser GPT-5.6 Sol + Pro consult starts a real, billed ChatGPT Pro run that can take 5-60 minutes; always send `dryRun:true` first to preview the resolved request (engine, model, files, cost-bearing browser path) without spending, then re-send without `dryRun` to execute. Use `files` to attach project context. If `engine` is omitted, Oracle follows CLI defaults: config/ORACLE_ENGINE first, then API when OPENAI_API_KEY is set, otherwise browser. Inspect the `sessions` MCP tool before retrying a prompt. Browser manual-login uses a private Oracle Chrome profile separate from the user\'s normal Chrome; dry-run output includes first-time setup guidance when that path is active. For browser-based image/file uploads, set `browserAttachments:"always"`. For ChatGPT image generation, set `generateImage` to enable the same image wait/download path as CLI --generate-image and read returned paths from `images`. Browser consults can include `browserFollowUps` for a multi-turn ChatGPT review in one conversation. Sessions are stored under `ORACLE_HOME_DIR` (shared with the CLI).',
+      inputSchema: consultInputSchema,
       outputSchema: consultOutputShape,
     },
     async (input: unknown) => runConsultTool(input, { server: server.server, deps }),

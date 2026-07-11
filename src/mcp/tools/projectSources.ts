@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { strictToolSchema } from "../types.js";
 import { loadUserConfig } from "../../config.js";
 import { resolveRemoteServiceConfig } from "../../remote/remoteServiceConfig.js";
 import { runBrowserProjectSources } from "../../browser/projectSourcesRunner.js";
@@ -64,7 +65,10 @@ const projectSourcesOutputShape = {
   tookMs: z.number(),
 } satisfies z.ZodRawShape;
 
-const projectSourcesInputSchema = z.object(projectSourcesInputShape);
+// Single source of truth: the advertised shape above is also the enforced schema, and
+// `strictToolSchema` rejects unknown keys so a mistyped flag cannot silently change a
+// persistent-source mutation.
+const projectSourcesInputSchema = strictToolSchema(projectSourcesInputShape);
 
 export function registerProjectSourcesTool(server: McpServer): void {
   server.registerTool(
@@ -73,7 +77,7 @@ export function registerProjectSourcesTool(server: McpServer): void {
       title: "Manage ChatGPT Project Sources",
       description:
         "List or append files to a ChatGPT Project's persistent Sources tab. This is useful for Developer Mode workflows where chats do not share memory, but explicit project sources provide shared context. Destructive delete/replace/sync operations are intentionally not included in v1.",
-      inputSchema: projectSourcesInputShape,
+      inputSchema: projectSourcesInputSchema,
       outputSchema: projectSourcesOutputShape,
     },
     async (input: unknown) => {

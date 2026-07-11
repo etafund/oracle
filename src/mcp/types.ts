@@ -18,59 +18,77 @@ export const browserThinkingTimeInputSchema = browserThinkingTimeRawSchema.trans
   },
 );
 
-export const consultInputSchema = z
-  .object({
-    preset: z.enum(CONSULT_PRESETS).optional(),
-    prompt: z.string().min(1, "Prompt is required."),
-    files: z.array(z.string()).default([]),
-    lane: z.enum(CONSULT_LANES).optional(),
-    model: z.string().optional(),
-    models: z.array(z.string()).optional(),
-    engine: z.enum(CONSULT_ENGINES).optional(),
-    browserModelLabel: z.string().optional(),
-    browserAttachments: z.enum(["auto", "never", "always"]).optional(),
-    browserBundleFiles: z.boolean().optional(),
-    browserBundleFormat: z.enum(["auto", "text", "zip"]).optional(),
-    browserThinkingTime: browserThinkingTimeInputSchema.optional(),
-    browserModelStrategy: z.enum(["select", "current", "ignore"]).optional(),
-    browserResearchMode: z.enum(["deep"]).optional(),
-    browserArchive: z.enum(["auto", "always", "never"]).optional(),
-    browserFollowUps: z.array(z.string()).optional(),
-    browserKeepBrowser: z.boolean().optional(),
-    browserDetached: z.boolean().optional(),
-    generateImage: z.string().optional(),
-    outputPath: z.string().optional(),
-    dryRun: z.boolean().optional(),
-    run_in_background: z.never().optional(),
-    runInBackground: z.never().optional(),
-    search: z.boolean().optional(),
-    slug: z.string().optional(),
-  })
-  .strict();
+// --- Strict tool-input schemas (single source of truth) ---
+//
+// Every MCP tool advertises AND enforces the exact same Zod object: the shape it
+// registers as `inputSchema` is the shape it parses in the handler, so the schema an
+// agent reads can never drift from what the tool accepts. Crucially the object is
+// `strict`, so the MCP SDK (which otherwise silently strips unknown keys before the
+// handler runs) rejects typos. That closes the paid-run trap where a mistyped safety
+// flag such as `dry_run`/`dryrun` is dropped and a real, billed ChatGPT Pro run starts
+// in place of the intended `dryRun` preview.
 
-export type ConsultInput = z.infer<typeof consultInputSchema>;
+function levenshtein(a: string, b: string): number {
+  const rows = a.length + 1;
+  const cols = b.length + 1;
+  const distance = Array.from({ length: rows }, () => new Array<number>(cols).fill(0));
+  for (let i = 0; i < rows; i += 1) {
+    distance[i][0] = i;
+  }
+  for (let j = 0; j < cols; j += 1) {
+    distance[0][j] = j;
+  }
+  for (let i = 1; i < rows; i += 1) {
+    for (let j = 1; j < cols; j += 1) {
+      const substitutionCost = a[i - 1] === b[j - 1] ? 0 : 1;
+      distance[i][j] = Math.min(
+        distance[i - 1][j] + 1,
+        distance[i][j - 1] + 1,
+        distance[i - 1][j - 1] + substitutionCost,
+      );
+    }
+  }
+  return distance[rows - 1][cols - 1];
+}
 
-export const sessionsInputSchema = z
-  .object({
-    id: z.string().min(1).optional(),
-    hours: z.number().finite().nonnegative().optional(),
-    limit: z.number().int().positive().optional(),
-    includeAll: z.boolean().optional(),
-    detail: z.boolean().optional(),
-  })
-  .strict();
+function nearestKnownKey(unknownKey: string, validKeys: readonly string[]): string | undefined {
+  const target = unknownKey.toLowerCase();
+  let best: string | undefined;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const key of validKeys) {
+    const distance = levenshtein(target, key.toLowerCase());
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = key;
+    }
+  }
+  // Only suggest a correction when it is plausibly a typo of the unknown key, so an
+  // unrelated stray key does not get a misleading "did you mean" pointer.
+  const threshold = Math.max(2, Math.ceil(unknownKey.length / 2));
+  return best !== undefined && bestDistance <= threshold ? best : undefined;
+}
 
-export type SessionsInput = z.infer<typeof sessionsInputSchema>;
+function describeUnknownKeys(unknownKeys: readonly string[], validKeys: readonly string[]): string {
+  return unknownKeys
+    .map((key) => {
+      const suggestion = nearestKnownKey(key, validKeys);
+      return suggestion
+        ? `Unknown input key "${key}". Did you mean "${suggestion}"?`
+        : `Unknown input key "${key}".`;
+    })
+    .join(" ");
+}
 
-export const followUpInputSchema = z
-  .object({
-    parentSessionId: z.string().min(1, "Parent session id is required."),
-    prompt: z.string().min(1, "Prompt is required."),
-    slug: z.string().optional(),
-    wait: z.boolean().optional(),
-    noRecover: z.boolean().optional(),
-    files: z.array(z.string()).optional(),
-  })
-  .strict();
-
-export type FollowUpInput = z.infer<typeof followUpInputSchema>;
+/**
+ * Build a strict Zod object from a raw shape. The returned schema rejects unknown keys
+ * with a message that names the offending key and its closest valid neighbour, and it
+ * doubles as the advertised MCP `inputSchema` so the contract and the enforcement can
+ * never diverge.
+ */
+export function strictToolSchema<Shape extends z.ZodRawShape>(shape: Shape) {
+  const validKeys = Object.keys(shape);
+  return z.strictObject(shape, {
+    error: (issue) =>
+      issue.code === "unrecognized_keys" ? describeUnknownKeys(issue.keys, validKeys) : undefined,
+  });
+}

@@ -1,4 +1,4 @@
-import type { ConsultInput } from "./types.js";
+import type { ConsultInput } from "./tools/consult.js";
 
 const CHATGPT_PRO_HEAVY_MODEL = "gpt-5.6-sol";
 const CHATGPT_PRO_HEAVY_THINKING_TIME = "extended";

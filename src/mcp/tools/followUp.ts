@@ -7,7 +7,7 @@ import {
   startBrowserFollowUpSession,
   waitForFollowUpSession,
 } from "../../cli/browserFollowUp.js";
-import { followUpInputSchema } from "../types.js";
+import { strictToolSchema } from "../types.js";
 
 const DEFAULT_MCP_FOLLOW_UP_WAIT_MS = 105_000;
 const DEFAULT_MCP_FOLLOW_UP_POLL_MS = 2_000;
@@ -15,8 +15,12 @@ const DEFAULT_MCP_FOLLOW_UP_POLL_MS = 2_000;
 const followUpInputShape = {
   parentSessionId: z
     .string()
+    .min(1, "Parent session id is required.")
     .describe("Stored browser session id/slug whose saved ChatGPT conversation should continue."),
-  prompt: z.string().describe("Follow-up prompt to send as the next ChatGPT turn."),
+  prompt: z
+    .string()
+    .min(1, "Prompt is required.")
+    .describe("Follow-up prompt to send as the next ChatGPT turn."),
   slug: z.string().optional().describe("Optional child session slug (3-5 words)."),
   wait: z
     .boolean()
@@ -26,11 +30,14 @@ const followUpInputShape = {
     .boolean()
     .optional()
     .describe("Require a live matching ChatGPT tab; do not relaunch/recover Chrome."),
-  files: z
-    .array(z.string())
-    .optional()
-    .describe("Unsupported in follow_up v1; start a new consult to attach files."),
+  // `files` is intentionally omitted: follow_up is prompt-only in v1. Attaching files is
+  // done by starting a new consult, so the advertised schema no longer offers a param the
+  // handler can only reject.
 } satisfies z.ZodRawShape;
+
+// Single source of truth: the advertised shape above is also the enforced schema (min
+// lengths and strict unknown-key rejection included), so the contract cannot drift.
+const followUpInputSchema = strictToolSchema(followUpInputShape);
 
 const followUpOutputShape = {
   sessionId: z.string(),
@@ -65,17 +72,12 @@ export function registerFollowUpTool(server: McpServer, deps: FollowUpToolDeps =
     {
       title: "Continue an oracle browser session",
       description:
-        "Create a child Oracle session that sends one prompt to an existing stored ChatGPT browser conversation. This is prompt-only in v1; use consult for new file attachments.",
-      inputSchema: followUpInputShape,
+        "Continue an existing stored ChatGPT browser conversation with one more prompt in the same thread. This is the cheap continuation path (it reuses the prior context instead of re-bundling files through a fresh consult), but it still starts a real, billed ChatGPT Pro turn that can take 5-60 minutes. It is prompt-only in v1 (no files); start a new consult to attach files. follow_up has no dryRun, so use consult with dryRun:true to preview configuration before spending.",
+      inputSchema: followUpInputSchema,
       outputSchema: followUpOutputShape,
     },
     async (input: unknown) => {
       const parsed = followUpInputSchema.parse(input);
-      if (parsed.files && parsed.files.length > 0) {
-        throw new Error(
-          "Oracle follow_up is prompt-only in v1. Start a new consult to attach files.",
-        );
-      }
       const start = deps.startBrowserFollowUpSession ?? startBrowserFollowUpSession;
       const waitForSession = deps.waitForFollowUpSession ?? waitForFollowUpSession;
       const readLogTail = deps.readFollowUpLogTail ?? readFollowUpLogTail;
@@ -85,7 +87,6 @@ export function registerFollowUpTool(server: McpServer, deps: FollowUpToolDeps =
         wait: parsed.wait,
         // GOAL spec parity with the CLI `--no-recover` flag (upstream MCP omits it).
         recover: parsed.noRecover === true ? false : undefined,
-        files: parsed.files,
         cliEntrypoint: deps.cliEntrypoint ?? resolveMcpCliEntrypoint(),
       });
       const waitMs =
@@ -99,7 +100,7 @@ export function registerFollowUpTool(server: McpServer, deps: FollowUpToolDeps =
         : result.session;
       const status = metadata?.status ?? result.session.status;
       const logTail = await readLogTail(result.session.id, 4000);
-      const output = `Follow-up session ${result.session.id} (${status}) from ${result.parentSessionId}. Reattach via: ${result.reattachCommand}`;
+      const output = `Follow-up session ${result.session.id} (${status}) from ${result.parentSessionId}. Poll it in-band with the sessions MCP tool (id:"${result.session.id}", detail:true).`;
       return {
         content: [{ type: "text" as const, text: output }],
         structuredContent: {

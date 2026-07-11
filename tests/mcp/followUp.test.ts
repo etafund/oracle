@@ -50,7 +50,7 @@ describe("follow_up MCP tool", () => {
       prompt: "continue this",
       slug: "child session now",
       wait: undefined,
-      files: undefined,
+      recover: undefined,
       cliEntrypoint: "/tmp/oracle-cli.js",
     });
     expect(result.structuredContent).toEqual({
@@ -100,7 +100,7 @@ describe("follow_up MCP tool", () => {
     );
   });
 
-  test("rejects files because follow_up is prompt-only in v1", async () => {
+  test("rejects files as an unknown key because follow_up is prompt-only in v1", async () => {
     const handlers: Array<(input: unknown) => Promise<unknown>> = [];
     const startBrowserFollowUpSession = vi.fn();
     registerFollowUpTool(
@@ -114,9 +114,11 @@ describe("follow_up MCP tool", () => {
     const handler = handlers[0];
     if (!handler) throw new Error("handler not registered");
 
+    // `files` is no longer advertised, so the strict schema rejects it as an unknown key
+    // rather than offering a param the handler can only refuse.
     await expect(
       handler({ parentSessionId: "parent", prompt: "next", files: ["a.ts"] }),
-    ).rejects.toThrow(/prompt-only/i);
+    ).rejects.toThrow(/files/i);
     expect(startBrowserFollowUpSession).not.toHaveBeenCalled();
   });
 

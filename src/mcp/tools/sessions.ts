@@ -1,20 +1,28 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { sessionStore } from "../../sessionStore.js";
-import { sessionsInputSchema } from "../types.js";
+import { strictToolSchema } from "../types.js";
 
 const sessionsInputShape = {
   id: z
     .string()
+    .min(1)
     .optional()
     .describe(
       "Session id or slug. If set, returns a single session (use detail:true to include metadata/request).",
     ),
   hours: z
     .number()
+    .finite()
+    .nonnegative()
     .optional()
     .describe("Look back this many hours when listing sessions (default: 24)."),
-  limit: z.number().optional().describe("Maximum sessions to return when listing (default: 100)."),
+  limit: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("Maximum sessions to return when listing (default: 100)."),
   includeAll: z
     .boolean()
     .optional()
@@ -26,6 +34,11 @@ const sessionsInputShape = {
     .optional()
     .describe("When id is set, include session metadata + stored request + full log text."),
 } satisfies z.ZodRawShape;
+
+// Single source of truth: the advertised shape above is also the enforced schema, and
+// `strictToolSchema` rejects unknown keys with a nearest-key hint instead of silently
+// dropping them.
+const sessionsInputSchema = strictToolSchema(sessionsInputShape);
 
 const sessionsOutputShape = {
   entries: z
@@ -57,7 +70,7 @@ export function registerSessionsTool(server: McpServer): void {
       title: "List or fetch oracle sessions",
       description:
         "Inspect Oracle session history stored under `ORACLE_HOME_DIR` (shared with the CLI). List recent sessions or fetch one by id/slug (optionally including metadata + request + log).",
-      inputSchema: sessionsInputShape,
+      inputSchema: sessionsInputSchema,
       outputSchema: sessionsOutputShape,
     },
     async (input: unknown) => {

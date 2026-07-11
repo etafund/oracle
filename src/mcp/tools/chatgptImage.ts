@@ -4,12 +4,8 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { getOracleHomeDir } from "../../oracleHome.js";
-import {
-  browserThinkingTimeInputSchema,
-  browserThinkingTimeRawSchema,
-  type ConsultInput,
-} from "../types.js";
-import { consultOutputShape, runConsultTool } from "./consult.js";
+import { browserThinkingTimeInputSchema, strictToolSchema } from "../types.js";
+import { type ConsultInput, consultOutputShape, runConsultTool } from "./consult.js";
 
 const chatGptImageInputShape = {
   prompt: z.string().min(1, "Prompt is required.").describe("Image generation prompt."),
@@ -41,7 +37,7 @@ const chatGptImageInputShape = {
     .describe(
       'How to deliver files. Defaults to "always" when files are present so reference images are uploaded.',
     ),
-  browserThinkingTime: browserThinkingTimeRawSchema
+  browserThinkingTime: browserThinkingTimeInputSchema
     .optional()
     .describe("Set ChatGPT thinking time when supported by the chosen model."),
   browserModelStrategy: z
@@ -71,12 +67,10 @@ const chatGptImageOutputShape = {
   requestedOutputPath: z.string(),
 } satisfies z.ZodRawShape;
 
-const chatGptImageInputSchema = z
-  .object({
-    ...chatGptImageInputShape,
-    browserThinkingTime: browserThinkingTimeInputSchema.optional(),
-  })
-  .strict();
+// Single source of truth: the advertised shape above is also the enforced schema, and
+// `strictToolSchema` rejects unknown/typo'd keys so a mistyped `dryRun` cannot silently
+// start a real, billed image run.
+const chatGptImageInputSchema = strictToolSchema(chatGptImageInputShape);
 
 export type ChatGptImageInput = z.infer<typeof chatGptImageInputSchema>;
 
@@ -123,8 +117,8 @@ export function registerChatGptImageTool(server: McpServer): void {
     {
       title: "Generate an image with ChatGPT",
       description:
-        "Agent-friendly wrapper for ChatGPT browser image generation. It selects browser mode, enables the image-aware wait/download path, uploads reference files when provided, and returns saved image paths in structuredContent.images.",
-      inputSchema: chatGptImageInputShape,
+        "Agent-friendly wrapper for ChatGPT browser image generation. It selects browser mode, enables the image-aware wait/download path, uploads reference files when provided, and returns saved image paths in structuredContent.images. COST/TIME: this drives a real, billed ChatGPT Pro browser run that can take several minutes; send `dryRun:true` first to preview the resolved image run without spending, then re-send without `dryRun` to generate.",
+      inputSchema: chatGptImageInputSchema,
       outputSchema: chatGptImageOutputShape,
     },
     async (input: unknown): Promise<CallToolResult> => {
