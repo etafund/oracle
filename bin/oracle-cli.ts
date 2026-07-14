@@ -51,6 +51,7 @@ import {
   parseFloatOption,
   parseIntOption,
   parseSearchOption,
+  parseWriteOutputPath,
   parseThinkingTimeOption,
   usesDefaultStatusFilters,
   resolvePreviewMode,
@@ -849,6 +850,7 @@ program
   .option(
     "--write-output <path>",
     "Write only the final assistant message to this file (overwrites; multi-model appends .<model> before the extension).",
+    parseWriteOutputPath,
   )
   .option("--allow-partial", "Exit 0 for multi-model runs when at least one model succeeds.", false)
   .addOption(
@@ -1583,6 +1585,7 @@ program
   .option(
     "--write-output <path>",
     "Write harvested browser output to this file (requires --harvest or --live).",
+    parseWriteOutputPath,
   )
   .option(
     "--browser-tab <ref>",

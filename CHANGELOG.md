@@ -8,6 +8,7 @@
 - Browser/Remote: preserve strict ChatGPT conversation resume URLs across remote browser follow-ups, reject unsafe resume targets instead of silently starting fresh, and keep live-tab tailing in `running`/`stalled` while ChatGPT shows Pro thinking or `Answer now` with no stop button.
 - Browser: avoid false pre-run access refusals when ordinary ChatGPT sidebar or task text mentions rate limiters or a healthy signed-in app transiently loads Cloudflare's challenge script, while still blocking real request-throttle and verification walls.
 - Browser: require a longer calm window before accepting preamble-sized ChatGPT Pro answers, confirm every substantial answer across multiple completion samples even when no thinking indicator appeared, avoid globally terminating the DevTools runtime when the snapshot watchdog wins, and preserve typed capture-binding failures instead of rewriting them as timeouts; this prevents review prompts from archiving mid-stream partials, poisoning post-capture binding checks, or obscuring the real failure stage.
+- CLI: stop `--write-output` from silently swallowing a following flag as its path — `oracle --write-output --slug foo` used to record the output path as `--slug`. A flag-shaped token now fails closed with a clear message telling you the path was forgotten, while the `-` / `/dev/stdout` stdout sentinels stay valid.
 
 ## 0.15.2 — 2026-07-06
 

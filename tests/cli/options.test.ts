@@ -6,6 +6,7 @@ import {
   parseFloatOption,
   parseIntOption,
   parseSearchOption,
+  parseWriteOutputPath,
   parseThinkingTimeOption,
   resolvePreviewMode,
   resolveApiModel,
@@ -189,6 +190,25 @@ describe("parseSearchOption", () => {
 
   test("throws on invalid input", () => {
     expect(() => parseSearchOption("maybe")).toThrow(InvalidArgumentError);
+  });
+});
+
+describe("parseWriteOutputPath", () => {
+  // Regression for skills-oracle-write-output-parser-a4tp: Commander v15 fills a
+  // required option-argument with the next argv token unconditionally, so
+  // `--write-output --slug foo` used to swallow "--slug" as the path.
+  test("rejects a flag-shaped token instead of swallowing it as the path", () => {
+    expect(() => parseWriteOutputPath("--slug")).toThrow(InvalidArgumentError);
+    expect(() => parseWriteOutputPath("--slug")).toThrow(/needs a file path/);
+    expect(() => parseWriteOutputPath("-h")).toThrow(InvalidArgumentError);
+  });
+
+  test("keeps the lone '-' stdout sentinel and ordinary paths", () => {
+    expect(parseWriteOutputPath("-")).toBe("-");
+    expect(parseWriteOutputPath("/dev/stdout")).toBe("/dev/stdout");
+    expect(parseWriteOutputPath("answer.md")).toBe("answer.md");
+    expect(parseWriteOutputPath("~/answer.md")).toBe("~/answer.md");
+    expect(parseWriteOutputPath("./-weird-name.md")).toBe("./-weird-name.md");
   });
 });
 

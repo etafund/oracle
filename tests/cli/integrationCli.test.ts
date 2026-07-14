@@ -129,6 +129,24 @@ describe("oracle CLI integration", () => {
   );
 
   test(
+    "rejects --write-output when the next token is a flag instead of a path",
+    async () => {
+      // Regression for skills-oracle-write-output-parser-a4tp: Commander fills a
+      // required option-argument with the next argv token unconditionally, so
+      // `--write-output --slug foo` used to record writeOutputPath="--slug".
+      const result = await execCli(["--write-output", "--slug", "myslug", "-p", "hello"], {
+        timeout: INTEGRATION_TIMEOUT,
+      });
+
+      expect(result.code).not.toBe(0);
+      const combined = `${result.stdout}\n${result.stderr}`;
+      expect(combined).toContain("--write-output needs a file path");
+      expect(combined).toContain('the flag "--slug"');
+    },
+    INTEGRATION_TIMEOUT,
+  );
+
+  test(
     "rejects dry-run combined with either render flag spelling",
     async () => {
       for (const renderFlag of ["--render-markdown", "--render"]) {

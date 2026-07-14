@@ -167,6 +167,35 @@ export function parseSearchOption(value: string): boolean {
   throw new InvalidArgumentError('Search mode must be "on" or "off".');
 }
 
+/**
+ * argParser for `--write-output <path>`.
+ *
+ * Commander v15 fills a *required* option-argument (`<path>`) with the very
+ * next argv token unconditionally — `parseOptions()` does `const value =
+ * args[i++]` without checking whether that token is itself flag-shaped
+ * (node_modules/commander/lib/command.js). So `--write-output --slug foo`
+ * silently recorded writeOutputPath="--slug" (the caller forgot the path and
+ * the following flag got swallowed), reported cross-repo as
+ * skills-oracle-write-output-parser-a4tp.
+ *
+ * A flag-shaped token — leading '-' with length > 1, the exact shape
+ * Commander's own `maybeOption()` treats as an option — is never a real output
+ * path, so reject it with a clear message instead of writing to a file
+ * literally named "--slug". A lone "-" (the stdout sentinel honored by
+ * `resolveOutputPath`) and "/dev/stdout" stay valid.
+ */
+export function parseWriteOutputPath(value: string): string {
+  if (value.length > 1 && value.startsWith("-")) {
+    throw new InvalidArgumentError(
+      `--write-output needs a file path, but the next token was the flag "${value}". ` +
+        `You probably forgot the path — put it right after the flag, e.g. ` +
+        `--write-output answer.md --slug ... (or --write-output=- for stdout). ` +
+        `To target a file whose name starts with "-", prefix it with a directory, e.g. ./${value}.`,
+    );
+  }
+  return value;
+}
+
 export function parseThinkingTimeOption(value: string): ThinkingTimeLevel {
   const normalized = normalizeThinkingTimeLevel(value);
   if (normalized) {
