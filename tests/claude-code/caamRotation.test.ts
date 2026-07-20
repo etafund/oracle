@@ -57,12 +57,21 @@ function fakeExecFileSequence(responses: FakeResponse[]): {
 
 describe("runCaamCooldownSet (caam cooldown set claude/<profile>)", () => {
   test("succeeds on exit 0 and never parses stdout text for its verdict", async () => {
-    const { impl, calls } = fakeExecFileSequence([{ stdout: "Recorded cooldown for claude/beta until ...\n" }]);
+    const { impl, calls } = fakeExecFileSequence([
+      { stdout: "Recorded cooldown for claude/beta until ...\n" },
+    ]);
 
     await expect(
-      runCaamCooldownSet("/opt/caam", "claude", "beta", 60, "session sess-1: rate_limit pattern 'rate limit'", {
-        execFileImpl: impl,
-      }),
+      runCaamCooldownSet(
+        "/opt/caam",
+        "claude",
+        "beta",
+        60,
+        "session sess-1: rate_limit pattern 'rate limit'",
+        {
+          execFileImpl: impl,
+        },
+      ),
     ).resolves.toBeUndefined();
 
     expect(calls).toEqual([
@@ -80,9 +89,7 @@ describe("runCaamCooldownSet (caam cooldown set claude/<profile>)", () => {
   });
 
   test("throws CaamRotationError on a non-zero exit (callers must treat this as non-fatal)", async () => {
-    const { impl } = fakeExecFileSequence([
-      { exitCode: 1, stderr: "Error: db unavailable\n" },
-    ]);
+    const { impl } = fakeExecFileSequence([{ exitCode: 1, stderr: "Error: db unavailable\n" }]);
 
     await expect(
       runCaamCooldownSet("/opt/caam", "claude", "beta", 60, "note", { execFileImpl: impl }),
@@ -261,7 +268,9 @@ describe("runCaamRobotStatus (caam robot status claude)", () => {
   });
 
   test("throws CaamRotationError when success:true but data.providers is missing", async () => {
-    const { impl } = fakeExecFileSequence([{ stdout: JSON.stringify({ success: true, data: {} }) }]);
+    const { impl } = fakeExecFileSequence([
+      { stdout: JSON.stringify({ success: true, data: {} }) },
+    ]);
 
     await expect(runCaamRobotStatus("/opt/caam", "claude", { execFileImpl: impl })).rejects.toThrow(
       /data\.providers/,
@@ -286,8 +295,8 @@ describe("resolveClaudeCodeMaxRateLimitRotations", () => {
     ).toBe(5);
   });
 
-  test("defaults to 2 when neither is set", () => {
-    expect(resolveClaudeCodeMaxRateLimitRotations(undefined, {})).toBe(2);
+  test("defaults to 0 so an explicitly selected shallow profile stays pinned", () => {
+    expect(resolveClaudeCodeMaxRateLimitRotations(undefined, {})).toBe(0);
   });
 
   test("0 is a valid override (fully disables rotation)", () => {
@@ -299,16 +308,16 @@ describe("resolveClaudeCodeMaxRateLimitRotations", () => {
     ).toBe(0);
   });
 
-  test("ignores a negative/garbage env var and falls back to the default", () => {
+  test("ignores a negative/garbage env var and falls back to the pinned default", () => {
     expect(
       resolveClaudeCodeMaxRateLimitRotations(undefined, {
         [ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS_ENV_VAR]: "not-a-number",
       }),
-    ).toBe(2);
+    ).toBe(0);
     expect(
       resolveClaudeCodeMaxRateLimitRotations(undefined, {
         [ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS_ENV_VAR]: "-1",
       }),
-    ).toBe(2);
+    ).toBe(0);
   });
 });

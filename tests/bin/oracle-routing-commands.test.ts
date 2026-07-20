@@ -33,8 +33,11 @@ describe("bin/oracle-cli preview and visibility routing", () => {
       `oracle --lane chatgpt-pro --prompt "Review this migration plan" --file docs/plan.md`,
     );
     expect(output).toContain(
-      `oracle --lane fable-local --prompt "Review this migration plan" --file docs/plan.md`,
+      `oracle --lane fable-local --caam-profile my-profile --caam-base "$HOME/orch-homes" --prompt "Review this migration plan" --file docs/plan.md`,
     );
+    expect(output).toContain("oracle doctor fable --json");
+    expect(output).toContain("Fable runs at fixed xhigh effort");
+    expect(output).toContain("Explicit profile selection fails closed");
     expect(output).toContain(
       `oracle --lane gemini-deep-think --prompt "Review this migration plan" --file docs/plan.md`,
     );
@@ -162,6 +165,38 @@ describe("bin/oracle-cli preview and visibility routing", () => {
     const output = `${stdout}\n${stderr}`;
 
     expect(output).toContain("--lane fable-local");
+  });
+
+  test("an explicitly empty CAAM profile fails closed before a Fable run", async () => {
+    const result = await runOracleFailure([
+      "--lane",
+      "fable-local",
+      "--caam-profile",
+      "",
+      "--prompt",
+      "Review",
+      "--dry-run",
+      "json",
+    ]);
+
+    expect(result.code).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/profile cannot be empty/i);
+  });
+
+  test("--caam-base without a profile is rejected instead of silently using direct Claude", async () => {
+    const result = await runOracleFailure([
+      "--lane",
+      "fable-local",
+      "--caam-base",
+      "/home/ubuntu/orch-homes",
+      "--prompt",
+      "Review",
+      "--dry-run",
+      "json",
+    ]);
+
+    expect(result.code).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toContain("--caam-base requires a CAAM profile");
   });
 
   test.each([

@@ -32,6 +32,7 @@ const REQUIRED_COMMAND_NAMES = [
   "capabilities",
   "doctor",
   "doctor-lanes",
+  "doctor-fable",
   "doctor-chatgpt",
   "doctor-gemini",
   "browser-leases-plan",
@@ -98,6 +99,12 @@ describe("each RobotCommandEntry carries the required v18 metadata", () => {
 
   test("aggregate doctor honestly advertises that remote checks touch the network", () => {
     expect(findRobotCommand("doctor")?.touches_network).toBe(true);
+  });
+
+  test("Fable doctor advertises the rotation env that can degrade strict account pinning", () => {
+    expect(findRobotCommand("doctor-fable")?.required_env).toContain(
+      "ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS",
+    );
   });
 
   test("required_env carries env NAMES only (no leaked secret-looking strings)", () => {
@@ -254,6 +261,7 @@ describe("RobotSurfacePayload — schema-pin regression test (agent-ergonomics S
       expect(typeof lane.attachments.supported).toBe("boolean");
       expect(typeof lane.continuability.cross_invocation_resume).toBe("boolean");
       expect(typeof lane.reasoning_depth_adjustable).toBe("boolean");
+      expect(typeof lane.explicit_profile_selection_fail_closed).toBe("boolean");
     }
     // The "no entry currently exposes paid_calls=true" invariant above is
     // scoped to ROBOT_COMMANDS/`commands` on purpose — lanes are a
@@ -261,6 +269,12 @@ describe("RobotSurfacePayload — schema-pin regression test (agent-ergonomics S
     for (const cmd of payload.commands) {
       expect(cmd.paid_calls).toBe(false);
     }
+    const fable = payload.lanes.find((lane) => lane.lane === "fable-local");
+    expect(fable?.doctor_command).toBe("oracle doctor fable --json");
+    expect(fable?.key_flags).toContain("--caam-profile <profile>");
+    expect(fable?.key_flags).toContain("--caam-base <absolute-path>");
+    expect(fable?.fixed_reasoning_effort).toBe("xhigh");
+    expect(fable?.explicit_profile_selection_fail_closed).toBe(true);
   });
 
   test("action_commands advertises restart and follow-up as honestly-paid session verbs", () => {
@@ -305,6 +319,11 @@ describe("buildRobotDocsGuideText — paste-ready agent handbook", () => {
     expect(lanesIndex).toBeGreaterThan(firstTryIndex);
     expect(text).toContain("oracle capabilities --json");
     expect(text).toContain("oracle doctor lanes --json");
+    expect(text).toContain("oracle doctor fable --json");
+    expect(text).toContain("--caam-profile <profile>");
+    expect(text).toContain("--caam-base <absolute-path>");
+    expect(text).toContain("effort=xhigh (fixed default)");
+    expect(text).toContain("explicit-profile=fail-closed");
     for (const lane of ["chatgpt-pro", "gemini-deep-think", "fable-local"]) {
       expect(text).toContain(lane);
     }

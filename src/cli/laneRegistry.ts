@@ -76,6 +76,10 @@ export interface LaneTemplate {
    * mode; Fable always runs `--effort xhigh` with no adjustable knob).
    */
   reasoning_depth_adjustable: boolean;
+  /** Fixed reasoning effort imposed by the lane, or null when not applicable. */
+  fixedReasoningEffort: "xhigh" | null;
+  /** Explicit account/profile selection must error instead of falling back to another account. */
+  explicitProfileSelectionFailClosed: boolean;
 }
 
 export const LANE_TEMPLATES: readonly LaneTemplate[] = [
@@ -119,6 +123,8 @@ export const LANE_TEMPLATES: readonly LaneTemplate[] = [
     // verified intelligence mode); an explicit --browser-thinking-time is
     // overridden, so advertising an adjustable depth would be untruthful.
     reasoning_depth_adjustable: false,
+    fixedReasoningEffort: null,
+    explicitProfileSelectionFailClosed: false,
   },
   {
     lane: "gemini-deep-think",
@@ -157,6 +163,8 @@ export const LANE_TEMPLATES: readonly LaneTemplate[] = [
       same_invocation_multi_turn: false,
     },
     reasoning_depth_adjustable: false,
+    fixedReasoningEffort: null,
+    explicitProfileSelectionFailClosed: false,
   },
   {
     lane: "fable-local",
@@ -166,7 +174,7 @@ export const LANE_TEMPLATES: readonly LaneTemplate[] = [
     readiness: "hidden-alpha-only",
     enabledForCli: true,
     command: 'oracle --lane fable-local --prompt "..." --file path',
-    doctorCommand: "oracle doctor lanes --json",
+    doctorCommand: "oracle doctor fable --json",
     transportEligibility: "local-only",
     normalizedEngineOptions: {
       engine: "claude-code",
@@ -188,8 +196,10 @@ export const LANE_TEMPLATES: readonly LaneTemplate[] = [
       "no_tools",
       "no_mcp_servers",
       "fable_model_verified_when_visible",
+      "explicit_caam_profile_selection_fails_closed",
+      "caam_doctor_and_launch_share_the_same_base",
     ],
-    keyFlags: ["--lane fable-local"],
+    keyFlags: ["--lane fable-local", "--caam-profile <profile>", "--caam-base <absolute-path>"],
     attachments: {
       supported: true,
       binary_supported: false,
@@ -201,6 +211,8 @@ export const LANE_TEMPLATES: readonly LaneTemplate[] = [
       same_invocation_multi_turn: false,
     },
     reasoning_depth_adjustable: false,
+    fixedReasoningEffort: "xhigh",
+    explicitProfileSelectionFailClosed: true,
   },
 ] as const;
 

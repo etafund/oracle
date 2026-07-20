@@ -176,6 +176,7 @@ describe("aggregate doctor", () => {
     const doctor = program.commands.find((command) => command.name() === "doctor");
     expect(doctor?.commands.map((command) => command.name()).sort()).toEqual([
       "chatgpt",
+      "fable",
       "gemini",
       "lanes",
     ]);

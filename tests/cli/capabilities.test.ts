@@ -94,9 +94,27 @@ describe("core lane capability commands", () => {
     const report = buildCapabilityReport({ env: EMPTY_ENV, now: FROZEN_TIME });
     const fable = capabilityById(report, "fable_xhigh_cli");
     expect(fable?.supported).toBe(true);
+    expect(fable?.next_command).toBe("oracle doctor fable --json");
     expect(fable?.notes.lane).toBe("fable-local");
     expect(fable?.notes.effort).toBe("xhigh");
+    expect(fable?.notes.effort_adjustable).toBe(false);
     expect(fable?.notes.remote_browser_allowed).toBe(false);
+    expect(fable?.notes.caam_profile_flag).toBe("--caam-profile <profile>");
+    expect(fable?.notes.caam_base_flag).toBe("--caam-base <absolute-path>");
+    expect(fable?.notes.explicit_profile_selection_fail_closed).toBe(true);
+    expect(fable?.notes.direct_claude_fallback_only_when_profile_omitted).toBe(true);
+  });
+
+  test("capabilities names the Fable CAAM environment alternatives without exposing values", () => {
+    const report = buildCapabilityReport({ env: EMPTY_ENV, now: FROZEN_TIME });
+    const envNames = report.env_var_names as Record<string, string>;
+    expect(envNames).toMatchObject({
+      claude_code_caam_profile: "ORACLE_CLAUDE_CODE_CAAM_PROFILE",
+      claude_code_caam_base: "ORACLE_CLAUDE_CODE_CAAM_BASE",
+      caam_shallow_homes_dir: "CAAM_SHALLOW_HOMES_DIR",
+      caam_executable: "ORACLE_CAAM_EXECUTABLE",
+      claude_code_max_rate_limit_rotations: "ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS",
+    });
   });
 });
 
@@ -374,15 +392,23 @@ describe("CapabilityReport — schema-pin regression test (agent-ergonomics Stag
       expect(typeof lane.continuability.cross_invocation_resume).toBe("boolean");
       expect(typeof lane.continuability.same_invocation_multi_turn).toBe("boolean");
       expect(typeof lane.reasoning_depth_adjustable).toBe("boolean");
+      expect(lane.fixed_reasoning_effort === null || lane.fixed_reasoning_effort === "xhigh").toBe(
+        true,
+      );
+      expect(typeof lane.explicit_profile_selection_fail_closed).toBe("boolean");
     }
   });
 
-  test("chatgpt-pro and gemini-deep-think key_flags name their distinguishing flag", () => {
+  test("each reviewed lane names the flags that distinguish its route", () => {
     const report = buildCapabilityReport({ env: EMPTY_ENV, now: FROZEN_TIME });
     const chatgpt = report.lanes.find((lane) => lane.lane === "chatgpt-pro");
     const gemini = report.lanes.find((lane) => lane.lane === "gemini-deep-think");
+    const fable = report.lanes.find((lane) => lane.lane === "fable-local");
     expect(chatgpt?.key_flags).toContain("--browser-thinking-time extended");
     expect(gemini?.key_flags).toContain("--gemini-deep-think");
+    expect(fable?.key_flags).toContain("--caam-profile <profile>");
+    expect(fable?.key_flags).toContain("--caam-base <absolute-path>");
+    expect(fable?.doctor_command).toBe("oracle doctor fable --json");
   });
 
   test("attachments/continuability/reasoning_depth_adjustable are sourced from laneRegistry.ts per lane", () => {
@@ -434,6 +460,8 @@ describe("CapabilityReport — schema-pin regression test (agent-ergonomics Stag
       same_invocation_multi_turn: false,
     });
     expect(fable?.reasoning_depth_adjustable).toBe(false);
+    expect(fable?.fixed_reasoning_effort).toBe("xhigh");
+    expect(fable?.explicit_profile_selection_fail_closed).toBe(true);
   });
 
   test("exit_codes matches the shared ORACLE_EXIT_CODE_DICTIONARY exactly", () => {
@@ -453,6 +481,7 @@ describe("CapabilityReport — schema-pin regression test (agent-ergonomics Stag
     expect(names).toContain("capabilities");
     expect(names).toContain("robot-docs");
     expect(names).toContain("doctor-lanes");
+    expect(names).toContain("doctor-fable");
     expect(names).toContain("session");
     expect(names).toContain("status");
   });

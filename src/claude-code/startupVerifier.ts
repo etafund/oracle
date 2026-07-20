@@ -120,7 +120,11 @@ export function verifyClaudeCodeRun(
   requireExactString(startup, "permissionMode", "plan", failures);
   requireEmptyArray(startup, "slash_commands", failures);
   requireEmptyArray(startup, "skills", failures);
-  requireEmptyArray(startup, "plugins", failures);
+  // Claude Code may report installed plugins as inert inventory even when
+  // the empty executable surfaces below prove none were activated for this
+  // run. Keep validating the field shape without treating inventory alone
+  // as tool/MCP/skill/slash-command access.
+  requireArray(startup, "plugins", failures);
   requireExactString(startup, "fast_mode_state", "off", failures);
   rejectNonEmptyOptionalCollection(startup, "hooks", failures);
   rejectNonEmptyOptionalCollection(startup, "chrome", failures);
@@ -239,6 +243,16 @@ function requireEmptyArray(
   }
   if (value.length > 0) {
     failure(failures, "non_empty_surface", field, `${field} must be empty for read-only v1.`);
+  }
+}
+
+function requireArray(
+  obj: Record<string, unknown>,
+  field: string,
+  failures: ClaudeCodeVerificationFailure[],
+): void {
+  if (!Array.isArray(obj[field])) {
+    failure(failures, "missing_or_invalid_array", field, `${field} must be an array.`);
   }
 }
 

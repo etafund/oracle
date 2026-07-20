@@ -106,7 +106,13 @@ export function buildRobotDocsGuideText(): string {
     lines.push(`    ${lane.command}`);
     lines.push(`    key flags : ${lane.key_flags.join(", ")}`);
     lines.push(`    doctor    : ${lane.doctor_command}`);
-    lines.push(`    readiness : ${lane.readiness}`);
+    const laneContracts = [
+      lane.fixed_reasoning_effort ? `effort=${lane.fixed_reasoning_effort} (fixed default)` : null,
+      lane.explicit_profile_selection_fail_closed ? "explicit-profile=fail-closed" : null,
+    ].filter((value): value is string => value !== null);
+    lines.push(
+      `    readiness : ${lane.readiness}${laneContracts.length > 0 ? `; ${laneContracts.join("; ")}` : ""}`,
+    );
   }
   lines.push("");
   lines.push("## Core read commands (no live calls)");

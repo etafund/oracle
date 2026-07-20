@@ -44,6 +44,12 @@ export const CORE_READ_COMMANDS: readonly CoreReadCommand[] = Object.freeze([
     purpose: "Static reviewed-lane policy for all 3 core lanes, no live calls.",
   }),
   coreReadCommand({
+    name: "doctor-fable",
+    command: "oracle doctor fable --json",
+    purpose:
+      "Fable xHigh local readiness, including Claude/CAAM account binding and fail-closed checks.",
+  }),
+  coreReadCommand({
     name: "doctor-chatgpt",
     command: "oracle doctor chatgpt --pro --extended-reasoning --json",
     purpose: "ChatGPT GPT-5.6 Sol + Pro lane readiness (selectors, sign-in).",

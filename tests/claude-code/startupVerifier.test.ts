@@ -55,6 +55,47 @@ describe("Claude Code startup/result verifier", () => {
     expect(verifyClaudeCodeRun([startup({ model: "fable" }), result()]).ok).toBe(true);
   });
 
+  test("accepts installed plugin inventory when every executable surface remains inert", () => {
+    const verified = verifyClaudeCodeRun([
+      startup({
+        plugins: [
+          "openai-codex@marketplace",
+          { name: "review-helper", version: "1.0.0", installed: true },
+        ],
+      }),
+      result(),
+    ]);
+
+    expect(verified.ok).toBe(true);
+    expect(verified.failures).toEqual([]);
+  });
+
+  test("still rejects plugin-exposed executable surfaces", () => {
+    const verified = verifyClaudeCodeRun([
+      startup({
+        plugins: ["openai-codex@marketplace"],
+        tools: ["plugin_tool"],
+        mcp_servers: [{ name: "plugin-server" }],
+        slash_commands: ["plugin-command"],
+        skills: ["plugin-skill"],
+        hooks: { PreToolUse: ["plugin-hook"] },
+      }),
+      result(),
+    ]);
+
+    expect(verified.ok).toBe(false);
+    expect(verified.failures).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "non_empty_surface", field: "tools" }),
+        expect.objectContaining({ code: "non_empty_surface", field: "mcp_servers" }),
+        expect.objectContaining({ code: "non_empty_surface", field: "slash_commands" }),
+        expect.objectContaining({ code: "non_empty_surface", field: "skills" }),
+        expect.objectContaining({ code: "non_empty_surface", field: "hooks" }),
+      ]),
+    );
+    expect(verified.failures).not.toContainEqual(expect.objectContaining({ field: "plugins" }));
+  });
+
   test("rejects API auth, available tools, MCP servers, and model mismatch", () => {
     const verified = verifyClaudeCodeRun([
       startup({
@@ -77,7 +118,7 @@ describe("Claude Code startup/result verifier", () => {
     );
   });
 
-  test("rejects custom surfaces and fallback/session persistence signals", () => {
+  test("rejects custom executable surfaces and fallback/session persistence signals", () => {
     const verified = verifyClaudeCodeRun([
       startup({
         agents: ["claude", "custom-reviewer"],
@@ -97,7 +138,6 @@ describe("Claude Code startup/result verifier", () => {
         expect.objectContaining({ code: "custom_agents_rejected", field: "agents" }),
         expect.objectContaining({ code: "non_empty_surface", field: "slash_commands" }),
         expect.objectContaining({ code: "non_empty_surface", field: "skills" }),
-        expect.objectContaining({ code: "non_empty_surface", field: "plugins" }),
         expect.objectContaining({ code: "unexpected_startup_value", field: "fast_mode_state" }),
         expect.objectContaining({ code: "unexpected_startup_value", field: "fallback_model" }),
         expect.objectContaining({ code: "unexpected_startup_value", field: "sessionPersistence" }),
@@ -108,6 +148,7 @@ describe("Claude Code startup/result verifier", () => {
   test("rejects missing critical startup fields", () => {
     const badStartup = startup();
     delete badStartup.tools;
+    delete badStartup.plugins;
     delete badStartup.apiKeySource;
 
     const verified = verifyClaudeCodeRun([badStartup, result()]);
@@ -117,6 +158,7 @@ describe("Claude Code startup/result verifier", () => {
       expect.arrayContaining([
         expect.objectContaining({ code: "missing_api_key_source" }),
         expect.objectContaining({ code: "missing_or_invalid_empty_array", field: "tools" }),
+        expect.objectContaining({ code: "missing_or_invalid_array", field: "plugins" }),
       ]),
     );
   });

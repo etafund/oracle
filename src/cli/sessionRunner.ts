@@ -64,6 +64,7 @@ import { resolveClaudeExecutable } from "../claude-code/executableResolver.js";
 import { assertClaudeCodeLocalOwner } from "../claude-code/localOwnerGuard.js";
 import {
   buildCaamShallowSpawnCommand,
+  resolveClaudeCodeCaamBase,
   resolveClaudeCodeCaamProfile,
   validateCaamProfileName,
 } from "../claude-code/caamCommand.js";
@@ -77,6 +78,7 @@ import {
 import { matchClaudeCodeRateLimitOrChallengeText } from "../claude-code/rateLimitPatterns.js";
 import {
   ClaudeCodeStreamNormalizer,
+  extractAuthoritativeFinalText,
   type ClaudeCodeNormalizedEvent,
 } from "../claude-code/streamParser.js";
 import type { ResolvedClaudeExecutable } from "../claude-code/executableResolver.js";
@@ -172,6 +174,8 @@ export interface ClaudeCodeRunnerResult extends ClaudeCodeArtifactPayloads {
   claudeSessionId?: string;
   /** caam shallow-spawn profile actually used this run, if any (caam-map.md §4). */
   caamProfileUsed?: string;
+  /** Exact CAAM shallow-profile base paired with `caamProfileUsed`. */
+  caamBaseUsed?: string;
   /** `true` when this run kept `--no-session-persistence` (one-shot, default). */
   sessionPersistenceDisabled?: boolean;
   /**
@@ -302,7 +306,10 @@ export async function performSessionRun({
         runOptions,
         artifactPaths,
         log,
-        write: writeInline,
+        // Structured/JSON callers need one authoritative final answer, not
+        // the concatenation of delta + assistant snapshot + result layers.
+        // The normalized artifact still preserves every raw event.
+        write: muteStdout ? () => true : writeInline,
       });
       const elapsedMs = result.elapsedMs ?? Date.now() - startedAt;
       const artifacts = await persistClaudeCodeArtifacts({
@@ -361,10 +368,19 @@ export async function performSessionRun({
       if (!success) {
         throw finalizedClaudeCodeError(result.errorMessage ?? "Claude Code local mode failed.");
       }
-      if (answerText && !muteStdout) {
-        const printable =
-          runOptions.renderPlain === true ? answerText : renderMarkdownAnsi(answerText);
-        writeInline(printable.endsWith("\n") ? printable : `${printable}\n`);
+      if (answerText) {
+        if (muteStdout) {
+          // Feed JSON/structured collectors only the authoritative final
+          // representation selected above. Do not add display newlines.
+          write(answerText);
+        } else {
+          // Claude's stream can contain more than one text block (for
+          // example, an intermediate draft followed by the final answer).
+          // Emit only the authoritative terminal representation once.
+          const printable =
+            runOptions.renderPlain === true ? answerText : renderMarkdownAnsi(answerText);
+          writeInline(printable.endsWith("\n") ? printable : `${printable}\n`);
+        }
       }
       await writeAssistantOutput(runOptions.writeOutputPath, answerText, log);
       await sendSessionNotification(
@@ -1246,23 +1262,25 @@ async function runLocalClaudeCodeSession(
   });
 
   // Opt-in `caam shallow-spawn` integration (caam-map.md §4). Activates ONLY
-  // when a profile is configured; any failure to stand it up (caam absent,
-  // hardening failure, unhealthy profile doctor) falls back to today's exact
-  // direct-`claude` behavior rather than breaking the run — see
-  // `tryActivateCaamShallowSpawn`.
+  // when a profile is configured. Account identity is a billing boundary, so
+  // an explicit profile is fail-closed: CAAM resolution or preflight failure
+  // aborts instead of falling back to an unpinned direct `claude` process.
   const caamProfileRequested = resolveClaudeCodeCaamProfile(
     input.runOptions.claudeCode?.caamProfile,
     process.env,
   );
+  const caamBaseResolution = caamProfileRequested
+    ? resolveClaudeCodeCaamBase(input.runOptions.claudeCode?.caamBase, process.env)
+    : undefined;
   const initialCaam = caamProfileRequested
-    ? await tryActivateCaamShallowSpawn(caamProfileRequested, command, input)
+    ? await activateCaamShallowSpawn(caamProfileRequested, caamBaseResolution!.base, command, input)
     : undefined;
 
   // caam rate-limit rotation (caam-ratelimit-rotation-design.md): gated
   // ENTIRELY on the original attempt's caam activation having succeeded —
-  // a caam-absent run (no profile configured, or activation fell back) is
-  // untouched: the loop below still runs exactly once and a rate limit
-  // surfaces exactly as it did before this feature existed (§3.3).
+  // a caam-absent run (no profile configured) is untouched: the loop below
+  // still runs exactly once and a rate limit surfaces exactly as it did
+  // before this feature existed (§3.3).
   const rotationEnabled = Boolean(initialCaam);
   const maxRotations = rotationEnabled
     ? resolveClaudeCodeMaxRateLimitRotations(
@@ -1437,15 +1455,17 @@ async function runLocalClaudeCodeSession(
     }
 
     // Re-run the existing doctor pre-flight against the candidate profile by
-    // simply re-invoking `tryActivateCaamShallowSpawn` unchanged (design
+    // simply re-invoking `activateCaamShallowSpawn` with the original base (design
     // §2.2 step 7). A doctor failure on the candidate is treated as
     // exhaustion here (not a silent fall back to direct-`claude`, which
     // would defeat the purpose of rotating in the first place).
-    const nextActivation = await tryActivateCaamShallowSpawn(nextProfile, command, input);
-    if (!nextActivation) {
+    let nextActivation: ClaudeCodeCaamActivation;
+    try {
+      nextActivation = await activateCaamShallowSpawn(nextProfile, activeCaam.base, command, input);
+    } catch (error) {
       input.log(
         dim(
-          `Claude Code caam shallow-spawn doctor failed for rotated profile "${nextProfile}"; rotation exhausted.`,
+          `Claude Code caam shallow-spawn doctor failed for rotated profile "${nextProfile}": ${formatError(error)}. Rotation exhausted.`,
         ),
       );
       exhausted = true;
@@ -1720,7 +1740,7 @@ async function runClaudeCodeChildAttempt({
     verificationError ??
     exitError;
   const normalizedEventsNdjson = events.map((event) => JSON.stringify(event)).join("\n");
-  const finalAnswer = extractFinalTextFromEvents(events);
+  const finalAnswer = extractAuthoritativeFinalText(events);
 
   const result: ClaudeCodeRunnerResult = {
     stdoutRaw: Buffer.concat(stdoutChunks),
@@ -1751,6 +1771,7 @@ async function runClaudeCodeChildAttempt({
     errorMessage,
     claudeSessionId,
     caamProfileUsed: activeCaam?.profile,
+    caamBaseUsed: activeCaam?.base,
     sessionPersistenceDisabled: !resumeSessionId,
     challengeDetected:
       rateLimitOrChallenge && activeCaam && rateLimitOrChallenge.kind === "challenge"
@@ -1771,6 +1792,7 @@ async function runClaudeCodeChildAttempt({
         ? {
             active: true,
             profile: activeCaam.profile,
+            base: activeCaam.base,
             executable: activeCaam.executable.path,
           }
         : { active: false },
@@ -1962,6 +1984,11 @@ function buildClaudeCodeAdapterMetadata(
   };
 }
 
+type ClaudeCodeSessionMetadataWithCaamIdentity = ClaudeCodeSessionMetadata & {
+  /** Exact base is part of CAAM identity: profile names are only unique within a base. */
+  caam_base?: string;
+};
+
 function buildClaudeCodeSessionMetadata({
   result,
   artifactPaths,
@@ -1970,7 +1997,7 @@ function buildClaudeCodeSessionMetadata({
   result: ClaudeCodeRunnerResult;
   artifactPaths: ClaudeCodeArtifactPaths;
   model: string;
-}): ClaudeCodeSessionMetadata {
+}): ClaudeCodeSessionMetadataWithCaamIdentity {
   const modelUsageKeys = result.modelUsageKeys ?? [];
   return {
     schema_version: "claude_code_session.v1",
@@ -1985,6 +2012,7 @@ function buildClaudeCodeSessionMetadata({
     total_cost_usd_observed: result.totalCostUsdObserved ?? null,
     claude_session_id: result.claudeSessionId,
     caam_profile: result.caamProfileUsed,
+    caam_base: result.caamBaseUsed,
     subscription_billing_uncertain: true,
     credit_billing_warning_emitted: result.creditBillingWarningEmitted ?? false,
     read_only: {
@@ -2095,81 +2123,68 @@ function extractFinalTextFromNdjson(result: ClaudeCodeRunnerResult): string {
   if (!ndjson) {
     return "";
   }
-  const pieces: string[] = [];
+  const events: ClaudeCodeNormalizedEvent[] = [];
   for (const line of ndjson.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed) {
       continue;
     }
     try {
-      const parsed = JSON.parse(trimmed) as { text?: unknown };
-      if (typeof parsed.text === "string") {
-        pieces.push(parsed.text);
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (parsed && typeof parsed === "object") {
+        events.push(parsed as ClaudeCodeNormalizedEvent);
       }
     } catch {
       // Normalized parse failures are preserved in artifacts; extraction is best effort.
     }
   }
-  return pieces.join("");
+  return extractAuthoritativeFinalText(events);
 }
 
 interface ClaudeCodeCaamActivation {
   command: ClaudeCodeCommand;
   profile: string;
+  base: string;
   executable: ResolvedCaamExecutable;
 }
 
 /**
  * caam-map.md §4: resolve `caam`, run its read-only pre-flight
  * (`caam shallow-spawn <profile> --print-env`, see caamDoctor.ts), and build
- * the `caam shallow-spawn` outer command. Any failure
- * along this path is caught and logged as a graceful-fallback warning —
- * per the opt-in + graceful-fallback contract, a caam misconfiguration must
- * never break the claude-code lane for callers who didn't ask for it;
- * `runLocalClaudeCodeSession` falls back to today's exact direct-`claude`
- * behavior (single global lock) whenever this returns `undefined`.
+ * the `caam shallow-spawn` outer command. This helper is called only after a
+ * user selected a CAAM profile; failures deliberately propagate so Oracle
+ * cannot charge or consume a different Claude account by accident.
  */
-async function tryActivateCaamShallowSpawn(
+async function activateCaamShallowSpawn(
   profile: string,
+  base: string,
   innerCommand: ClaudeCodeCommand,
   input: ClaudeCodeRunnerInput,
-): Promise<ClaudeCodeCaamActivation | undefined> {
-  try {
-    // Validate the profile name up front — before it is passed as an argv
-    // value to the `caam shallow-spawn --print-env` pre-flight AND before it is embedded in
-    // the per-profile lock filename below — so a malformed profile name
-    // never reaches an external process or a `path.join`.
-    const validatedProfile = validateCaamProfileName(profile);
-    const caamExecutable = await resolveCaamExecutable({
-      repoRoot: input.cwd,
-      env: process.env,
-    });
-    await runCaamShallowProfileDoctor(caamExecutable.path, validatedProfile, {
-      env: process.env,
-    });
-    const base = path.join(getOracleHomeDir(), "claude-code-shallow-homes");
-    const command = buildCaamShallowSpawnCommand({
-      caamExecutable: caamExecutable.path,
-      profile: validatedProfile,
-      base,
-      inner: innerCommand,
-    });
-    input.log(
-      dim(
-        `Claude Code caam shallow-spawn active: profile "${validatedProfile}" via ${caamExecutable.path}.`,
-      ),
-    );
-    return { command, profile: validatedProfile, executable: caamExecutable };
-  } catch (error) {
-    input.log(
-      dim(
-        `Claude Code caam shallow-spawn unavailable, falling back to direct \`claude\` with the shared single-flight lock: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      ),
-    );
-    return undefined;
-  }
+): Promise<ClaudeCodeCaamActivation> {
+  // An explicitly selected account is a security/billing boundary. Validate
+  // and preflight it before launch, and deliberately let any failure abort
+  // the run instead of silently falling back to whichever account plain
+  // `claude` happens to use.
+  const validatedProfile = validateCaamProfileName(profile);
+  const caamExecutable = await resolveCaamExecutable({
+    repoRoot: input.cwd,
+    env: process.env,
+  });
+  await runCaamShallowProfileDoctor(caamExecutable.path, validatedProfile, base, {
+    env: process.env,
+  });
+  const command = buildCaamShallowSpawnCommand({
+    caamExecutable: caamExecutable.path,
+    profile: validatedProfile,
+    base,
+    inner: innerCommand,
+  });
+  input.log(
+    dim(
+      `Claude Code CAAM account pinned: profile "${validatedProfile}" under ${base} via ${caamExecutable.path}.`,
+    ),
+  );
+  return { command, profile: validatedProfile, base, executable: caamExecutable };
 }
 
 function resolveClaudeCodeTimeoutMs(timeoutSeconds: RunOracleOptions["timeoutSeconds"]): number {
@@ -2763,32 +2778,14 @@ function writeClaudeCodeVisibleEvents(
   events: ClaudeCodeNormalizedEvent[],
 ): void {
   for (const event of events) {
-    if (event.stream === "stdout" && event.text) {
-      write(event.text);
-      continue;
-    }
+    // Preserve every stdout layer in artifacts, but do not display deltas:
+    // real Fable streams can contain an intermediate text block followed by
+    // the final block, plus assistant/result snapshots of that final block.
+    // The caller emits extractAuthoritativeFinalText() exactly once.
     if (event.stream === "stderr" && event.rawText) {
       write(event.rawText);
     }
   }
-}
-
-function extractFinalTextFromEvents(events: ClaudeCodeNormalizedEvent[]): string {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const json = events[index]?.json;
-    if (
-      json &&
-      typeof json === "object" &&
-      "result" in json &&
-      typeof (json as { result?: unknown }).result === "string"
-    ) {
-      return (json as { result: string }).result;
-    }
-  }
-  return events
-    .filter((event) => event.stream === "stdout" && event.text)
-    .map((event) => event.text)
-    .join("");
 }
 
 function summarizeClaudeCodeProgress(

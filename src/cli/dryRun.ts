@@ -31,6 +31,11 @@ import {
   type ClaudeCodePreflightResult,
 } from "../claude-code/preflight.js";
 import { assertClaudeCodeInlineBudget } from "../claude-code/inlineBudget.js";
+import {
+  resolveClaudeCodeCaamBase,
+  resolveClaudeCodeCaamProfile,
+} from "../claude-code/caamCommand.js";
+import { resolveClaudeCodeMaxRateLimitRotations } from "../claude-code/caamRotation.js";
 
 interface DryRunDeps {
   readFilesImpl?: typeof readFiles;
@@ -411,12 +416,23 @@ async function logClaudeCodeDryRunPlan({
   const preflight: ClaudeCodePreflightResult = await preflightImpl({
     executable: runOptions.claudeCode?.executable,
   });
+  const caamProfile = resolveClaudeCodeCaamProfile(runOptions.claudeCode?.caamProfile, process.env);
+  const caamBase = caamProfile
+    ? resolveClaudeCodeCaamBase(runOptions.claudeCode?.caamBase, process.env)
+    : undefined;
+  const caamPlan = caamProfile
+    ? `profile=${caamProfile}; base=${caamBase!.base}; base_source=${caamBase!.source}; fail_closed=true; max_rate_limit_rotations=${resolveClaudeCodeMaxRateLimitRotations(
+        runOptions.claudeCode?.maxRateLimitRotations,
+        process.env,
+      )}`
+    : "disabled (no profile selected; direct Claude account resolution applies)";
   const lines = [
     `[dry-run] Generated at: ${DRY_RUN_TIMESTAMP}.`,
     `[dry-run] Route: claude-code/local; model=${runOptions.model ?? "fable"}; access_path=claude_code_subscription_cli.`,
     "[dry-run] Live Claude Code action: disabled; no claude subprocess, API request, browser prompt submission, or browser mutation will run.",
     `[dry-run] Env block status: ${envStatus}.`,
     `[dry-run] Command shape: ${formatClaudeCodeCommandShape(runOptions.model ?? "fable")}.`,
+    `[dry-run] CAAM account plan: ${caamPlan}.`,
     '[dry-run] Read-only policy: permissionMode=plan; toolMode=none; --tools ""; MCP blocked; slash commands disabled; Chrome disabled; session persistence disabled.',
     `[dry-run] Claude executable/local-owner preflight: ${preflight.ok ? "pass" : "fail"}.`,
     ...preflight.checks.map(

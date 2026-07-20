@@ -68,6 +68,60 @@ describe("runDryRunSummary", () => {
     }
   });
 
+  test("prints the exact fail-closed CAAM profile/base contract", async () => {
+    const log = vi.fn();
+    await runDryRunSummary(
+      {
+        engine: "claude-code",
+        runOptions: {
+          prompt: "Review",
+          model: "fable",
+          file: [],
+          claudeCode: {
+            ...fableClaudeCodePolicy,
+            caamProfile: "cc-arthur",
+            caamBase: "/home/ubuntu/orch-homes",
+          },
+        },
+        cwd: "/repo",
+        version: "1.2.3",
+        log,
+      },
+      {
+        claudeCodePreflightImpl: async () => ({ ok: true, checks: [] }),
+      },
+    );
+
+    const joined = log.mock.calls.flat().join("\n");
+    expect(joined).toContain(
+      "CAAM account plan: profile=cc-arthur; base=/home/ubuntu/orch-homes; base_source=config; fail_closed=true; max_rate_limit_rotations=0",
+    );
+  });
+
+  test("fails closed on an unsafe CAAM profile before printing a runnable dry-run plan", async () => {
+    await expect(
+      runDryRunSummary(
+        {
+          engine: "claude-code",
+          runOptions: {
+            prompt: "Review",
+            model: "fable",
+            file: [],
+            claudeCode: {
+              ...fableClaudeCodePolicy,
+              caamProfile: "../evil",
+              caamBase: "/home/ubuntu/orch-homes",
+            },
+          },
+          cwd: "/repo",
+          version: "1.2.3",
+          log: vi.fn(),
+        },
+        { claudeCodePreflightImpl: async () => ({ ok: true, checks: [] }) },
+      ),
+    ).rejects.toThrow(/not a safe identifier/);
+  });
+
   test("api dry-run shows an estimated input cost and a per-token billing note", async () => {
     const log = vi.fn();
     await runDryRunSummary(

@@ -18,6 +18,7 @@ This is the curated cheatsheet. The authoritative source is always `oracle --hel
 | `oracle restart <id>`          | Re-run with the same prompt + files. `--json` emits one `oracle_session_action.v1` launch receipt (progress moves to stderr).      |
 | `oracle docs check`            | Check documented flags against CLI help metadata.                                                                                  |
 | `oracle doctor lanes --json`   | Print the reviewed lane policy without launching browsers or models.                                                               |
+| `oracle doctor fable --json`   | Check local Claude/CAAM profile, base, auth, ownership, and fail-closed readiness without launching a model.                       |
 | `oracle serve`                 | Run the remote browser host (see [Browser Mode](browser-mode.md)).                                                                 |
 | `oracle remote doctor`         | Probe the configured remote endpoint (TCP + `/health`). `--json` emits a `remote_browser_endpoint.v1` envelope.                    |
 | `oracle remote status`         | Print the resolved remote endpoint config without touching the network. `--json` for machine-readable output.                      |
@@ -34,30 +35,49 @@ The reviewed agent-facing route families are below. `oracle doctor lanes --json`
 | Lane                      | Command shape                                                                       | Notes                                                                                                                                                   |
 | ------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | ChatGPT GPT-5.6 Sol + Pro | `oracle --lane chatgpt-pro -p "..." --file ...`                                     | Selects exact `GPT-5.6 Sol`, separately verifies checked `Pro`, and fails before submit if either is unverified. Remote router/serve hosts are allowed. |
-| Fable xHigh               | `oracle --lane fable-local -p "..." --file ...`                                     | Uses the local Claude Code subscription CLI only. It refuses API, browser, router, and multi-model fan-out.                                             |
+| Fable xHigh               | `oracle --lane fable-local [--caam-profile <name>] -p "..." --file ...`             | Uses the local Claude Code subscription CLI at fixed `xhigh` effort. Explicit CAAM selection fails closed instead of using another account.             |
 | Gemini 3.1 Deep Think     | `oracle --engine browser --provider gemini --gemini-deep-think -p "..." --file ...` | Uses browser automation and API-substitution guardrails. The explicit `--lane gemini-deep-think` template may report deferred.                          |
 
 Run `oracle doctor lanes --json`, `oracle capabilities --json`, and `oracle remote doctor --json` before remote browser smokes.
 
-| Flag                              | Purpose                                                                                          |
-| --------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `-p, --prompt <text>`             | Required prompt.                                                                                 |
-| `-f, --file <paths...>`           | Files / dirs / globs. Repeatable. `!` prefix = exclude.                                          |
-| `-e, --engine <api\|browser>`     | Force engine. Reviewed ChatGPT/Gemini lanes use browser.                                         |
-| `-m, --model <name>`              | Single model. For reviewed lanes prefer the command shapes above.                                |
-| `--models <list>`                 | Compatibility-only comma-separated API fan-out.                                                  |
-| `--slug <name>`                   | Stable session slug.                                                                             |
-| `--render`                        | Print the assembled bundle to stdout.                                                            |
-| `--copy`                          | Copy the bundle to the clipboard.                                                                |
-| `--write-output <path>`           | Save the final answer to a file; multi-model runs add per-model files plus `<stem>.oracle.json`. |
-| `--files-report`                  | Print per-file token usage.                                                                      |
-| `--dry-run [summary\|json\|full]` | Preview without sending.                                                                         |
+| Flag                              | Purpose                                                                                                              |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `-p, --prompt <text>`             | Required prompt.                                                                                                     |
+| `-f, --file <paths...>`           | Files / dirs / globs. Repeatable. `!` prefix = exclude.                                                              |
+| `-e, --engine <api\|browser>`     | Force engine. Reviewed ChatGPT/Gemini lanes use browser.                                                             |
+| `-m, --model <name>`              | Single model. For reviewed lanes prefer the command shapes above.                                                    |
+| `--models <list>`                 | Compatibility-only comma-separated API fan-out.                                                                      |
+| `--caam-profile <name>`           | Pin `fable-local` to one CAAM shallow profile/subscription. A requested profile never falls back to direct `claude`. |
+| `--caam-base <absolute-path>`     | Override the CAAM shallow-profile base used by both doctor and launch; normally `$HOME/orch-homes`.                  |
+| `--slug <name>`                   | Stable session slug.                                                                                                 |
+| `--render`                        | Print the assembled bundle to stdout.                                                                                |
+| `--copy`                          | Copy the bundle to the clipboard.                                                                                    |
+| `--write-output <path>`           | Save the final answer to a file; multi-model runs add per-model files plus `<stem>.oracle.json`.                     |
+| `--files-report`                  | Print per-file token usage.                                                                                          |
+| `--dry-run [summary\|json\|full]` | Preview without sending.                                                                                             |
 
 ## Fable xHigh local lane
 
 `fable-local` is the local Claude Code review lane for Fable xHigh. It is for the local owner running their installed and logged-in `claude` command on the same machine. It is read-only review of Oracle-supplied prompt/file context, separate from Anthropic API mode.
 
-The lane must refuse when `ANTHROPIC_API_KEY` is present because Claude Code would prefer API-key billing in that environment. It must also refuse remote browser, `oracle serve`, router/bridge, background, restart, follow-up, and multi-model fan-out flows.
+Run the dedicated doctor before spending subscription usage:
+
+```bash
+oracle doctor fable --json
+```
+
+To use the currently logged-in local `claude` directly, omit the CAAM flags. To pin the run to one subscription profile, pass the profile explicitly; use `--caam-base` when the profile base cannot be inferred:
+
+```bash
+oracle --lane fable-local \
+  --caam-profile my-profile \
+  --caam-base "$HOME/orch-homes" \
+  -p "Challenge this migration plan" --file docs/plan.md
+```
+
+The Fable lane always launches Claude Code with `xhigh` effort; there is no user-adjustable Fable effort flag. Explicit account selection is fail-closed: if the requested CAAM executable, profile, base, doctor check, or launch cannot be verified, Oracle errors without falling back to an unpinned `claude` account. The direct local-Claude path is used only when no CAAM profile was requested.
+
+The lane must refuse when `ANTHROPIC_API_KEY` is present because Claude Code would prefer API-key billing in that environment. It also refuses remote browser, `oracle serve`, router/bridge, background, and multi-model fan-out flows. Cross-invocation `--followup` is supported only when it can resume the same Fable session under the exact same CAAM profile and canonical base; either mismatch (or missing legacy base metadata) is refused.
 
 The lane captures the visible Claude Code event stream only. It does not capture hidden reasoning. Raw visible stream artifacts may include prompts, file snippets, local paths, stderr, and other sensitive visible data; they are owner-local artifacts and are not included in redacted exports by default.
 
@@ -167,21 +187,26 @@ See [Browser Mode](browser-mode.md) for usage.
 
 ## Environment variables
 
-| Var                                    | Effect                                                                                                                                                             |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `OPENAI_API_KEY`                       | Enables OpenAI API mode.                                                                                                                                           |
-| `AZURE_OPENAI_API_KEY` etc.            | Enables Azure mode (paired with endpoint / deployment).                                                                                                            |
-| `GEMINI_API_KEY`                       | Enables Gemini API mode.                                                                                                                                           |
-| `ANTHROPIC_API_KEY`                    | Enables Claude API mode for Anthropic API models; local Claude Code mode refuses when this name is present.                                                        |
-| `OPENROUTER_API_KEY`                   | Enables OpenRouter ids.                                                                                                                                            |
-| `ORACLE_HOME_DIR`                      | Override `~/.oracle/` root.                                                                                                                                        |
-| `ORACLE_MAX_FILE_SIZE_BYTES`           | Per-file size cap (default 1 MB).                                                                                                                                  |
-| `ORACLE_BROWSER_COOKIES_JSON`          | Inline ChatGPT cookies (JSON / base64).                                                                                                                            |
-| `ORACLE_BROWSER_COOKIES_FILE`          | Path to cookies JSON.                                                                                                                                              |
-| `ORACLE_BROWSER_ATTACHMENT_TIMEOUT`    | Attachment upload/readiness timeout for browser mode.                                                                                                              |
-| `ORACLE_CHATGPT_ACCOUNT_EMAIL`         | Exact saved account for the Welcome back picker.                                                                                                                   |
-| `ORACLE_RUN_PROGRESS_JSON`             | `=1` streams `run_progress.v1` NDJSON progress events on stderr for long browser/API runs (default off).                                                           |
-| `ORACLE_CLAUDE_CODE_STREAM_JSON_INPUT` | `=1`/`true`/`yes`/`on` switches the `fable-local` lane to stream-json stdin (base64 image/PDF blocks; 32 MB encoded budget). Default off keeps the flat-text path. |
+| Var                                           | Effect                                                                                                                                                                                   |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OPENAI_API_KEY`                              | Enables OpenAI API mode.                                                                                                                                                                 |
+| `AZURE_OPENAI_API_KEY` etc.                   | Enables Azure mode (paired with endpoint / deployment).                                                                                                                                  |
+| `GEMINI_API_KEY`                              | Enables Gemini API mode.                                                                                                                                                                 |
+| `ANTHROPIC_API_KEY`                           | Enables Claude API mode for Anthropic API models; local Claude Code mode refuses when this name is present.                                                                              |
+| `OPENROUTER_API_KEY`                          | Enables OpenRouter ids.                                                                                                                                                                  |
+| `ORACLE_HOME_DIR`                             | Override `~/.oracle/` root.                                                                                                                                                              |
+| `ORACLE_MAX_FILE_SIZE_BYTES`                  | Per-file size cap (default 1 MB).                                                                                                                                                        |
+| `ORACLE_BROWSER_COOKIES_JSON`                 | Inline ChatGPT cookies (JSON / base64).                                                                                                                                                  |
+| `ORACLE_BROWSER_COOKIES_FILE`                 | Path to cookies JSON.                                                                                                                                                                    |
+| `ORACLE_BROWSER_ATTACHMENT_TIMEOUT`           | Attachment upload/readiness timeout for browser mode.                                                                                                                                    |
+| `ORACLE_CHATGPT_ACCOUNT_EMAIL`                | Exact saved account for the Welcome back picker.                                                                                                                                         |
+| `ORACLE_RUN_PROGRESS_JSON`                    | `=1` streams `run_progress.v1` NDJSON progress events on stderr for long browser/API runs (default off).                                                                                 |
+| `ORACLE_CLAUDE_CODE_STREAM_JSON_INPUT`        | `=1`/`true`/`yes`/`on` switches the `fable-local` lane to stream-json stdin (base64 image/PDF blocks; 32 MB encoded budget). Default off keeps the flat-text path.                       |
+| `ORACLE_CLAUDE_CODE_CAAM_PROFILE`             | Environment alternative to `--caam-profile`; pins Fable to one CAAM shallow profile.                                                                                                     |
+| `ORACLE_CLAUDE_CODE_CAAM_BASE`                | Environment alternative to `--caam-base`; must be an absolute shallow-profile base path.                                                                                                 |
+| `CAAM_SHALLOW_HOMES_DIR`                      | Native CAAM fallback for the shallow-profile base when Oracle's flag/env override is absent.                                                                                             |
+| `ORACLE_CAAM_EXECUTABLE`                      | Absolute executable override when `caam` is not resolved from the trusted `PATH`.                                                                                                        |
+| `ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS` | Maximum automatic CAAM account rotations after a rate limit. Defaults to `0`; any positive value explicitly opts out of strict account pinning and makes `doctor fable` report degraded. |
 
 ## See also
 

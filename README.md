@@ -68,9 +68,12 @@ npx -y @steipete/oracle --lane chatgpt-pro \
   -p "Write a concise architecture note for the storage adapters" \
   --file src/storage/README.md
 
-# Fable xHigh local lane
+# Fable xHigh local lane (xhigh is automatic; doctor makes no paid call)
+npx -y @steipete/oracle doctor fable --json
 npx -y @steipete/oracle --lane fable-local \
+  --caam-profile my-profile --caam-base "$HOME/orch-homes" \
   -p "Review this migration plan" --file docs/plan.md
+# Omit both CAAM flags only when the current local `claude` login is intentional.
 
 # Gemini 3.1 Deep Think browser lane
 npx -y @steipete/oracle --engine browser --provider gemini --gemini-deep-think \
@@ -145,7 +148,7 @@ npx -y @steipete/oracle tui
 
 - Reviewed lanes:
   - ChatGPT GPT-5.6 Sol + Pro: `--lane chatgpt-pro`. Oracle selects the exact model and separately verifies the checked `Pro` mode before submitting.
-  - Fable xHigh: `--lane fable-local` on the local machine only; it does not use the companion router (`<router-repo>`) or remote browser hosts.
+  - Fable xHigh: run `oracle doctor fable --json`, then use `--lane fable-local` on the local machine only. Add `--caam-profile <name>` (and, if needed, `--caam-base <absolute-path>`) to pin one subscription; explicit selection fails closed. Fable effort is always `xhigh`.
   - Gemini 3.1 Deep Think: `--engine browser --provider gemini --gemini-deep-think`.
 - Compatibility API mode still accepts API keys in your environment, but the old provider/model matrix is not the preferred agent-facing lane surface.
 - Gemini browser compatibility mode uses Chrome cookies instead of an API key—just be logged into `gemini.google.com` in Chrome (no Python/venv required).
@@ -163,6 +166,7 @@ npx -y @steipete/oracle tui
   ```
   - Oracle bundles a prompt plus the right files for a reviewed lane (ChatGPT GPT-5.6 Sol + Pro, Fable xHigh, Gemini 3.1 Deep Think) and returns a second opinion. Use when stuck, debugging, or reviewing.
   - Run `npx -y @steipete/oracle --help` once per session before first use.
+  - Fable: run `oracle doctor fable --json`, then `oracle --lane fable-local --caam-profile my-profile --caam-base "$HOME/orch-homes" -p "..." --file ...`. Replace `my-profile` with the intended CAAM profile. Fable uses fixed xhigh effort, and an explicit profile never falls back to another Claude account.
   - Submit: always pass the prompt with -p and context with --file. Never a bare positional — a single-word positional is refused with exit 2; quote a real prompt or use -p. Long Pro runs detach and print a session id.
   - Poll: `oracle wait <id> --json` blocks until the session is terminal and prints one oracle_session.v1 envelope (progress on stderr). Bound it with --timeout-seconds N; exit 7 = still running, so poll again. For live progress on long browser runs, set ORACLE_RUN_PROGRESS_JSON=1 to stream run_progress.v1 NDJSON on stderr.
   - Fetch: `oracle session <id> --json` returns the oracle_session.v1 envelope any time (status, exit_code, usage, output_file, final_answer_path).
@@ -480,6 +484,8 @@ Visible in default `--help` — the flags the 3 reviewed lanes and everyday sess
 | `-f, --file <paths...>`                                                        | Attach files/dirs (globs + `!` excludes).                                                                                                                                                                                                                         |
 | `-e, --engine <api\|browser\|claude-code>`                                     | Choose the engine. Reviewed lanes use browser for ChatGPT/Gemini and `claude-code` through `--lane fable-local`.                                                                                                                                                  |
 | `--lane fable-local`                                                           | Run the Fable xHigh local lane. It is local-only and refuses remote/browser/API fan-out.                                                                                                                                                                          |
+| `--caam-profile <name>`                                                        | Pin `fable-local` to one CAAM Claude subscription profile. Explicit selection fails closed rather than falling back to direct `claude`.                                                                                                                           |
+| `--caam-base <absolute-path>`                                                  | Override the CAAM shallow-profile base used consistently by `oracle doctor fable` and the launch; normally `$HOME/orch-homes`.                                                                                                                                    |
 | `--followup <sessionId\|responseId>`                                           | Continue a saved ChatGPT browser conversation or an OpenAI/Azure Responses API run from a stored Oracle session or `resp_...` response id.                                                                                                                        |
 | `--followup-model <model>`                                                     | For multi-model OpenAI/Azure parent sessions, choose which model response to continue from.                                                                                                                                                                       |
 | `--chatgpt-url <url>`                                                          | Target a ChatGPT workspace/folder or Temporary Chat URL (browser).                                                                                                                                                                                                |
@@ -586,6 +592,10 @@ Agent environment toggles (opt-in, off by default):
 
 - `ORACLE_RUN_PROGRESS_JSON=1` — stream `run_progress.v1` NDJSON progress events on **stderr** for long browser (and API) runs, so an agent polling a multi-minute Pro run has a machine-readable liveness signal. stdout stays reserved for the final `--json` envelope; progress lines never carry reasoning text.
 - `ORACLE_CLAUDE_CODE_STREAM_JSON_INPUT=1` — switch the Fable xHigh (`--lane fable-local`) lane to the stream-json content-block stdin transport, which base64-encodes image/PDF attachments into Anthropic content blocks instead of rejecting them. Default off keeps the historical flat-text path byte-for-byte; the encoded payload is held to a 32 MB budget.
+- `ORACLE_CLAUDE_CODE_CAAM_PROFILE=<name>` — environment alternative to `--caam-profile` for pinning the Fable subscription profile.
+- `ORACLE_CLAUDE_CODE_CAAM_BASE=<absolute-path>` — environment alternative to `--caam-base`; `CAAM_SHALLOW_HOMES_DIR` is the native CAAM fallback.
+- `ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS=<n>` — opt into automatic CAAM account rotation after a rate limit. The default is `0`; a positive value deliberately weakens strict account pinning, so `oracle doctor fable` reports degraded until it is reset to `0`.
+- `ORACLE_CAAM_EXECUTABLE=<absolute-path>` — override the trusted `caam` executable resolution.
 
 Session management
 

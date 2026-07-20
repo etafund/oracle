@@ -232,7 +232,7 @@ describe("browser follow-up resolution", () => {
 
 describe("Claude Code (Fable lane) follow-up resolution — claude-provider-map.md finding #2", () => {
   const claudeCodeMetadata = (
-    overrides: Partial<NonNullable<SessionMetadata["claudeCode"]>> = {},
+    overrides: Partial<NonNullable<SessionMetadata["claudeCode"]>> & { caam_base?: string } = {},
   ): SessionMetadata => ({
     ...baseMetadata,
     id: "fable-parent",
@@ -266,24 +266,29 @@ describe("Claude Code (Fable lane) follow-up resolution — claude-provider-map.
     },
   });
 
-  test("resolves a resumable claude-code session to its stored --session-id and profile", async () => {
-    const metadata = claudeCodeMetadata({ caam_profile: "beta" });
+  test("resolves a resumable claude-code session to its stored --session-id and CAAM identity", async () => {
+    const metadata = claudeCodeMetadata({
+      caam_profile: "beta",
+      caam_base: "/home/user/orch-homes/",
+    });
     const store = { readSession: vi.fn(async () => metadata) };
 
     await expect(resolveClaudeCodeFollowupReference("fable-parent", store)).resolves.toEqual({
       sessionId: "fable-parent",
       resumeSessionId: "5b1a2c3d-4e5f-6789-abcd-ef0123456789",
       caamProfile: "beta",
+      caamBase: "/home/user/orch-homes",
       model: "fable",
     });
   });
 
-  test("resolves undefined caamProfile when the parent ran with no profile (direct claude)", async () => {
+  test("resolves undefined CAAM identity when the parent ran with direct Claude", async () => {
     const metadata = claudeCodeMetadata();
     const store = { readSession: vi.fn(async () => metadata) };
 
     const resolved = await resolveClaudeCodeFollowupReference("fable-parent", store);
     expect(resolved?.caamProfile).toBeUndefined();
+    expect(resolved?.caamBase).toBeUndefined();
   });
 
   test("surfaces the referenced session's recorded lane so callers can guard against a --lane mismatch", async () => {
@@ -316,12 +321,14 @@ describe("Claude Code (Fable lane) follow-up resolution — claude-provider-map.
     );
   });
 
-  test("assertClaudeCodeFollowupProfileMatches: same profile (including both undefined) passes", () => {
+  test("assertClaudeCodeFollowupProfileMatches: same complete identity (including both unprofiled) passes", () => {
     expect(() =>
       assertClaudeCodeFollowupProfileMatches({
         parentSessionId: "fable-parent",
         parentProfile: "beta",
+        parentBase: "/home/user/orch-homes",
         childProfile: "beta",
+        childBase: "/home/user/orch-homes",
       }),
     ).not.toThrow();
     expect(() =>
@@ -331,6 +338,16 @@ describe("Claude Code (Fable lane) follow-up resolution — claude-provider-map.
         childProfile: undefined,
       }),
     ).not.toThrow();
+  });
+
+  test("assertClaudeCodeFollowupProfileMatches: a named profile without a recorded base fails closed", () => {
+    expect(() =>
+      assertClaudeCodeFollowupProfileMatches({
+        parentSessionId: "legacy-fable-parent",
+        parentProfile: "beta",
+        childProfile: "beta",
+      }),
+    ).toThrow(/SAME CAAM profile AND base/);
   });
 
   test("assertClaudeCodeFollowupProfileMatches: resuming across a different caam profile is refused", () => {
@@ -340,7 +357,7 @@ describe("Claude Code (Fable lane) follow-up resolution — claude-provider-map.
         parentProfile: "beta",
         childProfile: "bob",
       }),
-    ).toThrow(/SAME caam profile/);
+    ).toThrow(/SAME CAAM profile/);
   });
 
   test("assertClaudeCodeFollowupProfileMatches: refuses when parent had no profile but child requests one", () => {
@@ -350,7 +367,7 @@ describe("Claude Code (Fable lane) follow-up resolution — claude-provider-map.
         parentProfile: undefined,
         childProfile: "bob",
       }),
-    ).toThrow(/SAME caam profile/);
+    ).toThrow(/SAME CAAM profile/);
   });
 
   test("assertClaudeCodeFollowupProfileMatches: refuses when parent had a profile but child requests none", () => {
@@ -360,7 +377,31 @@ describe("Claude Code (Fable lane) follow-up resolution — claude-provider-map.
         parentProfile: "beta",
         childProfile: undefined,
       }),
-    ).toThrow(/SAME caam profile/);
+    ).toThrow(/SAME CAAM profile/);
+  });
+
+  test("assertClaudeCodeFollowupProfileMatches: same profile under a different base is refused", () => {
+    expect(() =>
+      assertClaudeCodeFollowupProfileMatches({
+        parentSessionId: "fable-parent",
+        parentProfile: "beta",
+        parentBase: "/home/user/orch-homes-a",
+        childProfile: "beta",
+        childBase: "/home/user/orch-homes-b",
+      }),
+    ).toThrow(/SAME CAAM profile AND base/);
+  });
+
+  test("assertClaudeCodeFollowupProfileMatches: same profile and normalized base passes", () => {
+    expect(() =>
+      assertClaudeCodeFollowupProfileMatches({
+        parentSessionId: "fable-parent",
+        parentProfile: "beta",
+        parentBase: "/home/user/orch-homes/",
+        childProfile: "beta",
+        childBase: "/home/user/orch-homes",
+      }),
+    ).not.toThrow();
   });
 
   test("assertClaudeCodeFollowupProfileMatchesRun: recognizes the config-key profile form (refuses a mismatch even when the env form matches the parent)", () => {
@@ -372,10 +413,13 @@ describe("Claude Code (Fable lane) follow-up resolution — claude-provider-map.
       assertClaudeCodeFollowupProfileMatchesRun({
         parentSessionId: "fable-parent",
         parentProfile: "beta",
-        runOptions: { claudeCode: { caamProfile: "bob" } },
+        parentBase: "/home/user/orch-homes",
+        runOptions: {
+          claudeCode: { caamProfile: "bob", caamBase: "/home/user/orch-homes" },
+        },
         env: { ORACLE_CLAUDE_CODE_CAAM_PROFILE: "beta" },
       }),
-    ).toThrow(/SAME caam profile/);
+    ).toThrow(/SAME CAAM profile/);
   });
 
   test("assertClaudeCodeFollowupProfileMatchesRun: config-key form takes precedence over the env form (matching config key passes despite a mismatched env var)", () => {
@@ -386,7 +430,10 @@ describe("Claude Code (Fable lane) follow-up resolution — claude-provider-map.
       assertClaudeCodeFollowupProfileMatchesRun({
         parentSessionId: "fable-parent",
         parentProfile: "beta",
-        runOptions: { claudeCode: { caamProfile: "beta" } },
+        parentBase: "/home/user/orch-homes",
+        runOptions: {
+          claudeCode: { caamProfile: "beta", caamBase: "/home/user/orch-homes" },
+        },
         env: { ORACLE_CLAUDE_CODE_CAAM_PROFILE: "bob" },
       }),
     ).not.toThrow();
@@ -397,18 +444,26 @@ describe("Claude Code (Fable lane) follow-up resolution — claude-provider-map.
       assertClaudeCodeFollowupProfileMatchesRun({
         parentSessionId: "fable-parent",
         parentProfile: "beta",
+        parentBase: "/home/user/orch-homes",
         runOptions: { claudeCode: undefined },
-        env: { ORACLE_CLAUDE_CODE_CAAM_PROFILE: "beta" },
+        env: {
+          ORACLE_CLAUDE_CODE_CAAM_PROFILE: "beta",
+          ORACLE_CLAUDE_CODE_CAAM_BASE: "/home/user/orch-homes",
+        },
       }),
     ).not.toThrow();
     expect(() =>
       assertClaudeCodeFollowupProfileMatchesRun({
         parentSessionId: "fable-parent",
         parentProfile: "beta",
+        parentBase: "/home/user/orch-homes",
         runOptions: { claudeCode: undefined },
-        env: { ORACLE_CLAUDE_CODE_CAAM_PROFILE: "bob" },
+        env: {
+          ORACLE_CLAUDE_CODE_CAAM_PROFILE: "bob",
+          ORACLE_CLAUDE_CODE_CAAM_BASE: "/home/user/orch-homes",
+        },
       }),
-    ).toThrow(/SAME caam profile/);
+    ).toThrow(/SAME CAAM profile/);
   });
 
   test("assertClaudeCodeFollowupProfileMatchesRun: no profile in either form only matches a no-profile parent", () => {
@@ -427,7 +482,37 @@ describe("Claude Code (Fable lane) follow-up resolution — claude-provider-map.
         runOptions: { claudeCode: undefined },
         env: {},
       }),
-    ).toThrow(/SAME caam profile/);
+    ).toThrow(/SAME CAAM profile/);
+  });
+
+  test("assertClaudeCodeFollowupProfileMatchesRun: same profile under a different resolved env base is refused", () => {
+    expect(() =>
+      assertClaudeCodeFollowupProfileMatchesRun({
+        parentSessionId: "fable-parent",
+        parentProfile: "beta",
+        parentBase: "/home/user/orch-homes-a",
+        runOptions: { claudeCode: undefined },
+        env: {
+          ORACLE_CLAUDE_CODE_CAAM_PROFILE: "beta",
+          ORACLE_CLAUDE_CODE_CAAM_BASE: "/home/user/orch-homes-b",
+        },
+      }),
+    ).toThrow(/orch-homes-a.*orch-homes-b/);
+  });
+
+  test("assertClaudeCodeFollowupProfileMatchesRun: a profiled legacy parent with no stored base fails closed", () => {
+    expect(() =>
+      assertClaudeCodeFollowupProfileMatchesRun({
+        parentSessionId: "legacy-fable-parent",
+        parentProfile: "beta",
+        parentBase: undefined,
+        runOptions: { claudeCode: undefined },
+        env: {
+          ORACLE_CLAUDE_CODE_CAAM_PROFILE: "beta",
+          ORACLE_CLAUDE_CODE_CAAM_BASE: "/home/user/orch-homes",
+        },
+      }),
+    ).toThrow(/base:null/);
   });
 });
 

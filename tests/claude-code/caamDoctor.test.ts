@@ -26,10 +26,18 @@ interface FakeResponse {
  * every invocation's argv, so tests can assert both what got called and
  * (for the CLI-drift path) that a second, different call happened.
  */
-function fakeExecFileSequence(responses: FakeResponse[]): { impl: typeof execFile; calls: string[][] } {
+function fakeExecFileSequence(responses: FakeResponse[]): {
+  impl: typeof execFile;
+  calls: string[][];
+} {
   const calls: string[][] = [];
   let callIndex = 0;
-  const impl = ((file: string, args: readonly string[], _options: unknown, callback: ExecFileCallback) => {
+  const impl = ((
+    file: string,
+    args: readonly string[],
+    _options: unknown,
+    callback: ExecFileCallback,
+  ) => {
     calls.push([file, ...args]);
     const response = responses[callIndex] ?? responses[responses.length - 1];
     callIndex += 1;
@@ -51,19 +59,39 @@ function fakeExecFileSequence(responses: FakeResponse[]): { impl: typeof execFil
 }
 
 const UNKNOWN_JSON_FLAG_STDERR =
-  'Error: unknown flag: --json\nUsage:\n  caam shallow-spawn <name> -- <cmd> [args...] [flags]\n';
+  "Error: unknown flag: --json\nUsage:\n  caam shallow-spawn <name> -- <cmd> [args...] [flags]\n";
+const SHALLOW_BASE = "/orch-homes";
 
 describe("caam shallow-spawn --print-env pre-flight (caam-map.md §4c)", () => {
+  test("rejects a relative base before invoking caam", async () => {
+    const { impl, calls } = fakeExecFileSequence([{ stdout: "should not run" }]);
+
+    await expect(
+      runCaamShallowProfileDoctor("/opt/caam", "beta", "relative/orch-homes", {
+        execFileImpl: impl,
+      }),
+    ).rejects.toThrow(/must be an absolute path/);
+    expect(calls).toEqual([]);
+  });
+
   test("modern caam: invokes `shallow-spawn <profile> --print-env --json` and passes on a healthy profile", async () => {
     const { impl, calls } = fakeExecFileSequence([
       {
-        stdout: JSON.stringify({ success: true, home: "/orch-homes/beta", shallow_profile: "beta" }),
+        stdout: JSON.stringify({
+          success: true,
+          home: "/orch-homes/beta",
+          shallow_profile: "beta",
+        }),
       },
     ]);
 
-    const result = await runCaamShallowProfileDoctor("/opt/caam", "beta", { execFileImpl: impl });
+    const result = await runCaamShallowProfileDoctor("/opt/caam", "beta", SHALLOW_BASE, {
+      execFileImpl: impl,
+    });
 
-    expect(calls).toEqual([["/opt/caam", "shallow-spawn", "beta", "--print-env", "--json"]]);
+    expect(calls).toEqual([
+      ["/opt/caam", "shallow-spawn", "beta", "--base", SHALLOW_BASE, "--print-env", "--json"],
+    ]);
     expect(result.healthy).toBe(true);
   });
 
@@ -73,16 +101,21 @@ describe("caam shallow-spawn --print-env pre-flight (caam-map.md §4c)", () => {
         exitCode: 1,
         stdout: JSON.stringify({
           success: false,
-          error: 'shallow profile "broken-profile" does not exist (try `caam shallow-profile create broken-profile`)',
+          error:
+            'shallow profile "broken-profile" does not exist (try `caam shallow-profile create broken-profile`)',
         }),
       },
     ]);
 
     await expect(
-      runCaamShallowProfileDoctor("/opt/caam", "broken-profile", { execFileImpl: impl }),
+      runCaamShallowProfileDoctor("/opt/caam", "broken-profile", SHALLOW_BASE, {
+        execFileImpl: impl,
+      }),
     ).rejects.toThrow(CaamShallowProfileDoctorError);
     await expect(
-      runCaamShallowProfileDoctor("/opt/caam", "broken-profile", { execFileImpl: impl }),
+      runCaamShallowProfileDoctor("/opt/caam", "broken-profile", SHALLOW_BASE, {
+        execFileImpl: impl,
+      }),
     ).rejects.toThrow(/unhealthy/);
   });
 
@@ -92,11 +125,13 @@ describe("caam shallow-spawn --print-env pre-flight (caam-map.md §4c)", () => {
       { stdout: "HOME=/orch-homes/beta\nSHALLOW_PROFILE=beta\n" },
     ]);
 
-    const result = await runCaamShallowProfileDoctor("/opt/caam", "beta", { execFileImpl: impl });
+    const result = await runCaamShallowProfileDoctor("/opt/caam", "beta", SHALLOW_BASE, {
+      execFileImpl: impl,
+    });
 
     expect(calls).toEqual([
-      ["/opt/caam", "shallow-spawn", "beta", "--print-env", "--json"],
-      ["/opt/caam", "shallow-spawn", "beta", "--print-env"],
+      ["/opt/caam", "shallow-spawn", "beta", "--base", SHALLOW_BASE, "--print-env", "--json"],
+      ["/opt/caam", "shallow-spawn", "beta", "--base", SHALLOW_BASE, "--print-env"],
     ]);
     expect(result.healthy).toBe(true);
   });
@@ -107,12 +142,15 @@ describe("caam shallow-spawn --print-env pre-flight (caam-map.md §4c)", () => {
       {
         exitCode: 1,
         stdout: "",
-        stderr: 'Error: shallow profile "broken-profile" does not exist (try `caam shallow-profile create broken-profile`)\n',
+        stderr:
+          'Error: shallow profile "broken-profile" does not exist (try `caam shallow-profile create broken-profile`)\n',
       },
     ]);
 
     await expect(
-      runCaamShallowProfileDoctor("/opt/caam", "broken-profile", { execFileImpl: impl }),
+      runCaamShallowProfileDoctor("/opt/caam", "broken-profile", SHALLOW_BASE, {
+        execFileImpl: impl,
+      }),
     ).rejects.toThrow(CaamShallowProfileDoctorError);
     expect(calls).toHaveLength(2);
   });
@@ -126,7 +164,9 @@ describe("caam shallow-spawn --print-env pre-flight (caam-map.md §4c)", () => {
     ]);
 
     await expect(
-      runCaamShallowProfileDoctor("/opt/caam", "beta", { execFileImpl: impl }),
+      runCaamShallowProfileDoctor("/opt/caam", "beta", SHALLOW_BASE, {
+        execFileImpl: impl,
+      }),
     ).rejects.toThrow(/does not match the expected KEY=VALUE/);
     expect(calls).toHaveLength(2);
   });
@@ -134,11 +174,16 @@ describe("caam shallow-spawn --print-env pre-flight (caam-map.md §4c)", () => {
   test("CLI drift: fails closed when plain-text stdout mixes env assignments with unexpected non-assignment lines", async () => {
     const { impl } = fakeExecFileSequence([
       { exitCode: 1, stdout: "", stderr: UNKNOWN_JSON_FLAG_STDERR },
-      { stdout: "note: profile schema will change in v3\nHOME=/orch-homes/beta\nSHALLOW_PROFILE=beta\n" },
+      {
+        stdout:
+          "note: profile schema will change in v3\nHOME=/orch-homes/beta\nSHALLOW_PROFILE=beta\n",
+      },
     ]);
 
     await expect(
-      runCaamShallowProfileDoctor("/opt/caam", "beta", { execFileImpl: impl }),
+      runCaamShallowProfileDoctor("/opt/caam", "beta", SHALLOW_BASE, {
+        execFileImpl: impl,
+      }),
     ).rejects.toThrow(CaamShallowProfileDoctorError);
   });
 
@@ -148,7 +193,9 @@ describe("caam shallow-spawn --print-env pre-flight (caam-map.md §4c)", () => {
     ]);
 
     await expect(
-      runCaamShallowProfileDoctor("/opt/caam", "beta", { execFileImpl: impl }),
+      runCaamShallowProfileDoctor("/opt/caam", "beta", SHALLOW_BASE, {
+        execFileImpl: impl,
+      }),
     ).rejects.toThrow(CaamShallowProfileDoctorError);
     // A spawn-level failure can't be fixed by retrying with different flags.
     expect(calls).toHaveLength(1);
@@ -158,7 +205,9 @@ describe("caam shallow-spawn --print-env pre-flight (caam-map.md §4c)", () => {
     const { impl } = fakeExecFileSequence([{ stdout: "not json" }]);
 
     await expect(
-      runCaamShallowProfileDoctor("/opt/caam", "beta", { execFileImpl: impl }),
+      runCaamShallowProfileDoctor("/opt/caam", "beta", SHALLOW_BASE, {
+        execFileImpl: impl,
+      }),
     ).rejects.toThrow(/did not return the expected/);
   });
 
@@ -168,7 +217,9 @@ describe("caam shallow-spawn --print-env pre-flight (caam-map.md §4c)", () => {
     ]);
 
     await expect(
-      runCaamShallowProfileDoctor("/opt/caam", "beta", { execFileImpl: impl }),
+      runCaamShallowProfileDoctor("/opt/caam", "beta", SHALLOW_BASE, {
+        execFileImpl: impl,
+      }),
     ).rejects.toThrow(CaamShallowProfileDoctorError);
     expect(calls).toHaveLength(1);
   });

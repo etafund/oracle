@@ -41,6 +41,13 @@ import { SESSION_ARTIFACT_INDEX_SCHEMA_VERSION } from "../sessionArtifacts.js";
 import { ORACLE_SESSION_ACTION_SCHEMA_VERSION } from "./sessionActionJson.js";
 import { AGENT_LANE_POLICY_VERSION } from "./laneRegistry.js";
 import { ORACLE_EXIT_CODE_DICTIONARY } from "./exitCodes.js";
+import {
+  CAAM_SHALLOW_HOMES_DIR_ENV_VAR,
+  ORACLE_CLAUDE_CODE_CAAM_BASE_ENV_VAR,
+  ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR,
+} from "../claude-code/caamCommand.js";
+import { ORACLE_CAAM_EXECUTABLE_ENV_VAR } from "../claude-code/caamResolver.js";
+import { ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS_ENV_VAR } from "../claude-code/caamRotation.js";
 
 export const ORACLE_ROBOT_TOOL_NAME = "oracle" as const;
 
@@ -98,6 +105,14 @@ function entry(input: RobotCommandEntry): RobotCommandEntry {
 }
 
 const ORACLE_REMOTE_ENVS: readonly string[] = ["ORACLE_REMOTE_HOST", "ORACLE_REMOTE_TOKEN"];
+const ORACLE_FABLE_ENVS: readonly string[] = [
+  ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR,
+  ORACLE_CLAUDE_CODE_CAAM_BASE_ENV_VAR,
+  CAAM_SHALLOW_HOMES_DIR_ENV_VAR,
+  ORACLE_CAAM_EXECUTABLE_ENV_VAR,
+  ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS_ENV_VAR,
+  "ORACLE_HOME_DIR",
+];
 
 export const ROBOT_COMMANDS: readonly RobotCommandEntry[] = Object.freeze([
   entry({
@@ -135,6 +150,19 @@ export const ROBOT_COMMANDS: readonly RobotCommandEntry[] = Object.freeze([
     paid_calls: false,
     dry_run: true,
     required_env: [],
+    output_schema_version: JSON_ENVELOPE_SCHEMA_VERSION,
+    recovery_fields: ROBOT_RECOVERY_FIELDS,
+    touches_network: false,
+    touches_chrome: false,
+  }),
+  entry({
+    name: "doctor-fable",
+    command: "oracle doctor fable --json",
+    purpose:
+      "Fable-specific local doctor: Claude/CAAM profile, base, auth, owner, and fail-closed readiness.",
+    paid_calls: false,
+    dry_run: true,
+    required_env: ORACLE_FABLE_ENVS,
     output_schema_version: JSON_ENVELOPE_SCHEMA_VERSION,
     recovery_fields: ROBOT_RECOVERY_FIELDS,
     touches_network: false,

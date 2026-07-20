@@ -36,6 +36,13 @@ import {
   SESSION_STATUS_VALUES,
   TERMINAL_SESSION_STATUSES,
 } from "../../cli/sessionStatus.js";
+import {
+  CAAM_SHALLOW_HOMES_DIR_ENV_VAR,
+  ORACLE_CLAUDE_CODE_CAAM_BASE_ENV_VAR,
+  ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR,
+} from "../../claude-code/caamCommand.js";
+import { ORACLE_CAAM_EXECUTABLE_ENV_VAR } from "../../claude-code/caamResolver.js";
+import { ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS_ENV_VAR } from "../../claude-code/caamRotation.js";
 
 export const ORACLE_CAPABILITIES_SCHEMA_VERSION = "oracle_capabilities.v1" as const;
 
@@ -113,6 +120,10 @@ export interface CapabilityLaneSummary {
   readonly continuability: LaneContinuabilityCapability;
   /** Whether reasoning depth can be dialed up/down for this lane. */
   readonly reasoning_depth_adjustable: boolean;
+  /** Fixed reasoning effort imposed by this lane, or null when not applicable. */
+  readonly fixed_reasoning_effort: "xhigh" | null;
+  /** Whether explicit account/profile selection refuses fallback to another account. */
+  readonly explicit_profile_selection_fail_closed: boolean;
 }
 
 export interface CapabilityReport {
@@ -219,15 +230,25 @@ function fableCapability(): CapabilityEntry {
     status: "available",
     description:
       "Core lane: Fable xHigh through the local Claude Code subscription CLI, isolated from browser/router transports.",
-    next_command: "oracle --lane fable-local --prompt '...' --file path",
+    next_command: "oracle doctor fable --json",
     fix_command: null,
     notes: {
       lane: "fable-local",
       effort: "xhigh",
+      effort_adjustable: false,
       access_path: "claude_code_subscription_cli",
       local_only: true,
       remote_browser_allowed: false,
       api_substitution_guard: true,
+      doctor_command: "oracle doctor fable --json",
+      caam_profile_flag: "--caam-profile <profile>",
+      caam_base_flag: "--caam-base <absolute-path>",
+      caam_profile_env: ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR,
+      caam_base_env: ORACLE_CLAUDE_CODE_CAAM_BASE_ENV_VAR,
+      caam_native_base_env: CAAM_SHALLOW_HOMES_DIR_ENV_VAR,
+      caam_executable_env: ORACLE_CAAM_EXECUTABLE_ENV_VAR,
+      explicit_profile_selection_fail_closed: true,
+      direct_claude_fallback_only_when_profile_omitted: true,
     },
   };
 }
@@ -410,6 +431,8 @@ export function buildLaneSummaries(): readonly CapabilityLaneSummary[] {
     attachments: entry.attachments,
     continuability: entry.continuability,
     reasoning_depth_adjustable: entry.reasoning_depth_adjustable,
+    fixed_reasoning_effort: entry.fixedReasoningEffort,
+    explicit_profile_selection_fail_closed: entry.explicitProfileSelectionFailClosed,
   }));
 }
 
@@ -472,6 +495,11 @@ export function buildCapabilityReport(input: BuildCapabilityReportInput): Capabi
         remote_token: REMOTE_TOKEN_ENV,
         openai_api_key: OPENAI_KEY_ENV,
         gemini_api_key: GEMINI_KEY_ENV,
+        claude_code_caam_profile: ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR,
+        claude_code_caam_base: ORACLE_CLAUDE_CODE_CAAM_BASE_ENV_VAR,
+        caam_shallow_homes_dir: CAAM_SHALLOW_HOMES_DIR_ENV_VAR,
+        caam_executable: ORACLE_CAAM_EXECUTABLE_ENV_VAR,
+        claude_code_max_rate_limit_rotations: ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS_ENV_VAR,
       },
     } as Record<string, unknown>),
   };

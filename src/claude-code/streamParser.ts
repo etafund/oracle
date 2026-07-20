@@ -205,6 +205,66 @@ export function extractVisibleText(json: unknown): string | undefined {
   return undefined;
 }
 
+/**
+ * Select one authoritative final-answer representation from Claude Code's
+ * layered stream-json output. A normal successful run can expose the same
+ * text three times: incremental text deltas, a complete assistant snapshot,
+ * and the terminal result. Never concatenate those layers.
+ *
+ * Precedence is terminal result, then the last complete assistant snapshot,
+ * then concatenated text deltas for older/incomplete streams that emitted no
+ * complete representation.
+ */
+export function extractAuthoritativeFinalText(
+  events: readonly ClaudeCodeNormalizedEvent[],
+): string {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    const json = objectRecord(event?.json);
+    if (json?.type === "result" && typeof json.result === "string") {
+      return json.result;
+    }
+    if (event?.type?.startsWith("result") && typeof event.text === "string") {
+      return event.text;
+    }
+  }
+
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    const json = objectRecord(event?.json);
+    if (json?.type === "assistant" && typeof event?.text === "string") {
+      return event.text;
+    }
+    if (event?.type === "assistant" && typeof event.text === "string") {
+      return event.text;
+    }
+  }
+
+  return events
+    .filter(isTextDeltaEvent)
+    .map((event) => event.text ?? "")
+    .join("");
+}
+
+export function isTextDeltaEvent(event: ClaudeCodeNormalizedEvent): boolean {
+  if (event.stream !== "stdout" || typeof event.text !== "string") {
+    return false;
+  }
+  const json = objectRecord(event.json);
+  if (json?.type !== "stream_event") {
+    return false;
+  }
+  const nestedEvent = objectRecord(json.event);
+  const delta = objectRecord(nestedEvent?.delta);
+  return nestedEvent?.type === "content_block_delta" && delta?.type === "text_delta";
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
 function decodeRaw(bytes: Buffer): Pick<ClaudeCodeNormalizedEvent, "rawText" | "rawBase64"> {
   try {
     return { rawText: new TextDecoder("utf-8", { fatal: true }).decode(bytes) };

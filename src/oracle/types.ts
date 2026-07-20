@@ -251,10 +251,17 @@ export interface RunOracleOptions {
      * `executable`'s override pattern: this programmatic ("config key")
      * form takes precedence over the `ORACLE_CLAUDE_CODE_CAAM_PROFILE` env
      * var. Unset by default — the claude-code lane only activates caam when
-     * a profile is explicitly configured; otherwise it falls back to
-     * today's exact direct-`claude` behavior.
+     * a profile is explicitly configured. Once configured, selection is
+     * fail-closed: a CAAM/preflight failure aborts instead of falling back
+     * to an unpinned direct-`claude` account.
      */
     caamProfile?: string;
+    /**
+     * Absolute base directory containing CAAM shallow profiles. The same
+     * resolved value is used for the read-only preflight and the eventual
+     * launch so account selection cannot drift between those two steps.
+     */
+    caamBase?: string;
     model?: string;
     readOnly: true;
     inlineEvents: true;
@@ -291,7 +298,7 @@ export interface RunOracleOptions {
      * effect when caam shallow-spawn is active for the original attempt
      * (`caamProfile` resolved); a caam-absent run is unaffected regardless
      * of this value. `0` fully disables rotation even with caam active.
-     * Defaults to 2 when unset (also settable via
+     * Defaults to 0 when unset (also settable via
      * `ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS`).
      */
     maxRateLimitRotations?: number;

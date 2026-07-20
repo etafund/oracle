@@ -1,6 +1,9 @@
 import { describe, expect, test } from "vitest";
 
-import { ClaudeCodeStreamNormalizer } from "../../src/claude-code/streamParser.js";
+import {
+  ClaudeCodeStreamNormalizer,
+  extractAuthoritativeFinalText,
+} from "../../src/claude-code/streamParser.js";
 
 describe("Claude Code stream normalizer", () => {
   test("parses JSON lines with byte offsets and lengths", () => {
@@ -25,6 +28,41 @@ describe("Claude Code stream normalizer", () => {
       type: "result",
       text: "ok",
     });
+  });
+
+  test("selects one authoritative answer instead of concatenating stream layers", () => {
+    const parser = new ClaudeCodeStreamNormalizer();
+    const events = parser.push(
+      "stdout",
+      [
+        {
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            delta: { type: "text_delta", text: "P" },
+          },
+        },
+        {
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            delta: { type: "text_delta", text: "ONG" },
+          },
+        },
+        {
+          type: "assistant",
+          message: { content: [{ type: "text", text: "PONG" }] },
+        },
+        { type: "result", subtype: "success", result: "PONG" },
+      ]
+        .map((event) => JSON.stringify(event))
+        .join("\n") + "\n",
+    );
+
+    expect(events.map((event) => event.text).filter(Boolean)).toEqual(["P", "ONG", "PONG", "PONG"]);
+    expect(extractAuthoritativeFinalText(events)).toBe("PONG");
+    expect(extractAuthoritativeFinalText(events.slice(0, -1))).toBe("PONG");
+    expect(extractAuthoritativeFinalText(events.slice(0, 2))).toBe("PONG");
   });
 
   test("handles split multibyte UTF-8 only after the full raw line arrives", () => {

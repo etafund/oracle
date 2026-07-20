@@ -93,7 +93,7 @@ const baseRunOptions = {
 };
 
 const log = vi.fn();
-const write = vi.fn(() => true);
+const write = vi.fn((_chunk: string) => true);
 const cliVersion = getCliVersion();
 const originalPlatform = process.platform;
 
@@ -135,6 +135,13 @@ const blockedClaudeCodeEnvDefaults = {
   CLAUDE_CODE_USE_VERTEX: undefined,
   CLAUDE_CODE_USE_FOUNDRY: undefined,
   CLAUDE_CODE_USE_ANTHROPIC_AWS: undefined,
+  ORACLE_CLAUDE_CODE_CAAM_BASE: undefined,
+  CAAM_SHALLOW_HOMES_DIR: undefined,
+  SHALLOW_PROFILE: undefined,
+  // Rotation is now opt-in. The dedicated rotation suite retains its
+  // historical multi-attempt scenarios by opting in through this shared
+  // test environment; resolver unit tests cover the production default 0.
+  [ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS_ENV_VAR]: "2",
 } satisfies Record<string, string | undefined>;
 
 const fableClaudeCodePolicy = {
@@ -227,8 +234,8 @@ function createFakeClaudeExecutable({
 // `shallow-spawn <profile> --base <base> -- <claude> <args...>` invocation
 // (the actual spawned child) that behaves like `createFakeClaudeExecutable`
 // above once "exec'd". Both use the `shallow-spawn` subcommand, so they are
-// told apart by the presence of `--print-env` (the pre-flight never passes
-// `--base`/`--`, and the real spawn never passes `--print-env`).
+// told apart by the presence of `--print-env` (the pre-flight and real spawn
+// both receive the same `--base`; only the real spawn receives `--`).
 function createFakeCaamExecutable({
   binDir,
   doctorInvocationArgvPath,
@@ -509,7 +516,51 @@ describe("performSessionRun", () => {
     }
     const contextPath = path.join(repoDir, "context.md");
     fs.writeFileSync(contextPath, "fake file context", "utf8");
-    createFakeClaudeExecutable({ binDir, argvPath, stdinPath, markerPath });
+    createFakeClaudeExecutable({
+      binDir,
+      argvPath,
+      stdinPath,
+      markerPath,
+      stdoutEvents: [
+        fakeClaudeCodeInitEvent(),
+        {
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            delta: { type: "text_delta", text: "INTERMEDIATE DRAFT" },
+          },
+        },
+        {
+          type: "assistant",
+          message: { content: [{ type: "text", text: "INTERMEDIATE DRAFT" }] },
+        },
+        {
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            delta: { type: "text_delta", text: "P" },
+          },
+        },
+        {
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            delta: { type: "text_delta", text: "ONG" },
+          },
+        },
+        {
+          type: "assistant",
+          message: { content: [{ type: "text", text: "PONG" }] },
+        },
+        {
+          type: "result",
+          subtype: "success",
+          result: "PONG",
+          modelUsage: { "claude-fable-5": {} },
+          total_cost_usd: 0,
+        },
+      ],
+    });
     sessionStoreMock.sessionsDir.mockReturnValue(sessionsDir);
     sessionStoreMock.getPaths.mockResolvedValue({
       dir: sessionDir,
@@ -518,6 +569,9 @@ describe("performSessionRun", () => {
       log: path.join(sessionDir, "output.log"),
     });
     setOracleHomeDirOverrideForTest(oracleHome);
+    const stdoutWrite = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true as unknown as boolean);
 
     try {
       await withExactEnv(
@@ -538,7 +592,7 @@ describe("performSessionRun", () => {
             log,
             write,
             version: cliVersion,
-            muteStdout: true,
+            muteStdout: false,
           });
         },
       );
@@ -563,9 +617,7 @@ describe("performSessionRun", () => {
       expect(fs.readFileSync(path.join(artifactsDir, "claude-code-stderr.raw"), "utf8")).toBe(
         "fake stderr\n",
       );
-      expect(fs.readFileSync(path.join(artifactsDir, "claude-code-final.md"), "utf8")).toBe(
-        "Fake final answer from Claude Code",
-      );
+      expect(fs.readFileSync(path.join(artifactsDir, "claude-code-final.md"), "utf8")).toBe("PONG");
       expect(
         fs.readFileSync(path.join(artifactsDir, "claude-code-events.normalized.ndjson"), "utf8"),
       ).toContain('"type":"result"');
@@ -576,6 +628,9 @@ describe("performSessionRun", () => {
       expect(adapter.command?.args_redacted).toContain(
         "<tiny Oracle-owned supplied-context reviewer prompt>",
       );
+      expect(write.mock.calls.map((call) => call[0]).join("")).toBe("fake stderr\nPONG\n");
+      expect(stdoutWrite.mock.calls.map((call) => call[0]).join("")).toBe("fake stderr\nPONG\n");
+      expect(write.mock.calls.map((call) => call[0]).join("")).not.toContain("INTERMEDIATE DRAFT");
       const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
       expect(finalUpdate).toMatchObject({
         status: "completed",
@@ -598,6 +653,7 @@ describe("performSessionRun", () => {
         false,
       );
     } finally {
+      stdoutWrite.mockRestore();
       setOracleHomeDirOverrideForTest(null);
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -1146,6 +1202,13 @@ describe("performSessionRun", () => {
       expect(input.artifactPaths.rawStdoutPath).toBe(
         "/tmp/.oracle/sessions/sess-1/artifacts/claude-code-stdout.raw",
       );
+      // Simulate the duplicate visible layers emitted by Claude Code with
+      // --include-partial-messages: deltas, assistant snapshot, and result.
+      // Structured/muted callers must receive only finalAnswerText below.
+      input.write("Final ");
+      input.write("answer");
+      input.write("Final answer");
+      input.write("Final answer");
       return {
         stdoutRaw: Buffer.from('{"type":"assistant","text":"Final answer"}\n'),
         stderrRaw: Buffer.from("visible stderr\n"),
@@ -1187,6 +1250,8 @@ describe("performSessionRun", () => {
     });
 
     expect(claudeCodeRunner).toHaveBeenCalledTimes(1);
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(write).toHaveBeenCalledWith("Final answer");
     expect(vi.mocked(runOracle)).not.toHaveBeenCalled();
     expect(vi.mocked(runBrowserSessionExecution)).not.toHaveBeenCalled();
     const writeCalls = (fsPromises.writeFile as unknown as { mock: { calls: unknown[][] } }).mock
@@ -3442,6 +3507,7 @@ describe("claude-code caam shallow-spawn integration (caam-map.md §4)", () => {
         { mode: 0o600 },
       );
 
+      const caamBase = path.join(fixture.root, "orch-homes");
       await withExactEnv(
         {
           ...blockedClaudeCodeEnvDefaults,
@@ -3451,7 +3517,15 @@ describe("claude-code caam shallow-spawn integration (caam-map.md §4)", () => {
         async () => {
           await performSessionRun({
             sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
-            runOptions: { prompt: "Review via caam", model: "fable" },
+            runOptions: {
+              prompt: "Review via caam",
+              model: "fable",
+              claudeCode: {
+                ...fableClaudeCodePolicy,
+                caamProfile: "beta",
+                caamBase,
+              },
+            },
             mode: "claude-code",
             cwd: fixture.repoDir,
             log,
@@ -3464,10 +3538,17 @@ describe("claude-code caam shallow-spawn integration (caam-map.md §4)", () => {
 
       // Doctor pre-flight ran read-only, scoped to the right profile, before the spawn.
       const doctorArgv = JSON.parse(fs.readFileSync(doctorInvocationArgvPath, "utf8")) as string[];
-      expect(doctorArgv).toEqual(["shallow-spawn", "beta", "--print-env", "--json"]);
+      expect(doctorArgv).toEqual([
+        "shallow-spawn",
+        "beta",
+        "--base",
+        caamBase,
+        "--print-env",
+        "--json",
+      ]);
 
       // The outer command is exactly:
-      //   caam shallow-spawn beta --base <oracleHome>/claude-code-shallow-homes -- <claude> <inner argv...>
+      //   caam shallow-spawn beta --base <configured-base> -- <claude> <inner argv...>
       // where the inner argv is byte-for-byte buildClaudeCodeCommand()'s
       // own output — untouched by the caam wrapper (caam-map.md §4a).
       const shallowSpawnArgv = JSON.parse(
@@ -3478,7 +3559,7 @@ describe("claude-code caam shallow-spawn integration (caam-map.md §4)", () => {
         "shallow-spawn",
         "beta",
         "--base",
-        path.join(fixture.oracleHome, "claude-code-shallow-homes"),
+        caamBase,
         "--",
         claudePath,
         ...expectedInner.args,
@@ -3491,7 +3572,14 @@ describe("claude-code caam shallow-spawn integration (caam-map.md §4)", () => {
       expect(fs.existsSync(globalLockPath)).toBe(true);
 
       const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
-      expect(finalUpdate).toMatchObject({ status: "completed", mode: "claude-code" });
+      expect(finalUpdate).toMatchObject({
+        status: "completed",
+        mode: "claude-code",
+        claudeCode: {
+          caam_profile: "beta",
+          caam_base: caamBase,
+        },
+      });
     } finally {
       teardownCaamFixture(fixture);
     }
@@ -3561,7 +3649,7 @@ describe("claude-code caam shallow-spawn integration (caam-map.md §4)", () => {
     }
   });
 
-  test("graceful fallback: caam absent from PATH runs the exact direct-claude behavior (global lock)", async () => {
+  test("fail closed: an explicit profile with caam absent never spawns direct claude", async () => {
     vi.mocked(fsPromises.mkdir).mockRestore();
     vi.mocked(fsPromises.writeFile).mockRestore();
     const fixture = setupCaamFixture();
@@ -3583,39 +3671,37 @@ describe("claude-code caam shallow-spawn integration (caam-map.md §4)", () => {
           [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "beta",
         },
         async () => {
-          await performSessionRun({
-            sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
-            runOptions: { prompt: "Review without caam installed", model: "fable" },
-            mode: "claude-code",
-            cwd: fixture.repoDir,
-            log,
-            write,
-            version: cliVersion,
-            muteStdout: true,
-          });
+          await expect(
+            performSessionRun({
+              sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+              runOptions: { prompt: "Review without caam installed", model: "fable" },
+              mode: "claude-code",
+              cwd: fixture.repoDir,
+              log,
+              write,
+              version: cliVersion,
+              muteStdout: true,
+            }),
+          ).rejects.toThrow(/caam/i);
         },
       );
 
-      // The direct `claude` fake ran, and received the UNWRAPPED inner argv
-      // — no "shallow-spawn"/"--base" prefix — exactly today's behavior.
-      expect(fs.readFileSync(claudeMarkerPath, "utf8")).toBe("spawned\n");
-      const argv = JSON.parse(fs.readFileSync(claudeArgvPath, "utf8")) as string[];
-      expect(argv[0]).toBe("-p");
-      expect(argv).not.toContain("shallow-spawn");
+      expect(fs.existsSync(claudeMarkerPath)).toBe(false);
+      expect(fs.existsSync(claudeArgvPath)).toBe(false);
 
-      // The GLOBAL lock filename was used (no profile keying) and released.
+      // No lock was acquired because account preflight failed before launch.
       const locksDir = path.join(fixture.oracleHome, "locks");
       expect(fs.existsSync(path.join(locksDir, "claude-code-subscription.lock"))).toBe(false);
       expect(fs.existsSync(path.join(locksDir, "claude-code-subscription-beta.lock"))).toBe(false);
 
       const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
-      expect(finalUpdate).toMatchObject({ status: "completed", mode: "claude-code" });
+      expect(finalUpdate).toMatchObject({ status: "error", mode: "claude-code" });
     } finally {
       teardownCaamFixture(fixture);
     }
   });
 
-  test("graceful fallback: caam present but shallow-spawn --print-env pre-flight reports unhealthy runs direct-claude behavior", async () => {
+  test("fail closed: an unhealthy explicit profile never spawns direct claude", async () => {
     vi.mocked(fsPromises.mkdir).mockRestore();
     vi.mocked(fsPromises.writeFile).mockRestore();
     const fixture = setupCaamFixture();
@@ -3645,22 +3731,24 @@ describe("claude-code caam shallow-spawn integration (caam-map.md §4)", () => {
           [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "unhealthy-profile",
         },
         async () => {
-          await performSessionRun({
-            sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
-            runOptions: { prompt: "Review with an unhealthy caam profile", model: "fable" },
-            mode: "claude-code",
-            cwd: fixture.repoDir,
-            log,
-            write,
-            version: cliVersion,
-            muteStdout: true,
-          });
+          await expect(
+            performSessionRun({
+              sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+              runOptions: { prompt: "Review with an unhealthy caam profile", model: "fable" },
+              mode: "claude-code",
+              cwd: fixture.repoDir,
+              log,
+              write,
+              version: cliVersion,
+              muteStdout: true,
+            }),
+          ).rejects.toThrow(/unhealthy/i);
         },
       );
 
-      // caam's shallow-spawn branch never ran; the direct claude fake did.
+      // Neither CAAM's launch branch nor direct Claude ran.
       expect(fs.existsSync(caamMarkerPath)).toBe(false);
-      expect(fs.readFileSync(claudeMarkerPath, "utf8")).toBe("spawned\n");
+      expect(fs.existsSync(claudeMarkerPath)).toBe(false);
 
       const locksDir = path.join(fixture.oracleHome, "locks");
       expect(fs.existsSync(path.join(locksDir, "claude-code-subscription.lock"))).toBe(false);
@@ -3669,7 +3757,7 @@ describe("claude-code caam shallow-spawn integration (caam-map.md §4)", () => {
       ).toBe(false);
 
       const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
-      expect(finalUpdate).toMatchObject({ status: "completed", mode: "claude-code" });
+      expect(finalUpdate).toMatchObject({ status: "error", mode: "claude-code" });
     } finally {
       teardownCaamFixture(fixture);
     }
@@ -3758,17 +3846,17 @@ describe("claude-code caam rate-limit rotation (caam-ratelimit-rotation-design.m
         },
       );
 
-      const doctorCalls = readJsonlLog(fixture.logsDir, "doctor-calls.jsonl");
-      expect(doctorCalls).toEqual([
-        ["shallow-spawn", "beta", "--print-env", "--json"],
-        ["shallow-spawn", "beth", "--print-env", "--json"],
-      ]);
+      const doctorCalls = readJsonlLog(fixture.logsDir, "doctor-calls.jsonl") as string[][];
+      expect(doctorCalls.map((argv) => argv[1])).toEqual(["beta", "beth"]);
+      expect(doctorCalls.every((argv) => argv[2] === "--base")).toBe(true);
+      expect(doctorCalls[0][3]).toBe(doctorCalls[1][3]);
 
       const shallowSpawnCalls = readJsonlLog(
         fixture.logsDir,
         "shallow-spawn-calls.jsonl",
       ) as string[][];
       expect(shallowSpawnCalls.map((argv) => argv[1])).toEqual(["beta", "beth"]);
+      expect(shallowSpawnCalls.every((argv) => argv[3] === doctorCalls[0][3])).toBe(true);
 
       const cooldownCalls = readJsonlLog(fixture.logsDir, "cooldown-calls.jsonl") as string[][];
       expect(cooldownCalls).toHaveLength(1);

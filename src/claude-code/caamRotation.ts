@@ -36,17 +36,17 @@ import { execFile } from "node:child_process";
 export const ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS_ENV_VAR =
   "ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS";
 
-const DEFAULT_MAX_RATE_LIMIT_ROTATIONS = 2;
+const DEFAULT_MAX_RATE_LIMIT_ROTATIONS = 0;
 
 /**
  * Resolves the rotation cap, preferring an explicit programmatic override
  * (`runOptions.claudeCode.maxRateLimitRotations`) over the
  * `ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS` env var, same precedence
- * pattern as `resolveClaudeCodeCaamProfile` (`caamCommand.ts`). Falls back
- * to a small positive default (2) when neither is a valid non-negative
- * integer. Callers only invoke this when caam is already active for the
- * original attempt — an absent/invalid value here never re-enables
- * rotation on its own.
+ * pattern as `resolveClaudeCodeCaamProfile` (`caamCommand.ts`). Defaults to
+ * zero so choosing a named shallow profile remains a pinned account-routing
+ * decision. Rotation is enabled only through an explicit positive override;
+ * an absent/invalid value never switches the caller onto another subscription
+ * profile.
  */
 export function resolveClaudeCodeMaxRateLimitRotations(
   configured: number | undefined,

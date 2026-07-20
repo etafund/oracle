@@ -119,6 +119,10 @@ import {
 import { isFableModel, resolveLanePolicy, type ResolvedOracleLane } from "../src/cli/lanePolicy.js";
 import { LaneRouteBlockError, VALID_LANES, closestLane } from "../src/cli/routeBlockError.js";
 import { nearestByEditDistance } from "../src/cli/didYouMean.js";
+import {
+  resolveClaudeCodeCaamProfile,
+  validateCaamBasePath,
+} from "../src/claude-code/caamCommand.js";
 
 // Standard EPIPE handling, wired before anything writes. When Oracle output
 // is piped into a consumer that closes the read end early (`oracle --help |
@@ -175,6 +179,8 @@ interface CliOptions extends OptionValues {
   timeout?: number | "auto";
   waitForLock?: number;
   claudeCodeExecutable?: string;
+  caamProfile?: string;
+  caamBase?: string;
   background?: boolean;
   httpTimeout?: number;
   zombieTimeout?: number;
@@ -759,6 +765,18 @@ program
     new Option(
       "--claude-code-executable <path>",
       "For --lane fable-local, override the resolved `claude` executable path (also settable via ORACLE_CLAUDE_CODE_EXECUTABLE). Still hardened: rejected if world-writable, foreign-owned, or inside the reviewed repo.",
+    ).default(undefined),
+  )
+  .addOption(
+    new Option(
+      "--caam-profile <name>",
+      "For --lane fable-local, pin the CAAM shallow profile. Selection is fail-closed: Oracle will not fall back to another Claude account.",
+    ).default(undefined),
+  )
+  .addOption(
+    new Option(
+      "--caam-base <absolute-path>",
+      "For --lane fable-local, set the CAAM shallow-profile base (also settable via ORACLE_CLAUDE_CODE_CAAM_BASE). The same base is verified and launched.",
     ).default(undefined),
   )
   .addOption(
@@ -1882,6 +1900,8 @@ function buildRunOptions(
           resumeSessionId: options.claudeCodeResumeSessionId,
           waitForLockMs: options.waitForLock,
           executable: options.claudeCodeExecutable,
+          caamProfile: options.caamProfile,
+          caamBase: options.caamBase,
         }
       : undefined);
 
@@ -2632,6 +2652,25 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     }
     laneForcedBrowserKeys = applyResolvedLaneCliOptions(options, resolvedLane, optionUsesDefault);
   }
+  if (
+    (options.caamProfile !== undefined || options.caamBase !== undefined) &&
+    resolvedLane?.lane !== "fable-local"
+  ) {
+    throw new Error(
+      "--caam-profile and --caam-base are only valid with --lane fable-local (or the equivalent --engine claude-code --model fable route).",
+    );
+  }
+  if (resolvedLane?.lane === "fable-local") {
+    const caamProfileForRun = resolveClaudeCodeCaamProfile(options.caamProfile, process.env);
+    if (options.caamBase !== undefined) {
+      validateCaamBasePath(options.caamBase);
+    }
+    if (options.caamBase !== undefined && !caamProfileForRun) {
+      throw new Error(
+        "--caam-base requires a CAAM profile. Add --caam-profile <name> (or set ORACLE_CLAUDE_CODE_CAAM_PROFILE), or omit --caam-base to use direct Claude.",
+      );
+    }
+  }
   // applyGeminiDeepThinkRootDefaults already coerces engine to "browser" when a
   // deep-think alias is requested, so by the time we reach this resolveApiModel
   // call the only deep-think models we will see are ones the user explicitly
@@ -2962,6 +3001,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   let claudeCodeFollowupProfileGuard: {
     parentSessionId: string;
     parentProfile?: string;
+    parentBase?: string;
   } | null = null;
   if (options.followup) {
     if (normalizedMultiModels.length > 0) {
@@ -3009,6 +3049,7 @@ async function runRootCommand(options: CliOptions): Promise<void> {
         claudeCodeFollowupProfileGuard = {
           parentSessionId: claudeCodeFollowup.sessionId,
           parentProfile: claudeCodeFollowup.caamProfile,
+          parentBase: claudeCodeFollowup.caamBase,
         };
         engine = "claude-code";
         if (claudeCodeFollowup.model) {

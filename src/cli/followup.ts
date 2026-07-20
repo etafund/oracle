@@ -5,7 +5,11 @@ import { resolveRecoveryUrl } from "../browser/recoverConversation.js";
 import { isRecoverableChatGptConversationUrl } from "../browser/reattachability.js";
 import { DEFAULT_MODEL } from "../oracle/config.js";
 import type { ModelName, RunOracleOptions } from "../oracle/types.js";
-import { resolveClaudeCodeCaamProfile } from "../claude-code/caamCommand.js";
+import {
+  resolveClaudeCodeCaamBase,
+  resolveClaudeCodeCaamProfile,
+  validateCaamBasePath,
+} from "../claude-code/caamCommand.js";
 
 export interface BrowserFollowupResolution {
   sessionId: string;
@@ -131,6 +135,8 @@ export interface ClaudeCodeFollowupResolution {
   resumeSessionId: string;
   /** caam shallow-spawn profile the parent run actually used, if any (caam-map.md §4). */
   caamProfile?: string;
+  /** Exact shallow-profile base paired with `caamProfile`; both identify the parent's `$HOME`. */
+  caamBase?: string;
   model?: string;
   /** The lane the referenced session actually ran under, if recorded (e.g. "fable-local"). */
   lane?: string;
@@ -172,13 +178,38 @@ export async function resolveClaudeCodeFollowupReference(
     );
   }
   const storedModel = metadata.options?.model ?? metadata.model;
+  const caamProfile = metadata.claudeCode?.caam_profile ?? undefined;
   return {
     sessionId: metadata.id,
     resumeSessionId,
-    caamProfile: metadata.claudeCode?.caam_profile ?? undefined,
+    caamProfile,
+    caamBase: caamProfile ? readStoredClaudeCodeCaamBase(metadata) : undefined,
     model: typeof storedModel === "string" ? storedModel : undefined,
     lane: metadata.lane ?? metadata.options?.lane,
   };
+}
+
+type StoredClaudeCodeMetadataWithCaamBase = NonNullable<SessionMetadata["claudeCode"]> & {
+  caam_base?: unknown;
+};
+
+/**
+ * `caam_base` is a narrow metadata extension while older session readers still
+ * expose `ClaudeCodeSessionMetadata` without that field. Keep the compatibility
+ * cast local so the unrelated shared sessionManager surface need not change.
+ */
+function readStoredClaudeCodeCaamBase(metadata: SessionMetadata): string | undefined {
+  const raw = (metadata.claudeCode as StoredClaudeCodeMetadataWithCaamBase | undefined)?.caam_base;
+  if (typeof raw !== "string" || !raw.trim()) {
+    return undefined;
+  }
+  try {
+    return validateCaamBasePath(raw);
+  } catch {
+    // Preserve an invalid/tampered stored value so the identity guard compares
+    // unequal and fails closed; never silently normalize it to the child base.
+    return raw.trim();
+  }
 }
 
 /**
@@ -230,30 +261,50 @@ export function assertFollowupLaneMatchesResolvedLane({
 }
 
 /**
- * Fail-closed gate for caam-map.md's "same profile or refuse" requirement:
+ * Fail-closed gate for caam-map.md's "same identity or refuse" requirement:
  * a resumed Claude Code session must use the exact same caam shallow-spawn
- * profile (hence the same `$HOME`) as its parent, or refuse before ever
- * spawning. `undefined` is its own valid value here ("no profile" / the
- * real, unprofiled `$HOME`) — it only matches another `undefined`, never a
- * named profile.
+ * profile AND base (together selecting the same `$HOME`) as its parent, or
+ * refuse before ever spawning. `undefined` is its own valid profile value
+ * here ("no profile" / the real, unprofiled `$HOME`) — it only matches
+ * another `undefined`, never a named profile.
  */
 export function assertClaudeCodeFollowupProfileMatches({
   parentSessionId,
   parentProfile,
+  parentBase,
   childProfile,
+  childBase,
 }: {
   parentSessionId: string;
   parentProfile?: string;
+  parentBase?: string;
   childProfile?: string;
+  childBase?: string;
 }): void {
-  if ((parentProfile ?? undefined) === (childProfile ?? undefined)) {
+  const profileMatches = (parentProfile ?? undefined) === (childProfile ?? undefined);
+  const unprofiled = parentProfile === undefined && childProfile === undefined;
+  const comparableParentBase = comparableCaamBase(parentBase);
+  const comparableChildBase = comparableCaamBase(childBase);
+  const baseMatches =
+    unprofiled ||
+    (comparableParentBase !== undefined &&
+      comparableChildBase !== undefined &&
+      comparableParentBase === comparableChildBase);
+  if (profileMatches && baseMatches) {
     return;
   }
   throw new Error(
-    `--followup ${parentSessionId} ran under caam profile ${JSON.stringify(parentProfile ?? null)}; resuming a Claude Code session must use the SAME caam profile (same $HOME), but this run resolved to ${JSON.stringify(
-      childProfile ?? null,
-    )}. Set ORACLE_CLAUDE_CODE_CAAM_PROFILE to match (or leave it unset to match "no profile") and retry.`,
+    `--followup ${parentSessionId} ran under CAAM identity {profile:${JSON.stringify(parentProfile ?? null)},base:${JSON.stringify(parentBase ?? null)}}; resuming a Claude Code session must use the SAME CAAM profile AND base (same $HOME), but this run resolved to {profile:${JSON.stringify(childProfile ?? null)},base:${JSON.stringify(childBase ?? null)}}. Set ORACLE_CLAUDE_CODE_CAAM_PROFILE and ORACLE_CLAUDE_CODE_CAAM_BASE to match the parent (or leave both unset to match "no profile") and retry.`,
   );
+}
+
+function comparableCaamBase(base: string | undefined): string | undefined {
+  if (!base?.trim()) return undefined;
+  try {
+    return validateCaamBasePath(base);
+  } catch {
+    return base.trim();
+  }
 }
 
 /**
@@ -270,20 +321,28 @@ export function assertClaudeCodeFollowupProfileMatches({
 export function assertClaudeCodeFollowupProfileMatchesRun({
   parentSessionId,
   parentProfile,
+  parentBase,
   runOptions,
   env,
 }: {
   parentSessionId: string;
   parentProfile?: string;
+  parentBase?: string;
   /** The actual built options for this run (structurally: `RunOracleOptions`). */
   runOptions: {
-    claudeCode?: Pick<NonNullable<RunOracleOptions["claudeCode"]>, "caamProfile">;
+    claudeCode?: Pick<NonNullable<RunOracleOptions["claudeCode"]>, "caamProfile" | "caamBase">;
   };
   env: NodeJS.ProcessEnv;
 }): void {
+  const childProfile = resolveClaudeCodeCaamProfile(runOptions.claudeCode?.caamProfile, env);
+  const childBase = childProfile
+    ? resolveClaudeCodeCaamBase(runOptions.claudeCode?.caamBase, env).base
+    : undefined;
   assertClaudeCodeFollowupProfileMatches({
     parentSessionId,
     parentProfile,
-    childProfile: resolveClaudeCodeCaamProfile(runOptions.claudeCode?.caamProfile, env),
+    parentBase,
+    childProfile,
+    childBase,
   });
 }

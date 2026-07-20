@@ -1,11 +1,11 @@
 ---
 name: oracle
-description: Use the @steipete/oracle CLI to bundle a prompt plus the right files and get a second-model review (API or browser) for debugging, refactors, design checks, or cross-validation.
+description: Use the @steipete/oracle CLI to bundle a prompt plus the right files and get a second-model review through ChatGPT/Gemini browser lanes, local Fable xHigh, or compatibility APIs.
 ---
 
 # Oracle (CLI) — best use
 
-Oracle bundles your prompt + selected files into one “one-shot” request so another model can answer with real repo context (API or browser automation). Treat outputs as advisory: verify against the codebase + tests.
+Oracle bundles your prompt + selected files into one “one-shot” request so another model can answer with real repo context (browser automation, local Claude Code, or a compatibility API). Treat outputs as advisory: verify against the codebase + tests.
 
 ## Main use case (browser, GPT‑5.5 Pro)
 
@@ -38,6 +38,13 @@ Recommended defaults:
 
 - Browser run (main path; long-running is normal):
   - `npx -y @steipete/oracle --engine browser --model gpt-5.5-pro -p "<task>" --file "src/**"`
+
+- Fable xHigh through a specific Claude subscription (local-only):
+  - Preflight, no paid prompt: `oracle doctor fable --json`
+  - Run: `oracle --lane fable-local --caam-profile my-profile --caam-base "$HOME/orch-homes" -p "<task>" --file "src/**"` (replace `my-profile` with the intended CAAM profile).
+  - Omit the two CAAM flags only when the current logged-in local `claude` account is intentional.
+  - Fable effort is fixed at `xhigh`. If an explicit CAAM profile/base cannot be verified or launched, Oracle fails closed and never falls back to another account.
+  - Automatic CAAM account rotation defaults to zero. Keep `ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS=0` for strict subscription pinning; a positive override is an explicit opt-out that `doctor fable` reports as degraded.
 
 - Manual paste fallback (assemble bundle, copy to clipboard):
   - `npx -y @steipete/oracle --render --copy -p "<task>" --file "src/**"`
@@ -72,6 +79,7 @@ Recommended defaults:
 
 - Auto-pick: uses `api` when `OPENAI_API_KEY` is set, otherwise `browser`.
 - Browser engine supports GPT + Gemini only; use `--engine api` for Claude/Grok/Codex or multi-model runs.
+- The reviewed Fable lane is different from Anthropic API mode: `--lane fable-local` uses the local Claude Code subscription CLI, stays local-only, and automatically enforces `xhigh` effort.
 - `--copy-profile <chrome-user-data-dir>`: reuse your **already signed-in** Chrome session with no manual login — copies the profile to a throwaway dir, launches with the real Keychain so its cookies decrypt, runs, then always deletes the copy. Failed/incomplete runs are deleted too, so they cannot be kept, reattached, or sent to an existing/remote browser. e.g. `oracle --engine browser --copy-profile "$HOME/Library/Application Support/Google/Chrome" -p "<task>"`. macOS/Linux; needs `rsync`.
 - **API runs require explicit user consent** before starting because they incur usage costs.
 - Browser attachments:

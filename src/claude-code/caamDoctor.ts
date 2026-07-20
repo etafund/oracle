@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { validateCaamBasePath } from "./caamCommand.js";
 
 /**
  * Read-only pre-flight health check (caam-map.md §4c): before ever spawning
@@ -31,13 +32,11 @@ import { execFile } from "node:child_process";
  *     `CaamShallowProfileDoctorError`.
  *
  * That error type is the entire contract with the caller: this function
- * only ever *resolves* when the profile has been positively verified
- * healthy. Every other outcome throws, and `tryActivateCaamShallowSpawn`
- * (sessionRunner.ts) already treats any thrown error here as "skip the caam
- * integration, fall back to direct `claude`" — never a hard user-facing
- * failure. Degrading gracefully here (rather than hard-failing on CLI
- * drift) just means that fallback stays a quiet, expected path instead of a
- * surprise.
+ * only ever *resolves* when the explicitly selected profile has been
+ * positively verified healthy. Every other outcome throws, and
+ * `activateCaamShallowSpawn` (sessionRunner.ts) surfaces that as a hard
+ * route failure. It must never fall back to direct `claude`, because doing
+ * so could silently use a different subscription account.
  */
 
 export interface CaamShallowProfileDoctorOptions {
@@ -181,16 +180,19 @@ function isEnvAssignmentOutput(stdout: string): boolean {
 export async function runCaamShallowProfileDoctor(
   caamExecutablePath: string,
   profile: string,
+  base: string,
   options: CaamShallowProfileDoctorOptions = {},
 ): Promise<CaamShallowProfileDoctorResult> {
   const exec = options.execFileImpl ?? execFile;
   const env = options.env ?? process.env;
   const timeout = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const validatedBase = validateCaamBasePath(base);
+  const printEnvArgs = ["shallow-spawn", profile, "--base", validatedBase, "--print-env"];
 
   const jsonOutcome = await execCaam(
     exec,
     caamExecutablePath,
-    ["shallow-spawn", profile, "--print-env", "--json"],
+    [...printEnvArgs, "--json"],
     env,
     timeout,
   );
@@ -238,13 +240,7 @@ export async function runCaamShallowProfileDoctor(
   // build with `shallow-spawn` supports: exit 0 with env-assignment lines
   // on stdout for a healthy profile, non-zero with nothing on stdout
   // otherwise.
-  const plainOutcome = await execCaam(
-    exec,
-    caamExecutablePath,
-    ["shallow-spawn", profile, "--print-env"],
-    env,
-    timeout,
-  );
+  const plainOutcome = await execCaam(exec, caamExecutablePath, printEnvArgs, env, timeout);
 
   if (plainOutcome.code === 0 && plainOutcome.stdout.trim().length > 0) {
     if (isEnvAssignmentOutput(plainOutcome.stdout)) {

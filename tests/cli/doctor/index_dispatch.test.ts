@@ -61,13 +61,16 @@ describe("registerDoctorCommand — top-level dispatch", () => {
     expect(doctor?.description()).toMatch(/preflight/i);
   });
 
-  test("registers `doctor chatgpt` and `doctor gemini` as subcommands of doctor", () => {
+  test("registers provider and Fable doctor subcommands", () => {
     const program = new Command();
     registerDoctorCommand(program);
     const doctor = program.commands.find((c) => c.name() === "doctor")!;
     const subNames = doctor.commands.map((c) => c.name());
     expect(subNames).toContain("chatgpt");
+    expect(subNames).toContain("fable");
     expect(subNames).toContain("gemini");
+    const fable = doctor.commands.find((command) => command.name() === "fable");
+    expect(fable?.aliases()).toContain("fable-local");
   });
 
   test("invoking `doctor` (no sub) routes to the aggregate runner", async () => {

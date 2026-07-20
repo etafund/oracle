@@ -6,6 +6,7 @@ import {
   type AggregateDoctorOptions,
 } from "./aggregate.js";
 import { registerChatGptDoctorCommand, type ChatGptDoctorOptions } from "./chatgpt.js";
+import { registerFableDoctorCommand, type FableDoctorOptions } from "./fable.js";
 import { registerGeminiDoctorCommand, type GeminiDoctorOptions } from "./gemini.js";
 import { runCaamDoctorCheck } from "./caam.js";
 import {
@@ -23,6 +24,7 @@ import type { ClaudeCodeSingleFlightLockPeek } from "../../sessionRunner.js";
 export interface DoctorCommandDeps {
   aggregate?: Partial<AggregateDoctorOptions>;
   chatgpt?: Partial<ChatGptDoctorOptions>;
+  fable?: Partial<FableDoctorOptions>;
   gemini?: Partial<GeminiDoctorOptions>;
 }
 
@@ -188,6 +190,7 @@ export function registerDoctorCommand(program: Command, deps: DoctorCommandDeps 
     });
 
   registerChatGptDoctorCommand(doctorCommand, deps.chatgpt);
+  registerFableDoctorCommand(doctorCommand, deps.fable);
   registerGeminiDoctorCommand(doctorCommand, deps.gemini);
   return doctorCommand;
 }
