@@ -206,7 +206,7 @@ See [Browser Mode](browser-mode.md) for usage.
 | `ORACLE_CLAUDE_CODE_CAAM_BASE`                | Environment alternative to `--caam-base`; must be an absolute shallow-profile base path.                                                                                                 |
 | `CAAM_SHALLOW_HOMES_DIR`                      | Native CAAM fallback for the shallow-profile base when Oracle's flag/env override is absent.                                                                                             |
 | `ORACLE_CAAM_EXECUTABLE`                      | Absolute executable override when `caam` is not resolved from the trusted `PATH`.                                                                                                        |
-| `ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS` | Maximum automatic CAAM account rotations after a rate limit. Defaults to `0`; any positive value explicitly opts out of strict account pinning and makes `doctor fable` report degraded. |
+| `ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS` | Legacy rotation limit for non-reviewed Claude Code integrations. `fable-local` clamps it to `0`; inherited or configured positive values cannot alter the selected subscription account. |
 
 ## See also
 

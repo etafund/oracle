@@ -425,7 +425,9 @@ export async function extractDeepResearchResult(
   };
 
   // Try the copy-button approach first for clean markdown
-  const markdown = await captureAssistantMarkdown(Runtime, meta, logger);
+  const markdown = await captureAssistantMarkdown(Runtime, meta, logger, {
+    requireSourceIdentity: true,
+  });
   if (markdown && !isDeepResearchIncompleteText(markdown)) {
     return { text: markdown, html: snapshot?.html ?? undefined, meta };
   }

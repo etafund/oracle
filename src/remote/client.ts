@@ -18,6 +18,8 @@ import {
 } from "../browser/artifacts.js";
 import {
   MAX_REMOTE_ARTIFACT_BYTES,
+  REMOTE_SESSION_RECOVERY_STAGES,
+  type RemoteBrowserRecoveryRequest,
   type RemoteArtifactDescriptor,
   type RemoteRunPayload,
   type RemoteRunEvent,
@@ -26,7 +28,16 @@ import {
 import { parseHostPort } from "../bridge/connection.js";
 import { computePromptSha256 } from "../browser/actions/captureBinding.js";
 import { isGpt56SolModelLabel } from "../browser/actions/thinkingTime.js";
-import { serializeRemoteRunPayloadForWire } from "./payload_sanitize.js";
+import {
+  serializeRemoteBrowserRecoveryRequestForWire,
+  serializeRemoteRunPayloadForWire,
+} from "./payload_sanitize.js";
+import { sanitizeRemoteRunRecoveryHint } from "./recovery.js";
+import { BrowserAutomationError } from "../oracle/errors.js";
+import { extractConversationIdFromUrl } from "../browser/conversationIdentity.js";
+import type { BrowserRemoteRunProvenance } from "../sessionManager.js";
+
+const EXECUTABLE_RECOVERY_STAGE_SET: ReadonlySet<string> = new Set(REMOTE_SESSION_RECOVERY_STAGES);
 
 interface RemoteExecutorOptions {
   host: string;
@@ -142,6 +153,144 @@ class ArtifactDownloadTimeoutError extends Error {
  */
 const SUBMIT_CONFIRMATION_LOG_PATTERN = /submitted prompt|prompt submitted|clicked send button/i;
 
+interface RemoteRouteIdentity {
+  runId: string | null;
+  accountId: string | null;
+  laneId: string | null;
+}
+
+export interface RemoteBrowserRecoveryCarrier {
+  recovery: RemoteBrowserRecoveryRequest["recovery"];
+  accountId: string;
+  laneId: string | null;
+  /** Exact capability-bound submitted composer prefix; never render/log. */
+  promptPreview: string;
+}
+
+/** Nonsecret proof that a remote account accepted a run which did not finish. */
+export interface RemoteBrowserFailedRoute {
+  runId: string;
+  accountId: string;
+  laneId: string | null;
+  terminalDoneOk: false;
+  provenance: null;
+}
+
+const remoteRecoveryByError = new WeakMap<Error, RemoteBrowserRecoveryCarrier>();
+const remoteFailedRouteByError = new WeakMap<Error, RemoteBrowserFailedRoute>();
+
+function walkErrorCauses<T>(error: unknown, read: (candidate: Error) => T | null): T | null {
+  const seen = new Set<Error>();
+  let current = error;
+  for (let depth = 0; depth < 8 && current instanceof Error && !seen.has(current); depth += 1) {
+    seen.add(current);
+    const value = read(current);
+    if (value) return value;
+    current = (current as Error & { cause?: unknown }).cause;
+  }
+  return null;
+}
+
+/** Capability-bearing recovery state is intentionally non-enumerable. */
+export function getRemoteBrowserRecoveryFromError(
+  error: unknown,
+): RemoteBrowserRecoveryCarrier | null {
+  return walkErrorCauses(error, (candidate) => remoteRecoveryByError.get(candidate) ?? null);
+}
+
+/**
+ * Return only compact, nonsecret route evidence. This deliberately follows
+ * Error.cause so a fail-closed submitted-session wrapper cannot erase the
+ * originating account marker.
+ */
+export function getRemoteBrowserFailedRouteFromError(
+  error: unknown,
+): RemoteBrowserFailedRoute | null {
+  return walkErrorCauses(error, (candidate) => remoteFailedRouteByError.get(candidate) ?? null);
+}
+
+function failedRouteFromIdentity(
+  route: RemoteRouteIdentity | null,
+): RemoteBrowserFailedRoute | null {
+  if (!route?.runId || !route.accountId) return null;
+  return {
+    runId: route.runId,
+    accountId: route.accountId,
+    laneId: route.laneId,
+    terminalDoneOk: false,
+    provenance: null,
+  };
+}
+
+function sanitizeRecoveryProvenance(value: unknown): BrowserRemoteRunProvenance | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  // Capture-only recovery is accepted only with the strongest structural
+  // proof: the captured assistant turn was paired to the exact submitted
+  // user-message handle on the exact target Runtime.
+  if (
+    raw.captureBindingVerified !== true ||
+    raw.captureBindingQuality !== "message-handle" ||
+    raw.challengeClean !== true
+  ) {
+    return null;
+  }
+  const nullableBoolean = (candidate: unknown): boolean | null =>
+    typeof candidate === "boolean" ? candidate : null;
+  const nullableString = (candidate: unknown): string | null =>
+    typeof candidate === "string" && candidate.length <= 512 ? candidate : null;
+  const quality = raw.captureBindingQuality;
+  return {
+    modelVerified: nullableBoolean(raw.modelVerified),
+    modelRequested: nullableString(raw.modelRequested),
+    modelResolved: nullableString(raw.modelResolved),
+    requestedModelLabel: nullableString(raw.requestedModelLabel),
+    resolvedModelLabel: nullableString(raw.resolvedModelLabel),
+    modelLabelVerified: nullableBoolean(raw.modelLabelVerified),
+    requestedMode: nullableString(raw.requestedMode),
+    resolvedModeLabel: nullableString(raw.resolvedModeLabel),
+    modeVerified: nullableBoolean(raw.modeVerified),
+    verifiedBeforePromptSubmit: nullableBoolean(raw.verifiedBeforePromptSubmit),
+    captureBindingVerified: true,
+    captureBindingQuality: quality,
+    challengeClean: true,
+  };
+}
+
+/**
+ * Read the neutral route labels stamped by `oracle serve` and preserved by the
+ * router. Treat them as untrusted HTTP input: accept only the same compact
+ * token alphabet as the worker and ignore duplicate/combined values.
+ */
+function readRemoteRouteIdentity(headers: http.IncomingHttpHeaders): RemoteRouteIdentity {
+  const read = (name: string, maxLength: number): string | null => {
+    const raw = headers[name];
+    if (typeof raw !== "string" || raw.length > maxLength) return null;
+    return /^[A-Za-z0-9._-]+$/.test(raw) ? raw : null;
+  };
+  return {
+    runId: read("x-oracle-run-id", 128),
+    accountId: read("x-oracle-account-id", 64),
+    laneId: read("x-oracle-lane-id", 64),
+  };
+}
+
+function resolveRecoveryPromptPreview(
+  options: BrowserRunOptions,
+  recovery: RemoteBrowserRecoveryRequest["recovery"],
+): string | null {
+  const candidates = [
+    options.prompt,
+    options.fallbackSubmission?.prompt,
+    ...(options.followUpPrompts ?? []),
+  ].filter((value): value is string => typeof value === "string");
+  for (const candidate of candidates) {
+    const preview = candidate.slice(0, 160);
+    if (computePromptSha256(preview) === recovery.promptPreviewSha256) return preview;
+  }
+  return null;
+}
+
 export function createRemoteBrowserExecutor({
   host,
   token,
@@ -247,6 +396,7 @@ export function createRemoteBrowserExecutor({
       // (see SUBMIT_CONFIRMATION_LOG_PATTERN): decides the typed transport
       // class (before/after submit) for a caller-gone abort.
       let submitObserved = false;
+      let acceptedRouteIdentity: RemoteRouteIdentity | null = null;
       // Live 200 response, if the stream has started — destroyed alongside
       // the request on caller-gone abort. Registered abort-listener removal
       // runs whenever the run settles (success or failure).
@@ -275,6 +425,12 @@ export function createRemoteBrowserExecutor({
 
       const fail = (error: Error) => {
         if (settled) return;
+        // A fully identified accepted 200 route is enough to fail closed: a
+        // proxy cut can hide the submit-confirmation line even though the
+        // account already received the prompt. Persist nonsecret ownership
+        // whenever that accepted route later fails, even without a capability.
+        const failedRoute = failedRouteFromIdentity(acceptedRouteIdentity);
+        if (failedRoute) remoteFailedRouteByError.set(error, failedRoute);
         settled = true;
         cleanup();
         reject(error);
@@ -302,7 +458,7 @@ export function createRemoteBrowserExecutor({
             req.setTimeout(0);
           }
           if (res.statusCode !== 200) {
-            collectRefusal(res)
+            collectRefusal(res, { inactivityTimeoutMs: streamIdleTimeoutMs })
               .then((refusal) =>
                 fail(
                   new RemoteRunFailedError(refusal.message, {
@@ -313,6 +469,14 @@ export function createRemoteBrowserExecutor({
               )
               .catch(fail);
             return;
+          }
+          const routeIdentity = readRemoteRouteIdentity(res.headers);
+          acceptedRouteIdentity = routeIdentity;
+          if (routeIdentity.runId || routeIdentity.accountId || routeIdentity.laneId) {
+            log(
+              `[remote] Accepted run route: run=${routeIdentity.runId ?? "unknown"} ` +
+                `account=${routeIdentity.accountId ?? "unknown"} lane=${routeIdentity.laneId ?? "unknown"}.`,
+            );
           }
           res.setEncoding("utf8");
           // Incremental NDJSON splitter (perf-io-remote#0): accumulate the
@@ -352,6 +516,7 @@ export function createRemoteBrowserExecutor({
               port,
               token,
               artifactInactivityTimeoutMs: streamIdleTimeoutMs,
+              routeIdentity,
               onResult: (result) => {
                 resolved = result;
               },
@@ -604,6 +769,391 @@ async function serializeAttachments(
   return serialized;
 }
 
+export interface RecoverRemoteBrowserSessionOptions extends RemoteExecutorOptions {
+  accountId: string;
+  request: RemoteBrowserRecoveryRequest;
+  log?: BrowserRunOptions["log"];
+  signal?: AbortSignal;
+}
+
+/**
+ * Dispatch a capture-only recovery to the account that minted its capability.
+ * This parser deliberately accepts only log + one terminal done event: a
+ * recovery cannot submit, stage attachments, or transfer artifacts.
+ */
+export function recoverRemoteBrowserSession({
+  host,
+  token,
+  accountId,
+  request,
+  log,
+  signal,
+  requestFn = http.request,
+  streamIdleTimeoutMs = resolveDefaultStreamIdleTimeoutMs(),
+  maxLineBytes = MAX_NDJSON_LINE_BYTES,
+}: RecoverRemoteBrowserSessionOptions): Promise<BrowserRunResult> {
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(accountId)) {
+    return Promise.reject(new Error("Invalid remote recovery account id."));
+  }
+  const body = Buffer.from(serializeRemoteBrowserRecoveryRequestForWire(request));
+  const { hostname, port } = parseHost(host);
+  return new Promise<BrowserRunResult>((resolve, reject) => {
+    let settled = false;
+    let doneResult: BrowserRunResult | null = null;
+    let doneObserved = false;
+    let routeIdentity: RemoteRouteIdentity | null = null;
+    let activeRes: http.IncomingMessage | null = null;
+    let requestHandle: http.ClientRequest | null = null;
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    let removeAbortListener: (() => void) | null = null;
+    let headersReceived = false;
+
+    const cleanup = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = null;
+      removeAbortListener?.();
+      removeAbortListener = null;
+    };
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      requestHandle?.destroy();
+      activeRes?.destroy();
+      reject(error);
+    };
+    const armIdle = (req: http.ClientRequest, res: http.IncomingMessage) => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        fail(
+          new RemoteRunFailedError(
+            `Remote recovery stream received no data for over ${streamIdleTimeoutMs}ms.`,
+            { errorClass: "transport_interrupted_after_submit", retryable: false },
+          ),
+        );
+        req.destroy();
+        res.destroy();
+      }, streamIdleTimeoutMs);
+    };
+
+    const req = requestFn(
+      {
+        hostname,
+        port,
+        path: "/recover",
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": body.length,
+          "X-Oracle-Recovery-Account-Id": accountId,
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
+      },
+      (res) => {
+        activeRes = res;
+        headersReceived = true;
+        req.setTimeout?.(0);
+        if (res.statusCode !== 200) {
+          collectRefusal(res, { inactivityTimeoutMs: streamIdleTimeoutMs })
+            .then((refusal) =>
+              fail(
+                new RemoteRunFailedError(refusal.message, {
+                  errorClass: refusal.errorClass,
+                  retryable: refusal.retryable,
+                }),
+              ),
+            )
+            .catch(fail);
+          return;
+        }
+        const contentType = res.headers["content-type"];
+        if (
+          typeof contentType !== "string" ||
+          !/^application\/x-ndjson(?:\s*;|$)/i.test(contentType)
+        ) {
+          fail(
+            new RemoteRunFailedError(
+              "Remote recovery response had an invalid content type; expected application/x-ndjson.",
+              { errorClass: "integrity_ui_unknown", retryable: false },
+            ),
+          );
+          return;
+        }
+        routeIdentity = readRemoteRouteIdentity(res.headers);
+        if (
+          !routeIdentity.runId ||
+          !routeIdentity.accountId ||
+          !routeIdentity.laneId ||
+          routeIdentity.accountId !== accountId
+        ) {
+          fail(
+            new RemoteRunFailedError(
+              "Remote recovery response did not match the requested authenticated account/run route.",
+              { errorClass: "integrity_ui_unknown", retryable: false },
+            ),
+          );
+          res.destroy();
+          return;
+        }
+        log?.(
+          `[remote] Accepted recovery route: run=${routeIdentity.runId} account=${routeIdentity.accountId} lane=${routeIdentity.laneId ?? "unknown"}.`,
+        );
+        res.setEncoding("utf8");
+        let pending = "";
+        const processLine = (line: string) => {
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(line) as unknown;
+          } catch (error) {
+            fail(
+              new Error(
+                `Failed to parse remote recovery event: ${error instanceof Error ? error.message : String(error)}`,
+              ),
+            );
+            return;
+          }
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            fail(
+              new RemoteRunFailedError("Remote recovery event was not an object.", {
+                errorClass: "integrity_ui_unknown",
+                retryable: false,
+              }),
+            );
+            return;
+          }
+          const event = parsed as Record<string, unknown>;
+          const eventType = typeof event.type === "string" ? event.type : null;
+          const eventRunId = typeof event.runId === "string" ? event.runId : null;
+          if (
+            !eventType ||
+            eventType.length > 32 ||
+            !eventRunId ||
+            eventRunId.length > 128 ||
+            !routeIdentity ||
+            eventRunId !== routeIdentity.runId
+          ) {
+            fail(
+              new RemoteRunFailedError(
+                "Remote recovery event run id did not match its authenticated response header.",
+                { errorClass: "integrity_ui_unknown", retryable: false },
+              ),
+            );
+            return;
+          }
+          if (doneObserved) {
+            fail(
+              new RemoteRunFailedError(
+                "Remote recovery emitted data after its terminal done event.",
+                { errorClass: "integrity_ui_unknown", retryable: false },
+              ),
+            );
+            return;
+          }
+          if (eventType === "log") {
+            if (typeof event.message !== "string" || event.message.length > 64 * 1024) {
+              fail(
+                new RemoteRunFailedError("Remote recovery log event was malformed.", {
+                  errorClass: "integrity_ui_unknown",
+                  retryable: false,
+                }),
+              );
+              return;
+            }
+            log?.(event.message);
+            return;
+          }
+          if (eventType !== "done") {
+            fail(
+              new RemoteRunFailedError(
+                `Remote recovery emitted forbidden event type ${eventType}.`,
+                { errorClass: "integrity_ui_unknown", retryable: false },
+              ),
+            );
+            return;
+          }
+          doneObserved = true;
+          if (event.ok !== true) {
+            fail(
+              new RemoteRunFailedError(
+                typeof event.errorMessage === "string"
+                  ? event.errorMessage.slice(0, 4_096)
+                  : "Remote browser recovery failed.",
+                {
+                  errorClass: typeof event.errorClass === "string" ? event.errorClass : null,
+                  retryable: event.retryable === true,
+                },
+              ),
+            );
+            return;
+          }
+          if (!event.result || typeof event.result !== "object" || Array.isArray(event.result)) {
+            fail(
+              new RemoteRunFailedError("Remote recovery success carried no valid result object.", {
+                errorClass: "integrity_ui_unknown",
+                retryable: false,
+              }),
+            );
+            return;
+          }
+          const recoveryProvenance = sanitizeRecoveryProvenance(event.provenance);
+          if (!recoveryProvenance) {
+            fail(
+              new RemoteRunFailedError(
+                "Remote recovery success lacked full message-handle capture-binding proof.",
+                { errorClass: "integrity_ui_unknown", retryable: false },
+              ),
+            );
+            return;
+          }
+          const rawResult = event.result as Record<string, unknown>;
+          const expectedConversationId = request.recovery.runtime.conversationId;
+          const resultConversationId =
+            typeof rawResult.conversationId === "string" ? rawResult.conversationId : null;
+          const resultTabUrl = typeof rawResult.tabUrl === "string" ? rawResult.tabUrl : null;
+          if (
+            resultConversationId !== expectedConversationId ||
+            !resultTabUrl ||
+            extractConversationIdFromUrl(resultTabUrl) !== expectedConversationId ||
+            rawResult.promptSubmitted !== true
+          ) {
+            fail(
+              new RemoteRunFailedError(
+                "Remote recovery result conversation did not match the signed request.",
+                { errorClass: "integrity_ui_unknown", retryable: false },
+              ),
+            );
+            return;
+          }
+          const answerText = rawResult.answerText;
+          const answerMarkdown = rawResult.answerMarkdown;
+          const answerHtml = rawResult.answerHtml;
+          const tookMs = rawResult.tookMs;
+          const answerTokens = rawResult.answerTokens;
+          const answerChars = rawResult.answerChars;
+          if (
+            typeof answerText !== "string" ||
+            typeof answerMarkdown !== "string" ||
+            (answerHtml !== undefined && typeof answerHtml !== "string") ||
+            typeof tookMs !== "number" ||
+            !Number.isFinite(tookMs) ||
+            tookMs < 0 ||
+            typeof answerTokens !== "number" ||
+            !Number.isFinite(answerTokens) ||
+            answerTokens < 0 ||
+            typeof answerChars !== "number" ||
+            !Number.isFinite(answerChars) ||
+            answerChars < 0
+          ) {
+            fail(
+              new RemoteRunFailedError("Remote recovery result fields were malformed.", {
+                errorClass: "integrity_ui_unknown",
+                retryable: false,
+              }),
+            );
+            return;
+          }
+          doneResult = {
+            answerText,
+            answerMarkdown,
+            ...(typeof answerHtml === "string" ? { answerHtml } : {}),
+            tookMs,
+            answerTokens,
+            answerChars,
+            browserTransport: "cdp",
+            tabUrl: request.recovery.runtime.tabUrl,
+            conversationId: expectedConversationId,
+            promptSubmitted: true,
+            remoteRun: {
+              runId: routeIdentity.runId,
+              accountId: routeIdentity.accountId,
+              laneId: routeIdentity.laneId,
+              terminalDoneOk: true,
+              provenance: recoveryProvenance,
+            },
+          };
+        };
+        armIdle(req, res);
+        res.on("data", (chunk: string) => {
+          armIdle(req, res);
+          pending += chunk;
+          if (Buffer.byteLength(pending, "utf8") > maxLineBytes) {
+            fail(
+              new RemoteRunFailedError(
+                `Remote recovery stream line exceeded the ${maxLineBytes}-byte cap.`,
+                { errorClass: "transport_interrupted_after_submit", retryable: false },
+              ),
+            );
+            req.destroy();
+            res.destroy();
+            return;
+          }
+          let newline = pending.indexOf("\n");
+          while (newline >= 0 && !settled) {
+            const line = pending.slice(0, newline).trim();
+            pending = pending.slice(newline + 1);
+            if (line) processLine(line);
+            newline = pending.indexOf("\n");
+          }
+        });
+        res.on("end", () => {
+          if (idleTimer) clearTimeout(idleTimer);
+          idleTimer = null;
+          const tail = pending.trim();
+          pending = "";
+          if (tail && !settled) processLine(tail);
+          if (settled) return;
+          if (!doneObserved || !doneResult) {
+            fail(
+              new RemoteRunFailedError(
+                "Remote recovery stream ended without a valid terminal done event.",
+                { errorClass: "transport_interrupted_after_submit", retryable: false },
+              ),
+            );
+            return;
+          }
+          settled = true;
+          cleanup();
+          resolve(doneResult);
+        });
+        res.on("error", fail);
+      },
+    );
+    requestHandle = req;
+    req.on("error", fail);
+    req.setTimeout?.(streamIdleTimeoutMs, () => {
+      if (settled || headersReceived) return;
+      fail(
+        new RemoteRunFailedError(
+          `Remote recovery worker sent no response headers within ${streamIdleTimeoutMs}ms.`,
+          { errorClass: "transport_interrupted_before_submit", retryable: true },
+        ),
+      );
+      req.destroy();
+    });
+    if (signal) {
+      const onAbort = () => {
+        fail(
+          new RemoteRunFailedError("Remote browser recovery cancelled by caller.", {
+            errorClass: "transport_interrupted_after_submit",
+            retryable: false,
+          }),
+        );
+        req.destroy();
+        activeRes?.destroy();
+      };
+      if (signal.aborted) onAbort();
+      else {
+        signal.addEventListener("abort", onAbort, { once: true });
+        removeAbortListener = () => signal.removeEventListener("abort", onAbort);
+      }
+    }
+    if (!settled) {
+      req.write(body);
+      req.end();
+    }
+  });
+}
+
 function parseHost(input: string): { hostname: string; port: number } {
   try {
     return parseHostPort(input);
@@ -621,6 +1171,7 @@ function handleEvent(params: {
   port: number;
   token?: string;
   artifactInactivityTimeoutMs: number;
+  routeIdentity: RemoteRouteIdentity;
   onResult: (result: BrowserRunResult) => void;
   onDone: () => void;
   onSubmitObserved: () => void;
@@ -726,7 +1277,9 @@ function handleEvent(params: {
       params.onResult({
         ...event.result,
         remoteRun: {
-          runId: event.runId ?? null,
+          runId: event.runId ?? params.routeIdentity.runId,
+          accountId: params.routeIdentity.accountId,
+          laneId: params.routeIdentity.laneId,
           terminalDoneOk: true,
           provenance: event.provenance ?? null,
         },
@@ -743,12 +1296,71 @@ function handleEvent(params: {
       );
       return null;
     }
-    params.onError(
-      new RemoteRunFailedError(
-        event.errorMessage ?? `Remote run failed (${event.errorClass ?? "unclassified"})`,
-        { errorClass: event.errorClass ?? null, retryable: event.retryable ?? false },
-      ),
-    );
+    const message =
+      event.errorMessage ?? `Remote run failed (${event.errorClass ?? "unclassified"})`;
+    const remoteFailure = new RemoteRunFailedError(message, {
+      errorClass: event.errorClass ?? null,
+      retryable: event.retryable ?? false,
+    });
+    const recovery = sanitizeRemoteRunRecoveryHint(event.recovery);
+    if (recovery && EXECUTABLE_RECOVERY_STAGE_SET.has(recovery.stage)) {
+      if (
+        !event.runId ||
+        !params.routeIdentity.runId ||
+        event.runId !== params.routeIdentity.runId ||
+        recovery.originRunId !== event.runId ||
+        !params.routeIdentity.accountId
+      ) {
+        params.onError(
+          new RemoteRunFailedError(
+            "Remote recovery evidence did not match the authenticated run/account route; refusing to persist it.",
+            { errorClass: "integrity_ui_unknown", retryable: false },
+          ),
+        );
+        return null;
+      }
+      const recoveryError = new BrowserAutomationError(
+        message,
+        {
+          stage: recovery.stage,
+          runtime: recovery.runtime,
+          errorClass: event.errorClass ?? null,
+          retryable: event.retryable ?? false,
+          remoteRun: {
+            runId: event.runId ?? params.routeIdentity.runId,
+            accountId: params.routeIdentity.accountId,
+            laneId: params.routeIdentity.laneId,
+            terminalDoneOk: false,
+            provenance: null,
+          },
+        },
+        remoteFailure,
+      ) as BrowserAutomationError & {
+        errorClass: string | null;
+        retryable: boolean | null;
+      };
+      // Preserve the direct typed-failure fields for callers that branch on
+      // errorClass/retryable without inspecting OracleUserError.details.
+      recoveryError.errorClass = remoteFailure.errorClass;
+      recoveryError.retryable = remoteFailure.retryable;
+      const failedRoute = failedRouteFromIdentity(params.routeIdentity);
+      if (failedRoute) remoteFailedRouteByError.set(recoveryError, failedRoute);
+      const executableRecovery = recovery as RemoteBrowserRecoveryRequest["recovery"];
+      const promptPreview = resolveRecoveryPromptPreview(params.options, executableRecovery);
+      if (promptPreview) {
+        remoteRecoveryByError.set(recoveryError, {
+          recovery: executableRecovery,
+          accountId: params.routeIdentity.accountId,
+          laneId: params.routeIdentity.laneId,
+          promptPreview,
+        });
+      }
+      params.onError(recoveryError);
+      return null;
+    }
+    const failedRoute = failedRouteFromIdentity(params.routeIdentity);
+    if (failedRoute) remoteFailedRouteByError.set(remoteFailure, failedRoute);
+    params.onError(remoteFailure);
     return null;
   }
   if (event.type === "result") {
@@ -1041,13 +1653,61 @@ function collectError(res: http.IncomingMessage): Promise<string> {
  */
 function collectRefusal(
   res: http.IncomingMessage,
+  options: { maxBytes?: number; inactivityTimeoutMs?: number } = {},
 ): Promise<{ message: string; errorClass: string | null; retryable: boolean | null }> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
+    const maxBytes = Math.max(1, options.maxBytes ?? 64 * 1024);
+    const inactivityTimeoutMs = Math.max(
+      1,
+      options.inactivityTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+    );
+    let totalBytes = 0;
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+    };
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+      res.destroy();
+    };
+    const arm = () => {
+      cleanup();
+      timer = setTimeout(() => {
+        fail(
+          new RemoteRunFailedError(
+            `Remote refusal body received no data for over ${inactivityTimeoutMs}ms.`,
+            { errorClass: "transport_interrupted_before_submit", retryable: true },
+          ),
+        );
+      }, inactivityTimeoutMs);
+    };
+    arm();
     res.on("data", (chunk: Buffer | string) => {
-      chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+      if (settled) return;
+      arm();
+      const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+      totalBytes += bytes.length;
+      if (totalBytes > maxBytes) {
+        fail(
+          new RemoteRunFailedError(`Remote refusal body exceeded the ${maxBytes}-byte limit.`, {
+            errorClass: "integrity_ui_unknown",
+            retryable: false,
+          }),
+        );
+        return;
+      }
+      chunks.push(bytes);
     });
     res.on("end", () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
       const raw = Buffer.concat(chunks).toString("utf8");
       const fallback = `Remote host responded with status ${res.statusCode}`;
       try {
@@ -1070,6 +1730,11 @@ function collectRefusal(
         resolve({ message: raw || fallback, errorClass: null, retryable: null });
       }
     });
-    res.on("error", reject);
+    res.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    });
   });
 }

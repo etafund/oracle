@@ -224,6 +224,42 @@ describe("browser follow-up sessions", () => {
     });
   });
 
+  test.each([
+    ["successful", true],
+    ["failed", false],
+  ])(
+    "rejects a %s remote parent before creating or launching a child",
+    async (_label, terminalDoneOk) => {
+      await withOracleHome(async () => {
+        const parent = await createBrowserParent();
+        await sessionStore.updateSession(parent.id, (current) => ({
+          browser: {
+            ...current.browser,
+            remoteRun: {
+              runId: "remote-parent-run",
+              accountId: "acct1",
+              laneId: "acct1-9473",
+              terminalDoneOk,
+              provenance: null,
+            },
+          },
+        }));
+        const launchDetachedSessionRunner = vi.fn(async () => true);
+        const launchDetachedSessionFinalizer = vi.fn(async () => true);
+
+        await expect(
+          startBrowserFollowUpSession(
+            parent.id,
+            { prompt: "unsafe local follow-up", cliEntrypoint: "/tmp/oracle-cli.js" },
+            { launchDetachedSessionRunner, launchDetachedSessionFinalizer },
+          ),
+        ).rejects.toThrow(/remote browser account.*unpinned follow-up/i);
+        expect(launchDetachedSessionRunner).not.toHaveBeenCalled();
+        expect(launchDetachedSessionFinalizer).not.toHaveBeenCalled();
+      });
+    },
+  );
+
   test("does not mutate the parent session metadata", async () => {
     await withOracleHome(async () => {
       const parent = await createBrowserParent(true);

@@ -9,6 +9,7 @@ import { delay } from "../utils.js";
 import { logDomFailure } from "../domDebug.js";
 import { assertFreshCaptureTarget } from "./captureBinding.js";
 import { BrowserAutomationError } from "../../oracle/errors.js";
+import { extractConversationIdFromUrl } from "../conversationIdentity.js";
 
 export function installJavaScriptDialogAutoDismissal(
   Page: ChromeClient["Page"],
@@ -446,12 +447,7 @@ export interface ResumedConversationHydrationDeps {
 }
 
 function conversationIdFromUrl(value: string | undefined): string | null {
-  if (!value) return null;
-  try {
-    return new URL(value).pathname.match(/(?:^|\/)c\/([^/]+)/)?.[1] ?? null;
-  } catch {
-    return null;
-  }
+  return extractConversationIdFromUrl(value ?? "") ?? null;
 }
 
 /**

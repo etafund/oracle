@@ -319,6 +319,9 @@ describe("ChatGPT Pro-specific recovery", () => {
     expect(normalizeConversationUrlHint("https://chatgpt.com/c/abc-123-xyz")).toBe(
       "https://chatgpt.com/c/abc-123-xyz",
     );
+    expect(normalizeConversationUrlHint("https://chat.openai.com/c/abc_123_xyz")).toBe(
+      "https://chat.openai.com/c/abc_123_xyz",
+    );
   });
 
   test("normalizeConversationUrlHint rejects non-conversation strings", () => {
@@ -326,6 +329,15 @@ describe("ChatGPT Pro-specific recovery", () => {
     expect(normalizeConversationUrlHint("")).toBeNull();
     expect(normalizeConversationUrlHint(undefined)).toBeNull();
     expect(normalizeConversationUrlHint("/profile")).toBeNull();
+  });
+
+  test("normalizeConversationUrlHint rejects provisional and deceptive conversation URLs", () => {
+    expect(normalizeConversationUrlHint("/c/WEB")).toBeNull();
+    expect(normalizeConversationUrlHint("/c/WEB:fee7a622-991a-497a-bac4-a878b86f82f3")).toBeNull();
+    expect(normalizeConversationUrlHint("https://example.com/c/abc-123-xyz")).toBeNull();
+    expect(normalizeConversationUrlHint("https://chatgpt.com.evil.test/c/abc-123-xyz")).toBeNull();
+    expect(normalizeConversationUrlHint("https://chatgpt.com/?next=/c/abc-123-xyz")).toBeNull();
+    expect(normalizeConversationUrlHint("https://chatgpt.com/c/abc-123-xyz/foreign")).toBeNull();
   });
 
   test("snapshotChatgptProRun rejects non-ChatGPT-Pro slots", () => {

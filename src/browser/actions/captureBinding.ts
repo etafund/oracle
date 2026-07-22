@@ -28,6 +28,12 @@ import type { BrowserLogger, ChromeClient } from "../types.js";
 import { CONVERSATION_TURN_SELECTOR } from "../constants.js";
 import { delay } from "../utils.js";
 import { BrowserAutomationError } from "../../oracle/errors.js";
+import {
+  buildConversationIdFromHrefExpression,
+  buildIsProvisionalChatGptConversationHrefExpression,
+  isConversationUrl as isStableConversationUrl,
+  normalizeChatGptConversationId,
+} from "../conversationIdentity.js";
 
 export type SubmittedMessageBindingQuality = "message-handle" | "guessed" | "conversation-only";
 
@@ -100,7 +106,7 @@ export function normalizePromptForDomMatch(value: string): string {
 }
 
 export function isConversationUrl(url: string): boolean {
-  return /\/c\/[a-zA-Z0-9-]+/.test(url);
+  return isStableConversationUrl(url);
 }
 
 const NORMALIZE_JS = `const normalize = (value) => {
@@ -133,12 +139,13 @@ const TURN_HELPERS_JS = `const isUserTurn = (node) => {
 function buildSubmittedUserMessageProbeExpression(prompt: string): string {
   const conversationLiteral = JSON.stringify(CONVERSATION_TURN_SELECTOR);
   const promptLiteral = JSON.stringify(prompt);
+  const conversationIdExpression = buildConversationIdFromHrefExpression("href");
   return `(() => {
     const CONVERSATION_SELECTOR = ${conversationLiteral};
     ${NORMALIZE_JS}
     ${TURN_HELPERS_JS}
     const href = typeof location === 'object' && location.href ? location.href : '';
-    const conversationId = href.match(/\\/c\\/([a-zA-Z0-9-]+)/)?.[1] ?? null;
+    const conversationId = ${conversationIdExpression};
     const normalizedPrompt = normalize(${promptLiteral});
     const promptPrefix = normalizedPrompt.slice(0, 120);
     const turns = Array.from(document.querySelectorAll(CONVERSATION_SELECTOR));
@@ -192,6 +199,7 @@ function buildCaptureBindingFactsExpression(
   );
   const capturedMessageIdLiteral = JSON.stringify(meta.messageId ?? null);
   const capturedTurnIdLiteral = JSON.stringify(meta.turnId ?? null);
+  const conversationIdExpression = buildConversationIdFromHrefExpression("href");
   return `(() => {
     const CONVERSATION_SELECTOR = ${conversationLiteral};
     const USER_MESSAGE_ID = ${userMessageIdLiteral};
@@ -206,7 +214,7 @@ function buildCaptureBindingFactsExpression(
         ? CSS.escape(String(value))
         : String(value).replace(/["\\\\]/g, '\\\\$&');
     const href = typeof location === 'object' && location.href ? location.href : '';
-    const conversationId = href.match(/\\/c\\/([a-zA-Z0-9-]+)/)?.[1] ?? null;
+    const conversationId = ${conversationIdExpression};
     const turns = Array.from(document.querySelectorAll(CONVERSATION_SELECTOR));
     const topLevelTurns = turns.filter(
       (turn) => !(turn.parentElement && turn.parentElement.closest(CONVERSATION_SELECTOR)),
@@ -353,7 +361,7 @@ export async function registerSubmittedUserMessage(
         }
       | undefined;
     if (value && typeof value === "object") {
-      const conversationId = typeof value.conversationId === "string" ? value.conversationId : null;
+      const conversationId = normalizeChatGptConversationId(value.conversationId) ?? null;
       if (value.found === true) {
         binding = {
           ...base,
@@ -426,6 +434,12 @@ export function evaluateCaptureBindingFacts(
       `capture target no longer shows bound conversation ${binding.conversationId}`,
     );
   }
+  if (!binding.conversationId && binding.quality !== "message-handle") {
+    return fail(
+      "capture-binding-ownership-unproven",
+      "the provisional submit had neither a durable conversation identity nor a structurally matched user message",
+    );
+  }
   const warnings: string[] = [];
   const hasCapturedIds = Boolean(meta.messageId || meta.turnId);
   if (binding.quality === "message-handle") {
@@ -482,7 +496,7 @@ function coerceFacts(value: unknown): CaptureBindingFacts | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
   return {
-    conversationId: typeof raw.conversationId === "string" ? raw.conversationId : null,
+    conversationId: normalizeChatGptConversationId(raw.conversationId) ?? null,
     userTurnFound: raw.userTurnFound === true,
     userTurnIsLatestUserTurn: raw.userTurnIsLatestUserTurn === true,
     capturedNodeFound: raw.capturedNodeFound === true,
@@ -600,14 +614,18 @@ export function buildCaptureBindingFailureError(
 
 function buildFreshCaptureTargetProbeExpression(): string {
   const conversationLiteral = JSON.stringify(CONVERSATION_TURN_SELECTOR);
+  const conversationIdExpression = buildConversationIdFromHrefExpression("href");
+  const provisionalConversationExpression =
+    buildIsProvisionalChatGptConversationHrefExpression("href");
   return `(() => {
     const CONVERSATION_SELECTOR = ${conversationLiteral};
     ${TURN_HELPERS_JS}
     const href = typeof location === 'object' && location.href ? location.href : '';
-    const conversationId = href.match(/\\/c\\/([a-zA-Z0-9-]+)/)?.[1] ?? null;
+    const conversationId = ${conversationIdExpression};
+    const provisionalConversation = ${provisionalConversationExpression};
     const turns = Array.from(document.querySelectorAll(CONVERSATION_SELECTOR));
     const assistantTurnCount = turns.filter(isAssistantTurn).length;
-    return { conversationId, assistantTurnCount };
+    return { conversationId, provisionalConversation, assistantTurnCount };
   })()`;
 }
 
@@ -645,15 +663,31 @@ export async function assertFreshCaptureTarget(
   if (!value || typeof value !== "object") {
     return;
   }
-  const facts = value as { conversationId?: string | null; assistantTurnCount?: number };
-  if (typeof facts.conversationId === "string" && facts.conversationId.length > 0) {
+  const facts = value as {
+    conversationId?: string | null;
+    provisionalConversation?: boolean;
+    assistantTurnCount?: number;
+  };
+  if (facts.provisionalConversation === true) {
     throw new BrowserAutomationError(
-      `Navigation for a fresh run landed on existing conversation /c/${facts.conversationId}. ` +
+      "Navigation for a fresh run landed on ChatGPT's provisional conversation route. " +
+        "Refusing to treat an occupied /c/WEB conversation as a blank target.",
+      {
+        stage: "navigate",
+        code: "stale-conversation-at-start",
+        provisionalConversation: true,
+      },
+    );
+  }
+  const conversationId = normalizeChatGptConversationId(facts.conversationId);
+  if (conversationId) {
+    throw new BrowserAutomationError(
+      `Navigation for a fresh run landed on existing conversation /c/${conversationId}. ` +
         "Refusing to submit into a pre-existing conversation; captured answers could belong to another run.",
       {
         stage: "navigate",
         code: "stale-conversation-at-start",
-        conversationId: facts.conversationId,
+        conversationId,
       },
     );
   }

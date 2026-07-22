@@ -98,6 +98,45 @@ describe("runDryRunSummary", () => {
     );
   });
 
+  test("reports zero Fable rotations despite inherited and configured positive values", async () => {
+    const originalRotations = process.env.ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS;
+    process.env.ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS = "9";
+    try {
+      const log = vi.fn();
+      await runDryRunSummary(
+        {
+          engine: "claude-code",
+          runOptions: {
+            prompt: "Review",
+            model: "fable",
+            lane: "fable-local",
+            file: [],
+            claudeCode: {
+              ...fableClaudeCodePolicy,
+              caamProfile: "cc-arthur",
+              caamBase: "/home/ubuntu/orch-homes",
+              maxRateLimitRotations: 3,
+            },
+          },
+          cwd: "/repo",
+          version: "1.2.3",
+          log,
+        },
+        {
+          claudeCodePreflightImpl: async () => ({ ok: true, checks: [] }),
+        },
+      );
+
+      expect(log.mock.calls.flat().join("\n")).toContain("max_rate_limit_rotations=0");
+    } finally {
+      if (originalRotations === undefined) {
+        delete process.env.ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS;
+      } else {
+        process.env.ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS = originalRotations;
+      }
+    }
+  });
+
   test("fails closed on an unsafe CAAM profile before printing a runnable dry-run plan", async () => {
     await expect(
       runDryRunSummary(

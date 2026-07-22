@@ -128,6 +128,73 @@ export interface RemoteRunProvenanceSummary {
   challengeClean: boolean | null;
 }
 
+export const REMOTE_RUN_RECOVERY_STAGES = [
+  "assistant-timeout",
+  "assistant-recheck",
+  "capture-binding",
+  "submit-prompt",
+  "connection-lost",
+  "cloudflare-challenge",
+] as const;
+
+export type RemoteRunRecoveryStage = (typeof REMOTE_RUN_RECOVERY_STAGES)[number];
+
+export const REMOTE_SESSION_RECOVERY_STAGES = [
+  "assistant-timeout",
+  "assistant-recheck",
+  "capture-binding",
+  "submit-prompt",
+  "connection-lost",
+] as const satisfies readonly RemoteRunRecoveryStage[];
+
+export type RemoteSessionRecoveryStage = (typeof REMOTE_SESSION_RECOVERY_STAGES)[number];
+
+/**
+ * Narrow, host-sanitized recovery evidence for a failed remote browser run.
+ * Worker-local CDP endpoints, process IDs, profile paths, and diagnostics are
+ * deliberately excluded. The durable ChatGPT identity preserves the recovery
+ * coordinate; the client records account/lane attribution separately from the
+ * authenticated response headers so an operator can reopen it on the account
+ * that created it.
+ */
+export interface RemoteRunRecoveryHint {
+  category: "browser-automation";
+  stage: RemoteRunRecoveryStage;
+  /** Run that crossed the prompt-submit boundary and minted this capability. */
+  originRunId: string;
+  /** Absolute expiry for the opaque recovery capability. */
+  expiresAt: string;
+  /** Opaque HMAC capability; persist for reattach but never print or log it. */
+  capability: string;
+  /** Hash of the exact submitted composer prefix; lets the client select it from known candidates. */
+  promptPreviewSha256: string;
+  runtime: {
+    tabUrl: string;
+    conversationId: string;
+    /** Recovery is offered only after the worker proved the prompt was submitted. */
+    promptSubmitted: true;
+  };
+}
+
+/**
+ * Recovery-only request sent to POST /recover. It carries no prompt body and
+ * cannot submit a new turn. The account coordinate is deliberately excluded
+ * from JSON: the authenticated routing header is independently verified by
+ * the destination worker before any Chrome/CDP operation.
+ */
+export interface RemoteBrowserRecoveryRequest {
+  schema: "remote-browser-recovery.v1";
+  recovery: RemoteRunRecoveryHint & { stage: RemoteSessionRecoveryStage };
+  /** Bounded saved prompt prefix used to prove ownership before capture. */
+  promptPreview: string;
+  browserConfig: BrowserSessionConfig;
+  options: {
+    heartbeatIntervalMs?: number;
+    verbose?: boolean;
+    sessionId?: string;
+  };
+}
+
 export type RemoteRunEvent =
   // `runId` is stamped onto every event by the server so each NDJSON line of a
   // run is joinable end-to-end (client logs, server logs, forensics) even when
@@ -171,6 +238,7 @@ export type RemoteRunEvent =
       errorMessage?: string;
       retryable?: boolean | null;
       provenance?: RemoteRunProvenanceSummary;
+      recovery?: RemoteRunRecoveryHint;
       result?: BrowserRunResult;
       uploadIntegrity?: RemoteUploadIntegrity;
     }

@@ -79,6 +79,183 @@ describe("resumeBrowserSession", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
+  test("waits for an exact saved provisional target to expose its canonical route", async () => {
+    const transientUrl = "https://chatgpt.com/c/WEB:fee7a622-991a-497a-bac4-a878b86f82f3";
+    const canonicalUrl = "https://chatgpt.com/c/canonical-after-submit";
+    const runtime = {
+      chromePort: 51559,
+      chromeHost: "127.0.0.1",
+      chromeTargetId: "submitted-target",
+      tabUrl: transientUrl,
+      conversationId: "WEB",
+    };
+    const listTargets = vi.fn(
+      async () =>
+        [{ targetId: "submitted-target", type: "page", url: transientUrl }] satisfies FakeTarget[],
+    ) as unknown as () => Promise<FakeTarget[]>;
+    let hrefReads = 0;
+    const evaluate = vi.fn(async ({ expression }: { expression: string }) => {
+      if (expression === "location.href") {
+        hrefReads += 1;
+        return { result: { value: hrefReads === 1 ? transientUrl : canonicalUrl } };
+      }
+      if (expression === "1+1") return { result: { value: 2 } };
+      if (expression.includes("const needles =")) return { result: { value: true } };
+      if (expression.includes("const matched = []")) {
+        return {
+          result: { value: { matchedIndex: 0, latestUserIndex: 0, matchCount: 1 } },
+        };
+      }
+      return { result: { value: null } };
+    });
+    const connect = vi.fn(
+      async () =>
+        ({
+          Runtime: { enable: vi.fn(), evaluate },
+          DOM: { enable: vi.fn() },
+          close: vi.fn(async () => {}),
+        }) satisfies FakeClient,
+    ) as unknown as (options?: unknown) => Promise<ChromeClient>;
+    const waitForAssistantResponse = vi.fn(async () => ({
+      text: "generated answer",
+      html: "",
+      meta: { messageId: "m1", turnId: "conversation-turn-1" },
+    }));
+    const captureAssistantMarkdown = vi.fn(async () => "generated answer");
+    const logger = vi.fn() as BrowserLogger;
+
+    await expect(
+      resumeBrowserSession(runtime, { timeoutMs: 2_000 }, logger, {
+        listTargets,
+        connect,
+        waitForAssistantResponse,
+        captureAssistantMarkdown,
+        promptPreview: "saved provisional prompt",
+      }),
+    ).resolves.toMatchObject({ answerMarkdown: "generated answer" });
+
+    expect(
+      evaluate.mock.calls.some(([params]) => params.expression.includes("const preferProjects =")),
+    ).toBe(false);
+    expect(logger).toHaveBeenCalledWith(expect.stringContaining("waiting for the canonical URL"));
+    expect(waitForAssistantResponse).toHaveBeenCalledWith(
+      expect.anything(),
+      2_000,
+      logger,
+      0,
+      "canonical-after-submit",
+      undefined,
+    );
+  });
+
+  test("requires prompt proof when a provisional target becomes canonical", async () => {
+    const transientUrl = "https://chatgpt.com/c/WEB:fee7a622-991a-497a-bac4-a878b86f82f3";
+    const canonicalUrl = "https://chatgpt.com/c/unrelated-canonical";
+    const runtime = {
+      chromePort: 51559,
+      chromeHost: "127.0.0.1",
+      chromeTargetId: "submitted-target",
+      tabUrl: transientUrl,
+      conversationId: "WEB",
+    };
+    const listTargets = vi.fn(async () => [
+      { targetId: "submitted-target", type: "page", url: canonicalUrl },
+    ]);
+    const evaluate = vi.fn(async ({ expression }: { expression: string }) => {
+      if (expression === "location.href") return { result: { value: canonicalUrl } };
+      if (expression === "1+1") return { result: { value: 2 } };
+      if (expression.includes("const needles =")) return { result: { value: true } };
+      if (expression.includes("const needle =")) return { result: { value: 0 } };
+      return { result: { value: null } };
+    });
+    const connect = vi.fn(
+      async () =>
+        ({
+          Runtime: { enable: vi.fn(), evaluate },
+          DOM: { enable: vi.fn() },
+          close: vi.fn(async () => {}),
+        }) satisfies FakeClient,
+    ) as unknown as (options?: unknown) => Promise<ChromeClient>;
+    const recoverSession = vi.fn(async () => ({
+      answerText: "wrong answer",
+      answerMarkdown: "wrong answer",
+    }));
+
+    await expect(
+      resumeBrowserSession(runtime, { timeoutMs: 2_000 }, vi.fn() as BrowserLogger, {
+        listTargets,
+        connect,
+        recoverSession,
+      }),
+    ).rejects.toThrow(/no prompt preview to prove conversation ownership/i);
+    expect(recoverSession).not.toHaveBeenCalled();
+
+    const waitForAssistantResponse = vi.fn(async () => ({
+      text: "owned answer",
+      html: "",
+      meta: { messageId: "m1", turnId: "conversation-turn-1" },
+    }));
+    const captureAssistantMarkdown = vi.fn(async () => "owned answer");
+    await expect(
+      resumeBrowserSession(runtime, { timeoutMs: 2_000 }, vi.fn() as BrowserLogger, {
+        listTargets,
+        connect,
+        recoverSession,
+        promptPreview: "saved provisional prompt",
+        waitForAssistantResponse,
+        captureAssistantMarkdown,
+      }),
+    ).resolves.toMatchObject({ answerMarkdown: "owned answer" });
+  });
+
+  test("fails closed when a provisional route no longer has its exact Chrome target", async () => {
+    const transientUrl = "https://chatgpt.com/c/WEB:fee7a622-991a-497a-bac4-a878b86f82f3";
+    const runtime = {
+      chromePort: 51559,
+      chromeHost: "127.0.0.1",
+      tabUrl: transientUrl,
+      conversationId: "WEB",
+    };
+    const listTargets = vi.fn(async () => [
+      { targetId: "unrelated", type: "page", url: "https://chatgpt.com/c/unrelated" },
+    ]);
+    const recoverSession = vi.fn(async () => ({
+      answerText: "wrong answer",
+      answerMarkdown: "wrong answer",
+    }));
+    const logger = vi.fn() as BrowserLogger;
+
+    await expect(
+      resumeBrowserSession(runtime, {}, logger, { listTargets, recoverSession }),
+    ).rejects.toThrow(/refusing to attach to an arbitrary tab/i);
+    expect(recoverSession).not.toHaveBeenCalled();
+  });
+
+  test("fails closed when only a provisional route remains after Chrome exits", async () => {
+    const recoverSession = vi.fn(async () => ({
+      answerText: "wrong answer",
+      answerMarkdown: "wrong answer",
+    }));
+
+    await expect(
+      resumeBrowserSession(
+        {
+          tabUrl: "https://chatgpt.com/c/WEB:fee7a622-991a-497a-bac4-a878b86f82f3",
+          conversationId: "WEB",
+        },
+        {},
+        vi.fn() as BrowserLogger,
+        { recoverSession },
+      ),
+    ).rejects.toThrow(/refusing to recover an arbitrary conversation/i);
+    await expect(
+      resumeBrowserSession({ conversationId: "WEB" }, {}, vi.fn() as BrowserLogger, {
+        recoverSession,
+      }),
+    ).rejects.toThrow(/refusing to recover an arbitrary conversation/i);
+    expect(recoverSession).not.toHaveBeenCalled();
+  });
+
   test("uses prompt preview turn index when reattaching to an already-open answer", async () => {
     const runtime = {
       chromePort: 51559,
@@ -97,8 +274,10 @@ describe("resumeBrowserSession", () => {
       if (expression === "1+1") {
         return { result: { value: 2 } };
       }
-      if (expression.includes("const needle =")) {
-        return { result: { value: 3 } };
+      if (expression.includes("const matched = []")) {
+        return {
+          result: { value: { matchedIndex: 3, latestUserIndex: 3, matchCount: 1 } },
+        };
       }
       return { result: { value: null } };
     });
@@ -128,7 +307,74 @@ describe("resumeBrowserSession", () => {
       promptPreview: "live reattach pro 123",
     });
 
-    expect(waitForAssistantResponse).toHaveBeenCalledWith(expect.anything(), 2000, logger, 3);
+    expect(waitForAssistantResponse).toHaveBeenCalledWith(
+      expect.anything(),
+      2000,
+      logger,
+      3,
+      "abc",
+      undefined,
+    );
+  });
+
+  test("fails closed when the reattach target drifts after response capture", async () => {
+    const expectedUrl = "https://chatgpt.com/c/expected-thread";
+    let currentUrl = expectedUrl;
+    const runtime = {
+      chromePort: 51559,
+      chromeHost: "127.0.0.1",
+      chromeTargetId: "target-1",
+      tabUrl: expectedUrl,
+    };
+    const listTargets = vi.fn(async () => [
+      { targetId: "target-1", type: "page", url: expectedUrl },
+    ]);
+    const evaluate = vi.fn(async ({ expression }: { expression: string }) => {
+      if (expression === "location.href") return { result: { value: currentUrl } };
+      if (expression === "1+1") return { result: { value: 2 } };
+      return { result: { value: null } };
+    });
+    const close = vi.fn(async () => {});
+    const connect = vi.fn(async () => ({
+      Runtime: { enable: vi.fn(), evaluate },
+      DOM: { enable: vi.fn() },
+      close,
+    })) as unknown as (options?: unknown) => Promise<ChromeClient>;
+    const waitForAssistantResponse = vi.fn(async () => {
+      currentUrl = "https://chatgpt.com/c/foreign-thread";
+      return {
+        text: "foreign answer",
+        html: "",
+        meta: { messageId: "foreign-message", turnId: "conversation-turn-3" },
+      };
+    });
+    const captureAssistantMarkdown = vi.fn(async () => "foreign answer");
+    const recoverSession = vi.fn(async () => ({
+      answerText: "fallback",
+      answerMarkdown: "fallback",
+    }));
+
+    await expect(
+      resumeBrowserSession(runtime, { timeoutMs: 2_000 }, vi.fn() as BrowserLogger, {
+        listTargets,
+        connect,
+        waitForAssistantResponse,
+        captureAssistantMarkdown,
+        recoverSession,
+      }),
+    ).rejects.toThrow(/expected conversation expected-thread.*foreign-thread/i);
+
+    expect(waitForAssistantResponse).toHaveBeenCalledWith(
+      expect.anything(),
+      2_000,
+      expect.anything(),
+      expect.anything(),
+      "expected-thread",
+      undefined,
+    );
+    expect(captureAssistantMarkdown).not.toHaveBeenCalled();
+    expect(recoverSession).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
   });
 
   test("uses Deep Research completion path when reattaching research sessions", async () => {
@@ -340,12 +586,83 @@ describe("reattach helpers", () => {
     extractConversationIdFromUrl,
     buildConversationUrl,
     openConversationFromSidebar,
+    waitForPromptPreview,
   } = __test__;
   type EvaluateParams = { expression: string };
   type EvaluateResult<T> = { result: { value: T } };
 
+  async function sidebarExpression(
+    conversationId?: string,
+    promptPreview = "saved prompt",
+  ): Promise<string> {
+    let source = "";
+    const runtime = {
+      evaluate: vi.fn(async ({ expression }: { expression: string }) => {
+        source = expression;
+        return { result: { value: { ok: false } } };
+      }),
+    } as unknown as ChromeClient["Runtime"];
+    await openConversationFromSidebar(runtime, {
+      conversationId,
+      preferProjects: false,
+      promptPreview,
+    });
+    return source;
+  }
+
+  function executeSidebarExpression(
+    source: string,
+    entries: Array<string | { href: string; text?: string; testId?: string }>,
+  ) {
+    const elements = entries.map((entry) => {
+      const href = typeof entry === "string" ? entry : entry.href;
+      const textContent = typeof entry === "string" ? entry : (entry.text ?? href);
+      const testId = typeof entry === "string" ? "" : (entry.testId ?? "");
+      const state = { clicked: false };
+      return {
+        state,
+        textContent,
+        dataset: {},
+        getAttribute: (name: string) => {
+          if (name === "href") return href;
+          if (name === "data-testid") return testId;
+          return "";
+        },
+        closest(selector: string) {
+          return selector === "nav,aside" ? null : this;
+        },
+        getBoundingClientRect: () => ({ width: 10, height: 10 }),
+        scrollIntoView: () => {},
+        dispatchEvent: () => {
+          state.clicked = true;
+        },
+      };
+    });
+    const document = { body: {}, querySelector: () => null, querySelectorAll: () => elements };
+    const location = { origin: "https://chatgpt.com", href: "https://chatgpt.com/" };
+    class FakeMouseEvent {}
+    const result = Function(
+      "document",
+      "location",
+      "window",
+      "MouseEvent",
+      `return ${source}`,
+    )(document, location, {}, FakeMouseEvent);
+    return {
+      result,
+      clicked: elements.map((element) => element.state.clicked),
+      href: location.href,
+    };
+  }
+
   test("extracts conversation id from a chat URL", () => {
     expect(extractConversationIdFromUrl("https://chatgpt.com/c/abc-123")).toBe("abc-123");
+    expect(extractConversationIdFromUrl("https://chatgpt.com/c/WEB")).toBeUndefined();
+    expect(
+      extractConversationIdFromUrl(
+        "https://chatgpt.com/c/WEB:fee7a622-991a-497a-bac4-a878b86f82f3",
+      ),
+    ).toBeUndefined();
     expect(extractConversationIdFromUrl("")).toBeUndefined();
   });
 
@@ -359,6 +676,22 @@ describe("reattach helpers", () => {
     expect(buildConversationUrl({ conversationId: "abc" }, "https://chatgpt.com/")).toBe(
       "https://chatgpt.com/c/abc",
     );
+    expect(
+      buildConversationUrl(
+        { tabUrl: "https://chatgpt.com/c/WEB:fee7a622-991a-497a-bac4-a878b86f82f3" },
+        "https://chatgpt.com/",
+      ),
+    ).toBeNull();
+    expect(buildConversationUrl({ conversationId: "WEB" }, "https://chatgpt.com/")).toBeNull();
+    expect(
+      buildConversationUrl(
+        {
+          tabUrl: "https://chatgpt.com/c/WEB:fee7a622-991a-497a-bac4-a878b86f82f3",
+          conversationId: "canonical-123",
+        },
+        "https://chatgpt.com/",
+      ),
+    ).toBe("https://chatgpt.com/c/canonical-123");
   });
 
   test("pickTarget prefers a saved conversation over a stale target id", () => {
@@ -377,6 +710,30 @@ describe("reattach helpers", () => {
     ).toEqual(targets[0]);
     expect(pickTarget(targets, { tabUrl: "https://chatgpt.com/c/first" })).toEqual(targets[0]);
     expect(pickTarget(targets, {})).toEqual(targets[0]);
+  });
+
+  test("only trusts an exact target id for a provisional conversation route", () => {
+    const transientUrl = "https://chatgpt.com/c/WEB:fee7a622-991a-497a-bac4-a878b86f82f3";
+    const targets = [
+      { targetId: "other", type: "page", url: transientUrl },
+      { targetId: "submitted", type: "page", url: transientUrl },
+    ];
+
+    expect(pickTarget(targets, { tabUrl: transientUrl, conversationId: "WEB" })).toBeUndefined();
+    expect(pickTarget(targets, { conversationId: "WEB" })).toBeUndefined();
+    expect(
+      pickTarget(targets, {
+        chromeTargetId: "submitted",
+        tabUrl: transientUrl,
+        conversationId: "WEB",
+      }),
+    ).toEqual(targets[1]);
+    expect(
+      pickTarget(
+        [{ targetId: "canonical", type: "page", url: "https://chatgpt.com/c/canonical-123" }],
+        { conversationId: "WEB", tabUrl: "https://chatgpt.com/c/canonical-123" },
+      ),
+    ).toMatchObject({ targetId: "canonical" });
   });
 
   test("pickTarget keeps the saved target among duplicate conversation tabs", () => {
@@ -403,13 +760,12 @@ describe("reattach helpers", () => {
   });
 
   test("openConversationFromSidebar passes conversationId and projects preference", async () => {
-    const evaluate = vi.fn<
-      (
-        params: EvaluateParams,
-      ) => Promise<EvaluateResult<{ ok: boolean; href?: string; count: number }>>
-    >(async () => ({
-      result: { value: { ok: true, href: "https://chatgpt.com/c/abc", count: 3 } },
-    }));
+    const evaluate = vi.fn(async ({ expression }: EvaluateParams) => {
+      if (expression === "location.href") {
+        return { result: { value: "https://chatgpt.com/c/abc" } };
+      }
+      return { result: { value: { ok: true, href: "https://chatgpt.com/c/abc", count: 3 } } };
+    });
     const runtime = { evaluate } as unknown as ChromeClient["Runtime"];
 
     const ok = await openConversationFromSidebar(runtime, {
@@ -434,8 +790,96 @@ describe("reattach helpers", () => {
     const ok = await openConversationFromSidebar(runtime, { preferProjects: false });
 
     expect(ok).toBe(false);
-    const call = evaluate.mock.calls[0]?.[0] as EvaluateParams | undefined;
-    expect(call?.expression).toContain("const conversationId = null");
-    expect(call?.expression).toContain("const preferProjects = false");
+    expect(evaluate).not.toHaveBeenCalled();
+  });
+
+  test("openConversationFromSidebar rejects a clicked destination with the wrong durable id", async () => {
+    const evaluate = vi.fn(async ({ expression }: { expression: string }) => {
+      if (expression === "location.href") {
+        return { result: { value: "https://chatgpt.com/c/wrong" } };
+      }
+      return {
+        result: {
+          value: { ok: true, href: "https://chatgpt.com/c/expected", count: 1 },
+        },
+      };
+    });
+    const runtime = { evaluate } as unknown as ChromeClient["Runtime"];
+
+    await expect(
+      openConversationFromSidebar(
+        runtime,
+        { conversationId: "expected", preferProjects: false },
+        0,
+        0,
+      ),
+    ).resolves.toBe(false);
+  });
+
+  test("prompt ownership proof requires text in an actual user turn", async () => {
+    const runtimeFor = (userTexts: string[], genericPageText: string) => {
+      const userTurns = userTexts.map((text) => ({ innerText: text, textContent: text }));
+      const root = {
+        innerText: genericPageText,
+        textContent: genericPageText,
+        querySelectorAll: (selector: string) =>
+          selector.includes('data-message-author-role="user"') ? userTurns : [],
+      };
+      const document = {
+        querySelector: (selector: string) => (selector === "main" ? root : null),
+      };
+      return {
+        evaluate: vi.fn(async ({ expression }: { expression: string }) => ({
+          result: {
+            value: Function("document", `return ${expression}`)(document),
+          },
+        })),
+      } as unknown as ChromeClient["Runtime"];
+    };
+
+    await expect(
+      waitForPromptPreview(runtimeFor([], "saved ownership prompt"), "saved ownership prompt", 20),
+    ).resolves.toBe(false);
+    await expect(
+      waitForPromptPreview(
+        runtimeFor(["Saved   ownership\nprompt"], ""),
+        "saved ownership prompt",
+        1_000,
+      ),
+    ).resolves.toBe(true);
+  });
+
+  test("sidebar fallback skips a provisional WEB route", async () => {
+    const transient = "https://chatgpt.com/c/WEB:fee7a622-991a-497a-bac4-a878b86f82f3";
+    const canonical = "https://chatgpt.com/c/canonical-123";
+
+    const outcome = executeSidebarExpression(await sidebarExpression(), [
+      { href: transient, text: "saved prompt" },
+      { href: canonical, text: "saved prompt" },
+    ]);
+
+    expect(outcome.clicked).toEqual([false, true]);
+    expect(outcome.href).toBe(canonical);
+  });
+
+  test("sidebar prompt and test-id fallbacks do not select a provisional route", async () => {
+    const transient = "https://chatgpt.com/c/WEB:fee7a622-991a-497a-bac4-a878b86f82f3";
+    const outcome = executeSidebarExpression(await sidebarExpression(), [
+      { href: transient, text: "saved prompt", testId: "conversation-history-item" },
+    ]);
+
+    expect(outcome.result).toMatchObject({ ok: false });
+    expect(outcome.clicked).toEqual([false]);
+    expect(outcome.href).toBe("https://chatgpt.com/");
+  });
+
+  test("sidebar matching compares the complete conversation id", async () => {
+    const outcome = executeSidebarExpression(await sidebarExpression("abc"), [
+      "https://chatgpt.com/c/abc-extra",
+      "https://chatgpt.com/c/abc",
+    ]);
+
+    expect(outcome.clicked).toEqual([false, true]);
+    expect(outcome.href).toBe("https://chatgpt.com/c/abc");
   });
 });

@@ -164,6 +164,8 @@ export interface BrowserRunOptions {
     hint: BrowserRuntimeMetadata,
     modelSelection?: BrowserModelSelectionEvidence,
   ) => void | Promise<void>;
+  /** Worker-internal hook carrying only the exact submitted prompt prefix. */
+  submittedPromptPreviewCb?: (promptPreview: string) => void | Promise<void>;
   /**
    * Caller-gone abort. When the signal fires, the run stops waiting at the
    * next raced wait point and unwinds through the normal cleanup path

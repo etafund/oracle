@@ -20,6 +20,7 @@
 // rules; this module composes their types but never modifies them.
 
 import type { RemoteRunState } from "../../remote/reconnect.js";
+import { extractConversationIdFromUrl } from "../conversationIdentity.js";
 import {
   PRO_THINKING_HARD_MAX_MS,
   PRO_THINKING_MIN_BACKGROUND_MS,
@@ -47,14 +48,12 @@ export function isChatgptProSlot(slot: unknown): slot is ChatgptProSlot {
   return typeof slot === "string" && CHATGPT_PRO_SLOT_SET.has(slot);
 }
 
-const CONVERSATION_URL_PATTERN = /\/c\/[a-zA-Z0-9-]{6,}/;
-
 /** Validate a ChatGPT `/c/<id>` URL hint. Returns the trimmed value or null. */
 export function normalizeConversationUrlHint(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   if (!trimmed) return null;
-  return CONVERSATION_URL_PATTERN.test(trimmed) ? trimmed : null;
+  return extractConversationIdFromUrl(trimmed) ? trimmed : null;
 }
 
 export interface ChatgptProSnapshotInput {

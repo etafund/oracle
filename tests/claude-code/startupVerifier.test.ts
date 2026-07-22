@@ -55,6 +55,27 @@ describe("Claude Code startup/result verifier", () => {
     expect(verifyClaudeCodeRun([startup({ model: "fable" }), result()]).ok).toBe(true);
   });
 
+  test("rejects startup model names that merely contain the Fable substring", () => {
+    const verified = verifyClaudeCodeRun([startup({ model: "fable-mini" }), result()]);
+
+    expect(verified.ok).toBe(false);
+    expect(verified.failures).toContainEqual(
+      expect.objectContaining({ code: "model_mismatch", field: "model" }),
+    );
+  });
+
+  test("rejects model-usage names that merely contain the Fable substring", () => {
+    const verified = verifyClaudeCodeRun([
+      startup(),
+      result({ modelUsage: { "claude-fable-5-mini": {} } }),
+    ]);
+
+    expect(verified.ok).toBe(false);
+    expect(verified.failures).toContainEqual(
+      expect.objectContaining({ code: "model_usage_mismatch", field: "modelUsage" }),
+    );
+  });
+
   test("accepts installed plugin inventory when every executable surface remains inert", () => {
     const verified = verifyClaudeCodeRun([
       startup({

@@ -16,6 +16,10 @@ import {
   logConversationSnapshot,
   buildConversationDebugExpression,
 } from "../domDebug.js";
+import {
+  buildConversationIdFromHrefExpression,
+  normalizeChatGptConversationId,
+} from "../conversationIdentity.js";
 import { buildClickDispatcher } from "./domEvents.js";
 
 const ASSISTANT_POLL_TIMEOUT_ERROR = "assistant-response-watchdog-timeout";
@@ -863,7 +867,18 @@ export async function captureAssistantMarkdown(
   Runtime: ChromeClient["Runtime"],
   meta: { messageId?: string | null; turnId?: string | null },
   logger: BrowserLogger,
+  options: { requireSourceIdentity?: boolean } = {},
 ): Promise<string | null> {
+  const hasSourceIdentity = Boolean(
+    (typeof meta.messageId === "string" && meta.messageId.trim()) ||
+    (typeof meta.turnId === "string" && meta.turnId.trim()),
+  );
+  if (options.requireSourceIdentity && !hasSourceIdentity) {
+    logger(
+      "Skipping copy-button Markdown capture because the validated assistant snapshot has no source identity; retaining the validated text snapshot.",
+    );
+    return null;
+  }
   const { result } = await Runtime.evaluate({
     expression: buildCopyExpression(meta),
     returnByValue: true,
@@ -1417,18 +1432,18 @@ function buildAssistantSnapshotExpression(
     typeof minTurnIndex === "number" && Number.isFinite(minTurnIndex) && minTurnIndex >= 0
       ? Math.floor(minTurnIndex)
       : -1;
-  const expectedConversationLiteral =
-    typeof expectedConversationId === "string" && expectedConversationId.trim().length > 0
-      ? JSON.stringify(expectedConversationId.trim())
-      : "null";
+  const normalizedExpectedConversationId = normalizeChatGptConversationId(expectedConversationId);
+  const expectedConversationLiteral = normalizedExpectedConversationId
+    ? JSON.stringify(normalizedExpectedConversationId)
+    : "null";
+  const currentConversationIdExpression = buildConversationIdFromHrefExpression("currentHref");
   return `(() => {
     const MIN_TURN_INDEX = ${minTurnLiteral};
     const EXPECTED_CONVERSATION_ID = ${expectedConversationLiteral};
     const currentHref = typeof location === 'object' && location.href ? location.href : '';
-    const currentConversationId = currentHref.match(/\\/c\\/([a-zA-Z0-9-]+)/)?.[1] ?? null;
+    const currentConversationId = ${currentConversationIdExpression};
     if (
       EXPECTED_CONVERSATION_ID &&
-      currentConversationId &&
       currentConversationId !== EXPECTED_CONVERSATION_ID
     ) {
       return null;
@@ -1473,10 +1488,11 @@ function buildResponseObserverExpression(
     typeof minTurnIndex === "number" && Number.isFinite(minTurnIndex) && minTurnIndex >= 0
       ? Math.floor(minTurnIndex)
       : -1;
-  const expectedConversationLiteral =
-    typeof expectedConversationId === "string" && expectedConversationId.trim().length > 0
-      ? JSON.stringify(expectedConversationId.trim())
-      : "null";
+  const normalizedExpectedConversationId = normalizeChatGptConversationId(expectedConversationId);
+  const expectedConversationLiteral = normalizedExpectedConversationId
+    ? JSON.stringify(normalizedExpectedConversationId)
+    : "null";
+  const currentConversationIdExpression = buildConversationIdFromHrefExpression("href");
   return `(() => {
     ${buildClickDispatcher()}
     const SELECTORS = ${selectorsLiteral};
@@ -1499,12 +1515,12 @@ function buildResponseObserverExpression(
     const settleDelayMs = 800;
     const currentConversationId = () => {
       const href = typeof location === 'object' && location.href ? location.href : '';
-      return href.match(/\\/c\\/([a-zA-Z0-9-]+)/)?.[1] ?? null;
+      return ${currentConversationIdExpression};
     };
     const matchesExpectedConversation = () => {
       if (!EXPECTED_CONVERSATION_ID) return true;
       const currentId = currentConversationId();
-      return !currentId || currentId === EXPECTED_CONVERSATION_ID;
+      return currentId === EXPECTED_CONVERSATION_ID;
     };
     ${buildAnswerNowPlaceholderPredicateJs("isAnswerNowPlaceholder")}
     ${buildActiveThinkingStatusPredicateJs("isActiveThinkingStatus")}
@@ -1947,7 +1963,11 @@ function buildAssistantExtractor(functionName: string): string {
       const text = innerText.trim().length > 0 ? innerText : textContent;
       const html = contentRoot?.innerHTML ?? '';
       const messageId = messageRoot.getAttribute('data-message-id');
-      const turnId = messageRoot.getAttribute('data-testid');
+      // ChatGPT commonly nests the role/message node inside an outer
+      // outer conversation-turn article whose finished-action
+      // controls are siblings of the message node. Preserve the outer turn
+      // id so subsequent copy capture can bind to that exact wrapper.
+      const turnId = turn.getAttribute('data-testid') || messageRoot.getAttribute('data-testid');
       const generatedImages = Array.from(messageRoot.querySelectorAll('img')).filter((img) =>
         String(img?.src || '').includes('/backend-api/estuary/content?id=file_')
       );
@@ -2133,27 +2153,55 @@ function buildCopyExpression(meta: { messageId?: string | null; turnId?: string 
   return `(() => {
     ${buildClickDispatcher()}
     const BUTTON_SELECTOR = '${COPY_BUTTON_SELECTOR}';
+    const CONVERSATION_SELECTOR = ${JSON.stringify(CONVERSATION_TURN_SELECTOR)};
     const TIMEOUT_MS = 10000;
+    const hint = ${JSON.stringify(meta ?? {})};
+    const HINT_HAS_IDENTITY = Boolean(hint?.messageId || hint?.turnId);
+    const esc = (value) =>
+      typeof CSS !== 'undefined' && CSS && typeof CSS.escape === 'function'
+        ? CSS.escape(String(value))
+        : String(value).replace(/["\\\\]/g, '\\\\$&');
+    const toTurn = (node) => {
+      if (!node) return null;
+      let turn = typeof node.closest === 'function'
+        ? (node.closest(CONVERSATION_SELECTOR) || node)
+        : node;
+      // Conversation selectors intentionally include both outer turn
+      // wrappers and nested role nodes. Climb through all matching ancestors
+      // so a message-id hint reaches sibling Copy controls in the outer turn.
+      while (turn) {
+        const parentTurn = turn.parentElement
+          ? turn.parentElement.closest(CONVERSATION_SELECTOR)
+          : null;
+        if (!parentTurn) break;
+        turn = parentTurn;
+      }
+      return turn;
+    };
 
     const locateButton = () => {
-      const hint = ${JSON.stringify(meta ?? {})};
       if (hint?.messageId) {
-        const node = document.querySelector('[data-message-id="' + hint.messageId + '"]');
-        const buttons = node ? Array.from(node.querySelectorAll('${COPY_BUTTON_SELECTOR}')) : [];
+        const node = document.querySelector('[data-message-id="' + esc(hint.messageId) + '"]');
+        const turn = toTurn(node);
+        const buttons = turn ? Array.from(turn.querySelectorAll(BUTTON_SELECTOR)) : [];
         const button = buttons.at(-1) ?? null;
         if (button) {
           return button;
         }
       }
       if (hint?.turnId) {
-        const node = document.querySelector('[data-testid="' + hint.turnId + '"]');
-        const buttons = node ? Array.from(node.querySelectorAll('${COPY_BUTTON_SELECTOR}')) : [];
+        const node = document.querySelector('[data-testid="' + esc(hint.turnId) + '"]');
+        const turn = toTurn(node);
+        const buttons = turn ? Array.from(turn.querySelectorAll(BUTTON_SELECTOR)) : [];
         const button = buttons.at(-1) ?? null;
         if (button) {
           return button;
         }
       }
-      const CONVERSATION_SELECTOR = ${JSON.stringify(CONVERSATION_TURN_SELECTOR)};
+      // An authoritative snapshot id is a binding boundary, not a preference.
+      // If its exact turn/button disappeared, fail closed instead of silently
+      // copying whichever assistant happens to be latest now.
+      if (HINT_HAS_IDENTITY) return null;
       const ASSISTANT_SELECTOR = '${ASSISTANT_ROLE_SELECTOR}';
       const isAssistantTurn = (node) => {
         if (!(node instanceof HTMLElement)) return false;
@@ -2292,7 +2340,10 @@ function buildCopyExpression(meta: { messageId?: string | null; turnId?: string 
           return;
         }
         if (Date.now() > deadline) {
-          resolve({ success: false, status: 'missing-button' });
+          resolve({
+            success: false,
+            status: HINT_HAS_IDENTITY ? 'hint-target-missing' : 'missing-button',
+          });
           return;
         }
         setTimeout(waitForButton, 120);

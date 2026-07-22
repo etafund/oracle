@@ -1,5 +1,8 @@
 import { describe, expect, test } from "vitest";
-import { hasRecoverableChatGptConversation } from "../../src/browser/reattachability.js";
+import {
+  hasRecoverableChatGptConversation,
+  isRecoverableChatGptConversationUrl,
+} from "../../src/browser/reattachability.js";
 
 describe("hasRecoverableChatGptConversation", () => {
   test("accepts explicit conversation ids", () => {
@@ -32,5 +35,17 @@ describe("hasRecoverableChatGptConversation", () => {
   test("rejects malformed or non-ChatGPT URLs", () => {
     expect(hasRecoverableChatGptConversation({ tabUrl: "not a url" })).toBe(false);
     expect(hasRecoverableChatGptConversation({ tabUrl: "https://example.com/c/abc" })).toBe(false);
+  });
+
+  test("rejects ChatGPT's transient WEB conversation identity", () => {
+    const transient = "https://chatgpt.com/c/WEB:fee7a622-991a-497a-bac4-a878b86f82f3";
+    expect(isRecoverableChatGptConversationUrl(transient)).toBe(false);
+    expect(hasRecoverableChatGptConversation({ tabUrl: transient })).toBe(false);
+    expect(hasRecoverableChatGptConversation({ conversationId: "WEB" })).toBe(false);
+    expect(
+      hasRecoverableChatGptConversation({
+        conversationId: "WEB:fee7a622-991a-497a-bac4-a878b86f82f3",
+      }),
+    ).toBe(false);
   });
 });

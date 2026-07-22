@@ -3,6 +3,10 @@ import type { BrowserLogger, ChromeClient, CookieParam } from "./types.js";
 import { delay } from "./utils.js";
 import { BrowserAutomationError } from "../oracle/errors.js";
 import { getCookies, type Cookie } from "@steipete/sweet-cookie";
+import {
+  extractConversationIdFromUrl,
+  normalizeChatGptConversationId,
+} from "./conversationIdentity.js";
 
 export class ChromeCookieSyncError extends Error {}
 
@@ -61,6 +65,7 @@ export async function clearStaleChatGptConversationCookies(
   try {
     const preservedNames = new Set(
       (options.preserveConversationIds ?? [])
+        .map((id) => normalizeChatGptConversationId(id))
         .filter((id): id is string => Boolean(id))
         .map((id) => `conv_key_${id}`),
     );
@@ -269,7 +274,7 @@ function extractChatGptConversationId(url: string): string | undefined {
     if (domain !== "chatgpt.com" && domain !== "chat.openai.com") {
       return undefined;
     }
-    return parsed.pathname.match(/\/c\/([a-zA-Z0-9-]+)/)?.[1];
+    return extractConversationIdFromUrl(parsed.toString());
   } catch {
     return undefined;
   }

@@ -51,7 +51,14 @@ const DEFAULT_MAX_RATE_LIMIT_ROTATIONS = 0;
 export function resolveClaudeCodeMaxRateLimitRotations(
   configured: number | undefined,
   env: NodeJS.ProcessEnv,
+  options: { lane?: string } = {},
 ): number {
+  // Fable's account identity is part of the reviewed lane contract. An
+  // inherited env var (or an accidentally reused programmatic override) must
+  // never move a fable-local run onto a different subscription account.
+  if (options.lane?.trim().toLowerCase() === "fable-local") {
+    return 0;
+  }
   if (typeof configured === "number" && Number.isInteger(configured) && configured >= 0) {
     return configured;
   }

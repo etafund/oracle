@@ -1,6 +1,16 @@
 import { describe, expect, test, vi } from "vitest";
 
-import { createRemoteBrowserExecutor } from "../../src/remote/client.js";
+import type { BrowserSessionConfig } from "../../src/sessionManager.js";
+import {
+  createRemoteBrowserExecutor,
+  recoverRemoteBrowserSession,
+} from "../../src/remote/client.js";
+import {
+  MAX_REMOTE_RECOVERY_REQUEST_BYTES,
+  sanitizeRemoteBrowserRecoveryRequestForHost,
+} from "../../src/remote/payload_sanitize.js";
+import { buildRemoteRunRecoveryHint } from "../../src/remote/recovery.js";
+import type { RemoteBrowserRecoveryRequest } from "../../src/remote/types.js";
 
 type ExecutorOptions = Parameters<typeof createRemoteBrowserExecutor>[0];
 type RequestFn = NonNullable<ExecutorOptions["requestFn"]>;
@@ -124,7 +134,150 @@ describe("remote client payload sanitizer", () => {
     ).rejects.toThrow(/resumeConversationUrl/i);
     expect(body()).toBeNull();
   });
+
+  test("minimizes a realistic saved config before POST /recover without mutating the saved config", async () => {
+    const { requestFn, body } = captureSerializedBodyRequest();
+    const cookieSecret = `cookie-${"x".repeat(70 * 1024)}`;
+    const savedConfig: BrowserSessionConfig = {
+      url: "https://chatgpt.com/g/g-private/project",
+      chatgptUrl: "https://chatgpt.com/",
+      timeoutMs: 2_400_000,
+      inputTimeoutMs: 45_000,
+      assistantRecheckDelayMs: 2_000,
+      assistantRecheckTimeoutMs: 120_000,
+      autoReattachDelayMs: 3_000,
+      autoReattachIntervalMs: 10_000,
+      autoReattachTimeoutMs: 300_000,
+      researchMode: "off",
+      desiredModel: "GPT-5.6 Pro",
+      thinkingTime: "extended",
+      resumeConversationUrl: "https://chatgpt.com/c/saved-config-conversation",
+      inlineCookies: [
+        {
+          name: "__Secure-next-auth.session-token",
+          value: cookieSecret,
+          domain: "chatgpt.com",
+          path: "/",
+          secure: true,
+          httpOnly: true,
+        },
+      ],
+      inlineCookiesSource: "/home/client/.oracle/private-cookies.json",
+      chromePath: "/usr/bin/google-chrome",
+      chromeCookiePath: "/home/client/.config/chrome/Cookies",
+      chromeProfile: "ClientDefault",
+      manualLoginProfileDir: "/home/client/.oracle/browser-profile",
+      debugPort: 9222,
+      attachRunning: true,
+      keepBrowser: true,
+      browserTabRef: "client-owned-target",
+      remoteChrome: { host: "127.0.0.1", port: 9223 },
+      cookieNames: ["__Secure-next-auth.session-token"],
+      cookieSync: false,
+      manualLogin: true,
+      allowCookieErrors: true,
+    };
+    const savedSnapshot = structuredClone(savedConfig);
+    const request = recoveryRequest(savedConfig);
+
+    await recoverRemoteBrowserSession({
+      host: "localhost:9222",
+      token: "remote-client-token",
+      accountId: "acct1",
+      request,
+      requestFn,
+    }).catch(() => undefined);
+
+    const raw = body();
+    expect(raw, "recovery request body was not captured").not.toBeNull();
+    expect(Buffer.byteLength(raw ?? "", "utf8")).toBeLessThan(MAX_REMOTE_RECOVERY_REQUEST_BYTES);
+    expect(raw).not.toContain(cookieSecret);
+    expect(raw).not.toContain("private-cookies.json");
+    expect(raw).not.toContain("browser-profile");
+    expect(raw).not.toContain("client-owned-target");
+    expect(raw).not.toContain("remote-client-token");
+
+    const wire = JSON.parse(raw ?? "{}") as RemoteBrowserRecoveryRequest;
+    expect(wire.browserConfig).toEqual({
+      timeoutMs: 2_400_000,
+      inputTimeoutMs: 45_000,
+      assistantRecheckDelayMs: 2_000,
+      assistantRecheckTimeoutMs: 120_000,
+      autoReattachDelayMs: 3_000,
+      autoReattachIntervalMs: 10_000,
+      autoReattachTimeoutMs: 300_000,
+      researchMode: "off",
+    });
+    expect(() => sanitizeRemoteBrowserRecoveryRequestForHost(wire)).not.toThrow();
+    expect(savedConfig).toEqual(savedSnapshot);
+  });
+
+  test.each([
+    ["top-level", (value: Record<string, unknown>) => (value.prompt = "must-not-submit")],
+    [
+      "recovery runtime",
+      (value: Record<string, unknown>) =>
+        ((
+          (value.recovery as Record<string, unknown>).runtime as Record<string, unknown>
+        ).chromePort = 9222),
+    ],
+    [
+      "browser config",
+      (value: Record<string, unknown>) =>
+        ((value.browserConfig as Record<string, unknown>).inlineCookies = [
+          { name: "session", value: "secret" },
+        ]),
+    ],
+    [
+      "options",
+      (value: Record<string, unknown>) =>
+        ((value.options as Record<string, unknown>).followUpPrompts = ["submit again"]),
+    ],
+  ])("host strictly rejects an extra %s recovery field", (_label, mutate) => {
+    const value = structuredClone(recoveryRequest({ timeoutMs: 120_000 })) as unknown as Record<
+      string,
+      unknown
+    >;
+    mutate(value);
+    expect(() => sanitizeRemoteBrowserRecoveryRequestForHost(value)).toThrow(/unexpected field/i);
+  });
 });
+
+function recoveryRequest(browserConfig: BrowserSessionConfig): RemoteBrowserRecoveryRequest {
+  const promptPreview = "exact submitted prompt prefix";
+  const recovery = buildRemoteRunRecoveryHint(
+    {
+      stage: "assistant-recheck",
+      runtime: {
+        tabUrl: "https://chatgpt.com/c/recovery-client-test",
+        conversationId: "recovery-client-test",
+        promptSubmitted: true,
+      },
+    },
+    undefined,
+    {
+      originRunId: "origin-client-test",
+      accountId: "acct1",
+      authToken: "account-secret",
+      promptPreview,
+      nowMs: Date.now(),
+    },
+  );
+  if (!recovery || recovery.stage !== "assistant-recheck") {
+    throw new Error("failed to build recovery client fixture");
+  }
+  return {
+    schema: "remote-browser-recovery.v1",
+    recovery: { ...recovery, stage: "assistant-recheck" },
+    promptPreview,
+    browserConfig,
+    options: {
+      heartbeatIntervalMs: 5_000,
+      verbose: true,
+      sessionId: "recovery-client-test",
+    },
+  };
+}
 
 function captureSerializedBodyRequest(): {
   requestFn: RequestFn;

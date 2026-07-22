@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   classifyTabState,
   formatBrowserTabState,
+  isChatGptConversationUrlForTest,
   isChatGptUrlForTest,
   resolveChatGptTabFromSummariesForTest,
   sessionMatchesTab,
@@ -145,6 +146,20 @@ describe("liveTabs helpers", () => {
     expect(isChatGptUrlForTest("not-a-url")).toBe(false);
   });
 
+  test("conversation scoring only recognizes durable canonical ChatGPT identities", () => {
+    expect(isChatGptConversationUrlForTest("https://chatgpt.com/c/abc_123-def")).toBe(true);
+    expect(isChatGptConversationUrlForTest("https://chat.openai.com/c/legacy-id")).toBe(true);
+
+    expect(isChatGptConversationUrlForTest("https://chatgpt.com/c/WEB")).toBe(false);
+    expect(
+      isChatGptConversationUrlForTest(
+        "https://chatgpt.com/c/WEB:fee7a622-991a-497a-bac4-a878b86f82f3",
+      ),
+    ).toBe(false);
+    expect(isChatGptConversationUrlForTest("https://example.com/c/abc_123-def")).toBe(false);
+    expect(isChatGptConversationUrlForTest("https://chatgpt.com/?next=/c/abc_123-def")).toBe(false);
+  });
+
   test("matches sessions by target id, url, and conversation id", () => {
     const meta = {
       id: "session-1",
@@ -180,5 +195,32 @@ describe("liveTabs helpers", () => {
         conversationId: "def",
       }),
     ).toBe(false);
+  });
+
+  test("does not match a different tab by a provisional WEB URL", () => {
+    const transientUrl = "https://chatgpt.com/c/WEB:fee7a622-991a-497a-bac4-a878b86f82f3";
+    const meta = {
+      id: "session-1",
+      createdAt: "2026-07-21T00:00:00.000Z",
+      status: "running",
+      options: {},
+      mode: "browser",
+      browser: {
+        runtime: {
+          chromeTargetId: "submitted-target",
+          tabUrl: transientUrl,
+          conversationId: "WEB",
+        },
+      },
+    } as SessionMetadata;
+
+    expect(
+      sessionMatchesTab(meta, {
+        targetId: "different-target",
+        url: transientUrl,
+        conversationId: "WEB",
+      }),
+    ).toBe(false);
+    expect(sessionMatchesTab(meta, { targetId: "submitted-target", url: transientUrl })).toBe(true);
   });
 });

@@ -17,6 +17,7 @@ import type {
   RemoteArtifactDescriptor,
   RemoteAttachmentIntegrityEntry,
   RemoteAttachmentPayload,
+  RemoteBrowserRecoveryRequest,
   RemoteRunPayload,
   RemoteRunEvent,
   RemoteRunProvenanceSummary,
@@ -25,7 +26,7 @@ import type {
 } from "./types.js";
 import { MAX_REMOTE_ARTIFACT_BYTES } from "./types.js";
 import { getQuarantineLatchState } from "../browser/quarantineLatch.js";
-import type { OracleUserError } from "../oracle/errors.js";
+import { BrowserAutomationError, type OracleUserError } from "../oracle/errors.js";
 import { getCookies, type Cookie } from "@steipete/sweet-cookie";
 import { CHATGPT_URL } from "../browser/constants.js";
 import { getCliVersion, getOracleBuildInfo, type OracleBuildInfo } from "../version.js";
@@ -38,6 +39,7 @@ import {
   verifyDevToolsReachable,
 } from "../browser/profileState.js";
 import { normalizeChatgptUrl } from "../browser/utils.js";
+import { estimateTokenCount } from "../browser/utils.js";
 import { resolveBrowserConfig } from "../browser/config.js";
 import { getBrowserCleanupTaint, type BrowserCleanupTaint } from "../browser/index.js";
 import { isGpt56SolModelLabel } from "../browser/actions/thinkingTime.js";
@@ -50,14 +52,27 @@ import {
   type RunAttachmentDigest,
   type RunErrorClass,
 } from "./run_event_sink.js";
-import { sanitizeRemoteRunPayloadForHost } from "./payload_sanitize.js";
+import {
+  MAX_REMOTE_RECOVERY_REQUEST_BYTES,
+  sanitizeRemoteBrowserRecoveryRequestForHost,
+  sanitizeRemoteRunPayloadForHost,
+} from "./payload_sanitize.js";
+import { buildRemoteRunRecoveryHint, verifyRemoteRunRecoveryCapability } from "./recovery.js";
 import {
   computeFileSha256,
   sanitizeArtifactFilename,
   sanitizeArtifactMimeType,
   validateArtifactFile,
 } from "../browser/artifacts.js";
-import type { BrowserRunWarning, SessionArtifact } from "../sessionManager.js";
+import type {
+  BrowserRunWarning,
+  BrowserRuntimeMetadata,
+  SessionArtifact,
+} from "../sessionManager.js";
+import {
+  resumeBrowserSessionInIsolatedFleetTab,
+  type IsolatedFleetRecoveryOptions,
+} from "../browser/reattach.js";
 
 export interface RemoteServerOptions {
   host?: string;
@@ -118,6 +133,10 @@ export interface RemoteServerOptions {
 
 interface RemoteServerDeps {
   runBrowser?: typeof runBrowserMode;
+  /** Capture-only recovery seam; never submits a prompt. */
+  recoverBrowser?: (
+    options: IsolatedFleetRecoveryOptions,
+  ) => Promise<{ answerText: string; answerMarkdown: string }>;
   /**
    * Test/future-instrumentation hook after the browser has returned a result
    * but before the worker emits artifacts/provenance/done and releases the
@@ -444,6 +463,7 @@ export async function createRemoteServer(
   deps: RemoteServerDeps = {},
 ): Promise<RemoteServerInstance> {
   const runBrowser = deps.runBrowser ?? runBrowserMode;
+  const recoverBrowser = deps.recoverBrowser ?? resumeBrowserSessionInIsolatedFleetTab;
   const resolvedToken = await resolveServeAuthToken({
     tokenFile: options.tokenFile,
     token: options.token,
@@ -825,7 +845,8 @@ export async function createRemoteServer(
         return;
       }
 
-      if (req.method !== "POST" || req.url !== "/runs") {
+      const isRecoveryRequest = req.method === "POST" && req.url === "/recover";
+      if (!isRecoveryRequest && (req.method !== "POST" || req.url !== "/runs")) {
         res.statusCode = 404;
         res.end();
         return;
@@ -887,6 +908,46 @@ export async function createRemoteServer(
         return;
       }
       requestAuthorized = true;
+      const requestedRecoveryAccount = readSingleHeader(
+        req.headers["x-oracle-recovery-account-id"],
+      );
+      if (isRecoveryRequest) {
+        // Account affinity is both a routing coordinate and a worker-side
+        // authorization check. Validate it before attach probing or any other
+        // CDP/lease action; a wrong/missing pin never gets a browser side
+        // effect even if a router accidentally forwarded it here.
+        if (!requestedRecoveryAccount || requestedRecoveryAccount !== accountId) {
+          refuseRun(421, "recovery_account_mismatch", {
+            errorClass: "integrity_ui_unknown",
+            retryable: false,
+          });
+          return;
+        }
+      } else if (req.headers["x-oracle-recovery-account-id"] !== undefined) {
+        refuseRun(400, "recovery_header_on_run", {
+          errorClass: "integrity_ui_unknown",
+          retryable: false,
+        });
+        return;
+      }
+      const admissionCleanupTaint = cleanupTaintProvider();
+      if (admissionCleanupTaint) {
+        // Readiness is advisory; admission is authoritative. A worker with an
+        // indeterminate owned-target cleanup must not accept another body or
+        // touch CDP. 409 lets the router try a healthy sibling (and /recover's
+        // mandatory account pin keeps that retry inside the same account).
+        refuseRun(
+          409,
+          "cleanup_tainted",
+          {
+            errorClass: "capacity_busy",
+            retryable: true,
+            reason: admissionCleanupTaint.reason,
+          },
+          { "Retry-After": "15" },
+        );
+        return;
+      }
       if (admitting || busy) {
         if (verbose) {
           logger(
@@ -913,12 +974,14 @@ export async function createRemoteServer(
       admitting = true;
       ownsSingleFlight = true;
       let payload: RemoteRunPayload | null = null;
+      let recoveryRequest: RemoteBrowserRecoveryRequest | null = null;
       let runDir: string | null = null;
       let attachProbeForRun: AttachTargetProbe | null = null;
       // oracle.run.v1 accounting for this run (one sink line per ACCEPTED
       // run, emitted from the finally below on success, failure, and abort).
       let acceptedAt: string | null = null;
       let submittedAt: string | null = null;
+      let submittedPromptPreview: string | null = null;
       let firstTokenAt: string | null = null;
       let activeTabLeasesAtSubmit: number | null = null;
       let attachments: BrowserAttachment[] = [];
@@ -947,31 +1010,45 @@ export async function createRemoteServer(
           return;
         }
 
-        if (attachOnly) {
-          // Fail-closed admission: no attachable, owned browser means the
-          // run is refused with a typed error. The worker NEVER launches a
-          // browser to satisfy a run — that converts "operator has not
-          // prepared a browser" into a profile race between sibling workers.
-          attachProbeForRun = await probeAttachTargetCached();
-          if (!attachProbeForRun.ok) {
-            refuseRun(
-              503,
-              "browser_unavailable",
-              {
-                reason: attachProbeForRun.reason,
-                // Substrate outages are retryable on another lane; this
-                // worker cannot serve until its browser returns.
-                retryable: true,
-              },
-              { "Retry-After": "30" },
-            );
-            return;
-          }
-        }
         try {
-          const body = await readRequestBody(req, bodyLimits);
-          payload = sanitizeRemoteRunPayloadForHost(JSON.parse(body) as RemoteRunPayload);
-          if (payload?.browserConfig) {
+          const body = await readRequestBody(
+            req,
+            isRecoveryRequest
+              ? {
+                  ...bodyLimits,
+                  maxBytes: Math.min(bodyLimits.maxBytes, MAX_REMOTE_RECOVERY_REQUEST_BYTES),
+                }
+              : bodyLimits,
+          );
+          const parsed = JSON.parse(body) as unknown;
+          if (isRecoveryRequest) {
+            recoveryRequest = sanitizeRemoteBrowserRecoveryRequestForHost(parsed);
+            if (
+              !verifyRemoteRunRecoveryCapability(recoveryRequest.recovery, {
+                accountId,
+                authToken,
+                promptPreview: recoveryRequest.promptPreview,
+              })
+            ) {
+              refuseRun(403, "invalid_recovery_capability", {
+                errorClass: "integrity_ui_unknown",
+                retryable: false,
+              });
+              return;
+            }
+            // Synthetic common envelope for accounting/streaming only. The
+            // recovery branch below never invokes runBrowser and has no prompt
+            // or attachments to submit.
+            payload = {
+              prompt: "",
+              attachments: [],
+              browserConfig: recoveryRequest.browserConfig,
+              options: recoveryRequest.options,
+            };
+          } else {
+            payload = sanitizeRemoteRunPayloadForHost(parsed as RemoteRunPayload);
+          }
+          if (!isRecoveryRequest && payload.browserConfig) {
             payload.browserConfig.url = normalizeChatgptUrl(payload.browserConfig.url, CHATGPT_URL);
           }
         } catch (error) {
@@ -989,90 +1066,111 @@ export async function createRemoteServer(
           return;
         }
 
-        // FLEET MODEL GATE (authoritative trust boundary). Validate the
-        // effective desired model label BEFORE staging attachments or flipping
-        // `busy`, so a disallowed model is refused without consuming a browser
-        // slot or touching the filesystem. The effective label is the payload's
-        // desiredModel, falling back to this worker's baseline. No silent
-        // remap/alias: a disallowed label fails closed with an actionable error.
-        const effectiveModelLabel =
-          typeof payload.browserConfig?.desiredModel === "string" &&
-          payload.browserConfig.desiredModel.trim().length > 0
-            ? payload.browserConfig.desiredModel
-            : baselineBrowserConfig.desiredModel;
-        if (!isServeModelLabelAllowed(effectiveModelLabel, serveAllowedModelLabels)) {
-          refuseRun(422, "model_not_allowed", {
-            errorClass: "model_not_allowed",
-            retryable: false,
-            message: `this browser worker serves only GPT-5.6 Sol + Pro; requested model label "${effectiveModelLabel ?? ""}" is not allowed. Drop --model (the default resolves to GPT-5.6 Sol) or use --engine api for API models.`,
-          });
-          return;
+        if (attachOnly || isRecoveryRequest) {
+          // This probe is intentionally after recovery capability/account
+          // validation: forged, expired, or cross-account recovery requests
+          // must cause zero CDP/browser side effects.
+          attachProbeForRun = await probeAttachTargetCached();
+          if (!attachProbeForRun.ok) {
+            refuseRun(
+              503,
+              "browser_unavailable",
+              {
+                reason: attachProbeForRun.reason,
+                retryable: true,
+              },
+              { "Retry-After": "30" },
+            );
+            return;
+          }
         }
 
-        // FLEET MODEL-STRATEGY GATE (same trust boundary, evaluated BEFORE
-        // staging attachments or flipping `busy`). modelStrategy is
-        // client-controllable via the payload sanitize allow-list, so a
-        // token-authenticated payload could pin "ignore" (skip model selection
-        // outright) or "current" (submit on whatever model the shared Chrome
-        // currently has loaded) and slip past the model-label gate above with
-        // the baseline "Pro" desiredModel — submitting UNVERIFIED, since the
-        // downstream atomic-verification guard only trips for the Sol label.
-        // Require "select". Absent/undefined stays allowed (defaults to
-        // "select" downstream). No silent remap: a disallowed strategy fails
-        // closed with an actionable error.
-        const requestedModelStrategy = payload.browserConfig?.modelStrategy;
-        if (!isServeModelStrategyAllowed(requestedModelStrategy)) {
-          refuseRun(422, "model_strategy_not_allowed", {
-            errorClass: "model_strategy_not_allowed",
-            retryable: false,
-            message: `this browser worker requires modelStrategy "select" (atomic model+mode verification); modelStrategy "${String(requestedModelStrategy)}" is not allowed on the fleet`,
-          });
-          return;
-        }
-
-        // Stage attachments during admission (before `busy` flips) so a
-        // truncated/corrupted upload is refused with a typed error instead of
-        // consuming a browser slot. Stored names are collision-proof and the
-        // integrity manifest is emitted with the run's events below.
-        try {
-          runDir = await mkdtemp(path.join(os.tmpdir(), `oracle-serve-${runId}-`));
-          const attachmentDir = path.join(runDir, "attachments");
-          await mkdir(attachmentDir, { recursive: true });
-          const staged = await stageAttachmentsWithIntegrity({
-            payloadAttachments: payload.attachments,
-            dir: attachmentDir,
-            fallbackLabel: "attachment",
-          });
-          attachments = staged.attachments;
-          uploadIntegrity = {
-            attachments: staged.manifest,
-            preSendDomCheck: "composer-chips-by-stored-name",
-          };
-
-          if (payload.fallbackSubmission) {
-            const fallbackAttachmentDir = path.join(runDir, "fallback-attachments");
-            await mkdir(fallbackAttachmentDir, { recursive: true });
-            const stagedFallback = await stageAttachmentsWithIntegrity({
-              payloadAttachments: payload.fallbackSubmission.attachments,
-              dir: fallbackAttachmentDir,
-              fallbackLabel: "fallback-attachment",
+        if (!isRecoveryRequest) {
+          // FLEET MODEL GATE (authoritative trust boundary). Validate the
+          // effective desired model label BEFORE staging attachments or flipping
+          // `busy`, so a disallowed model is refused without consuming a browser
+          // slot or touching the filesystem. The effective label is the payload's
+          // desiredModel, falling back to this worker's baseline. No silent
+          // remap/alias: a disallowed label fails closed with an actionable error.
+          const effectiveModelLabel =
+            typeof payload.browserConfig?.desiredModel === "string" &&
+            payload.browserConfig.desiredModel.trim().length > 0
+              ? payload.browserConfig.desiredModel
+              : baselineBrowserConfig.desiredModel;
+          if (!isServeModelLabelAllowed(effectiveModelLabel, serveAllowedModelLabels)) {
+            refuseRun(422, "model_not_allowed", {
+              errorClass: "model_not_allowed",
+              retryable: false,
+              message: `this browser worker serves only GPT-5.6 Sol + Pro; requested model label "${effectiveModelLabel ?? ""}" is not allowed. Drop --model (the default resolves to GPT-5.6 Sol) or use --engine api for API models.`,
             });
-            fallbackSubmission = {
-              prompt: payload.fallbackSubmission.prompt,
-              attachments: stagedFallback.attachments,
+            return;
+          }
+
+          // FLEET MODEL-STRATEGY GATE (same trust boundary, evaluated BEFORE
+          // staging attachments or flipping `busy`). modelStrategy is
+          // client-controllable via the payload sanitize allow-list, so a
+          // token-authenticated payload could pin "ignore" (skip model selection
+          // outright) or "current" (submit on whatever model the shared Chrome
+          // currently has loaded) and slip past the model-label gate above with
+          // the baseline "Pro" desiredModel — submitting UNVERIFIED, since the
+          // downstream atomic-verification guard only trips for the Sol label.
+          // Require "select". Absent/undefined stays allowed (defaults to
+          // "select" downstream). No silent remap: a disallowed strategy fails
+          // closed with an actionable error.
+          const requestedModelStrategy = payload.browserConfig?.modelStrategy;
+          if (!isServeModelStrategyAllowed(requestedModelStrategy)) {
+            refuseRun(422, "model_strategy_not_allowed", {
+              errorClass: "model_strategy_not_allowed",
+              retryable: false,
+              message: `this browser worker requires modelStrategy "select" (atomic model+mode verification); modelStrategy "${String(requestedModelStrategy)}" is not allowed on the fleet`,
+            });
+            return;
+          }
+
+          // Stage attachments during admission (before `busy` flips) so a
+          // truncated/corrupted upload is refused with a typed error instead of
+          // consuming a browser slot. Stored names are collision-proof and the
+          // integrity manifest is emitted with the run's events below.
+          try {
+            runDir = await mkdtemp(path.join(os.tmpdir(), `oracle-serve-${runId}-`));
+            const attachmentDir = path.join(runDir, "attachments");
+            await mkdir(attachmentDir, { recursive: true });
+            const staged = await stageAttachmentsWithIntegrity({
+              payloadAttachments: payload.attachments,
+              dir: attachmentDir,
+              fallbackLabel: "attachment",
+            });
+            attachments = staged.attachments;
+            uploadIntegrity = {
+              attachments: staged.manifest,
+              preSendDomCheck: "composer-chips-by-stored-name",
             };
-            uploadIntegrity.fallbackAttachments = stagedFallback.manifest;
+
+            if (payload.fallbackSubmission) {
+              const fallbackAttachmentDir = path.join(runDir, "fallback-attachments");
+              await mkdir(fallbackAttachmentDir, { recursive: true });
+              const stagedFallback = await stageAttachmentsWithIntegrity({
+                payloadAttachments: payload.fallbackSubmission.attachments,
+                dir: fallbackAttachmentDir,
+                fallbackLabel: "fallback-attachment",
+              });
+              fallbackSubmission = {
+                prompt: payload.fallbackSubmission.prompt,
+                attachments: stagedFallback.attachments,
+              };
+              uploadIntegrity.fallbackAttachments = stagedFallback.manifest;
+            }
+          } catch (error) {
+            if (runDir) {
+              await rm(runDir, { recursive: true, force: true }).catch(() => undefined);
+            }
+            if (error instanceof AttachmentIntegrityError) {
+              refuseRun(400, "attachment_size_mismatch", { detail: error.message });
+            } else {
+              refuseRun(400, "invalid_request");
+            }
+            return;
           }
-        } catch (error) {
-          if (runDir) {
-            await rm(runDir, { recursive: true, force: true }).catch(() => undefined);
-          }
-          if (error instanceof AttachmentIntegrityError) {
-            refuseRun(400, "attachment_size_mismatch", { detail: error.message });
-          } else {
-            refuseRun(400, "invalid_request");
-          }
-          return;
         }
 
         // Admission checks passed: hand the single-flight slot to the browser
@@ -1162,7 +1260,7 @@ export async function createRemoteServer(
         }
         // Stamp the run id onto every NDJSON line so each event of a run is
         // joinable without relying on stream framing alone.
-        const flushed = res.write(`${JSON.stringify({ runId, ...event })}\n`);
+        const flushed = res.write(`${JSON.stringify({ ...event, runId })}\n`);
         if (!flushed) {
           writeBackpressured = true;
           if (!drainListenerAttached) {
@@ -1180,6 +1278,7 @@ export async function createRemoteServer(
       let runRetryable: boolean | null = null;
       let bindingVerified: boolean | null = null;
       let bindingQuality: SubmittedMessageBindingQuality | null = null;
+      let latestRuntimeHint: BrowserRuntimeMetadata | null = null;
       try {
         if (
           uploadIntegrity &&
@@ -1247,23 +1346,71 @@ export async function createRemoteServer(
           }
         }
 
-        const result = await runBrowser({
-          prompt: payload.prompt,
-          attachments,
-          fallbackSubmission,
-          config: payload.browserConfig,
-          log: automationLogger,
-          heartbeatIntervalMs: payload.options.heartbeatIntervalMs,
-          verbose: payload.options.verbose,
-          sessionId: payload.options.sessionId,
-          followUpPrompts: payload.options.followUpPrompts,
-          signal: runAbort.signal,
-          // Same resolved identity /ready and /runs admission use (options.accountId ?? env
-          // ?? DEFAULT_ACCOUNT_ID above), so the browser-side quarantine gates trip under
-          // this worker's authoritative account id rather than re-deriving from env
-          // independently (oracle-router-8t1).
-          accountId,
-        });
+        const result: BrowserRunResult = recoveryRequest
+          ? await (async () => {
+              const port = attachProbeForRun?.port;
+              if (!port) {
+                throw new BrowserAutomationError(
+                  "Recovery worker has no verified attach-target port.",
+                  { stage: "recovery-substrate", retryable: false },
+                );
+              }
+              const startedAt = Date.now();
+              const recovered = await recoverBrowser({
+                runtime: recoveryRequest.recovery.runtime,
+                config: payload.browserConfig,
+                logger: automationLogger,
+                chromeHost: "127.0.0.1",
+                chromePort: port,
+                profileDir: attachProfileDir,
+                promptPreview: recoveryRequest.promptPreview,
+                sessionId: payload.options.sessionId,
+                maxConcurrentTabs: effectiveRunConfig.maxConcurrentTabs ?? undefined,
+                leaseTimeoutMs: effectiveRunConfig.profileLockTimeoutMs ?? undefined,
+                signal: runAbort.signal,
+                accountId,
+              });
+              const answerMarkdown = recovered.answerMarkdown || recovered.answerText;
+              bindingVerified = true;
+              bindingQuality = "message-handle";
+              return {
+                answerText: recovered.answerText,
+                answerMarkdown,
+                tookMs: Date.now() - startedAt,
+                answerTokens: estimateTokenCount(answerMarkdown),
+                answerChars: answerMarkdown.length,
+                browserTransport: "cdp",
+                tabUrl: recoveryRequest.recovery.runtime.tabUrl,
+                conversationId: recoveryRequest.recovery.runtime.conversationId,
+                promptSubmitted: true,
+              };
+            })()
+          : await runBrowser({
+              prompt: payload.prompt,
+              attachments,
+              fallbackSubmission,
+              config: payload.browserConfig,
+              log: automationLogger,
+              heartbeatIntervalMs: payload.options.heartbeatIntervalMs,
+              verbose: payload.options.verbose,
+              sessionId: payload.options.sessionId,
+              followUpPrompts: payload.options.followUpPrompts,
+              runtimeHintCb: (runtime) => {
+                // Retain only in memory until the terminal event is built. The
+                // failure envelope later strips every worker-local CDP/process/
+                // profile field and carries only a durable ChatGPT URL + id.
+                latestRuntimeHint = runtime;
+              },
+              submittedPromptPreviewCb: (promptPreview) => {
+                submittedPromptPreview = promptPreview;
+              },
+              signal: runAbort.signal,
+              // Same resolved identity /ready and /runs admission use (options.accountId ?? env
+              // ?? DEFAULT_ACCOUNT_ID above), so the browser-side quarantine gates trip under
+              // this worker's authoritative account id rather than re-deriving from env
+              // independently (oracle-router-8t1).
+              accountId,
+            });
         runResult = result;
         if (activeRun?.id === runId) {
           const completedAtMs = Date.now();
@@ -1349,12 +1496,21 @@ export async function createRemoteServer(
             ? declaredRetryable
             : runErrorClass === "capacity_busy" ||
               runErrorClass === "transport_interrupted_before_submit";
+        const recovery = recoveryRequest
+          ? undefined
+          : buildRemoteRunRecoveryHint(details, latestRuntimeHint, {
+              originRunId: runId,
+              accountId,
+              authToken,
+              promptPreview: submittedPromptPreview ?? "",
+            });
         sendEvent({
           type: "done",
           ok: false,
           errorClass: runErrorClass,
           errorMessage: sanitizeErrorMessage(message),
           retryable: runRetryable,
+          ...(recovery ? { recovery } : {}),
           provenance: await buildRunProvenance({
             result: runResult,
             bindingVerified,
@@ -2309,6 +2465,11 @@ function sanitizeIdentityLabel(value: string | undefined): string | undefined {
   return trimmed;
 }
 
+function readSingleHeader(value: string | string[] | undefined): string | null {
+  if (typeof value !== "string" || value.length > 64) return null;
+  return /^[A-Za-z0-9._-]+$/.test(value) ? value : null;
+}
+
 function isAuthorizedBearer(authHeader: string | undefined, authToken: string): boolean {
   try {
     return timingSafeEqual(Buffer.from(authHeader ?? ""), Buffer.from(`Bearer ${authToken}`));
@@ -2423,6 +2584,7 @@ function sanitizeResult(
     chromeTargetId: undefined,
     tabUrl: result.tabUrl,
     conversationId: result.conversationId,
+    promptSubmitted: result.promptSubmitted,
     controllerPid: undefined,
     // Preserve model-selection evidence + warnings across the remote boundary.
     // Without these the local session runner fabricates `resolved=(unavailable)`

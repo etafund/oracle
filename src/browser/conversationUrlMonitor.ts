@@ -1,5 +1,6 @@
 import type { BrowserLogger } from "./types.js";
 import { delay } from "./utils.js";
+import { isConversationUrl } from "./conversationIdentity.js";
 
 export interface ConversationUrlMonitor {
   update: (label: string, timeoutMs?: number) => Promise<boolean>;
@@ -26,24 +27,31 @@ export function createConversationUrlMonitor(options: {
   const update = async (label: string, timeoutMs = 10_000): Promise<boolean> => {
     const startedAt = now();
     while (!stopped && now() - startedAt < timeoutMs) {
+      let url: string | null | undefined;
       try {
-        const url = await options.readUrl();
-        if (stopped) {
-          return false;
-        }
-        if (url && isConversationUrl(url)) {
-          options.logger(`[browser] conversation url (${label}) = ${url}`);
-          const persist = options.persistUrl(url);
-          activePersists.add(persist);
-          try {
-            await persist;
-          } finally {
-            activePersists.delete(persist);
-          }
-          return true;
-        }
+        url = await options.readUrl();
       } catch {
         // The page can navigate or disconnect between polls; keep trying until timeout.
+        await wait(pollIntervalMs);
+        continue;
+      }
+      if (stopped) {
+        return false;
+      }
+      if (url && isConversationUrl(url)) {
+        options.logger(`[browser] conversation url (${label}) = ${url}`);
+        // Persistence may enforce a stronger identity invariant than URL
+        // syntax (for example first-canonical-id-wins). Propagate that failure
+        // instead of treating it like a transient CDP read and polling/logging
+        // the same conflicting URL until timeout.
+        const persist = options.persistUrl(url);
+        activePersists.add(persist);
+        try {
+          await persist;
+        } finally {
+          activePersists.delete(persist);
+        }
+        return true;
       }
       await wait(pollIntervalMs);
     }
@@ -75,8 +83,4 @@ export function createConversationUrlMonitor(options: {
       await Promise.allSettled(activePersists);
     },
   };
-}
-
-function isConversationUrl(url: string): boolean {
-  return /\/c\/[a-z0-9-]+/i.test(url);
 }

@@ -9,6 +9,10 @@ import { waitForAssistantResponse } from "../pageActions.js";
 import { sha256OfBytes } from "../../oracle/v18/evidence.js";
 import { chatgptSelectorList } from "../selectors/chatgpt/index.js";
 import {
+  buildConversationIdFromHrefExpression,
+  normalizeChatGptConversationId,
+} from "../conversationIdentity.js";
+import {
   createChatGptProMachine,
   isFailureState,
   machineVerdict,
@@ -61,7 +65,7 @@ interface ChatgptDomProviderState {
   baselineTurns?: number | null;
   attachmentNames?: AttachmentReadyExpectation[];
   committedTurns?: number | null;
-  onPromptSubmitted?: () => Promise<void> | void;
+  onPromptSubmitted?: (submittedPrompt: string) => Promise<void> | void;
   /**
    * Authoritative worker account id (BrowserRunOptions.accountId, i.e. the
    * serve layer's `options.accountId ?? env`). Threaded into the pre-run and
@@ -310,7 +314,7 @@ async function readChatGptProDomProbe(
     sendExists: probe.sendExists === true,
     targetId: typeof probe.targetId === "string" ? probe.targetId : null,
     url: typeof probe.url === "string" ? probe.url : null,
-    conversationId: typeof probe.conversationId === "string" ? probe.conversationId : null,
+    conversationId: normalizeChatGptConversationId(probe.conversationId) ?? null,
     fingerprint: typeof probe.fingerprint === "string" ? probe.fingerprint : null,
   };
 }
@@ -322,6 +326,7 @@ function buildChatGptProDomProbeExpression(): string {
   const effortRows = JSON.stringify(chatgptSelectorList("effort_row"));
   const composerInputs = JSON.stringify(chatgptSelectorList("composer_textarea"));
   const sendButtons = JSON.stringify(chatgptSelectorList("send_button"));
+  const conversationIdExpression = buildConversationIdFromHrefExpression("url");
 
   return `(() => {
     const MODEL_PICKER_BUTTONS = ${modelPickerButtons};
@@ -430,7 +435,7 @@ function buildChatGptProDomProbeExpression(): string {
     const promptReady = COMPOSER_INPUTS.some((selector) => Boolean(document.querySelector(selector)));
     const sendExists = SEND_BUTTONS.some((selector) => Boolean(document.querySelector(selector)));
     const url = window.location?.href || null;
-    const conversationId = url?.match(/\\/c\\/([^/?#]+)/)?.[1] || null;
+    const conversationId = ${conversationIdExpression};
     return {
       modelLabel,
       effortLabels,

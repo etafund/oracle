@@ -40,7 +40,7 @@ export async function submitPrompt(
     baselineTurns?: number | null;
     inputTimeoutMs?: number | null;
     attachmentTimeoutMs?: number | null;
-    onPromptSubmitted?: () => Promise<void> | void;
+    onPromptSubmitted?: (submittedPrompt: string) => Promise<void> | void;
   },
   prompt: string,
   logger: BrowserLogger,
@@ -242,7 +242,7 @@ export async function submitPrompt(
     // onPromptSubmitted flag below.
     logger("Submitted prompt via send button click");
   }
-  await deps.onPromptSubmitted?.();
+  await deps.onPromptSubmitted?.(prompt);
 
   const commitTimeoutMs = Math.max(60_000, deps.inputTimeoutMs ?? 0);
   // Learned: the send button can succeed but the turn doesn't appear immediately; verify commit via turns/stop button.

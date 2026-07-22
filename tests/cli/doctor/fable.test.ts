@@ -278,7 +278,7 @@ describe("oracle doctor fable", () => {
     expect(envelope.next_command).toContain("--wait-for-lock 5m");
   });
 
-  test("reports the effective rotation env and degrades when strict account pinning is disabled", async () => {
+  test("ignores an inherited positive rotation env and preserves strict Fable account pinning", async () => {
     const envelope = await runFableDoctor(
       readyOptions({
         env: {
@@ -291,12 +291,12 @@ describe("oracle doctor fable", () => {
     );
 
     expect(envelope.ok).toBe(true);
-    expect(envelope.data.status).toBe("degraded");
-    expect(envelope.data.effective_run_contract.max_rate_limit_rotations).toBe(2);
-    expect(envelope.warnings).toContain("effective_run_contract:fable_account_rotation_enabled");
-    expect(envelope.fix_command).toBe(
-      "ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS=0 oracle doctor fable --caam-profile cc-arthur --caam-base /home/ubuntu/orch-homes --json",
+    expect(envelope.data.status).toBe("ready");
+    expect(envelope.data.effective_run_contract.max_rate_limit_rotations).toBe(0);
+    expect(envelope.warnings).not.toContain(
+      "effective_run_contract:fable_account_rotation_enabled",
     );
+    expect(envelope.fix_command).toBeNull();
   });
 
   test("registers the discoverable fable command and fable-local alias", () => {

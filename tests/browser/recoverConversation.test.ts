@@ -55,6 +55,17 @@ describe("resolveRecoveryUrl", () => {
     expect(resolveRecoveryUrl(metaWith({ tabUrl: "" }, undefined))).toBeNull();
   });
 
+  test("rejects ChatGPT's transient WEB conversation URL", () => {
+    expect(
+      resolveRecoveryUrl(
+        metaWith(
+          { tabUrl: "https://chatgpt.com/c/WEB:fee7a622-991a-497a-bac4-a878b86f82f3" },
+          undefined,
+        ),
+      ),
+    ).toBeNull();
+  });
+
   test("prefers harvest.url when runtime.tabUrl is a stale shell URL", () => {
     expect(
       resolveRecoveryUrl(

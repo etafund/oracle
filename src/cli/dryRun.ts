@@ -424,6 +424,7 @@ async function logClaudeCodeDryRunPlan({
     ? `profile=${caamProfile}; base=${caamBase!.base}; base_source=${caamBase!.source}; fail_closed=true; max_rate_limit_rotations=${resolveClaudeCodeMaxRateLimitRotations(
         runOptions.claudeCode?.maxRateLimitRotations,
         process.env,
+        { lane: "fable-local" },
       )}`
     : "disabled (no profile selected; direct Claude account resolution applies)";
   const lines = [

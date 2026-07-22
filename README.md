@@ -594,7 +594,7 @@ Agent environment toggles (opt-in, off by default):
 - `ORACLE_CLAUDE_CODE_STREAM_JSON_INPUT=1` — switch the Fable xHigh (`--lane fable-local`) lane to the stream-json content-block stdin transport, which base64-encodes image/PDF attachments into Anthropic content blocks instead of rejecting them. Default off keeps the historical flat-text path byte-for-byte; the encoded payload is held to a 32 MB budget.
 - `ORACLE_CLAUDE_CODE_CAAM_PROFILE=<name>` — environment alternative to `--caam-profile` for pinning the Fable subscription profile.
 - `ORACLE_CLAUDE_CODE_CAAM_BASE=<absolute-path>` — environment alternative to `--caam-base`; `CAAM_SHALLOW_HOMES_DIR` is the native CAAM fallback.
-- `ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS=<n>` — opt into automatic CAAM account rotation after a rate limit. The default is `0`; a positive value deliberately weakens strict account pinning, so `oracle doctor fable` reports degraded until it is reset to `0`.
+- `ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS=<n>` — compatibility cap for non-reviewed Claude Code integrations. The reviewed `fable-local` lane always clamps the effective value to `0`, so inherited or configured positive values cannot rotate away from the selected subscription account.
 - `ORACLE_CAAM_EXECUTABLE=<absolute-path>` — override the trusted `caam` executable resolution.
 
 Session management

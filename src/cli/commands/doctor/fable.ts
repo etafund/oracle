@@ -275,6 +275,7 @@ export async function runFableDoctor(
   const maxRateLimitRotations = resolveClaudeCodeMaxRateLimitRotations(
     options.maxRateLimitRotations,
     env,
+    { lane: "fable-local" },
   );
   const profileSource = options.caamProfile?.trim()
     ? "config"

@@ -290,6 +290,19 @@ interface TargetConnectMessages {
   closeFailed: (targetId: string, message: string) => string;
 }
 
+export class OrphanedChromeTargetError extends Error {
+  constructor(
+    readonly targetId: string,
+    cause: unknown,
+  ) {
+    super(
+      `Failed to close unused browser tab ${targetId}: ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause },
+    );
+    this.name = "OrphanedChromeTargetError";
+  }
+}
+
 export interface RemoteTargetInfo {
   targetId?: string;
   type?: string;
@@ -518,9 +531,11 @@ async function connectToNewTarget(
       } catch (closeError) {
         const closeMessage = closeError instanceof Error ? closeError.message : String(closeError);
         logger(messages.closeFailed(targetId, closeMessage));
+        throw new OrphanedChromeTargetError(targetId, closeError);
       }
     }
   } catch (error) {
+    if (error instanceof OrphanedChromeTargetError) throw error;
     const message = error instanceof Error ? error.message : String(error);
     logger(messages.openFailed(message));
   }
@@ -624,7 +639,11 @@ export async function connectWithNewTab(
   logger: BrowserLogger,
   initialUrl?: string,
   host?: string,
-  options?: { fallbackToDefault?: boolean; retries?: number; retryDelayMs?: number },
+  options?: {
+    fallbackToDefault?: boolean;
+    retries?: number;
+    retryDelayMs?: number;
+  },
 ): Promise<IsolatedTabConnection> {
   const effectiveHost = host ?? "127.0.0.1";
   const url = initialUrl ?? "about:blank";

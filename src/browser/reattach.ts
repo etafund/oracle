@@ -16,8 +16,11 @@ import {
   launchChrome,
   connectToChrome,
   hideChromeWindow,
+  closeRemoteChromeTarget,
+  connectWithNewTab,
   connectToRemoteChromeTarget,
   listRemoteChromeTargets,
+  OrphanedChromeTargetError,
 } from "./chromeLifecycle.js";
 import { resolveBrowserConfig } from "./config.js";
 import { clearStaleChatGptConversationCookies, syncCookies } from "./cookies.js";
@@ -32,7 +35,7 @@ import {
   withTimeout,
   openConversationFromSidebar,
   openConversationFromSidebarWithRetry,
-  waitForLocationChange,
+  waitForPromptPreview,
   readConversationTurnIndex,
   buildPromptEchoMatcher,
   recoverPromptEcho,
@@ -40,6 +43,27 @@ import {
   type TargetInfoLite,
 } from "./reattachHelpers.js";
 import { waitForDeepResearchCompletion } from "./actions/deepResearch.js";
+import {
+  assertCapturedAnswerNotAccessArtifact,
+  assertPreRunAccessState,
+} from "./actions/challengeDetection.js";
+import {
+  isProvisionalChatGptConversationId,
+  isProvisionalChatGptConversationUrl,
+  normalizeChatGptConversationId,
+} from "./conversationIdentity.js";
+import { delay } from "./utils.js";
+import {
+  acquireBrowserTabLease,
+  OrphanedBrowserTabLeaseError,
+  type BrowserTabLease,
+} from "./tabLeaseRegistry.js";
+import { BrowserAutomationError } from "../oracle/errors.js";
+import { closeOwnedTargetWithDeadline, latchBrowserCleanupTaint } from "./index.js";
+import {
+  assertCapturedAssistantResponseBound,
+  registerSubmittedUserMessage,
+} from "./actions/captureBinding.js";
 
 export interface ReattachDeps {
   listTargets?: () => Promise<TargetInfoLite[]>;
@@ -52,11 +76,101 @@ export interface ReattachDeps {
     config: BrowserSessionConfig | undefined,
   ) => Promise<ReattachResult>;
   promptPreview?: string;
+  /** Refuse target fallback; attach only to runtime.chromeTargetId. */
+  requireExactTarget?: boolean;
+  /** Require the saved user-turn prefix to exist before any answer capture. */
+  requirePromptPreviewMatch?: boolean;
+  /** Fleet recovery must never launch/reopen a separate browser profile. */
+  allowNewChromeFallback?: boolean;
+  /** Authoritative worker account id for browser-side quarantine gates. */
+  accountId?: string;
 }
 
 export interface ReattachResult {
   answerText: string;
   answerMarkdown: string;
+}
+
+class ProvisionalConversationTargetMissingError extends Error {}
+class ConversationRecoveryProofError extends Error {}
+
+type ProvenConversationIdentity = {
+  conversationId: string;
+  conversationUrl: string;
+};
+
+async function readCurrentConversationIdentity(
+  Runtime: ChromeClient["Runtime"],
+): Promise<ProvenConversationIdentity | null> {
+  const { result } = await Runtime.evaluate({
+    expression: "location.href",
+    returnByValue: true,
+  });
+  const conversationUrl = typeof result?.value === "string" ? result.value : "";
+  const conversationId = extractConversationIdFromUrl(conversationUrl);
+  return conversationId ? { conversationId, conversationUrl } : null;
+}
+
+async function waitForCanonicalConversationIdentity(
+  Runtime: ChromeClient["Runtime"],
+  expectedConversationId: string | undefined,
+  timeoutMs: number,
+  reason: string,
+): Promise<ProvenConversationIdentity> {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  do {
+    try {
+      const identity = await readCurrentConversationIdentity(Runtime);
+      if (identity) {
+        if (expectedConversationId && identity.conversationId !== expectedConversationId) {
+          throw new ConversationRecoveryProofError(
+            `${reason}; expected conversation ${expectedConversationId}, but the tab shows ${identity.conversationId}.`,
+          );
+        }
+        return identity;
+      }
+    } catch (error) {
+      if (error instanceof ConversationRecoveryProofError) {
+        throw error;
+      }
+      // A navigation can briefly destroy the execution context. Retry until
+      // the bounded canonicalization deadline rather than trusting a null id.
+    }
+    if (Date.now() >= deadline) break;
+    await delay(200);
+  } while (Date.now() < deadline);
+  throw new ConversationRecoveryProofError(
+    `${reason}; the tab did not expose a durable canonical ChatGPT conversation URL before capture.`,
+  );
+}
+
+async function assertConversationIdentityStillOpen(
+  Runtime: ChromeClient["Runtime"],
+  expected: ProvenConversationIdentity,
+  reason: string,
+): Promise<void> {
+  let current: ProvenConversationIdentity | null = null;
+  try {
+    current = await readCurrentConversationIdentity(Runtime);
+  } catch {
+    // Treat an unreadable route as a failed proof. A later recovery can reopen
+    // the saved canonical URL, but this capture must not be returned.
+  }
+  if (!current || current.conversationId !== expected.conversationId) {
+    throw new ConversationRecoveryProofError(
+      `${reason}; expected conversation ${expected.conversationId}, but the capture target now shows ${current?.conversationId ?? "no durable conversation"}.`,
+    );
+  }
+}
+
+function hasOnlyProvisionalConversationIdentity(runtime: BrowserRuntimeMetadata): boolean {
+  const provisionalIdentityPresent =
+    isProvisionalChatGptConversationId(runtime.conversationId) ||
+    isProvisionalChatGptConversationUrl(runtime.tabUrl ?? "");
+  const durableConversationId =
+    normalizeChatGptConversationId(runtime.conversationId) ??
+    extractConversationIdFromUrl(runtime.tabUrl ?? "");
+  return provisionalIdentityPresent && !durableConversationId;
 }
 
 export async function resumeBrowserSession(
@@ -70,13 +184,27 @@ export async function resumeBrowserSession(
     (async (runtimeMeta, configMeta) =>
       resumeBrowserSessionViaNewChrome(runtimeMeta, configMeta, logger, deps));
   let closeAttachedConnection: (() => Promise<void>) | null = null;
+  let provenConversation: ProvenConversationIdentity | null = null;
   const closeAttached = async (): Promise<void> => {
     const close = closeAttachedConnection;
     closeAttachedConnection = null;
-    await close?.().catch(() => undefined);
+    if (!close) return;
+    if (deps.allowNewChromeFallback === false) {
+      // Strict fleet recovery owns the target in its outer helper, which
+      // certifies closure through a fresh bounded HTTP close. A wedged page
+      // CDP detach must not prevent that outer finally from running.
+      void close().catch(() => undefined);
+      return;
+    }
+    await close().catch(() => undefined);
   };
 
   if (!runtime.chromePort && !runtime.chromeBrowserWSEndpoint) {
+    if (hasOnlyProvisionalConversationIdentity(runtime)) {
+      throw new ProvisionalConversationTargetMissingError(
+        "Saved session only has a provisional ChatGPT conversation identity and no running Chrome target; refusing to recover an arbitrary conversation.",
+      );
+    }
     logger("No running Chrome detected; reopening browser to locate the session.");
     return recoverSession(runtime, config);
   }
@@ -96,7 +224,23 @@ export async function resumeBrowserSession(
           browserWSEndpoint,
         })) as TargetInfoLite[]);
     const targetList = (await listTargets()) as TargetInfoLite[];
-    const target = pickTarget(targetList, liveRuntime);
+    const target = deps.requireExactTarget
+      ? targetList.find(
+          (candidate) =>
+            Boolean(liveRuntime.chromeTargetId) &&
+            (candidate.targetId ?? candidate.id) === liveRuntime.chromeTargetId,
+        )
+      : pickTarget(targetList, liveRuntime);
+    if (deps.requireExactTarget && !target) {
+      throw new ConversationRecoveryProofError(
+        "The isolated recovery target no longer exists; refusing to attach to another Chrome tab.",
+      );
+    }
+    if (!target && hasOnlyProvisionalConversationIdentity(liveRuntime)) {
+      throw new ProvisionalConversationTargetMissingError(
+        "Saved session only has a provisional ChatGPT conversation identity and no exact Chrome target; refusing to attach to an arbitrary tab.",
+      );
+    }
     const connection =
       browserWSEndpoint && !deps.connect
         ? await connectToRemoteChromeTarget(host, port ?? 9222, logger, {
@@ -136,23 +280,83 @@ export async function resumeBrowserSession(
       await Page.enable();
     }
 
-    const ensureConversationOpen = async () => {
+    const ensureConversationOpen = async (): Promise<ProvenConversationIdentity> => {
+      const expectedConversationId =
+        normalizeChatGptConversationId(runtime.conversationId) ??
+        extractConversationIdFromUrl(runtime.tabUrl ?? "");
+      const attachedTargetId = target?.targetId ?? target?.id;
+      const attachedExactSavedTarget = Boolean(
+        liveRuntime.chromeTargetId && attachedTargetId === liveRuntime.chromeTargetId,
+      );
+      const requirePromptOwnershipProof = async (reason: string) => {
+        const promptPreview = deps.promptPreview?.trim();
+        if (!promptPreview) {
+          throw new ConversationRecoveryProofError(
+            `${reason}; the saved session has no prompt preview to prove conversation ownership.`,
+          );
+        }
+        const proofTimeoutMs = Math.min(10_000, Math.max(1_000, config?.timeoutMs ?? 10_000));
+        const matched = await waitForPromptPreview(Runtime, promptPreview, proofTimeoutMs);
+        if (!matched) {
+          throw new ConversationRecoveryProofError(
+            `${reason}; the saved prompt was not found in the attached conversation.`,
+          );
+        }
+        logger("Saved prompt verified in the attached conversation before reattach capture.");
+      };
       const { result } = await Runtime.evaluate({
         expression: "location.href",
         returnByValue: true,
       });
       const href = typeof result?.value === "string" ? result.value : "";
-      if (href.includes("/c/")) {
-        const currentId = extractConversationIdFromUrl(href);
-        if (!runtime.conversationId || (currentId && currentId === runtime.conversationId)) {
-          return;
+      const currentId = extractConversationIdFromUrl(href);
+      if (currentId && (!expectedConversationId || currentId === expectedConversationId)) {
+        if (!expectedConversationId) {
+          if (!attachedExactSavedTarget) {
+            throw new ConversationRecoveryProofError(
+              "The attached tab has a canonical ChatGPT conversation but the session saved neither that durable identity nor the exact Chrome target",
+            );
+          }
+          await requirePromptOwnershipProof(
+            hasOnlyProvisionalConversationIdentity(liveRuntime)
+              ? "The exact saved Chrome target moved from a provisional ChatGPT route to a canonical conversation"
+              : "The exact saved Chrome target has a canonical conversation without a saved durable identity",
+          );
         }
+        if (deps.requirePromptPreviewMatch) {
+          await requirePromptOwnershipProof(
+            "The reopened canonical conversation must contain this session's saved user turn",
+          );
+        }
+        return { conversationId: currentId, conversationUrl: href };
+      }
+      if (
+        !currentId &&
+        !expectedConversationId &&
+        isProvisionalChatGptConversationUrl(href) &&
+        attachedExactSavedTarget
+      ) {
+        await requirePromptOwnershipProof(
+          "The exact saved Chrome target still has only a provisional ChatGPT conversation identity",
+        );
+        logger(
+          "Saved Chrome target is still on ChatGPT's provisional conversation route; waiting for the canonical URL before capture.",
+        );
+        const canonical = await waitForCanonicalConversationIdentity(
+          Runtime,
+          undefined,
+          Math.max(5_000, config?.timeoutMs ?? 120_000),
+          "The exact saved Chrome target remained provisional",
+        );
+        await requirePromptOwnershipProof(
+          "The exact saved Chrome target moved from a provisional route to a canonical conversation",
+        );
+        return canonical;
       }
       const opened = await openConversationFromSidebarWithRetry(
         Runtime,
         {
-          conversationId:
-            runtime.conversationId ?? extractConversationIdFromUrl(runtime.tabUrl ?? ""),
+          conversationId: expectedConversationId,
           preferProjects: true,
           promptPreview: deps.promptPreview,
         },
@@ -161,7 +365,18 @@ export async function resumeBrowserSession(
       if (!opened) {
         throw new Error("Unable to locate prior ChatGPT conversation in sidebar.");
       }
-      await waitForLocationChange(Runtime, 15_000);
+      const identity = await waitForCanonicalConversationIdentity(
+        Runtime,
+        expectedConversationId,
+        2_000,
+        "The sidebar recovery navigation did not preserve the saved conversation",
+      );
+      if (deps.requirePromptPreviewMatch) {
+        await requirePromptOwnershipProof(
+          "The sidebar-reopened conversation must contain this session's saved user turn",
+        );
+      }
+      return identity;
     };
 
     const waitForResponse = deps.waitForAssistantResponse ?? waitForAssistantResponse;
@@ -173,10 +388,35 @@ export async function resumeBrowserSession(
       pingTimeoutMs,
       "Reattach target did not respond",
     );
-    await ensureConversationOpen();
+    provenConversation = await ensureConversationOpen();
+    const promptTurnBinding = await readPromptPreviewTurnBinding(Runtime, deps.promptPreview);
+    const promptTurnIndex = promptTurnBinding?.matchedIndex ?? null;
+    if (deps.requirePromptPreviewMatch) {
+      if (!promptTurnBinding || promptTurnIndex === null) {
+        throw new ConversationRecoveryProofError(
+          "The saved user turn was visible during recovery but no concrete turn index could be bound; refusing an unscoped assistant capture.",
+        );
+      }
+      if (
+        promptTurnBinding.matchCount !== 1 ||
+        promptTurnBinding.latestUserIndex !== promptTurnIndex
+      ) {
+        throw new ConversationRecoveryProofError(
+          "The saved user turn is ambiguous or is not the conversation's latest user turn; refusing to capture a different turn's assistant response.",
+        );
+      }
+    }
     const minTurnIndex =
-      (await readPromptPreviewTurnIndex(Runtime, deps.promptPreview)) ??
+      promptTurnIndex ??
       (deps.promptPreview ? null : await readConversationTurnIndex(Runtime, logger));
+    if (deps.requirePromptPreviewMatch) {
+      const binding = await registerSubmittedUserMessage(Runtime, deps.promptPreview ?? "", logger);
+      if (binding.quality !== "message-handle") {
+        throw new ConversationRecoveryProofError(
+          "The saved user turn could not be registered as an exact structural message handle; refusing recovery capture.",
+        );
+      }
+    }
     if (config?.researchMode === "deep") {
       const waitForDeepResearch =
         deps.waitForDeepResearchCompletion ?? waitForDeepResearchCompletion;
@@ -187,6 +427,17 @@ export async function resumeBrowserSession(
         timeoutMs + 5_000,
         "Reattach Deep Research response timed out",
       );
+      if (deps.requirePromptPreviewMatch) {
+        await assertCapturedAssistantResponseBound(Runtime, {}, logger);
+      }
+      await assertCapturedAnswerNotAccessArtifact(Runtime, { text: researchResult.text }, logger, {
+        quarantine: { accountId: deps.accountId },
+      });
+      await assertConversationIdentityStillOpen(
+        Runtime,
+        provenConversation,
+        "Deep Research reattach completed on a different route",
+      );
       await closeAttached();
       return {
         answerText: researchResult.text,
@@ -195,9 +446,21 @@ export async function resumeBrowserSession(
     }
     const promptEcho = buildPromptEchoMatcher(deps.promptPreview);
     const answer = await withTimeout(
-      waitForResponse(Runtime, timeoutMs, logger, minTurnIndex ?? undefined),
+      waitForResponse(
+        Runtime,
+        timeoutMs,
+        logger,
+        minTurnIndex ?? undefined,
+        provenConversation.conversationId,
+        deps.accountId,
+      ),
       timeoutMs + 5_000,
       "Reattach response timed out",
+    );
+    await assertConversationIdentityStillOpen(
+      Runtime,
+      provenConversation,
+      "Reattach response capture drifted to a different route",
     );
     const recovered = await recoverPromptEcho(
       Runtime,
@@ -206,25 +469,389 @@ export async function resumeBrowserSession(
       logger,
       minTurnIndex,
       timeoutMs,
+      provenConversation.conversationId,
+    );
+    if (deps.requirePromptPreviewMatch) {
+      await assertCapturedAssistantResponseBound(Runtime, recovered.meta, logger);
+    }
+    await assertConversationIdentityStillOpen(
+      Runtime,
+      provenConversation,
+      "Reattach prompt-echo recovery drifted to a different route",
     );
     const markdown =
       (await withTimeout(
-        captureMarkdown(Runtime, recovered.meta, logger),
+        captureMarkdown(Runtime, recovered.meta, logger, {
+          requireSourceIdentity: deps.requirePromptPreviewMatch === true,
+        }),
         15_000,
         "Reattach markdown capture timed out",
       )) ?? recovered.text;
+    if (deps.requirePromptPreviewMatch) {
+      await assertCapturedAssistantResponseBound(Runtime, recovered.meta, logger);
+    }
+    await assertConversationIdentityStillOpen(
+      Runtime,
+      provenConversation,
+      "Reattach markdown capture drifted to a different route",
+    );
     const aligned = alignPromptEchoMarkdown(recovered.text, markdown, promptEcho, logger);
 
     await closeAttached();
     return { answerText: aligned.answerText, answerMarkdown: aligned.answerMarkdown };
   } catch (error) {
     await closeAttached();
+    if (
+      error instanceof ProvisionalConversationTargetMissingError ||
+      error instanceof ConversationRecoveryProofError
+    ) {
+      throw error;
+    }
+    if (deps.allowNewChromeFallback === false) {
+      throw error;
+    }
     const message = error instanceof Error ? error.message : String(error);
     logger(
       `Existing Chrome reattach failed (${message}); reopening browser to locate the session.`,
     );
-    return recoverSession(runtime, config);
+    const recoveryRuntime = provenConversation
+      ? {
+          ...runtime,
+          conversationId: provenConversation.conversationId,
+          tabUrl: provenConversation.conversationUrl,
+        }
+      : runtime;
+    return recoverSession(recoveryRuntime, config);
   }
+}
+
+export interface IsolatedFleetRecoveryOptions {
+  runtime: BrowserRuntimeMetadata & {
+    tabUrl: string;
+    conversationId: string;
+    promptSubmitted: true;
+  };
+  config?: BrowserSessionConfig;
+  logger: BrowserLogger;
+  chromeHost: string;
+  chromePort: number;
+  profileDir: string;
+  promptPreview: string;
+  sessionId?: string;
+  maxConcurrentTabs?: number;
+  leaseTimeoutMs?: number;
+  signal?: AbortSignal;
+  accountId?: string;
+  /** Test seam; production uses the strict isolated-target connector. */
+  connectWithNewTabFn?: typeof connectWithNewTab;
+}
+
+class IndeterminateRecoveryTargetConnectError extends Error {
+  constructor(reason: "aborted" | "timed out") {
+    super(
+      `Isolated recovery target creation ${reason}; the lane remains reserved until any late target result is closed.`,
+    );
+    this.name = "IndeterminateRecoveryTargetConnectError";
+  }
+}
+
+/**
+ * Recover a submitted fleet run without touching an existing lane tab. A
+ * normal tab lease is acquired, a new owned tab is opened at the exact
+ * canonical conversation, the saved user turn is proved, and only then is
+ * the assistant response captured. The owned tab is closed before the lease
+ * is released; no prompt submission path is reachable.
+ */
+export async function resumeBrowserSessionInIsolatedFleetTab(
+  options: IsolatedFleetRecoveryOptions,
+): Promise<ReattachResult> {
+  const {
+    runtime,
+    config,
+    logger,
+    chromeHost,
+    chromePort,
+    profileDir,
+    promptPreview,
+    sessionId,
+    maxConcurrentTabs,
+    leaseTimeoutMs,
+    signal,
+    accountId,
+    connectWithNewTabFn = connectWithNewTab,
+  } = options;
+  let lease: BrowserTabLease | null = null;
+  let isolated: Awaited<ReturnType<typeof connectWithNewTab>> | null = null;
+  let primaryError: unknown;
+  let hasPrimaryError = false;
+  let recoveryResult: ReattachResult | undefined;
+  let orphanedTargetId: string | null = null;
+  let closeOwnedPromise: Promise<void> | null = null;
+  let deferredConnectCleanup = false;
+  const closeOwned = (): Promise<void> => {
+    if (closeOwnedPromise) return closeOwnedPromise;
+    closeOwnedPromise = (async () => {
+      const targetId = isolated?.targetId ?? orphanedTargetId ?? undefined;
+      // A dead CDP detach can wedge forever. Start it best-effort with a
+      // handled rejection, then independently close the owned target through
+      // the bounded fresh HTTP path below.
+      void isolated?.client.close().catch((error) => {
+        logger(
+          `Recovery CDP detach failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+      const closed = await closeOwnedTargetWithDeadline(
+        closeRemoteChromeTarget(chromeHost, chromePort, targetId, logger),
+        logger,
+        { targetId: targetId ?? null },
+      );
+      if (!closed) {
+        throw new BrowserAutomationError(
+          `Failed to close isolated recovery target ${targetId ?? "unknown"}; recovery success cannot be certified.`,
+          { stage: "recovery-cleanup", retryable: false },
+        );
+      }
+    })();
+    return closeOwnedPromise;
+  };
+  let removeAbortListener: () => void = () => {};
+  try {
+    try {
+      lease = await acquireBrowserTabLease(profileDir, {
+        maxConcurrentTabs,
+        timeoutMs: leaseTimeoutMs,
+        logger,
+        sessionId,
+        chromeHost,
+        chromePort,
+        signal,
+      });
+    } catch (error) {
+      if (error instanceof OrphanedBrowserTabLeaseError) {
+        latchBrowserCleanupTaint(error.message, logger);
+        // Keep ownership reachable and make one independently bounded retry;
+        // the record remains fail-closed if the registry is still locked.
+        void error.lease.release().catch((retryError) => {
+          latchBrowserCleanupTaint(
+            `orphaned recovery lease rollback retry failed (${error.lease.id}): ${retryError instanceof Error ? retryError.message : String(retryError)}`,
+            logger,
+          );
+        });
+      }
+      throw error;
+    }
+    if (signal?.aborted) {
+      throw new Error("Remote browser recovery caller disconnected before tab creation.");
+    }
+    const connectAttempt = connectWithNewTabFn(chromePort, logger, runtime.tabUrl, chromeHost, {
+      fallbackToDefault: false,
+      retries: 6,
+      retryDelayMs: 500,
+    });
+    const connectTimeoutMs = Math.max(1_000, Math.min(config?.timeoutMs ?? 30_000, 30_000));
+    let connectTimer: ReturnType<typeof setTimeout> | null = null;
+    let removeConnectAbortListener = (): void => {};
+    const connectCancelled = new Promise<never>((_resolve, reject) => {
+      const rejectOnce = (reason: "aborted" | "timed out") =>
+        reject(new IndeterminateRecoveryTargetConnectError(reason));
+      connectTimer = setTimeout(() => rejectOnce("timed out"), connectTimeoutMs);
+      if (signal) {
+        const onAbort = () => rejectOnce("aborted");
+        signal.addEventListener("abort", onAbort, { once: true });
+        removeConnectAbortListener = () => signal.removeEventListener("abort", onAbort);
+        if (signal.aborted) onAbort();
+      }
+    });
+    try {
+      isolated = await Promise.race([connectAttempt, connectCancelled]);
+    } catch (error) {
+      if (error instanceof IndeterminateRecoveryTargetConnectError) {
+        deferredConnectCleanup = true;
+        latchBrowserCleanupTaint(error.message, logger);
+        const lateLease = lease;
+        // Do not abandon the in-flight CDP operation. If it ever settles,
+        // close any target it created before releasing the capacity lease.
+        // If it never settles, the fail-closed lease and cleanup taint remain.
+        void connectAttempt
+          .then(
+            async (lateConnection) => {
+              const lateTargetId = lateConnection.targetId;
+              void lateConnection.client.close().catch(() => undefined);
+              if (lateTargetId) {
+                const closed = await closeOwnedTargetWithDeadline(
+                  closeRemoteChromeTarget(chromeHost, chromePort, lateTargetId, logger),
+                  logger,
+                  { targetId: lateTargetId },
+                );
+                if (!closed) {
+                  throw new Error(
+                    `Late isolated recovery target ${lateTargetId} could not be closed.`,
+                  );
+                }
+              }
+              await lateLease?.release();
+            },
+            async (lateError) => {
+              if (lateError instanceof OrphanedChromeTargetError) {
+                const closed = await closeOwnedTargetWithDeadline(
+                  closeRemoteChromeTarget(chromeHost, chromePort, lateError.targetId, logger),
+                  logger,
+                  { targetId: lateError.targetId },
+                );
+                if (!closed) throw lateError;
+              }
+              await lateLease?.release();
+            },
+          )
+          .catch((lateCleanupError) => {
+            latchBrowserCleanupTaint(
+              `late isolated recovery target cleanup failed: ${lateCleanupError instanceof Error ? lateCleanupError.message : String(lateCleanupError)}`,
+              logger,
+            );
+          });
+      }
+      if (error instanceof OrphanedChromeTargetError) {
+        orphanedTargetId = error.targetId;
+        logger(
+          `Isolated recovery target ${error.targetId} survived its first close attempt; retrying through bounded cleanup.`,
+        );
+      }
+      throw error;
+    } finally {
+      if (connectTimer) clearTimeout(connectTimer);
+      removeConnectAbortListener();
+    }
+    const targetId = isolated?.targetId;
+    if (!isolated || !targetId) {
+      throw new ConversationRecoveryProofError(
+        "Chrome did not create a dedicated recovery tab; refusing to use its default tab.",
+      );
+    }
+    if (signal?.aborted) {
+      throw new Error("Remote browser recovery caller disconnected during tab creation.");
+    }
+    const aborted = signal
+      ? new Promise<never>((_resolve, reject) => {
+          const onAbort = () => {
+            void closeOwned().then(
+              () =>
+                reject(
+                  new Error("Remote browser recovery caller disconnected; isolated tab closed."),
+                ),
+              (cleanupError) =>
+                reject(
+                  new BrowserAutomationError(
+                    `Remote browser recovery caller disconnected and isolated-tab cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+                    { stage: "recovery-cleanup", retryable: false },
+                  ),
+                ),
+            );
+          };
+          signal.addEventListener("abort", onAbort, { once: true });
+          removeAbortListener = () => signal.removeEventListener("abort", onAbort);
+        })
+      : null;
+    const raceAbort = async <T>(work: Promise<T>): Promise<T> =>
+      aborted ? await Promise.race([work, aborted]) : await work;
+
+    await raceAbort(
+      lease.update({
+        chromeHost,
+        chromePort,
+        chromeTargetId: targetId,
+        tabUrl: runtime.tabUrl,
+      }),
+    );
+
+    const { Page, Runtime } = isolated.client;
+    await raceAbort(
+      (async () => {
+        await Page.enable?.();
+        await Runtime.enable?.();
+        // Navigate explicitly even though target creation received the same URL:
+        // this gives us the normal document-ready proof before reattach opens a
+        // second, exact-target CDP session.
+        await navigateToChatGPT(Page, Runtime, runtime.tabUrl, logger);
+        await assertPreRunAccessState(Runtime, logger, { quarantine: { accountId } });
+      })(),
+    );
+
+    const recovery = resumeBrowserSession(
+      {
+        ...runtime,
+        chromeHost,
+        chromePort,
+        chromeTargetId: targetId,
+      },
+      config,
+      logger,
+      {
+        promptPreview,
+        requireExactTarget: true,
+        requirePromptPreviewMatch: true,
+        allowNewChromeFallback: false,
+        accountId,
+      },
+    );
+    recoveryResult = await raceAbort(recovery);
+  } catch (error) {
+    primaryError = error;
+    hasPrimaryError = true;
+  }
+
+  removeAbortListener();
+  // Load-bearing order: the physical owned tab is closed before the lease
+  // advertises a free slot to sibling lanes.
+  let cleanupError: unknown;
+  if (!deferredConnectCleanup) {
+    try {
+      await closeOwned();
+    } catch (error) {
+      cleanupError = error;
+      logger(
+        `Failed to close isolated recovery tab: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  if (lease && !cleanupError && !deferredConnectCleanup) {
+    await lease.release().catch((error) => {
+      cleanupError ??= error;
+      latchBrowserCleanupTaint(
+        `isolated recovery lease release failed (${lease?.id ?? "unknown"}): ${error instanceof Error ? error.message : String(error)}`,
+        logger,
+      );
+      logger(
+        `Failed to release isolated recovery tab lease: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+  } else if (lease && (cleanupError || deferredConnectCleanup)) {
+    logger(
+      `[browser] Keeping isolated recovery lease ${lease.id.slice(0, 8)} active because owned-target close was not proved.`,
+    );
+  }
+
+  // Preserve primary work failures after cleanup; cleanup-only failures make
+  // an otherwise successful recovery uncertifiable. Keeping both decisions
+  // outside `finally` prevents cleanup control flow from overwriting the
+  // original result/error while still guaranteeing close-before-release.
+  if (hasPrimaryError) {
+    throw primaryError;
+  }
+  if (cleanupError) {
+    throw cleanupError instanceof BrowserAutomationError
+      ? cleanupError
+      : new BrowserAutomationError(
+          `Isolated recovery cleanup failed; recovery success cannot be certified: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+          { stage: "recovery-cleanup", retryable: false },
+        );
+  }
+  if (!recoveryResult) {
+    throw new BrowserAutomationError("Isolated recovery completed without a result.", {
+      stage: "recovery",
+      retryable: false,
+    });
+  }
+  return recoveryResult;
 }
 
 async function refreshAttachRuntime(
@@ -270,6 +897,11 @@ async function resumeBrowserSessionViaNewChrome(
   logger: BrowserLogger,
   deps: ReattachDeps,
 ): Promise<ReattachResult> {
+  if (hasOnlyProvisionalConversationIdentity(runtime)) {
+    throw new ProvisionalConversationTargetMissingError(
+      "Saved session only has a provisional ChatGPT conversation identity; refusing to recover an arbitrary conversation from history.",
+    );
+  }
   const resolved = resolveBrowserConfig(config ?? {});
   const manualLogin = Boolean(resolved.manualLogin);
   const userDataDir = manualLogin
@@ -321,6 +953,10 @@ async function resumeBrowserSessionViaNewChrome(
   }
   await ensurePromptReady(Runtime, resolved.inputTimeoutMs, logger);
 
+  const savedConversationId =
+    normalizeChatGptConversationId(runtime.conversationId) ??
+    extractConversationIdFromUrl(runtime.tabUrl ?? "");
+
   const conversationUrl = buildConversationUrl(runtime, resolved.url);
   if (conversationUrl) {
     logger(`Reopening conversation at ${conversationUrl}`);
@@ -328,11 +964,13 @@ async function resumeBrowserSessionViaNewChrome(
     await ensureNotBlocked(Runtime, resolved.headless, logger);
     await ensurePromptReady(Runtime, resolved.inputTimeoutMs, logger);
   } else {
+    const conversationId =
+      normalizeChatGptConversationId(runtime.conversationId) ??
+      extractConversationIdFromUrl(runtime.tabUrl ?? "");
     const opened = await openConversationFromSidebarWithRetry(
       Runtime,
       {
-        conversationId:
-          runtime.conversationId ?? extractConversationIdFromUrl(runtime.tabUrl ?? ""),
+        conversationId,
         preferProjects:
           resolved.url !== CHATGPT_URL ||
           Boolean(
@@ -345,8 +983,14 @@ async function resumeBrowserSessionViaNewChrome(
     if (!opened) {
       throw new Error("Unable to locate prior ChatGPT conversation in sidebar.");
     }
-    await waitForLocationChange(Runtime, 15_000);
   }
+
+  const provenConversation = await waitForCanonicalConversationIdentity(
+    Runtime,
+    savedConversationId,
+    2_000,
+    "The reopened browser did not preserve the saved conversation",
+  );
 
   const waitForResponse = deps.waitForAssistantResponse ?? waitForAssistantResponse;
   const captureMarkdown = deps.captureAssistantMarkdown ?? captureAssistantMarkdown;
@@ -390,6 +1034,12 @@ async function resumeBrowserSessionViaNewChrome(
         requireScopedTargetOwner: true,
       },
     );
+    await assertCapturedAnswerNotAccessArtifact(Runtime, { text: researchResult.text }, logger);
+    await assertConversationIdentityStillOpen(
+      Runtime,
+      provenConversation,
+      "Deep Research recovery completed on a different route",
+    );
     await cleanup();
     return {
       answerText: researchResult.text,
@@ -397,7 +1047,18 @@ async function resumeBrowserSessionViaNewChrome(
     };
   }
   const promptEcho = buildPromptEchoMatcher(deps.promptPreview);
-  const answer = await waitForResponse(Runtime, timeoutMs, logger, minTurnIndex ?? undefined);
+  const answer = await waitForResponse(
+    Runtime,
+    timeoutMs,
+    logger,
+    minTurnIndex ?? undefined,
+    provenConversation.conversationId,
+  );
+  await assertConversationIdentityStillOpen(
+    Runtime,
+    provenConversation,
+    "Recovered response capture drifted to a different route",
+  );
   const recovered = await recoverPromptEcho(
     Runtime,
     answer,
@@ -405,8 +1066,22 @@ async function resumeBrowserSessionViaNewChrome(
     logger,
     minTurnIndex,
     timeoutMs,
+    provenConversation.conversationId,
   );
-  const markdown = (await captureMarkdown(Runtime, recovered.meta, logger)) ?? recovered.text;
+  await assertConversationIdentityStillOpen(
+    Runtime,
+    provenConversation,
+    "Recovered prompt-echo capture drifted to a different route",
+  );
+  const markdown =
+    (await captureMarkdown(Runtime, recovered.meta, logger, {
+      requireSourceIdentity: true,
+    })) ?? recovered.text;
+  await assertConversationIdentityStillOpen(
+    Runtime,
+    provenConversation,
+    "Recovered markdown capture drifted to a different route",
+  );
   const aligned = alignPromptEchoMarkdown(recovered.text, markdown, promptEcho, logger);
 
   await cleanup();
@@ -418,6 +1093,19 @@ async function readPromptPreviewTurnIndex(
   Runtime: ChromeClient["Runtime"],
   promptPreview?: string | null,
 ): Promise<number | null> {
+  return (await readPromptPreviewTurnBinding(Runtime, promptPreview))?.matchedIndex ?? null;
+}
+
+type PromptPreviewTurnBinding = {
+  matchedIndex: number;
+  latestUserIndex: number;
+  matchCount: number;
+};
+
+async function readPromptPreviewTurnBinding(
+  Runtime: ChromeClient["Runtime"],
+  promptPreview?: string | null,
+): Promise<PromptPreviewTurnBinding | null> {
   const preview = promptPreview?.trim();
   if (!preview) {
     return null;
@@ -428,21 +1116,38 @@ async function readPromptPreviewTurnIndex(
       if (!needle) return null;
       const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
       const turns = ${buildConversationTurnListExpression()};
-      let matched = null;
+      const matched = [];
+      let latestUserIndex = null;
       for (const [index, node] of turns.entries()) {
         const attr = (node.getAttribute('data-message-author-role') || node.getAttribute('data-turn') || node.dataset?.turn || '').toLowerCase();
         const isUser = attr === 'user' || Boolean(node.querySelector('[data-message-author-role="user"]'));
         if (!isUser) continue;
+        latestUserIndex = index;
         const text = normalize(node.innerText || node.textContent || '');
         if (text.length > 0 && (text.includes(needle) || needle.includes(text.slice(0, needle.length)))) {
-          matched = index;
+          matched.push(index);
         }
       }
-      return matched;
+      if (!matched.length || latestUserIndex === null) return null;
+      return {
+        matchedIndex: matched[matched.length - 1],
+        latestUserIndex,
+        matchCount: matched.length,
+      };
     })()`,
     returnByValue: true,
   });
-  return typeof result?.value === "number" ? result.value : null;
+  const value = result?.value as Partial<PromptPreviewTurnBinding> | null | undefined;
+  return value &&
+    typeof value.matchedIndex === "number" &&
+    typeof value.latestUserIndex === "number" &&
+    typeof value.matchCount === "number"
+    ? {
+        matchedIndex: value.matchedIndex,
+        latestUserIndex: value.latestUserIndex,
+        matchCount: value.matchCount,
+      }
+    : null;
 }
 
 // biome-ignore lint/style/useNamingConvention: test-only export used in vitest suite
@@ -451,5 +1156,7 @@ export const __test__ = {
   extractConversationIdFromUrl,
   buildConversationUrl,
   openConversationFromSidebar,
+  waitForPromptPreview,
   readPromptPreviewTurnIndex,
+  readPromptPreviewTurnBinding,
 };

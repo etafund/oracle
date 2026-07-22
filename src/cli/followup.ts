@@ -3,6 +3,7 @@ import { CHATGPT_URL } from "../browser/constants.js";
 import { buildConversationUrl } from "../browser/reattachHelpers.js";
 import { resolveRecoveryUrl } from "../browser/recoverConversation.js";
 import { isRecoverableChatGptConversationUrl } from "../browser/reattachability.js";
+import { normalizeChatGptConversationId } from "../browser/conversationIdentity.js";
 import { DEFAULT_MODEL } from "../oracle/config.js";
 import type { ModelName, RunOracleOptions } from "../oracle/types.js";
 import {
@@ -44,7 +45,7 @@ export function resolveBrowserResumeConversationUrl(
   if (gatedUrl) {
     return gatedUrl;
   }
-  const conversationId = metadata.browser?.runtime?.conversationId?.trim();
+  const conversationId = normalizeChatGptConversationId(metadata.browser?.runtime?.conversationId);
   if (!conversationId) {
     return null;
   }
@@ -92,6 +93,11 @@ export async function resolveBrowserFollowupReference(
   );
   if (mode !== "browser" && !hasBrowserMetadata) {
     return null;
+  }
+  if (metadata.browser?.remoteRecovery || metadata.browser?.remoteRun) {
+    throw new Error(
+      `Session ${trimmed} belongs to a remote browser account. Refusing --followup because ordinary follow-ups are not account-pinned and could submit on a different account; use the originating ChatGPT account's history${metadata.browser?.remoteRecovery ? ` or recover first with \`oracle session ${trimmed} --render\`` : ""}.`,
+    );
   }
 
   const resumeConversationUrl = resolveBrowserResumeConversationUrl(metadata);

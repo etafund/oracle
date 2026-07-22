@@ -3,6 +3,16 @@ import { CONVERSATION_TURN_SELECTOR } from "./constants.js";
 import { buildConversationTurnCountExpression } from "./conversationTurns.js";
 import { delay } from "./utils.js";
 import { readAssistantSnapshot } from "./pageActions.js";
+import {
+  buildConversationIdFromHrefExpression,
+  extractConversationIdFromUrl,
+  isConversationUrl,
+  isProvisionalChatGptConversationId,
+  isProvisionalChatGptConversationUrl,
+  normalizeChatGptConversationId,
+} from "./conversationIdentity.js";
+
+export { extractConversationIdFromUrl } from "./conversationIdentity.js";
 
 export type TargetInfoLite = {
   id?: string;
@@ -28,7 +38,8 @@ export function pickTarget(
     return undefined;
   }
   const conversationId =
-    runtime.conversationId ?? extractConversationIdFromUrl(runtime.tabUrl ?? "");
+    normalizeChatGptConversationId(runtime.conversationId) ??
+    extractConversationIdFromUrl(runtime.tabUrl ?? "");
   const byId = runtime.chromeTargetId
     ? targets.find((target) => (target.targetId ?? target.id) === runtime.chromeTargetId)
     : undefined;
@@ -42,19 +53,18 @@ export function pickTarget(
     if (byConversation) return byConversation;
   }
   if (byId) return byId;
-  if (runtime.tabUrl) {
-    const byUrl =
-      targets.find((t) => t.url?.startsWith(runtime.tabUrl as string)) ||
-      targets.find((t) => (runtime.tabUrl as string).startsWith(t.url || ""));
+  if (
+    !conversationId &&
+    (isProvisionalChatGptConversationId(runtime.conversationId) ||
+      (runtime.tabUrl && isProvisionalChatGptConversationUrl(runtime.tabUrl)))
+  ) {
+    return undefined;
+  }
+  if (runtime.tabUrl && isConversationUrl(runtime.tabUrl)) {
+    const byUrl = targets.find((t) => t.url === runtime.tabUrl);
     if (byUrl) return byUrl;
   }
   return targets.find((t) => t.type === "page") ?? targets[0];
-}
-
-export function extractConversationIdFromUrl(url: string): string | undefined {
-  if (!url) return undefined;
-  const match = url.match(/\/c\/([a-zA-Z0-9-]+)/);
-  return match?.[1];
 }
 
 export function buildConversationUrl(
@@ -62,12 +72,11 @@ export function buildConversationUrl(
   baseUrl: string,
 ): string | null {
   if (runtime.tabUrl) {
-    if (runtime.tabUrl.includes("/c/")) {
+    if (isConversationUrl(runtime.tabUrl)) {
       return runtime.tabUrl;
     }
-    return null;
   }
-  const conversationId = runtime.conversationId;
+  const conversationId = normalizeChatGptConversationId(runtime.conversationId);
   if (!conversationId) {
     return null;
   }
@@ -97,12 +106,23 @@ export async function openConversationFromSidebar(
   Runtime: ChromeClient["Runtime"],
   options: { conversationId?: string; preferProjects?: boolean; promptPreview?: string },
   attempt = 0,
+  verificationTimeoutMs = 2_000,
 ): Promise<boolean> {
+  const conversationId = normalizeChatGptConversationId(options.conversationId);
+  const promptPreview = options.promptPreview?.trim() ?? "";
+  // A sidebar entry is recovery evidence only when it can be tied to either a
+  // durable saved conversation id or the saved prompt. Without either, the
+  // old fallback picked an arbitrary history row and could return another
+  // run's answer.
+  if (!conversationId && !promptPreview) {
+    return false;
+  }
+  const conversationIdFromHrefExpression = buildConversationIdFromHrefExpression("href");
   const response = await Runtime.evaluate({
     expression: `(() => {
-      const conversationId = ${JSON.stringify(options.conversationId ?? null)};
+      const conversationId = ${JSON.stringify(conversationId ?? null)};
       const preferProjects = ${JSON.stringify(Boolean(options.preferProjects))};
-      const promptPreview = ${JSON.stringify(options.promptPreview ?? null)};
+      const promptPreview = ${JSON.stringify(promptPreview || null)};
       const attemptIndex = ${Math.max(0, attempt)};
       const promptNeedleFull = promptPreview ? promptPreview.trim().toLowerCase().slice(0, 100) : '';
       const promptNeedleShort = promptNeedleFull.replace(/\\s*\\d{4,}\\s*$/, '').trim();
@@ -127,6 +147,7 @@ export async function openConversationFromSidebar(
         el.dataset?.href ||
         el.dataset?.url ||
         '';
+      const conversationIdFromHref = (href) => ${conversationIdFromHrefExpression};
       const toCandidate = (el) => {
         const clickable = el.closest('a,button,[role="link"],[role="button"]') || el;
         const rawText = (el.textContent || clickable.textContent || '').trim();
@@ -148,6 +169,7 @@ export async function openConversationFromSidebar(
       const candidates = allElements.map(toCandidate);
       const mainCandidates = candidates.filter((item) => !item.inNav);
       const navCandidates = candidates.filter((item) => item.inNav);
+      const hasDurableHref = (item) => Boolean(conversationIdFromHref(item.href));
       const visible = (item) => {
         const rect = item.clickable.getBoundingClientRect();
         return rect.width > 0 && rect.height > 0;
@@ -163,25 +185,23 @@ export async function openConversationFromSidebar(
       let target = null;
       if (conversationId) {
         const byId = (item) =>
-          (item.href && item.href.includes('/c/' + conversationId)) ||
+          conversationIdFromHref(item.href) === conversationId ||
           (item.conversationId && item.conversationId === conversationId);
         target = pick(mainCandidates.filter(byId)) || pick(navCandidates.filter(byId));
       }
-      if (!target && promptNeedles.length > 0) {
-        const byPrompt = (item) => promptNeedles.some((needle) => item.text && item.text.toLowerCase().includes(needle));
+      if (!target && !conversationId && promptNeedles.length > 0) {
+        // Prompt text alone is not enough to click a symbolic WEB route or a
+        // generic history control. Require a durable same-origin conversation
+        // href first; the caller verifies both the final href and prompt after
+        // navigation.
+        const byPrompt = (item) =>
+          hasDurableHref(item) &&
+          promptNeedles.some((needle) => item.text && item.text.toLowerCase().includes(needle));
         const sortBySpecificity = (items) =>
           items
             .filter(byPrompt)
             .sort((a, b) => (a.text?.length ?? 0) - (b.text?.length ?? 0));
         target = pickWithAttempt(sortBySpecificity(mainCandidates)) || pickWithAttempt(sortBySpecificity(navCandidates));
-      }
-      if (!target) {
-        const byHref = (item) => item.href && item.href.includes('/c/');
-        target = pickWithAttempt(mainCandidates.filter(byHref)) || pickWithAttempt(navCandidates.filter(byHref));
-      }
-      if (!target) {
-        const byTestId = (item) => /conversation|history/i.test(item.testId || '');
-        target = pickWithAttempt(mainCandidates.filter(byTestId)) || pickWithAttempt(navCandidates.filter(byTestId));
       }
       if (target) {
         target.clickable.scrollIntoView({ block: 'center' });
@@ -189,7 +209,7 @@ export async function openConversationFromSidebar(
           new MouseEvent('click', { bubbles: true, cancelable: true, view: window }),
         );
         // Fallback: some project-sidebar items don't navigate on click, force the URL.
-        if (target.href && target.href.includes('/c/')) {
+        if (conversationIdFromHref(target.href)) {
           const targetUrl = target.href.startsWith('http')
             ? target.href
             : new URL(target.href, location.origin).toString();
@@ -208,7 +228,42 @@ export async function openConversationFromSidebar(
     })()`,
     returnByValue: true,
   });
-  return Boolean(response.result?.value?.ok);
+  if (!response.result?.value?.ok) {
+    return false;
+  }
+  return waitForDurableConversationUrl(Runtime, conversationId, Math.max(0, verificationTimeoutMs));
+}
+
+async function waitForDurableConversationUrl(
+  Runtime: ChromeClient["Runtime"],
+  expectedConversationId: string | undefined,
+  timeoutMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    try {
+      const { result } = await Runtime.evaluate({
+        expression: "location.href",
+        returnByValue: true,
+      });
+      const href = typeof result?.value === "string" ? result.value : "";
+      const currentConversationId = extractConversationIdFromUrl(href);
+      if (
+        currentConversationId &&
+        (!expectedConversationId || currentConversationId === expectedConversationId)
+      ) {
+        return true;
+      }
+    } catch {
+      // Navigation can briefly destroy the execution context; retry until the
+      // verification budget expires.
+    }
+    if (Date.now() >= deadline) {
+      break;
+    }
+    await delay(200);
+  } while (Date.now() < deadline);
+  return false;
 }
 
 export async function openConversationFromSidebarWithRetry(
@@ -217,13 +272,25 @@ export async function openConversationFromSidebarWithRetry(
   timeoutMs: number,
 ): Promise<boolean> {
   const start = Date.now();
+  const promptPreview = options.promptPreview?.trim();
   let attempt = 0;
   while (Date.now() - start < timeoutMs) {
     // Retry because project list can hydrate after initial navigation.
-    const opened = await openConversationFromSidebar(Runtime, options, attempt);
+    const remainingMs = Math.max(0, timeoutMs - (Date.now() - start));
+    const opened = await openConversationFromSidebar(
+      Runtime,
+      options,
+      attempt,
+      Math.min(2_000, remainingMs),
+    );
     if (opened) {
-      if (options.promptPreview) {
-        const matched = await waitForPromptPreview(Runtime, options.promptPreview, 10_000);
+      if (promptPreview) {
+        const proofRemainingMs = Math.max(0, timeoutMs - (Date.now() - start));
+        const matched = await waitForPromptPreview(
+          Runtime,
+          promptPreview,
+          Math.min(10_000, proofRemainingMs),
+        );
         if (matched) {
           return true;
         }
@@ -242,8 +309,9 @@ export async function waitForPromptPreview(
   promptPreview: string,
   timeoutMs: number,
 ): Promise<boolean> {
-  const needleFull = promptPreview.trim().toLowerCase().slice(0, 120);
-  const needleShort = needleFull.replace(/\\s*\\d{4,}\\s*$/, "").trim();
+  const normalize = (value: string) => value.toLowerCase().replace(/\s+/g, " ").trim();
+  const needleFull = normalize(promptPreview).slice(0, 120);
+  const needleShort = needleFull.replace(/\s*\d{4,}\s*$/, "").trim();
   const needles = Array.from(new Set([needleFull, needleShort].filter(Boolean)));
   if (needles.length === 0) return false;
   const selectorLiteral = JSON.stringify(CONVERSATION_TURN_SELECTOR);
@@ -255,23 +323,25 @@ export async function waitForPromptPreview(
       document.querySelector('main') ||
       document.querySelector('[role="main"]');
     if (!root) return false;
-    const userTurns = Array.from(root.querySelectorAll('[data-message-author-role="user"], [data-turn="user"]'));
-    const collectText = (nodes) =>
-      nodes
-        .map((node) => (node.innerText || node.textContent || ''))
-        .join(' ')
-        .toLowerCase();
-    let text = collectText(userTurns);
-    let hasTurns = userTurns.length > 0;
-    if (!text) {
-      const turns = Array.from(root.querySelectorAll(${selectorLiteral}));
-      hasTurns = hasTurns || turns.length > 0;
-      text = collectText(turns);
-    }
-    if (!text) {
-      text = (root.innerText || root.textContent || '').toLowerCase();
-    }
-    return needles.some((needle) => text.includes(needle));
+    const explicitUserTurns = Array.from(
+      root.querySelectorAll('[data-message-author-role="user"], [data-turn="user"]'),
+    );
+    const inferredUserTurns = Array.from(root.querySelectorAll(${selectorLiteral})).filter((node) => {
+      const role = String(
+        node.getAttribute?.('data-message-author-role') ||
+        node.getAttribute?.('data-turn') ||
+        node.dataset?.turn ||
+        '',
+      ).toLowerCase();
+      return role === 'user' || Boolean(node.querySelector?.('[data-message-author-role="user"]'));
+    });
+    const userTurns = Array.from(new Set([...explicitUserTurns, ...inferredUserTurns]));
+    if (userTurns.length === 0) return false;
+    const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+    return userTurns.some((node) => {
+      const text = normalize(node.innerText || node.textContent || '');
+      return text && needles.some((needle) => text.includes(needle));
+    });
   })()`;
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -378,27 +448,37 @@ export async function recoverPromptEcho(
   logger: BrowserLogger,
   minTurnIndex: number | null,
   timeoutMs: number,
+  expectedConversationId?: string,
 ): Promise<AssistantPayload> {
   if (!matcher || !matcher.isEcho(answer.text)) {
     return answer;
   }
   logger("Detected prompt echo while reattaching; waiting for assistant response...");
   const deadline = Date.now() + Math.min(timeoutMs, 15_000);
-  let bestText: string | null = null;
+  let bestSnapshot: AssistantPayload | null = null;
   let stableCount = 0;
   while (Date.now() < deadline) {
-    const snapshot = await readAssistantSnapshot(Runtime, minTurnIndex ?? undefined).catch(
-      () => null,
-    );
+    const snapshot = await readAssistantSnapshot(
+      Runtime,
+      minTurnIndex ?? undefined,
+      expectedConversationId,
+    ).catch(() => null);
     const text = typeof snapshot?.text === "string" ? snapshot.text.trim() : "";
     if (!text || matcher.isEcho(text)) {
       await delay(300);
       continue;
     }
-    if (!bestText || text.length > bestText.length) {
-      bestText = text;
+    if (!bestSnapshot || text.length > bestSnapshot.text.length) {
+      bestSnapshot = {
+        text,
+        html: snapshot?.html,
+        meta: {
+          messageId: snapshot?.messageId ?? null,
+          turnId: snapshot?.turnId ?? null,
+        },
+      };
       stableCount = 0;
-    } else if (text === bestText) {
+    } else if (text === bestSnapshot.text) {
       stableCount += 1;
     }
     if (stableCount >= 2) {
@@ -406,9 +486,9 @@ export async function recoverPromptEcho(
     }
     await delay(300);
   }
-  if (bestText) {
+  if (bestSnapshot) {
     logger("Recovered assistant response after prompt echo during reattach");
-    return { ...answer, text: bestText };
+    return bestSnapshot;
   }
   return answer;
 }

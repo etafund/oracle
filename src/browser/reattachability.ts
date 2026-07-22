@@ -1,4 +1,8 @@
 import type { BrowserRuntimeMetadata } from "../sessionStore.js";
+import {
+  extractConversationIdFromUrl,
+  normalizeChatGptConversationId,
+} from "./conversationIdentity.js";
 
 /**
  * True when the URL points at a specific ChatGPT conversation (`/c/<id>`) on
@@ -19,7 +23,7 @@ export function isRecoverableChatGptConversationUrl(candidate: string | null | u
     if (url.hostname !== "chatgpt.com" && url.hostname !== "chat.openai.com") {
       return false;
     }
-    return /(?:^|\/)c\/[^/]+/.test(url.pathname);
+    return extractConversationIdFromUrl(url.toString()) !== undefined;
   } catch {
     return false;
   }
@@ -31,7 +35,7 @@ export function hasRecoverableChatGptConversation(
   if (!runtime) {
     return false;
   }
-  if (runtime.conversationId?.trim()) {
+  if (normalizeChatGptConversationId(runtime.conversationId)) {
     return true;
   }
   return isRecoverableChatGptConversationUrl(runtime.tabUrl);

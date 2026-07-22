@@ -295,6 +295,27 @@ describe("resolveClaudeCodeMaxRateLimitRotations", () => {
     ).toBe(5);
   });
 
+  test("forces fable-local rotations to 0 despite explicit and inherited positive values", () => {
+    expect(
+      resolveClaudeCodeMaxRateLimitRotations(
+        3,
+        {
+          [ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS_ENV_VAR]: "9",
+        },
+        { lane: "fable-local" },
+      ),
+    ).toBe(0);
+    expect(
+      resolveClaudeCodeMaxRateLimitRotations(
+        undefined,
+        {
+          [ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS_ENV_VAR]: "9",
+        },
+        { lane: " FABLE-LOCAL " },
+      ),
+    ).toBe(0);
+  });
+
   test("defaults to 0 so an explicitly selected shallow profile stays pinned", () => {
     expect(resolveClaudeCodeMaxRateLimitRotations(undefined, {})).toBe(0);
   });

@@ -9,6 +9,7 @@ import { describe, expect, test, vi } from "vitest";
 
 import {
   assertCapturedAssistantResponseBound,
+  assertFreshCaptureTarget,
   buildCaptureBindingFactsExpressionForTest,
   buildFreshCaptureTargetProbeExpressionForTest,
   buildSubmittedUserMessageProbeExpressionForTest,
@@ -174,6 +175,21 @@ describe("assertCapturedAssistantResponseBound", () => {
     expect(getSubmittedUserMessageBinding(runtime)?.conversationId).toBe("assigned-later");
   });
 
+  test("ignores ChatGPT's transient /c/WEB:<uuid> id and adopts the canonical id", async () => {
+    const runtime = await registeredRuntime(
+      { ...HANDLE_PROBE_RESULT, conversationId: "WEB:fee7a622-991a-497a-bac4-a878b86f82f3" },
+      [{ ...GOOD_FACTS, conversationId: "6a5fc6a9-a724-83e8-a224-75b57da507ea" }],
+    );
+
+    expect(getSubmittedUserMessageBinding(runtime)?.conversationId).toBeNull();
+    await expect(
+      assertCapturedAssistantResponseBound(runtime, CAPTURED_META, () => {}),
+    ).resolves.toMatchObject({ capturedFollowsUserMessage: true });
+    expect(getSubmittedUserMessageBinding(runtime)?.conversationId).toBe(
+      "6a5fc6a9-a724-83e8-a224-75b57da507ea",
+    );
+  });
+
   test("fails loud when the conversation changed between submit and capture", async () => {
     const runtime = await registeredRuntime(HANDLE_PROBE_RESULT, [
       { ...GOOD_FACTS, conversationId: "other-conv" },
@@ -297,30 +313,65 @@ describe("evaluateCaptureBindingFacts", () => {
     // The guessed handle may point at another run's user turn: facts derived
     // from it (missing / superseded / ordering) must not be treated as a
     // cross-talk proof either way.
-    const verdict = evaluateCaptureBindingFacts(
-      { ...binding, quality: "guessed" },
-      CAPTURED_META,
-      { ...GOOD_FACTS, userTurnFound: false, userTurnIsLatestUserTurn: false },
-    );
+    const verdict = evaluateCaptureBindingFacts({ ...binding, quality: "guessed" }, CAPTURED_META, {
+      ...GOOD_FACTS,
+      userTurnFound: false,
+      userTurnIsLatestUserTurn: false,
+    });
     expect(verdict.ok).toBe(true);
   });
 
   test("guessed bindings still fail loud on conversation change", () => {
-    const verdict = evaluateCaptureBindingFacts(
-      { ...binding, quality: "guessed" },
-      CAPTURED_META,
-      { ...GOOD_FACTS, conversationId: "other" },
-    );
+    const verdict = evaluateCaptureBindingFacts({ ...binding, quality: "guessed" }, CAPTURED_META, {
+      ...GOOD_FACTS,
+      conversationId: "other",
+    });
     expect(verdict.ok).toBe(false);
     expect(verdict.code).toBe("capture-binding-conversation-changed");
   });
 
-  test("guessed bindings fail when the captured node vanished", () => {
+  test.each(["guessed", "conversation-only"] as const)(
+    "rejects %s capture when a provisional submit had no durable identity",
+    (quality) => {
+      const verdict = evaluateCaptureBindingFacts(
+        {
+          ...binding,
+          quality,
+          conversationId: null,
+          userMessageId: quality === "conversation-only" ? null : binding.userMessageId,
+          userTurnTestId: quality === "conversation-only" ? null : binding.userTurnTestId,
+        },
+        CAPTURED_META,
+        { ...GOOD_FACTS, conversationId: "unrelated-canonical" },
+      );
+
+      expect(verdict.ok).toBe(false);
+      expect(verdict.code).toBe("capture-binding-ownership-unproven");
+    },
+  );
+
+  test("rejects an id-less degraded capture from a provisional submit", () => {
     const verdict = evaluateCaptureBindingFacts(
-      { ...binding, quality: "guessed" },
-      CAPTURED_META,
-      { ...GOOD_FACTS, capturedNodeFound: false },
+      {
+        ...binding,
+        quality: "conversation-only",
+        conversationId: null,
+        userMessageId: null,
+        userTurnTestId: null,
+      },
+      {},
+      { ...GOOD_FACTS, conversationId: "unrelated-canonical" },
     );
+
+    expect(verdict.ok).toBe(false);
+    expect(verdict.code).toBe("capture-binding-ownership-unproven");
+  });
+
+  test("guessed bindings fail when the captured node vanished", () => {
+    const verdict = evaluateCaptureBindingFacts({ ...binding, quality: "guessed" }, CAPTURED_META, {
+      ...GOOD_FACTS,
+      capturedNodeFound: false,
+    });
     expect(verdict.ok).toBe(false);
     expect(verdict.code).toBe("capture-binding-captured-node-missing");
   });
@@ -385,13 +436,32 @@ describe("generated DOM expressions", () => {
   test("fresh-target probe reports conversation id and assistant turn count", () => {
     const expression = buildFreshCaptureTargetProbeExpressionForTest();
     expect(expression).toContain("assistantTurnCount");
+    expect(expression).toContain("provisionalConversation");
     expect(expression).toContain("conversation-turn");
+  });
+});
+
+describe("assertFreshCaptureTarget", () => {
+  test("rejects an occupied provisional conversation even before an assistant turn exists", async () => {
+    const runtime = runtimeWithValues([
+      { conversationId: null, provisionalConversation: true, assistantTurnCount: 0 },
+    ]);
+
+    await expect(
+      assertFreshCaptureTarget(runtime, "https://chatgpt.com/?model=gpt-5-pro", () => {}),
+    ).rejects.toMatchObject({
+      details: { code: "stale-conversation-at-start", provisionalConversation: true },
+    });
   });
 });
 
 describe("helpers", () => {
   test("isConversationUrl matches only /c/<id> URLs", () => {
     expect(isConversationUrl("https://chatgpt.com/c/abc-123")).toBe(true);
+    expect(isConversationUrl("https://chatgpt.com/c/WEB")).toBe(false);
+    expect(
+      isConversationUrl("https://chatgpt.com/c/WEB:fee7a622-991a-497a-bac4-a878b86f82f3"),
+    ).toBe(false);
     expect(isConversationUrl("https://chatgpt.com/?model=gpt-5-pro")).toBe(false);
     expect(isConversationUrl("https://chatgpt.com/g/g-p-project/project")).toBe(false);
   });

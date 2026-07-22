@@ -39,13 +39,16 @@ const SRC_ROOT = fileURLToPath(new URL("../../src", import.meta.url));
 
 // Anchors are compared on whitespace-normalized source so formatting-only
 // changes cannot skew the ordering measurement.
-const RELEASE_ANCHOR = "tabLease=null;awaithandle.release().catch(()=>undefined);";
+const INDEX_RELEASE_ANCHOR = "awaitreleaseBrowserTabLeaseOrTaint(handle,logger,";
+const PROJECT_RELEASE_ANCHOR = "tabLease=null;awaithandle.release().catch(()=>undefined);";
 const REMOTE_CLOSE_ANCHOR =
   "awaitcloseRemoteChromeTarget(host,port,remoteTargetId??undefined,logger);";
 // No `.catch(...)` tail: runBrowserMode()'s close now returns the boolean
 // close outcome (so a failed close can taint cleanup state, oracle-router-lv2)
 // while projectSourcesRunner still swallows; the anchor is the shared prefix.
 const LOCAL_CLOSE_ANCHOR = "awaitcloseTab(chrome.port,isolatedTargetId,logger,chromeHost)";
+const RECOVERY_CLOSE_ANCHOR = "awaitcloseOwned();";
+const RECOVERY_RELEASE_ANCHOR = "awaitlease.release().catch(";
 
 async function readSource(relative: string): Promise<string> {
   return readFile(path.join(SRC_ROOT, relative), "utf8");
@@ -81,21 +84,36 @@ async function localCleanupSlice(): Promise<string> {
   );
 }
 
+async function isolatedRecoveryCleanupSlice(): Promise<string> {
+  const source = await readSource("browser/reattach.ts");
+  return normalize(
+    sliceBetween(
+      source,
+      "export async function resumeBrowserSessionInIsolatedFleetTab",
+      "async function refreshAttachRuntime",
+    ),
+  );
+}
+
 describe("close-before-release ordering (red harness)", () => {
   test("guard: cleanup sequences and their close/release anchors still exist", async () => {
     // If any anchor disappears in a refactor this guard goes red visibly,
     // preventing the expected-failure cases below from rotting into no-ops.
     const remote = await remoteCleanupSlice();
-    expect(remote).toContain(RELEASE_ANCHOR);
+    expect(remote).toContain(INDEX_RELEASE_ANCHOR);
     expect(remote).toContain(REMOTE_CLOSE_ANCHOR);
 
     const local = await localCleanupSlice();
-    expect(local).toContain(RELEASE_ANCHOR);
+    expect(local).toContain(INDEX_RELEASE_ANCHOR);
     expect(local).toContain(LOCAL_CLOSE_ANCHOR);
 
     const projectSources = normalize(await readSource("browser/projectSourcesRunner.ts"));
-    expect(projectSources).toContain(RELEASE_ANCHOR);
+    expect(projectSources).toContain(PROJECT_RELEASE_ANCHOR);
     expect(projectSources).toContain(LOCAL_CLOSE_ANCHOR);
+
+    const isolatedRecovery = await isolatedRecoveryCleanupSlice();
+    expect(isolatedRecovery).toContain(RECOVERY_CLOSE_ANCHOR);
+    expect(isolatedRecovery).toContain(RECOVERY_RELEASE_ANCHOR);
   });
 
   // NOTE on lastIndexOf: runBrowserMode() also releases the lease on its
@@ -105,7 +123,7 @@ describe("close-before-release ordering (red harness)", () => {
   test("[red] remote cleanup must close the owned target BEFORE releasing the tab lease", async () => {
     const remote = await remoteCleanupSlice();
     const closeIndex = remote.indexOf(REMOTE_CLOSE_ANCHOR);
-    const releaseIndex = remote.lastIndexOf(RELEASE_ANCHOR);
+    const releaseIndex = remote.lastIndexOf(INDEX_RELEASE_ANCHOR);
     expect(closeIndex).toBeGreaterThanOrEqual(0);
     expect(releaseIndex).toBeGreaterThanOrEqual(0);
     // Property: close-before-release. Pre-fix, runRemoteBrowserMode()
@@ -116,7 +134,7 @@ describe("close-before-release ordering (red harness)", () => {
   test("guard: local cleanup already closes the owned target before releasing", async () => {
     const local = await localCleanupSlice();
     const closeIndex = local.indexOf(LOCAL_CLOSE_ANCHOR);
-    const releaseIndex = local.lastIndexOf(RELEASE_ANCHOR);
+    const releaseIndex = local.lastIndexOf(INDEX_RELEASE_ANCHOR);
     expect(closeIndex).toBeGreaterThanOrEqual(0);
     expect(releaseIndex).toBeGreaterThanOrEqual(0);
     expect(closeIndex).toBeLessThan(releaseIndex);
@@ -125,9 +143,20 @@ describe("close-before-release ordering (red harness)", () => {
   test("guard: project-sources cleanup already closes the owned target before releasing", async () => {
     const projectSources = normalize(await readSource("browser/projectSourcesRunner.ts"));
     const closeIndex = projectSources.indexOf(LOCAL_CLOSE_ANCHOR);
-    const releaseIndex = projectSources.lastIndexOf(RELEASE_ANCHOR);
+    const releaseIndex = projectSources.lastIndexOf(PROJECT_RELEASE_ANCHOR);
     expect(closeIndex).toBeGreaterThanOrEqual(0);
     expect(releaseIndex).toBeGreaterThanOrEqual(0);
     expect(closeIndex).toBeLessThan(releaseIndex);
+  });
+
+  test("isolated recovery closes its owned target before releasing the lane lease", async () => {
+    const recovery = await isolatedRecoveryCleanupSlice();
+    const closeIndex = recovery.lastIndexOf(RECOVERY_CLOSE_ANCHOR);
+    const releaseIndex = recovery.lastIndexOf(RECOVERY_RELEASE_ANCHOR);
+    expect(closeIndex).toBeGreaterThanOrEqual(0);
+    expect(releaseIndex).toBeGreaterThanOrEqual(0);
+    expect(closeIndex).toBeLessThan(releaseIndex);
+    expect(recovery).toContain("if(!deferredConnectCleanup)");
+    expect(recovery).toContain("if(lease&&!cleanupError&&!deferredConnectCleanup)");
   });
 });

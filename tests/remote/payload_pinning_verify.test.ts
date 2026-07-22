@@ -259,6 +259,8 @@ describe("host-side resumeConversationUrl validation", () => {
     "https://chatgpt.com/c/id/extra",
     "https://chatgpt.com/c/id?model=gpt",
     "https://chatgpt.com/c/id#fragment",
+    "https://chatgpt.com/c/WEB",
+    "https://chatgpt.com/c/WEB:fee7a622-991a-497a-bac4-a878b86f82f3",
     "not a url",
     "https://chatgpt.com/c/id\nhttps://evil.example/",
     42,
@@ -341,11 +343,16 @@ describe("sanitizer is the single choke point between payloads and runBrowser", 
       path.join(path.dirname(fileURLToPath(import.meta.url)), "../../src/remote/server.ts"),
       "utf8",
     );
-    // The raw body is parsed exactly once, directly inside the sanitizer call.
+    // The raw body is parsed exactly once, then routed into exactly one of the
+    // dedicated run/recovery sanitizers before either execution path.
     const parseSites = serverSource.match(/JSON\.parse\(body\)/g) ?? [];
     expect(parseSites).toHaveLength(1);
+    expect(serverSource).toContain("const parsed = JSON.parse(body) as unknown");
     expect(serverSource).toContain(
-      "sanitizeRemoteRunPayloadForHost(JSON.parse(body) as RemoteRunPayload)",
+      "payload = sanitizeRemoteRunPayloadForHost(parsed as RemoteRunPayload)",
+    );
+    expect(serverSource).toContain(
+      "recoveryRequest = sanitizeRemoteBrowserRecoveryRequestForHost(parsed)",
     );
     // After sanitization the server only writes these pinned/normalized
     // fields onto the config; nothing else may copy client browserConfig

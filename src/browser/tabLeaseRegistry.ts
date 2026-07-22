@@ -13,6 +13,9 @@ const REGISTRY_LOCK_OWNER_FILENAME = "owner.json";
 const DEFAULT_POLL_MS = 1000;
 const DEFAULT_STALE_MS = 6 * 60 * 60 * 1000;
 const REGISTRY_LOCK_TIMEOUT_MS = 10_000;
+// Leave a margin after the dead-owner steal threshold so bounded mutation
+// waits get one real reclamation attempt before their own deadline wins.
+const REGISTRY_MUTATION_LOCK_TIMEOUT_MS = REGISTRY_LOCK_TIMEOUT_MS + 1_000;
 /**
  * A lock directory with no readable owner record (legacy writer or a crash
  * between mkdir() and the owner write) may only be reclaimed after this quiet
@@ -112,6 +115,26 @@ export class TabLeaseRegistryLockCollisionError extends Error {
   }
 }
 
+export class TabLeaseRegistryLockWaitError extends Error {
+  constructor(lockDir: string, reason: "aborted" | "timed out") {
+    super(`Tab-lease registry lock wait ${reason} at ${lockDir}.`);
+    this.name = "TabLeaseRegistryLockWaitError";
+  }
+}
+
+export class OrphanedBrowserTabLeaseError extends Error {
+  readonly lease: BrowserTabLease;
+
+  constructor(lease: BrowserTabLease, cause: unknown) {
+    super(
+      `Caller aborted after browser tab lease ${lease.id} was written, and rollback could not be proved; the lease remains active fail-closed.`,
+      { cause },
+    );
+    this.name = "OrphanedBrowserTabLeaseError";
+    this.lease = lease;
+  }
+}
+
 export function normalizeMaxConcurrentTabs(value: unknown): number {
   if (value === undefined || value === null) {
     return DEFAULT_MAX_CONCURRENT_CHATGPT_TABS;
@@ -134,6 +157,7 @@ export async function acquireBrowserTabLease(
     chromeHost?: string;
     chromePort?: number;
     staleMs?: number;
+    signal?: AbortSignal;
   },
   deps: BrowserTabLeaseDeps = {},
 ): Promise<BrowserTabLease> {
@@ -148,8 +172,20 @@ export async function acquireBrowserTabLease(
   const startedAt = now();
   let warned = false;
   let lastHeartbeatAt = 0;
+  const createLeaseHandle = (): BrowserTabLease => ({
+    id: leaseId,
+    release: async () => releaseBrowserTabLease(profileDir, leaseId, options.logger),
+    update: async (patch) => updateBrowserTabLease(profileDir, leaseId, patch, options.logger),
+  });
+
+  const throwIfAborted = (): void => {
+    if (options.signal?.aborted) {
+      throw new Error("Browser tab-lease acquisition aborted by caller.");
+    }
+  };
 
   for (;;) {
+    throwIfAborted();
     const acquired = await withRegistryLock(
       profileDir,
       async () => {
@@ -183,17 +219,30 @@ export async function acquireBrowserTabLease(
         return lease;
       },
       options.logger,
+      {
+        signal: options.signal,
+        deadlineMs:
+          timeoutMs > 0 ? Date.now() + Math.max(0, timeoutMs - (now() - startedAt)) : undefined,
+      },
     );
 
     if (acquired) {
+      const leaseHandle = createLeaseHandle();
+      if (options.signal?.aborted) {
+        // The abort may race the registry write. Remove the just-created
+        // record before surfacing it so a vanished caller cannot leave an
+        // orphan capacity claim without ever receiving a lease handle.
+        try {
+          await leaseHandle.release();
+        } catch (error) {
+          throw new OrphanedBrowserTabLeaseError(leaseHandle, error);
+        }
+        throwIfAborted();
+      }
       options.logger?.(
         `[browser] Acquired ChatGPT browser slot ${leaseId.slice(0, 8)} (${maxConcurrentTabs} max).`,
       );
-      return {
-        id: leaseId,
-        release: async () => releaseBrowserTabLease(profileDir, leaseId, options.logger),
-        update: async (patch) => updateBrowserTabLease(profileDir, leaseId, patch, options.logger),
-      };
+      return leaseHandle;
     }
 
     const elapsed = now() - startedAt;
@@ -209,8 +258,34 @@ export async function acquireBrowserTabLease(
         `Timed out waiting for ChatGPT browser slot after ${Math.round(elapsed / 1000)}s (${maxConcurrentTabs} max).`,
       );
     }
-    await delay(timeoutMs > 0 ? Math.min(pollMs, timeoutMs - elapsed) : pollMs);
+    await delayWithAbort(
+      timeoutMs > 0 ? Math.min(pollMs, timeoutMs - elapsed) : pollMs,
+      options.signal,
+    );
   }
+}
+
+async function delayWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) {
+    await delay(ms);
+    return;
+  }
+  if (signal.aborted) throw new Error("Browser tab-lease acquisition aborted by caller.");
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(
+      () => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      },
+      Math.max(0, ms),
+    );
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      reject(new Error("Browser tab-lease acquisition aborted by caller."));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 export async function updateBrowserTabLease(
@@ -240,6 +315,7 @@ export async function updateBrowserTabLease(
       await writeRegistry(profileDir, [...leases, ...outcome.opaque]);
     },
     logger,
+    { timeoutMs: REGISTRY_MUTATION_LOCK_TIMEOUT_MS },
   );
 }
 
@@ -261,6 +337,7 @@ export async function releaseBrowserTabLease(
       await writeRegistry(profileDir, [...remaining, ...outcome.opaque]);
     },
     logger,
+    { timeoutMs: REGISTRY_MUTATION_LOCK_TIMEOUT_MS },
   );
   // Only report success after the lease record was actually removed and the
   // registry rewritten; lock/read/write failures propagate to the caller.
@@ -434,22 +511,47 @@ interface RegistryLockOwner {
   token?: string;
 }
 
+interface RegistryLockWaitOptions {
+  signal?: AbortSignal;
+  /** Absolute wall-clock deadline. */
+  deadlineMs?: number;
+  /** Relative wall-clock bound, ignored when deadlineMs is supplied. */
+  timeoutMs?: number;
+}
+
 async function withRegistryLock<T>(
   profileDir: string,
   callback: () => Promise<T>,
   logger?: BrowserLogger,
+  options: RegistryLockWaitOptions = {},
 ): Promise<T> {
   const lockDir = path.join(profileDir, REGISTRY_LOCK_DIRNAME);
   const ownerPath = path.join(lockDir, REGISTRY_LOCK_OWNER_FILENAME);
   const startedAt = Date.now();
+  const deadlineMs =
+    options.deadlineMs ??
+    (options.timeoutMs !== undefined
+      ? startedAt + Math.max(0, options.timeoutMs)
+      : Number.POSITIVE_INFINITY);
   let lastWaitLogAt = 0;
   for (;;) {
+    if (options.signal?.aborted) {
+      throw new TabLeaseRegistryLockWaitError(lockDir, "aborted");
+    }
     try {
+      // Always allow one non-blocking mkdir attempt, even at the exact
+      // deadline. A free registry lock is not a lock-wait timeout; callers
+      // such as tab-slot acquisition must get to observe capacity and report
+      // their own domain-specific timeout. The deadline applies only once an
+      // existing lock would make us wait.
       await mkdir(lockDir, { recursive: false });
       break;
     } catch (error) {
       if ((error as { code?: string }).code !== "EEXIST") {
         throw error;
+      }
+      if (Date.now() >= deadlineMs) {
+        throw new TabLeaseRegistryLockWaitError(lockDir, "timed out");
       }
       if (Date.now() - startedAt > REGISTRY_LOCK_TIMEOUT_MS) {
         // Owner-aware steal: the lock is reclaimed only from a provably-dead
@@ -466,7 +568,21 @@ async function withRegistryLock<T>(
           );
         }
       }
-      await delay(50);
+      if (options.signal?.aborted) {
+        throw new TabLeaseRegistryLockWaitError(lockDir, "aborted");
+      }
+      const remainingMs = deadlineMs - Date.now();
+      if (remainingMs <= 0) {
+        throw new TabLeaseRegistryLockWaitError(lockDir, "timed out");
+      }
+      try {
+        await delayWithAbort(Math.min(50, remainingMs), options.signal);
+      } catch (error) {
+        if (options.signal?.aborted) {
+          throw new TabLeaseRegistryLockWaitError(lockDir, "aborted");
+        }
+        throw error;
+      }
     }
   }
   // Record our identity inside the lock so peers can verify owner liveness.
@@ -709,8 +825,9 @@ export async function withRegistryLockForTest<T>(
   profileDir: string,
   callback: () => Promise<T>,
   logger?: BrowserLogger,
+  options?: RegistryLockWaitOptions,
 ): Promise<T> {
-  return withRegistryLock(profileDir, callback, logger);
+  return withRegistryLock(profileDir, callback, logger, options);
 }
 
 function isLockOwnerAlive(owner: RegistryLockOwner): boolean {

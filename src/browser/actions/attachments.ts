@@ -4,6 +4,10 @@ import { INPUT_SELECTORS, SEND_BUTTON_SELECTORS, UPLOAD_STATUS_SELECTORS } from 
 import { buildConversationTurnListExpression } from "../conversationTurns.js";
 import { delay } from "../utils.js";
 import { logDomFailure } from "../domDebug.js";
+import {
+  buildConversationIdFromHrefExpression,
+  normalizeChatGptConversationId,
+} from "../conversationIdentity.js";
 import { transferAttachmentViaDataTransfer } from "./attachmentDataTransfer.js";
 
 export async function uploadAttachmentFile(
@@ -1808,18 +1812,19 @@ function buildUserTurnAttachmentExpression(options: {
 }): string {
   const minTurnLiteral = options.minTurnIndex === null ? "null" : String(options.minTurnIndex);
   const expectedPromptLiteral = JSON.stringify(options.expectedPromptPrefix);
-  const expectedConversationLiteral = options.expectedConversationId
-    ? JSON.stringify(options.expectedConversationId)
+  const expectedConversationId = normalizeChatGptConversationId(options.expectedConversationId);
+  const expectedConversationLiteral = expectedConversationId
+    ? JSON.stringify(expectedConversationId)
     : "null";
+  const currentConversationIdExpression = buildConversationIdFromHrefExpression("currentHref");
   return `(() => {
     const MIN_TURN_INDEX = ${minTurnLiteral};
     const EXPECTED_PROMPT_PREFIX = ${expectedPromptLiteral};
     const EXPECTED_CONVERSATION_ID = ${expectedConversationLiteral};
     const currentHref = typeof location === 'object' && location.href ? location.href : '';
-    const currentConversationId = currentHref.match(/\\/c\\/([a-zA-Z0-9-]+)/)?.[1] ?? null;
+    const currentConversationId = ${currentConversationIdExpression};
     if (
       EXPECTED_CONVERSATION_ID &&
-      currentConversationId &&
       currentConversationId !== EXPECTED_CONVERSATION_ID
     ) {
       return { ok: false, conversationMismatch: true };

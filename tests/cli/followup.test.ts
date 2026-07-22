@@ -42,6 +42,21 @@ describe("browser follow-up resolution", () => {
     expect(resolveBrowserResumeConversationUrl(metadata)).toBe("https://chatgpt.com/c/live-thread");
   });
 
+  test("does not build a resume URL from ChatGPT's transient WEB identity", () => {
+    const metadata: SessionMetadata = {
+      ...baseMetadata,
+      mode: "browser",
+      browser: {
+        runtime: {
+          tabUrl: "https://chatgpt.com/c/WEB:fee7a622-991a-497a-bac4-a878b86f82f3",
+          conversationId: "WEB",
+        },
+      },
+    };
+
+    expect(resolveBrowserResumeConversationUrl(metadata)).toBeNull();
+  });
+
   test("resolves stored browser sessions to a browser resume path", async () => {
     const metadata: SessionMetadata = {
       ...baseMetadata,
@@ -75,6 +90,37 @@ describe("browser follow-up resolution", () => {
       },
     });
   });
+
+  test.each([
+    ["successful", true],
+    ["failed", false],
+  ])(
+    "rejects a %s remote browser session before resolving a local follow-up",
+    async (_label, terminalDoneOk) => {
+      const metadata: SessionMetadata = {
+        ...baseMetadata,
+        id: `remote-${terminalDoneOk ? "success" : "failure"}`,
+        mode: "browser",
+        model: "gpt-5.6-pro",
+        browser: {
+          config: { url: "https://chatgpt.com/" },
+          runtime: { conversationId: "remote-conversation" },
+          remoteRun: {
+            runId: "remote-run",
+            accountId: "acct1",
+            laneId: "acct1-9473",
+            terminalDoneOk,
+            provenance: null,
+          },
+        },
+      };
+      const store = { readSession: vi.fn(async () => metadata) };
+
+      await expect(resolveBrowserFollowupReference(metadata.id, store)).rejects.toThrow(
+        /remote browser account.*Refusing --followup.*not account-pinned/i,
+      );
+    },
+  );
 
   test("leaves stored API sessions on the existing API follow-up path", async () => {
     const metadata: SessionMetadata = {

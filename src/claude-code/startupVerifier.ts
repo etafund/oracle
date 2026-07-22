@@ -188,7 +188,7 @@ export function verifyClaudeCodeRun(
 
 export function isFableCompatibleModel(model: string): boolean {
   const normalized = model.trim().toLowerCase();
-  return normalized === "fable" || normalized === "claude-fable-5" || normalized.includes("fable");
+  return normalized === "fable" || normalized === "claude-fable-5";
 }
 
 function eventJson(event: ClaudeCodeNormalizedEvent | unknown): Record<string, unknown> | null {

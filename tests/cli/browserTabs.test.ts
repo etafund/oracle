@@ -32,6 +32,25 @@ describe("browser tab CLI helpers", () => {
     expect(resolveSessionTabRefForTest(meta)).toBe("https://chatgpt.com/c/runtime-conversation");
   });
 
+  test("skips provisional WEB metadata and falls back to the exact target id", () => {
+    const meta = {
+      id: "session-1",
+      createdAt: "2026-07-21T00:00:00.000Z",
+      status: "running",
+      options: {},
+      mode: "browser",
+      browser: {
+        runtime: {
+          chromeTargetId: "submitted-target",
+          tabUrl: "https://chatgpt.com/c/WEB:fee7a622-991a-497a-bac4-a878b86f82f3",
+          conversationId: "WEB",
+        },
+      },
+    } as SessionMetadata;
+
+    expect(resolveSessionTabRefForTest(meta)).toBe("submitted-target");
+  });
+
   test("keeps Answer now / thinking tabs running even when the stop button is hidden", () => {
     const harvested = {
       targetId: "target-1",

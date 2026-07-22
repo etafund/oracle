@@ -68,6 +68,36 @@ describe("tabLeaseRegistry", () => {
     }
   });
 
+  test("aborts promptly while queued for a browser slot without writing a lease", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-tab-leases-"));
+    try {
+      const first = await acquireBrowserTabLease(dir, {
+        maxConcurrentTabs: 1,
+        timeoutMs: 500,
+        sessionId: "slot-owner",
+      });
+      const controller = new AbortController();
+      const queued = acquireBrowserTabLease(dir, {
+        maxConcurrentTabs: 1,
+        pollMs: 5_000,
+        timeoutMs: 60_000,
+        sessionId: "aborted-waiter",
+        signal: controller.signal,
+      });
+
+      controller.abort();
+      await expect(queued).rejects.toThrow(/acquisition aborted by caller/u);
+
+      const registry = JSON.parse(
+        await readFile(path.join(dir, "oracle-tab-leases.json"), "utf8"),
+      ) as { leases: Array<{ sessionId?: string }> };
+      expect(registry.leases.map((lease) => lease.sessionId)).toEqual(["slot-owner"]);
+      await first.release();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("drops stale leases owned by dead pids", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-tab-leases-"));
     try {

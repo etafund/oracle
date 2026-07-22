@@ -1,6 +1,8 @@
 import chalk from "chalk";
 import kleur from "kleur";
 import fs from "node:fs/promises";
+import type { Writable } from "node:stream";
+import { finished } from "node:stream/promises";
 import type {
   SessionMetadata,
   SessionTransportMetadata,
@@ -31,10 +33,27 @@ import {
   resolveSessionLineage,
 } from "./sessionLineage.js";
 import { formatSessionExecutionLabel } from "./sessionLifecycle.js";
+import {
+  claimRemoteBrowserRecoveryCompletion,
+  isFailedRemoteBrowserOrigin,
+  isRemoteBrowserRecoveryCompletionPersisted,
+  ownsRemoteBrowserRecoveryCompletion,
+  recoverStoredRemoteBrowserSession,
+  releaseRemoteBrowserRecoveryCompletion,
+  RemoteBrowserRecoveryUnavailableError,
+} from "../remote/sessionRecovery.js";
+import { deleteRemoteBrowserRecoverySecret } from "../remote/sessionRecoveryStore.js";
 
 const isTty = (): boolean => Boolean(process.stdout.isTTY);
 const dim = (text: string): string => (isTty() ? kleur.dim(text) : text);
 export const MAX_RENDER_BYTES = 200_000;
+
+async function endRecoveryLogStream(stream: { end: () => void }): Promise<void> {
+  const completion =
+    typeof (stream as Partial<Writable>).once === "function" ? finished(stream as Writable) : null;
+  stream.end();
+  await completion;
+}
 
 function isProcessAlive(pid?: number): boolean {
   if (!pid) return false;
@@ -98,13 +117,14 @@ async function writeReattachAnswer(
   logWriter.logLine("[reattach] captured assistant response from existing Chrome tab");
   logWriter.logLine("Answer:");
   logWriter.logLine(body);
-  logWriter.stream.end();
+  await endRecoveryLogStream(logWriter.stream);
 }
 
 async function saveReattachBrowserArtifacts(
   sessionId: string,
   metadata: SessionMetadata,
   result: { answerText: string; answerMarkdown: string },
+  requireTranscript = false,
 ): Promise<SessionMetadata["artifacts"]> {
   const body = result.answerMarkdown || result.answerText;
   const conversationUrl = metadata.browser?.runtime?.tabUrl;
@@ -118,14 +138,20 @@ async function saveReattachBrowserArtifacts(
       }).catch(() => null)
     : null;
   const prompt = (await readStoredPrompt(sessionId)) ?? metadata.promptPreview ?? "";
-  const transcriptArtifact = await saveBrowserTranscriptArtifact({
+  const transcriptWrite = saveBrowserTranscriptArtifact({
     sessionId,
     prompt,
     answerMarkdown: body,
     conversationUrl,
     artifacts: appendArtifacts(undefined, [reportArtifact]),
     logger,
-  }).catch(() => null);
+  });
+  const transcriptArtifact = requireTranscript
+    ? await transcriptWrite
+    : await transcriptWrite.catch(() => null);
+  if (requireTranscript && !transcriptArtifact) {
+    throw new Error("Remote recovery produced no durable transcript artifact; refusing commit.");
+  }
   return appendArtifacts(metadata.artifacts, [reportArtifact, transcriptArtifact]);
 }
 
@@ -281,7 +307,136 @@ export async function attachSession(
       completedDeepResearchPlaceholder ||
       (runtime?.controllerPid && !controllerAlive));
 
-  if (canReattach) {
+  const canRecoverRemote = metadata.mode === "browser" && isFailedRemoteBrowserOrigin(metadata);
+  let attemptedRemoteRecovery = false;
+  if (canRecoverRemote) {
+    attemptedRemoteRecovery = true;
+    const coordinate = metadata.browser?.remoteRecovery;
+    const attemptedOriginRunId = coordinate?.originRunId;
+    const recoveryBrowserMetadata = metadata.browser;
+    console.log(
+      chalk.yellow(
+        `Attempting capture-only recovery on originating account ${coordinate?.accountId ?? "unknown"} (conversation=${coordinate?.runtime.conversationId ?? "unknown"})...`,
+      ),
+    );
+    let completionClaim: Awaited<ReturnType<typeof claimRemoteBrowserRecoveryCompletion>> = null;
+    let recoveryCommitted = false;
+    try {
+      completionClaim = await claimRemoteBrowserRecoveryCompletion(sessionId, attemptedOriginRunId);
+      if (!completionClaim) {
+        throw new RemoteBrowserRecoveryUnavailableError(
+          "A newer remote recovery attempt or another completion writer owns this session; refusing a stale recovery dispatch.",
+        );
+      }
+      const result = await recoverStoredRemoteBrowserSession(metadata, {
+        completionClaim,
+        log: (message?: string) => {
+          if (message) console.log(dim(message));
+        },
+      });
+      const reattachResult = {
+        answerText: result.answerText,
+        answerMarkdown: result.answerMarkdown,
+      };
+      const outputTokens = estimateTokenCount(result.answerMarkdown);
+      const artifacts = await saveReattachBrowserArtifacts(
+        sessionId,
+        metadata,
+        reattachResult,
+        true,
+      );
+      // The origin-bound claim above is the CAS boundary. Logging after it is
+      // safe from stale contenders while still leaving the coordinate
+      // retryable if this local write fails before final metadata commit.
+      await writeReattachAnswer(sessionId, reattachResult, false);
+      let completionApplied = false;
+      try {
+        await sessionStore.updateSession(sessionId, (current) => {
+          // updateSession can invoke this updater repeatedly after conflicts;
+          // only the final invocation may authorize the remaining side effects.
+          completionApplied = false;
+          if (!completionClaim || !ownsRemoteBrowserRecoveryCompletion(current, completionClaim)) {
+            return {};
+          }
+          const {
+            remoteRecovery: _remoteRecovery,
+            remoteRecoveryCompletionClaim: _completionClaim,
+            ...freshBrowser
+          } = current.browser ?? recoveryBrowserMetadata ?? {};
+          completionApplied = true;
+          return {
+            status: "completed",
+            completedAt: new Date().toISOString(),
+            usage: {
+              inputTokens: 0,
+              outputTokens,
+              reasoningTokens: 0,
+              totalTokens: outputTokens,
+            },
+            errorMessage: undefined,
+            browser: {
+              ...freshBrowser,
+              config: current.browser?.config ?? recoveryBrowserMetadata?.config,
+              runtime: {
+                ...runtime,
+                tabUrl: result.tabUrl ?? coordinate?.runtime.tabUrl,
+                conversationId: result.conversationId ?? coordinate?.runtime.conversationId,
+                promptSubmitted: true,
+              },
+              remoteRun: result.remoteRun,
+            },
+            artifacts: appendArtifacts(current.artifacts, artifacts ?? []),
+            response: { status: "completed" },
+            error: undefined,
+            transport: undefined,
+          };
+        });
+        if (!completionApplied) {
+          throw new RemoteBrowserRecoveryUnavailableError(
+            "Recovery completion ownership changed before finalization; refusing a stale success commit.",
+          );
+        }
+        recoveryCommitted = true;
+      } catch (error) {
+        const persisted = await sessionStore.readSession(sessionId).catch(() => null);
+        if (!isRemoteBrowserRecoveryCompletionPersisted(persisted, result.remoteRun, artifacts)) {
+          throw error;
+        }
+        recoveryCommitted = true;
+      }
+      await deleteRemoteBrowserRecoverySecret(sessionId, attemptedOriginRunId).catch((error) => {
+        console.log(
+          dim(
+            `Recovered session metadata was committed, but private recovery cleanup failed (${error instanceof Error ? error.message : String(error)}).`,
+          ),
+        );
+      });
+      console.log(
+        chalk.green("Remote recovery succeeded without resubmitting; session marked completed."),
+      );
+      metadata = (await sessionStore.readSession(sessionId)) ?? metadata;
+    } catch (error) {
+      if (recoveryCommitted) {
+        await deleteRemoteBrowserRecoverySecret(sessionId, attemptedOriginRunId).catch(() => false);
+        const message = error instanceof Error ? error.message : String(error);
+        console.log(
+          chalk.yellow(
+            `Remote recovery was committed, but a post-commit display step failed: ${message}`,
+          ),
+        );
+      } else {
+        if (completionClaim) {
+          await releaseRemoteBrowserRecoveryCompletion(sessionId, completionClaim).catch(
+            () => undefined,
+          );
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        console.log(chalk.red(`Remote recovery failed: ${message}`));
+      }
+    }
+  }
+
+  if (canReattach && !attemptedRemoteRecovery) {
     const portInfo = runtime?.chromePort ? `port ${runtime.chromePort}` : "unknown port";
     const urlInfo = runtime?.tabUrl ? `url=${runtime.tabUrl}` : "url=unknown";
     console.log(

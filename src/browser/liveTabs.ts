@@ -12,6 +12,12 @@ import {
 } from "./constants.js";
 import { captureAssistantMarkdown, readAssistantSnapshot } from "./actions/assistantResponse.js";
 import { delay } from "./utils.js";
+import {
+  extractConversationIdFromUrl,
+  normalizeChatGptConversationId,
+} from "./conversationIdentity.js";
+
+export { extractConversationIdFromUrl } from "./conversationIdentity.js";
 
 export const DEFAULT_REMOTE_CHROME_HOST = "127.0.0.1";
 export const DEFAULT_REMOTE_CHROME_PORT = 9222;
@@ -130,7 +136,7 @@ function isChatGptUrl(url: string): boolean {
 }
 
 function isChatGptConversationUrl(url: string): boolean {
-  return /\/c\//.test(normalizeUrl(url));
+  return extractConversationIdFromUrl(normalizeUrl(url)) !== undefined;
 }
 
 function isChatGptTarget(target: ChromeTarget): boolean {
@@ -487,6 +493,10 @@ export function isChatGptUrlForTest(url: string): boolean {
   return isChatGptUrl(url);
 }
 
+export function isChatGptConversationUrlForTest(url: string): boolean {
+  return isChatGptConversationUrl(url);
+}
+
 export async function resolveChatGptTab(
   options: ResolveChatGptTabOptions = {},
 ): Promise<ChatGptTabSummary> {
@@ -593,11 +603,6 @@ export async function harvestChatGptTab(
   }
 }
 
-export function extractConversationIdFromUrl(url: string): string | undefined {
-  const match = normalizeUrl(url).match(/\/c\/([^/?#]+)/);
-  return match?.[1] ?? undefined;
-}
-
 export function formatBrowserTabState(
   tab: Pick<
     ChatGptTabSummary,
@@ -610,7 +615,13 @@ export function formatBrowserTabState(
 export function sessionMatchesTab(meta: SessionMetadata, tab: Partial<ChatGptTabSummary>): boolean {
   const runtime = meta?.browser?.runtime ?? {};
   const harvest = meta?.browser?.harvest ?? {};
-  const conversationId = tab.conversationId ?? extractConversationIdFromUrl(tab.url ?? "");
+  const conversationId =
+    normalizeChatGptConversationId(tab.conversationId) ??
+    extractConversationIdFromUrl(tab.url ?? "");
+  const runtimeConversationId = normalizeChatGptConversationId(runtime.conversationId);
+  const harvestConversationId = normalizeChatGptConversationId(harvest.conversationId);
+  const runtimeUrlConversationId = extractConversationIdFromUrl(runtime.tabUrl ?? "");
+  const harvestUrlConversationId = extractConversationIdFromUrl(harvest.url ?? "");
   const portMatches = [runtime.chromePort, meta?.browser?.config?.remoteChrome?.port]
     .filter(Boolean)
     .some(
@@ -627,15 +638,15 @@ export function sessionMatchesTab(meta: SessionMetadata, tab: Partial<ChatGptTab
   const matches = [
     runtime.chromeTargetId && runtime.chromeTargetId === tab.targetId,
     harvest.targetId && harvest.targetId === tab.targetId,
-    runtime.tabUrl && runtime.tabUrl === tab.url,
-    harvest.url && harvest.url === tab.url,
-    conversationId && runtime.conversationId && runtime.conversationId === conversationId,
-    conversationId && harvest.conversationId && harvest.conversationId === conversationId,
+    runtimeUrlConversationId && runtime.tabUrl === tab.url,
+    harvestUrlConversationId && harvest.url === tab.url,
+    conversationId && runtimeConversationId === conversationId,
+    conversationId && harvestConversationId === conversationId,
   ].some(Boolean);
   return Boolean(
     matches ||
     (portMatches &&
       conversationId &&
-      (runtime.conversationId === conversationId || harvest.conversationId === conversationId)),
+      (runtimeConversationId === conversationId || harvestConversationId === conversationId)),
   );
 }

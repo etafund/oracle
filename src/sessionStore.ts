@@ -164,6 +164,7 @@ export type {
   BrowserModelSelectionEvidenceStatus,
   BrowserRunWarning,
   BrowserRemoteRunEvidence,
+  BrowserRemoteRecoveryMetadata,
   BrowserRemoteRunProvenance,
   SessionTransportMetadata,
   SessionUserErrorMetadata,

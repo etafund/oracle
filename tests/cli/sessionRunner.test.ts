@@ -52,7 +52,11 @@ vi.mock("../../src/sessionStore.ts", () => ({
 
 import type { SessionMetadata, SessionModelRun } from "../../src/sessionManager.ts";
 import type { ModelName } from "../../src/oracle.ts";
-import { performSessionRun } from "../../src/cli/sessionRunner.ts";
+import {
+  performSessionRun,
+  RemoteBrowserFailureSupersededError,
+  persistRemoteBrowserFailureRecoveryState,
+} from "../../src/cli/sessionRunner.ts";
 import {
   BrowserAutomationError,
   FileValidationError,
@@ -79,6 +83,7 @@ import { setOracleHomeDirOverrideForTest } from "../../src/oracleHome.ts";
 import { buildClaudeCodeCommand } from "../../src/claude-code/command.ts";
 import { ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR } from "../../src/claude-code/caamCommand.ts";
 import { ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS_ENV_VAR } from "../../src/claude-code/caamRotation.ts";
+import type { RemoteBrowserRecoveryCarrier } from "../../src/remote/client.ts";
 
 const baseSessionMeta: SessionMetadata = {
   id: "sess-1",
@@ -497,6 +502,617 @@ beforeEach(() => {
 });
 
 describe("performSessionRun", () => {
+  test("persists the failed remote marker before sidecar write and stays fail-closed across an interrupted coordinate commit", async () => {
+    const events: string[] = [];
+    let current: SessionMetadata = {
+      ...baseSessionMeta,
+      mode: "browser",
+      browser: { config: { chromePath: null } },
+    };
+    let updateCount = 0;
+    const updateSession = vi.fn(
+      async (
+        _sessionId: string,
+        updates:
+          | Partial<SessionMetadata>
+          | ((metadata: SessionMetadata) => Partial<SessionMetadata>),
+      ) => {
+        updateCount += 1;
+        events.push(updateCount === 1 ? "failed-route-marker" : "public-coordinate-cas");
+        if (updateCount === 2) {
+          expect(current.browser?.remoteRun).toMatchObject({
+            runId: "remote-run-1",
+            terminalDoneOk: false,
+          });
+          throw new Error("simulated interruption after sidecar rename");
+        }
+        const patch = typeof updates === "function" ? updates(current) : updates;
+        current = { ...current, ...patch };
+        return current;
+      },
+    );
+    const recoveryCarrier: RemoteBrowserRecoveryCarrier = {
+      accountId: "acct1",
+      laneId: "acct1-9473",
+      promptPreview: "original prompt",
+      recovery: {
+        category: "browser-automation",
+        stage: "capture-binding",
+        originRunId: "remote-run-1",
+        expiresAt: "2026-07-23T00:00:00.000Z",
+        capability: `v1.${"a".repeat(43)}`,
+        promptPreviewSha256: "deadbeef",
+        runtime: {
+          tabUrl: "https://chatgpt.com/c/remote-conversation",
+          conversationId: "remote-conversation",
+          promptSubmitted: true,
+        },
+      },
+    };
+    const writeSecret = vi.fn(async () => {
+      events.push("private-sidecar");
+    });
+
+    await expect(
+      persistRemoteBrowserFailureRecoveryState(
+        {
+          sessionId: current.id,
+          browser: current.browser,
+          failedRoute: {
+            runId: "remote-run-1",
+            accountId: "acct1",
+            laneId: "acct1-9473",
+            terminalDoneOk: false,
+            provenance: null,
+          },
+          recoveryCarrier,
+        },
+        { updateSession, writeSecret },
+      ),
+    ).rejects.toThrow(/simulated interruption/);
+
+    expect(events).toEqual(["failed-route-marker", "private-sidecar", "public-coordinate-cas"]);
+    expect(current.browser?.remoteRun).toMatchObject({
+      runId: "remote-run-1",
+      accountId: "acct1",
+      terminalDoneOk: false,
+    });
+    expect(current.browser?.remoteRecovery).toBeUndefined();
+  });
+
+  test("remote recovery coordinate CAS uses the final updater retry verdict", async () => {
+    let current: SessionMetadata = {
+      ...baseSessionMeta,
+      mode: "browser",
+      browser: { config: { chromePath: null } },
+    };
+    let updateCount = 0;
+    const updateSession = vi.fn(
+      async (
+        _sessionId: string,
+        updates:
+          | Partial<SessionMetadata>
+          | ((metadata: SessionMetadata) => Partial<SessionMetadata>),
+      ) => {
+        updateCount += 1;
+        if (typeof updates !== "function") throw new Error("expected updater");
+        if (updateCount === 1) {
+          current = { ...current, ...updates(current) };
+          return current;
+        }
+        // First invocation sees the expected generation, then an optimistic
+        // retry sees a newer failed route. Only the latter verdict may win.
+        updates(current);
+        current = {
+          ...current,
+          browser: {
+            ...current.browser,
+            remoteRun: {
+              runId: "remote-run-2",
+              accountId: "acct2",
+              laneId: "acct2-9473",
+              terminalDoneOk: false,
+              provenance: null,
+            },
+          },
+        };
+        current = { ...current, ...updates(current) };
+        return current;
+      },
+    );
+    const deleteSecret = vi.fn(async () => true);
+    const carrier = {
+      accountId: "acct1",
+      laneId: "acct1-9473",
+      promptPreview: "original prompt",
+      recovery: {
+        category: "browser-automation",
+        stage: "capture-binding",
+        originRunId: "remote-run-1",
+        expiresAt: "2026-07-23T00:00:00.000Z",
+        capability: `v1.${"a".repeat(43)}`,
+        promptPreviewSha256: "deadbeef",
+        runtime: {
+          tabUrl: "https://chatgpt.com/c/remote-conversation",
+          conversationId: "remote-conversation",
+          promptSubmitted: true,
+        },
+      },
+    } satisfies RemoteBrowserRecoveryCarrier;
+
+    await expect(
+      persistRemoteBrowserFailureRecoveryState(
+        {
+          sessionId: current.id,
+          browser: current.browser,
+          failedRoute: {
+            runId: "remote-run-1",
+            accountId: "acct1",
+            laneId: "acct1-9473",
+            terminalDoneOk: false,
+            provenance: null,
+          },
+          recoveryCarrier: carrier,
+        },
+        { updateSession, writeSecret: vi.fn(async () => undefined), deleteSecret },
+      ),
+    ).rejects.toBeInstanceOf(RemoteBrowserFailureSupersededError);
+
+    expect(current.browser?.remoteRun?.runId).toBe("remote-run-2");
+    expect(current.browser?.remoteRecovery).toBeUndefined();
+    expect(deleteSecret).toHaveBeenCalledWith(current.id, "remote-run-1");
+  });
+
+  test.each(["completed winner", "active completion claim"])(
+    "stale failed-route publication cannot downgrade a %s",
+    async (winnerKind) => {
+      const completed = winnerKind === "completed winner";
+      const winningRoute = {
+        runId: "winning-run",
+        accountId: "acct2",
+        laneId: "acct2-9473",
+        terminalDoneOk: completed as true | false,
+        provenance: null,
+      } as NonNullable<NonNullable<SessionMetadata["browser"]>["remoteRun"]>;
+      const current: SessionMetadata = {
+        ...baseSessionMeta,
+        status: completed ? "completed" : "error",
+        mode: "browser",
+        browser: {
+          remoteRun: winningRoute,
+          ...(completed
+            ? {}
+            : {
+                remoteRecovery: {
+                  schema: "remote-browser-recovery-public.v1" as const,
+                  stage: "capture-binding" as const,
+                  originRunId: "winning-run",
+                  expiresAt: "2026-07-23T00:00:00.000Z",
+                  accountId: "acct2",
+                  laneId: "acct2-9473",
+                  runtime: {
+                    tabUrl: "https://chatgpt.com/c/winning-run",
+                    conversationId: "winning-run",
+                    promptSubmitted: true as const,
+                  },
+                },
+                remoteRecoveryCompletionClaim: {
+                  schema: "remote-browser-recovery-completion-claim.v1" as const,
+                  originRunId: "winning-run",
+                  claimId: "winning-claim",
+                  claimedAt: "2026-07-22T00:00:00.000Z",
+                  ownerPid: process.pid,
+                },
+              }),
+        },
+      };
+      const updateSession = vi.fn(
+        async (
+          _sessionId: string,
+          updater: (metadata: SessionMetadata) => Partial<SessionMetadata>,
+        ) => ({ ...current, ...updater(current) }),
+      );
+      const writeSecret = vi.fn(async () => undefined);
+
+      await expect(
+        persistRemoteBrowserFailureRecoveryState(
+          {
+            sessionId: current.id,
+            browser: { config: { chromePath: null } },
+            failedRoute: {
+              runId: "stale-run",
+              accountId: "acct1",
+              laneId: "acct1-9473",
+              terminalDoneOk: false,
+              provenance: null,
+            },
+          },
+          { updateSession, writeSecret },
+        ),
+      ).rejects.toBeInstanceOf(RemoteBrowserFailureSupersededError);
+
+      expect(current.status).toBe(completed ? "completed" : "error");
+      expect(current.browser?.remoteRun?.runId).toBe("winning-run");
+      expect(writeSecret).not.toHaveBeenCalled();
+      expect(sessionStoreMock.updateModelRun).not.toHaveBeenCalled();
+      expect(sessionStoreMock.createLogWriter).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each(["partial metadata commit", "cleanup failure", "output failure"])(
+    "remote recovery stays completed after a %s and still attempts capability cleanup",
+    async (failureMode) => {
+      const originRunId = "remote-origin-1";
+      const completionClaim = {
+        schema: "remote-browser-recovery-completion-claim.v1" as const,
+        originRunId,
+        claimId: "recovery-claim-1",
+        claimedAt: new Date().toISOString(),
+        ownerPid: process.pid,
+      };
+      let current: SessionMetadata = {
+        ...baseSessionMeta,
+        status: "error",
+        mode: "browser",
+        model: "gpt-5.2-pro",
+        browser: {
+          config: { chromePath: null },
+          runtime: {
+            tabUrl: `https://chatgpt.com/c/${originRunId}`,
+            conversationId: originRunId,
+            promptSubmitted: true,
+          },
+          remoteRun: {
+            runId: originRunId,
+            accountId: "acct1",
+            laneId: "acct1-9473",
+            terminalDoneOk: false,
+            provenance: null,
+          },
+          remoteRecovery: {
+            schema: "remote-browser-recovery-public.v1",
+            stage: "capture-binding",
+            originRunId,
+            expiresAt: "2026-07-23T00:00:00.000Z",
+            accountId: "acct1",
+            laneId: "acct1-9473",
+            runtime: {
+              tabUrl: `https://chatgpt.com/c/${originRunId}`,
+              conversationId: originRunId,
+              promptSubmitted: true,
+            },
+          },
+        },
+      };
+      let injectedPartialCommitFailure = false;
+      sessionStoreMock.updateSession.mockImplementation(
+        async (
+          _sessionId: string,
+          updates:
+            | Partial<SessionMetadata>
+            | ((metadata: SessionMetadata) => Partial<SessionMetadata>),
+        ) => {
+          const patch = typeof updates === "function" ? updates(current) : updates;
+          current = { ...current, ...patch };
+          if (
+            failureMode === "partial metadata commit" &&
+            current.status === "completed" &&
+            !injectedPartialCommitFailure
+          ) {
+            injectedPartialCommitFailure = true;
+            throw new Error("normalized model file write failed after meta rename");
+          }
+          return current;
+        },
+      );
+      sessionStoreMock.readSession.mockImplementation(async () => current);
+      sessionStoreMock.updateModelRun.mockImplementation(
+        async (_sessionId: string, _model: string, updates: { status?: string }) => {
+          if (updates.status === "completed") {
+            throw new Error("redundant completed model update must not run");
+          }
+          return {};
+        },
+      );
+      const claim = vi.fn(async () => {
+        if (!current.browser) throw new Error("missing browser state");
+        current = {
+          ...current,
+          browser: { ...current.browser, remoteRecoveryCompletionClaim: completionClaim },
+        };
+        return completionClaim;
+      });
+      const recoverStored = vi.fn(async () => ({
+        answerText: "durable recovered answer",
+        answerMarkdown: "durable recovered answer",
+        tookMs: 10,
+        answerTokens: 3,
+        answerChars: 24,
+        tabUrl: `https://chatgpt.com/c/${originRunId}`,
+        conversationId: originRunId,
+        remoteRun: {
+          runId: "recovery-run-1",
+          accountId: "acct1",
+          laneId: "acct1-9473",
+          terminalDoneOk: true as const,
+          provenance: null,
+        },
+      }));
+      const persistArtifacts = vi.fn(async () => [
+        {
+          kind: "transcript" as const,
+          path: "/tmp/.oracle/sessions/sess-1/artifacts/transcript-recovered.md",
+        },
+      ]);
+      const deleteSecret = vi.fn(async () => {
+        if (failureMode === "cleanup failure") throw new Error("sidecar unlink failed");
+        return true;
+      });
+      if (failureMode === "output failure") {
+        vi.mocked(fsPromises.writeFile).mockRejectedValueOnce(new Error("output disk full"));
+      }
+
+      await expect(
+        performSessionRun({
+          sessionMeta: current,
+          runOptions: {
+            ...baseRunOptions,
+            ...(failureMode === "output failure"
+              ? { writeOutputPath: "/tmp/recovered-output.md" }
+              : {}),
+          },
+          mode: "browser",
+          browserConfig: { chromePath: null },
+          cwd: "/tmp",
+          log,
+          write,
+          version: cliVersion,
+          remoteRecoveryDeps: {
+            claim,
+            recoverStored,
+            release: vi.fn(async () => true),
+            deleteSecret,
+            persistArtifacts,
+          },
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(current).toMatchObject({
+        status: "completed",
+        browser: {
+          remoteRun: { runId: "recovery-run-1", terminalDoneOk: true },
+        },
+        artifacts: [
+          {
+            kind: "transcript",
+            path: "/tmp/.oracle/sessions/sess-1/artifacts/transcript-recovered.md",
+          },
+        ],
+      });
+      expect(current.browser?.remoteRecovery).toBeUndefined();
+      expect(current.browser?.remoteRecoveryCompletionClaim).toBeUndefined();
+      expect(deleteSecret).toHaveBeenCalledWith(current.id, originRunId);
+      expect(sessionStoreMock.updateModelRun).not.toHaveBeenCalledWith(
+        current.id,
+        expect.any(String),
+        expect.objectContaining({ status: "completed" }),
+      );
+      expect(log).not.toHaveBeenCalledWith(expect.stringMatching(/^ERROR:/));
+    },
+  );
+
+  test("second-CAS loss to a same-origin completion claim preserves its retry sidecar", async () => {
+    let current: SessionMetadata = {
+      ...baseSessionMeta,
+      status: "running",
+      mode: "browser",
+      browser: { config: { chromePath: null } },
+    };
+    let updateCount = 0;
+    const updateSession = vi.fn(
+      async (
+        _sessionId: string,
+        updater: (metadata: SessionMetadata) => Partial<SessionMetadata>,
+      ) => {
+        updateCount += 1;
+        if (updateCount === 2) {
+          current = {
+            ...current,
+            browser: {
+              ...current.browser,
+              remoteRecovery: {
+                schema: "remote-browser-recovery-public.v1",
+                stage: "capture-binding",
+                originRunId: "remote-run-1",
+                expiresAt: "2026-07-23T00:00:00.000Z",
+                accountId: "acct1",
+                laneId: "acct1-9473",
+                runtime: {
+                  tabUrl: "https://chatgpt.com/c/remote-run-1",
+                  conversationId: "remote-run-1",
+                  promptSubmitted: true,
+                },
+              },
+              remoteRecoveryCompletionClaim: {
+                schema: "remote-browser-recovery-completion-claim.v1",
+                originRunId: "remote-run-1",
+                claimId: "winner-claim",
+                claimedAt: "2026-07-22T00:00:00.000Z",
+                ownerPid: process.pid,
+              },
+            },
+          };
+        }
+        current = { ...current, ...updater(current) };
+        return current;
+      },
+    );
+    const deleteSecret = vi.fn(async () => true);
+    const carrier = {
+      accountId: "acct1",
+      laneId: "acct1-9473",
+      promptPreview: "original prompt",
+      recovery: {
+        category: "browser-automation",
+        stage: "capture-binding",
+        originRunId: "remote-run-1",
+        expiresAt: "2026-07-23T00:00:00.000Z",
+        capability: `v1.${"a".repeat(43)}`,
+        promptPreviewSha256: "deadbeef",
+        runtime: {
+          tabUrl: "https://chatgpt.com/c/remote-run-1",
+          conversationId: "remote-run-1",
+          promptSubmitted: true,
+        },
+      },
+    } satisfies RemoteBrowserRecoveryCarrier;
+
+    await expect(
+      persistRemoteBrowserFailureRecoveryState(
+        {
+          sessionId: current.id,
+          browser: current.browser,
+          failedRoute: {
+            runId: "remote-run-1",
+            accountId: "acct1",
+            laneId: "acct1-9473",
+            terminalDoneOk: false,
+            provenance: null,
+          },
+          recoveryCarrier: carrier,
+        },
+        { updateSession, writeSecret: vi.fn(async () => undefined), deleteSecret },
+      ),
+    ).rejects.toBeInstanceOf(RemoteBrowserFailureSupersededError);
+
+    expect(current.browser?.remoteRecoveryCompletionClaim?.claimId).toBe("winner-claim");
+    expect(current.browser?.remoteRecovery?.originRunId).toBe("remote-run-1");
+    expect(deleteSecret).not.toHaveBeenCalled();
+  });
+
+  test.each(["completed winner", "active completion claim"])(
+    "performSessionRun leaves a %s entirely untouched when it wins after failed-route publication",
+    async (winnerKind) => {
+      const failedRoute = {
+        runId: "remote-run-1",
+        accountId: "acct1",
+        laneId: "acct1-9473",
+        terminalDoneOk: false as const,
+        provenance: null,
+      };
+      const coordinate = {
+        schema: "remote-browser-recovery-public.v1" as const,
+        stage: "capture-binding" as const,
+        originRunId: "remote-run-1",
+        expiresAt: "2026-07-23T00:00:00.000Z",
+        accountId: "acct1",
+        laneId: "acct1-9473",
+        runtime: {
+          tabUrl: "https://chatgpt.com/c/remote-run-1",
+          conversationId: "remote-run-1",
+          promptSubmitted: true as const,
+        },
+      };
+      let current: SessionMetadata = {
+        ...baseSessionMeta,
+        mode: "browser",
+        model: "gpt-5.2-pro",
+        browser: { config: { chromePath: null } },
+      };
+      let winnerInjected = false;
+      sessionStoreMock.updateSession.mockImplementation(
+        async (
+          _sessionId: string,
+          updates:
+            | Partial<SessionMetadata>
+            | ((metadata: SessionMetadata) => Partial<SessionMetadata>),
+        ) => {
+          if (typeof updates === "function" && current.browser?.remoteRecovery && !winnerInjected) {
+            winnerInjected = true;
+            current =
+              winnerKind === "completed winner"
+                ? {
+                    ...current,
+                    status: "completed",
+                    browser: {
+                      ...current.browser,
+                      remoteRun: {
+                        runId: "winning-run",
+                        accountId: "acct2",
+                        laneId: "acct2-9473",
+                        terminalDoneOk: true,
+                        provenance: null,
+                      },
+                      remoteRecovery: undefined,
+                    },
+                  }
+                : {
+                    ...current,
+                    browser: {
+                      ...current.browser,
+                      remoteRecoveryCompletionClaim: {
+                        schema: "remote-browser-recovery-completion-claim.v1",
+                        originRunId: "remote-run-1",
+                        claimId: "winning-claim",
+                        claimedAt: new Date().toISOString(),
+                        ownerPid: process.pid,
+                      },
+                    },
+                  };
+          }
+          const patch = typeof updates === "function" ? updates(current) : updates;
+          current = { ...current, ...patch };
+          return current;
+        },
+      );
+      vi.mocked(runBrowserSessionExecution).mockRejectedValueOnce(
+        new Error("stale remote failure"),
+      );
+      const persistState = vi.fn(async () => {
+        current = {
+          ...current,
+          browser: {
+            ...current.browser,
+            remoteRun: failedRoute,
+            remoteRecovery: coordinate,
+          },
+        };
+        return current.browser;
+      });
+
+      await expect(
+        performSessionRun({
+          sessionMeta: current,
+          runOptions: baseRunOptions,
+          mode: "browser",
+          browserConfig: { chromePath: null },
+          cwd: "/tmp",
+          log,
+          write,
+          version: cliVersion,
+          remoteFailureDeps: {
+            getFailedRoute: () => failedRoute,
+            getRecovery: () => null,
+            persistState,
+          },
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(winnerInjected).toBe(true);
+      expect(current.status).toBe(winnerKind === "completed winner" ? "completed" : "running");
+      expect(current.browser?.remoteRun?.runId).toBe(
+        winnerKind === "completed winner" ? "winning-run" : "remote-run-1",
+      );
+      expect(log).not.toHaveBeenCalledWith(expect.stringMatching(/^ERROR:/));
+      expect(sessionStoreMock.updateModelRun).not.toHaveBeenCalledWith(
+        current.id,
+        expect.any(String),
+        expect.objectContaining({ status: "error" }),
+      );
+      expect(sessionStoreMock.createLogWriter).not.toHaveBeenCalled();
+    },
+  );
+
   test("default claude-code runner spawns a guarded local claude process with stdin prompt and raw artifacts", async () => {
     vi.mocked(fsPromises.mkdir).mockRestore();
     vi.mocked(fsPromises.writeFile).mockRestore();
@@ -2562,7 +3178,11 @@ describe("performSessionRun", () => {
         conversationUrl: "https://chatgpt.com/c/saved-conversation",
       }),
     );
-    const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    const finalUpdateInput = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    const finalUpdate =
+      typeof finalUpdateInput === "function"
+        ? finalUpdateInput(submittedSessionMeta)
+        : finalUpdateInput;
     expect(finalUpdate).toMatchObject({
       status: "completed",
       response: { status: "completed" },
@@ -2725,7 +3345,7 @@ describe("performSessionRun", () => {
       browser: expect.objectContaining({ config: expect.any(Object) }),
     });
     expect(finalUpdate?.browser?.runtime).toBeUndefined();
-    expect(finalUpdate?.browser).not.toHaveProperty("modelSelection");
+    expect(finalUpdate?.browser?.modelSelection).toEqual(staleSessionMeta.browser.modelSelection);
     expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
       baseSessionMeta.id,
       "gpt-5.2-pro",
@@ -2788,7 +3408,31 @@ describe("performSessionRun", () => {
       }),
     ).rejects.toThrow(/prompt did not appear/i);
 
-    const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    const finalUpdateInput = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    const finalUpdate =
+      typeof finalUpdateInput === "function"
+        ? finalUpdateInput({
+            ...baseSessionMeta,
+            browser: {
+              config: { chromePath: null },
+              runtime: {
+                chromePort: 9222,
+                chromeHost: "127.0.0.1",
+                tabUrl: "https://chatgpt.com/c/demo",
+                promptSubmitted: true,
+              },
+              modelSelection: {
+                requestedModel: "Pro",
+                resolvedLabel: "Pro",
+                strategy: "select",
+                status: "already-selected",
+                verified: true,
+                source: "chatgpt-model-picker",
+                capturedAt: "2026-07-03T00:00:00.000Z",
+              },
+            },
+          })
+        : finalUpdateInput;
     expect(finalUpdate).toMatchObject({
       status: "error",
       browser: expect.objectContaining({
@@ -3070,6 +3714,67 @@ describe("performSessionRun", () => {
     expect(logLines).toContain("oracle session sess-1 --harvest");
   });
 
+  test("persists sanitized remote timeout recovery identity and route attribution", async () => {
+    const recoveryRuntime = {
+      tabUrl: "https://chatgpt.com/c/canonical-remote-123",
+      conversationId: "canonical-remote-123",
+      promptSubmitted: true as const,
+    };
+    vi.mocked(runBrowserSessionExecution).mockRejectedValueOnce(
+      new BrowserAutomationError("Assistant response timed out before completion.", {
+        stage: "assistant-timeout",
+        runtime: recoveryRuntime,
+        errorClass: "transport_interrupted_after_submit",
+        retryable: false,
+        remoteRun: {
+          runId: "run-recovery-1",
+          accountId: "acct2",
+          laneId: "acct2-9473",
+          terminalDoneOk: false,
+        },
+      }),
+    );
+
+    await performSessionRun({
+      sessionMeta: baseSessionMeta,
+      runOptions: baseRunOptions,
+      mode: "browser",
+      browserConfig: { chromePath: null },
+      cwd: "/tmp",
+      log,
+      write,
+      version: cliVersion,
+    });
+
+    const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    expect(finalUpdate).toMatchObject({
+      status: "error",
+      response: { status: "incomplete", incompleteReason: "incomplete-capture" },
+      browser: { runtime: recoveryRuntime },
+      error: {
+        category: "browser-automation",
+        details: {
+          stage: "assistant-timeout",
+          runtime: recoveryRuntime,
+          errorClass: "transport_interrupted_after_submit",
+          retryable: false,
+          remoteRun: {
+            runId: "run-recovery-1",
+            accountId: "acct2",
+            laneId: "acct2-9473",
+            terminalDoneOk: false,
+          },
+        },
+      },
+    });
+    const serialized = JSON.stringify(finalUpdate);
+    expect(serialized).not.toContain("chromePort");
+    expect(serialized).not.toContain("chromePid");
+    expect(serialized).not.toContain("chromeTargetId");
+    expect(serialized).not.toContain("userDataDir");
+    expect(serialized).not.toContain("diagnostics");
+  });
+
   test("records runtime and profile reuse guidance when cloudflare challenge is detected", async () => {
     const automationError = new BrowserAutomationError(
       "Cloudflare challenge detected. Complete the “Just a moment…” check in the open browser, then rerun.",
@@ -3247,7 +3952,31 @@ describe("performSessionRun", () => {
         conversationUrl: "https://chatgpt.com/c/demo",
       }),
     );
-    const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    const finalUpdateInput = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    const finalUpdate =
+      typeof finalUpdateInput === "function"
+        ? finalUpdateInput({
+            ...baseSessionMeta,
+            browser: {
+              config: { chromePath: null },
+              runtime: {
+                chromePort: 9222,
+                chromeHost: "127.0.0.1",
+                tabUrl: "https://chatgpt.com/c/demo",
+                promptSubmitted: true,
+              },
+              modelSelection: {
+                requestedModel: "Pro",
+                resolvedLabel: "Pro",
+                strategy: "select",
+                status: "already-selected",
+                verified: true,
+                source: "chatgpt-model-picker",
+                capturedAt: "2026-07-03T00:00:00.000Z",
+              },
+            },
+          })
+        : finalUpdateInput;
     expect(finalUpdate).toMatchObject({
       status: "completed",
       artifacts: [
@@ -3895,6 +4624,75 @@ describe("claude-code caam rate-limit rotation (caam-ratelimit-rotation-design.m
       expect(adapter.rotation?.final_profile).toBe("beth");
       expect(adapter.rotation?.rotations_used).toBe(1);
       expect(adapter.rotation?.exhausted).toBe(false);
+    } finally {
+      teardownRotationFixture(fixture);
+    }
+  });
+
+  test("fable-local never rotates despite positive configured and inherited caps", async () => {
+    vi.mocked(fsPromises.mkdir).mockRestore();
+    vi.mocked(fsPromises.writeFile).mockRestore();
+    const fixture = setupRotationFixture();
+    try {
+      createFakeCaamExecutableWithRotation({
+        binDir: fixture.binDir,
+        logsDir: fixture.logsDir,
+        profileStdoutEvents: {
+          beta: [fakeClaudeCodeInitEvent(), rateLimitResultEvent("rate limit on pinned profile")],
+        },
+        robotNextResponses: [{ json: { success: true, data: { profile: "beth" } } }],
+      });
+
+      await withExactEnv(
+        {
+          ...blockedClaudeCodeEnvDefaults,
+          PATH: `${fixture.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "beta",
+          [ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS_ENV_VAR]: "9",
+        },
+        async () => {
+          await expect(
+            performSessionRun({
+              sessionMeta: {
+                ...baseSessionMeta,
+                mode: "claude-code",
+                model: "fable",
+                lane: "fable-local",
+              },
+              runOptions: {
+                prompt: "Review while preserving the selected account",
+                model: "fable",
+                lane: "fable-local",
+                claudeCode: {
+                  ...fableClaudeCodePolicy,
+                  maxRateLimitRotations: 3,
+                },
+              },
+              mode: "claude-code",
+              cwd: fixture.repoDir,
+              log,
+              write,
+              version: cliVersion,
+              muteStdout: true,
+            }),
+          ).rejects.toThrow(/rate-limit signal/);
+        },
+      );
+
+      expect(readJsonlLog(fixture.logsDir, "doctor-calls.jsonl")).toHaveLength(1);
+      expect(readJsonlLog(fixture.logsDir, "shallow-spawn-calls.jsonl")).toHaveLength(1);
+      expect(readJsonlLog(fixture.logsDir, "cooldown-calls.jsonl")).toHaveLength(0);
+      expect(readJsonlLog(fixture.logsDir, "robot-next-calls.jsonl")).toHaveLength(0);
+
+      const adapter = readAdapterMetadata(fixture) as {
+        rotation?: { attempts: unknown[]; rotations_used: number; exhausted: boolean; cap: number };
+      };
+      expect(adapter.rotation).toMatchObject({
+        rotations_used: 0,
+        exhausted: true,
+        cap: 0,
+      });
+      expect(adapter.rotation?.attempts).toHaveLength(1);
     } finally {
       teardownRotationFixture(fixture);
     }

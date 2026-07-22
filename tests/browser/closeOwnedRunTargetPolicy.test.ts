@@ -10,7 +10,7 @@
  * The close-BEFORE-release ordering itself is covered by
  * tests/browser/closeBeforeReleaseOrdering.test.ts.
  */
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import type { BrowserLogger } from "../../src/browser/types.js";
 import {
   __test__,
@@ -21,6 +21,7 @@ import {
 const {
   closeOwnedTargetWithDeadline,
   closeRemoteConnectionAfterRun,
+  releaseBrowserTabLeaseOrTaint,
   resolveCloseOwnedRunTargetPolicy,
   shouldCloseOwnedRunTargetAfterRun,
 } = __test__;
@@ -138,6 +139,55 @@ describe("shouldCloseOwnedRunTargetAfterRun with the 'always' policy", () => {
         keepBrowser: false,
       }),
     ).toBe(false);
+  });
+
+  test("a known orphaned owned target is retried even for an attempted keep-browser run", () => {
+    expect(
+      shouldCloseOwnedRunTargetAfterRun({
+        runStatus: "attempted",
+        ownsTarget: true,
+        keepBrowser: true,
+        policy: "auto",
+        orphanedTargetNeedsCleanup: true,
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("releaseBrowserTabLeaseOrTaint", () => {
+  test("a failed release is surfaced as cleanup-taint", async () => {
+    const { logger, messages } = makeLogger();
+    const release = vi.fn(async () => {
+      throw new Error("registry lock unavailable");
+    });
+
+    await expect(
+      releaseBrowserTabLeaseOrTaint(
+        { id: "lease-release-failed", release, update: vi.fn() } as never,
+        logger,
+        "browser run cleanup",
+      ),
+    ).resolves.toBe(false);
+
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(getBrowserCleanupTaint()?.reason).toContain("tab-lease release failed");
+    expect(getBrowserCleanupTaint()?.reason).toContain("lease-release-failed");
+    expect(getBrowserCleanupTaint()?.reason).toContain("registry lock unavailable");
+    expect(messages.some((message) => message.includes("CLEANUP-TAINT"))).toBe(true);
+  });
+
+  test("a successful release reports clean completion", async () => {
+    const { logger } = makeLogger();
+    const release = vi.fn(async () => undefined);
+
+    await expect(
+      releaseBrowserTabLeaseOrTaint(
+        { id: "lease-release-ok", release, update: vi.fn() } as never,
+        logger,
+        "browser run cleanup",
+      ),
+    ).resolves.toBe(true);
+    expect(getBrowserCleanupTaint()).toBeNull();
   });
 });
 

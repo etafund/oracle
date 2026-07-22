@@ -14,6 +14,7 @@ import {
   type ChatGptTabSummary,
 } from "../browser/liveTabs.js";
 import { recoverConversationTab } from "../browser/recoverConversation.js";
+import { normalizeChatGptConversationId } from "../browser/conversationIdentity.js";
 import { resolveOutputPath } from "./writeOutputPath.js";
 
 const LIVE_POLL_MS = 2000;
@@ -111,15 +112,18 @@ function snippet(text: string, max = 120): string {
 function resolveSessionTabRef(meta: SessionMetadata): string {
   const runtime = meta?.browser?.runtime ?? {};
   const harvest = meta?.browser?.harvest ?? {};
-  return (
-    harvest.url ??
-    runtime.tabUrl ??
-    harvest.conversationId ??
-    runtime.conversationId ??
-    harvest.targetId ??
-    runtime.chromeTargetId ??
-    "current"
-  );
+  for (const candidate of [harvest.url, runtime.tabUrl]) {
+    if (typeof candidate === "string" && extractConversationIdFromUrl(candidate)) {
+      return candidate;
+    }
+  }
+  for (const candidate of [harvest.conversationId, runtime.conversationId]) {
+    const conversationId = normalizeChatGptConversationId(candidate);
+    if (conversationId) {
+      return conversationId;
+    }
+  }
+  return harvest.targetId ?? runtime.chromeTargetId ?? "current";
 }
 
 export function resolveSessionTabRefForTest(meta: SessionMetadata): string {
@@ -137,7 +141,9 @@ async function persistHarvest(
   const harvest = {
     targetId: harvested.targetId,
     url: harvested.url,
-    conversationId: harvested.conversationId ?? extractConversationIdFromUrl(harvested.url),
+    conversationId:
+      normalizeChatGptConversationId(harvested.conversationId) ??
+      extractConversationIdFromUrl(harvested.url),
     harvestedAt: new Date().toISOString(),
     assistantHash: hash,
     state: harvested.state,
@@ -259,6 +265,13 @@ export async function harvestSessionBrowserOutput(
   if (!meta) {
     throw new Error(`No session found with ID ${sessionId}.`);
   }
+  if (meta.browser?.remoteRun || meta.browser?.remoteRecovery) {
+    throw new Error(
+      meta.browser.remoteRecovery
+        ? `Session ${sessionId} belongs to a remote browser account. Refusing --harvest local/default-CDP fallback; use \`oracle session ${sessionId} --render\` for account-affine capture-only recovery.`
+        : `Session ${sessionId} belongs to a remote browser account. Refusing --harvest local/default-CDP fallback; inspect the conversation in the originating ChatGPT account's history.`,
+    );
+  }
   const initialEndpoint = sessionBrowserEndpoint(meta) ?? {
     host: DEFAULT_REMOTE_CHROME_HOST,
     port: DEFAULT_REMOTE_CHROME_PORT,
@@ -328,6 +341,13 @@ export async function liveTailSessionBrowserOutput(
   const meta = await sessionStore.readSession(sessionId);
   if (!meta) {
     throw new Error(`No session found with ID ${sessionId}.`);
+  }
+  if (meta.browser?.remoteRun || meta.browser?.remoteRecovery) {
+    throw new Error(
+      meta.browser.remoteRecovery
+        ? `Session ${sessionId} belongs to a remote browser account. Refusing --live local/default-CDP fallback; use \`oracle session ${sessionId} --render\` for account-affine capture-only recovery.`
+        : `Session ${sessionId} belongs to a remote browser account. Refusing --live local/default-CDP fallback; inspect the conversation in the originating ChatGPT account's history.`,
+    );
   }
   let endpoint = sessionBrowserEndpoint(meta) ?? {
     host: DEFAULT_REMOTE_CHROME_HOST,

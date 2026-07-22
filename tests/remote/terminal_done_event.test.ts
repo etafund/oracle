@@ -92,6 +92,7 @@ describe("server: terminal done event", () => {
         {
           runBrowser: async (options) => {
             options.log?.("Submitted prompt via Enter key");
+            options.submittedPromptPreviewCb?.("test");
             options.log?.(formatCaptureBindingVerifiedLog("message-handle", "abc123"));
             return MINIMAL_RESULT;
           },
@@ -187,7 +188,16 @@ describe("server: terminal done event", () => {
             // Turn 1: submit confirmed and capture binding verified at full
             // structural strength.
             options.log?.("Submitted prompt via Enter key");
+            await options.submittedPromptPreviewCb?.("test");
             options.log?.(formatCaptureBindingVerifiedLog("message-handle", "abc123"));
+            await options.runtimeHintCb?.({
+              tabUrl: "https://chatgpt.com/c/recoverable-123?private=1",
+              conversationId: "recoverable-123",
+              promptSubmitted: true,
+              chromePid: 1234,
+              chromePort: 9222,
+              userDataDir: "/home/oracle/private-profile",
+            });
             // Follow-up turn: the capture binding fails structurally — thrown
             // exactly as assertCapturedAssistantResponseBound throws it.
             throw buildCaptureBindingFailureError(
@@ -209,6 +219,21 @@ describe("server: terminal done event", () => {
         expect(done.ok).toBe(false);
         expect(done.errorClass).toBe("integrity_binding_failed");
         expect(done.retryable).toBe(false);
+        expect(done.recovery).toMatchObject({
+          category: "browser-automation",
+          stage: "capture-binding",
+          originRunId: expect.any(String),
+          expiresAt: expect.any(String),
+          capability: expect.stringMatching(/^v1\./),
+          promptPreviewSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          runtime: {
+            tabUrl: "https://chatgpt.com/c/recoverable-123",
+            conversationId: "recoverable-123",
+            promptSubmitted: true,
+          },
+        });
+        expect(JSON.stringify(done.recovery)).not.toContain("9222");
+        expect(JSON.stringify(done.recovery)).not.toContain("private-profile");
         const provenance = done.provenance as Record<string, unknown>;
         expect(provenance.captureBindingVerified).toBe(false);
         expect(provenance.captureBindingQuality).toBeNull();
@@ -539,6 +564,82 @@ describe("client: terminal done enforcement", () => {
   );
 
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "a recoverable remote failure preserves only logical conversation metadata",
+    async () => {
+      const fake = await startFakeRunServer(
+        [
+          {
+            type: "done",
+            ok: false,
+            runId: "run-recovery-1",
+            errorClass: "transport_interrupted_after_submit",
+            errorMessage: "Assistant response timed out before completion.",
+            retryable: false,
+            recovery: {
+              category: "browser-automation",
+              stage: "assistant-timeout",
+              originRunId: "run-recovery-1",
+              expiresAt: "2099-01-01T00:00:00.000Z",
+              capability: `v1.${"a".repeat(43)}`,
+              promptPreviewSha256:
+                "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+              runtime: {
+                tabUrl: "https://chatgpt.com/c/recoverable-123",
+                conversationId: "recoverable-123",
+                promptSubmitted: true,
+                chromePort: 9222,
+              },
+            },
+          },
+        ],
+        {
+          headers: {
+            "x-oracle-run-id": "run-recovery-1",
+            "x-oracle-account-id": "acct2",
+            "x-oracle-lane-id": "acct2-9473",
+          },
+        },
+      );
+      try {
+        const executor = createRemoteBrowserExecutor({
+          host: `127.0.0.1:${fake.port}`,
+          token: "secret",
+        });
+        const failure = await executor({ prompt: "x", config: {} }).then(
+          () => null,
+          (error: unknown) => error,
+        );
+        expect(failure).toBeInstanceOf(BrowserAutomationError);
+        expect(failure).not.toBeInstanceOf(RemoteRunFailedError);
+        expect((failure as { errorClass?: string }).errorClass).toBe(
+          "transport_interrupted_after_submit",
+        );
+        expect((failure as { retryable?: boolean }).retryable).toBe(false);
+        expect((failure as BrowserAutomationError).details).toEqual({
+          stage: "assistant-timeout",
+          runtime: {
+            tabUrl: "https://chatgpt.com/c/recoverable-123",
+            conversationId: "recoverable-123",
+            promptSubmitted: true,
+          },
+          errorClass: "transport_interrupted_after_submit",
+          retryable: false,
+          remoteRun: {
+            runId: "run-recovery-1",
+            accountId: "acct2",
+            laneId: "acct2-9473",
+            terminalDoneOk: false,
+            provenance: null,
+          },
+        });
+        expect(JSON.stringify((failure as BrowserAutomationError).details)).not.toContain("9222");
+      } finally {
+        await fake.close();
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
     "busy refusals surface capacity_busy with a retry verdict",
     async () => {
       await isolatedFleetDir();
@@ -630,13 +731,16 @@ async function rawRun(port: number, token: string): Promise<{ statusCode: number
 /** Fake /runs endpoint that streams the given events and ends. */
 async function startFakeRunServer(
   events: Array<Record<string, unknown>>,
-  options: { rawTail?: string } = {},
+  options: { rawTail?: string; headers?: Record<string, string> } = {},
 ): Promise<{ port: number; close: () => Promise<void> }> {
   const server = http.createServer((req, res) => {
     if (req.method === "POST" && req.url === "/runs") {
       req.resume();
       req.on("end", () => {
-        res.writeHead(200, { "Content-Type": "application/x-ndjson" });
+        res.writeHead(200, {
+          "Content-Type": "application/x-ndjson",
+          ...options.headers,
+        });
         for (const event of events) {
           res.write(`${JSON.stringify(event)}\n`);
         }

@@ -17,8 +17,9 @@ import {
   shouldPreserveBrowserOnErrorForTest,
 } from "../../src/browser/index.js";
 import { resolveBrowserConfig } from "../../src/browser/config.js";
-import type { BrowserLogger } from "../../src/browser/types.js";
+import type { BrowserLogger, ChromeClient } from "../../src/browser/types.js";
 import { BrowserAutomationError } from "../../src/oracle/errors.js";
+import { registerSubmittedUserMessage } from "../../src/browser/actions/captureBinding.js";
 
 describe("shouldPreserveBrowserOnErrorForTest", () => {
   test("preserves the browser for headful cloudflare challenge errors", () => {
@@ -1090,5 +1091,206 @@ describe("pollConversationUrlForTest", () => {
 
     expect(found).toBe(false);
     expect(onConversationUrl).not.toHaveBeenCalled();
+  });
+
+  test("does not persist the transient /c/WEB:<uuid> route", async () => {
+    const urls = [
+      "https://chatgpt.com/c/WEB:fee7a622-991a-497a-bac4-a878b86f82f3",
+      "https://chatgpt.com/c/6a5fc6a9-a724-83e8-a224-75b57da507ea",
+    ];
+    let reads = 0;
+    const onConversationUrl = vi.fn(async () => {});
+
+    const found = await pollConversationUrlForTest({
+      readUrl: async () => urls[Math.min(reads++, urls.length - 1)],
+      onConversationUrl,
+      timeoutMs: 5_000,
+      delayFn: instantDelay,
+    });
+
+    expect(found).toBe(true);
+    expect(onConversationUrl).toHaveBeenCalledOnce();
+    expect(onConversationUrl).toHaveBeenCalledWith(
+      "https://chatgpt.com/c/6a5fc6a9-a724-83e8-a224-75b57da507ea",
+    );
+  });
+});
+
+describe("post-capture structural binding", () => {
+  const bindingProbe = {
+    found: true,
+    matchedPrompt: true,
+    conversationId: "run-conversation",
+    userMessageId: "user-message",
+    userTurnTestId: "conversation-turn-1",
+  };
+  const goodFacts = {
+    conversationId: "run-conversation",
+    userTurnFound: true,
+    userTurnIsLatestUserTurn: true,
+    capturedNodeFound: true,
+    capturedFollowsUserMessage: true,
+    interveningAssistantTurns: 0,
+    assistantTurnAfterUserMessage: true,
+  };
+
+  function runtimeWithValues(values: unknown[]): ChromeClient["Runtime"] & {
+    evaluate: ReturnType<typeof vi.fn>;
+  } {
+    const queue = [...values];
+    const evaluate = vi.fn(async () => ({
+      result: { value: queue.length > 1 ? queue.shift() : queue[0] },
+    }));
+    return { evaluate } as unknown as ChromeClient["Runtime"] & {
+      evaluate: ReturnType<typeof vi.fn>;
+    };
+  }
+
+  test("generated-image capture rejects a response from another conversation", async () => {
+    const generatedImage = {
+      text: "Generated image.",
+      html: '<img src="/backend-api/estuary/content?id=file_generated">',
+      messageId: "foreign-assistant",
+      turnId: "conversation-turn-3",
+      turnIndex: 2,
+      afterLatestUser: true,
+    };
+    const runtime = runtimeWithValues([
+      bindingProbe,
+      generatedImage,
+      { ...goodFacts, conversationId: "foreign-conversation" },
+    ]);
+    await registerSubmittedUserMessage(runtime, "draw a diagram", () => {});
+
+    await expect(
+      __test__.waitForAssistantOrGeneratedImageResponse({
+        Runtime: runtime,
+        waitForText: async () => {
+          throw new Error("text path should not run");
+        },
+        timeoutMs: 1_000,
+        minTurnIndex: 1,
+        expectedConversationId: "run-conversation",
+        imageOutputRequested: true,
+        logger: vi.fn() as BrowserLogger,
+      }),
+    ).rejects.toMatchObject({
+      details: { code: "capture-binding-conversation-changed" },
+    });
+
+    expect(
+      runtime.evaluate.mock.calls.some(([params]) =>
+        String(params.expression).includes('const EXPECTED_CONVERSATION_ID = "run-conversation"'),
+      ),
+    ).toBe(true);
+  });
+
+  test("delayed long-response replacement is revalidated before it can overwrite the answer", async () => {
+    const original = "a".repeat(600);
+    const replacement = {
+      text: "b".repeat(700),
+      messageId: "foreign-assistant",
+      turnId: "conversation-turn-3",
+      turnIndex: 2,
+      afterLatestUser: true,
+    };
+    const runtime = runtimeWithValues([
+      bindingProbe,
+      replacement,
+      replacement,
+      { ...goodFacts, conversationId: "foreign-conversation" },
+    ]);
+    await registerSubmittedUserMessage(runtime, "review this plan", () => {});
+
+    await expect(
+      __test__.maybeRecoverLongAssistantResponse({
+        runtime,
+        baselineTurns: 1,
+        expectedConversationId: "run-conversation",
+        answerText: original,
+        answerMarkdown: original,
+        logger: vi.fn() as BrowserLogger,
+        allowMarkdownUpdate: true,
+        wait: async () => {},
+      }),
+    ).rejects.toMatchObject({
+      details: { code: "capture-binding-conversation-changed" },
+    });
+
+    expect(
+      runtime.evaluate.mock.calls.some(([params]) =>
+        String(params.expression).includes('const EXPECTED_CONVERSATION_ID = "run-conversation"'),
+      ),
+    ).toBe(true);
+  });
+
+  test("delayed long-response replacement returns after binding verification", async () => {
+    const original = "a".repeat(600);
+    const replacement = {
+      text: "b".repeat(700),
+      messageId: "owned-assistant",
+      turnId: "conversation-turn-3",
+      turnIndex: 2,
+      afterLatestUser: true,
+    };
+    const runtime = runtimeWithValues([bindingProbe, replacement, replacement, goodFacts]);
+    await registerSubmittedUserMessage(runtime, "review this plan", () => {});
+    const logs: string[] = [];
+
+    await expect(
+      __test__.maybeRecoverLongAssistantResponse({
+        runtime,
+        baselineTurns: 1,
+        expectedConversationId: "run-conversation",
+        answerText: original,
+        answerMarkdown: original,
+        logger: (message) => logs.push(String(message)),
+        allowMarkdownUpdate: true,
+        wait: async () => {},
+      }),
+    ).resolves.toEqual({
+      answerText: replacement.text,
+      answerMarkdown: replacement.text,
+    });
+    expect(logs.join("\n")).toContain("Structural capture binding verified");
+  });
+
+  test("alternate snapshot replacements never mutate the answer when binding fails", async () => {
+    const runtime = runtimeWithValues([
+      bindingProbe,
+      { ...goodFacts, userTurnIsLatestUserTurn: false },
+    ]);
+    await registerSubmittedUserMessage(runtime, "review this plan", () => {});
+    const replace = vi.fn(() => "foreign answer");
+
+    await expect(
+      __test__.applyBoundAssistantSnapshotReplacement(
+        runtime,
+        { messageId: "foreign-assistant", turnId: "conversation-turn-5" },
+        vi.fn() as BrowserLogger,
+        replace,
+      ),
+    ).rejects.toMatchObject({
+      details: { code: "capture-binding-user-message-superseded" },
+    });
+
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  test("alternate snapshot replacements apply only after binding verification", async () => {
+    const runtime = runtimeWithValues([bindingProbe, goodFacts]);
+    await registerSubmittedUserMessage(runtime, "review this plan", () => {});
+    const replace = vi.fn(() => "owned answer");
+
+    await expect(
+      __test__.applyBoundAssistantSnapshotReplacement(
+        runtime,
+        { messageId: "owned-assistant", turnId: "conversation-turn-3" },
+        vi.fn() as BrowserLogger,
+        replace,
+      ),
+    ).resolves.toBe("owned answer");
+
+    expect(replace).toHaveBeenCalledOnce();
   });
 });

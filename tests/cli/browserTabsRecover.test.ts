@@ -160,4 +160,57 @@ describe("harvestSessionBrowserOutput recovery fallback", () => {
     });
     expect(fakeChrome.kill).toHaveBeenCalledTimes(1);
   });
+
+  test.each([
+    ["successful", true],
+    ["failed", false],
+  ])(
+    "refuses local harvest and live-tail for a %s remote run before any CDP access",
+    async (_label, terminalDoneOk) => {
+      const remoteMeta: SessionMetadata = {
+        ...baseMeta,
+        browser: {
+          ...baseMeta.browser,
+          remoteRun: {
+            runId: "remote-run",
+            accountId: "acct1",
+            laneId: "acct1-9473",
+            terminalDoneOk,
+            provenance: null,
+          },
+        },
+      };
+      const harvestChatGptTab = vi.fn();
+      const recoverConversationTab = vi.fn();
+      const updateSession = vi.fn();
+
+      vi.doMock("../../src/browser/liveTabs.js", () => ({
+        collectChatGptTabs: vi.fn(),
+        DEFAULT_REMOTE_CHROME_HOST: "127.0.0.1",
+        DEFAULT_REMOTE_CHROME_PORT: 9222,
+        extractConversationIdFromUrl: () => null,
+        formatBrowserTabState: () => "completed",
+        harvestChatGptTab,
+        sessionMatchesTab: () => false,
+      }));
+      vi.doMock("../../src/browser/recoverConversation.js", () => ({
+        recoverConversationTab,
+      }));
+      vi.doMock("../../src/sessionStore.js", () => ({
+        sessionStore: { readSession: async () => remoteMeta, updateSession },
+      }));
+
+      const { harvestSessionBrowserOutput, liveTailSessionBrowserOutput } =
+        await import("../../src/cli/browserTabs.js");
+      await expect(
+        harvestSessionBrowserOutput(remoteMeta.id, { quietOutput: true }),
+      ).rejects.toThrow(/remote browser account.*Refusing --harvest.*local\/default-CDP/i);
+      await expect(liveTailSessionBrowserOutput(remoteMeta.id)).rejects.toThrow(
+        /remote browser account.*Refusing --live.*local\/default-CDP/i,
+      );
+      expect(harvestChatGptTab).not.toHaveBeenCalled();
+      expect(recoverConversationTab).not.toHaveBeenCalled();
+      expect(updateSession).not.toHaveBeenCalled();
+    },
+  );
 });

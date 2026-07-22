@@ -182,10 +182,57 @@ export interface BrowserRemoteRunProvenance {
 }
 
 /** Authoritative remote terminal-event evidence persisted with the client session. */
-export interface BrowserRemoteRunEvidence {
+interface BrowserRemoteRunEvidenceBase {
   runId: string | null;
-  terminalDoneOk: true;
-  provenance: BrowserRemoteRunProvenance | null;
+  /** Neutral worker identity copied from the accepted run's response headers. */
+  accountId?: string | null;
+  /** Neutral lane identity copied from the accepted run's response headers. */
+  laneId?: string | null;
+}
+
+export type BrowserRemoteRunEvidence =
+  | (BrowserRemoteRunEvidenceBase & {
+      terminalDoneOk: true;
+      provenance: BrowserRemoteRunProvenance | null;
+    })
+  | (BrowserRemoteRunEvidenceBase & {
+      terminalDoneOk: false;
+      provenance: null;
+    });
+
+/** Nonsecret coordinate; the HMAC capability and prompt prefix live in a 0600 sidecar. */
+export interface BrowserRemoteRecoveryMetadata {
+  schema: "remote-browser-recovery-public.v1";
+  stage:
+    | "assistant-timeout"
+    | "assistant-recheck"
+    | "capture-binding"
+    | "submit-prompt"
+    | "connection-lost";
+  originRunId: string;
+  expiresAt: string;
+  accountId: string;
+  laneId?: string | null;
+  runtime: {
+    tabUrl: string;
+    conversationId: string;
+    promptSubmitted: true;
+  };
+}
+
+/**
+ * Short-lived, nonsecret ownership marker for committing a recovered answer.
+ * The public recovery coordinate remains in place while this claim exists so
+ * a crashed writer can release/retry without orphaning the private sidecar.
+ */
+export interface BrowserRemoteRecoveryCompletionClaim {
+  schema: "remote-browser-recovery-completion-claim.v1";
+  originRunId: string;
+  claimId: string;
+  claimedAt: string;
+  ownerPid: number;
+  /** Linux process start tick, when available, to distinguish PID reuse. */
+  ownerStartToken?: string;
 }
 
 export interface BrowserMetadata {
@@ -195,6 +242,8 @@ export interface BrowserMetadata {
   archive?: BrowserArchiveResult;
   modelSelection?: BrowserModelSelectionEvidence;
   remoteRun?: BrowserRemoteRunEvidence;
+  remoteRecovery?: BrowserRemoteRecoveryMetadata;
+  remoteRecoveryCompletionClaim?: BrowserRemoteRecoveryCompletionClaim;
   warnings?: BrowserRunWarning[];
 }
 

@@ -52,6 +52,25 @@ describe("createConversationUrlMonitor", () => {
     expect(persistUrl).toHaveBeenCalledWith("https://chatgpt.com/c/recovered");
   });
 
+  test("propagates a canonical-identity persistence conflict without polling it repeatedly", async () => {
+    const readUrl = vi.fn(async () => "https://chatgpt.com/c/foreign-conversation");
+    const persistUrl = vi.fn(async () => {
+      throw new Error("canonical conversation changed");
+    });
+    const monitor = createConversationUrlMonitor({
+      readUrl,
+      persistUrl,
+      logger: vi.fn() as BrowserLogger,
+      wait: async () => {},
+    });
+
+    await expect(monitor.update("assistant-wait", 5_000)).rejects.toThrow(
+      /canonical conversation changed/i,
+    );
+    expect(readUrl).toHaveBeenCalledOnce();
+    expect(persistUrl).toHaveBeenCalledOnce();
+  });
+
   test("shares one in-flight poll between background callers", async () => {
     let resolveRead: ((url: string) => void) | undefined;
     const readUrl = vi.fn(
@@ -156,5 +175,29 @@ describe("createConversationUrlMonitor", () => {
     await expect(monitor.update("assistant-timeout", 500)).resolves.toBe(false);
 
     expect(persistUrl).not.toHaveBeenCalled();
+  });
+
+  test("waits through the transient /c/WEB:<uuid> route and persists the canonical URL", async () => {
+    const readUrl = vi
+      .fn<() => Promise<string>>()
+      .mockResolvedValueOnce("https://chatgpt.com/c/WEB:fee7a622-991a-497a-bac4-a878b86f82f3")
+      .mockResolvedValue("https://chatgpt.com/c/6a5fc6a9-a724-83e8-a224-75b57da507ea");
+    const persistUrl = vi.fn(async () => {});
+    let now = 0;
+    const monitor = createConversationUrlMonitor({
+      readUrl,
+      persistUrl,
+      logger: vi.fn() as BrowserLogger,
+      wait: async () => {
+        now += 250;
+      },
+      now: () => now,
+    });
+
+    await expect(monitor.update("post-submit", 1_000)).resolves.toBe(true);
+    expect(persistUrl).toHaveBeenCalledOnce();
+    expect(persistUrl).toHaveBeenCalledWith(
+      "https://chatgpt.com/c/6a5fc6a9-a724-83e8-a224-75b57da507ea",
+    );
   });
 });

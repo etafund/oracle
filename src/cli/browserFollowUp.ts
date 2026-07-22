@@ -99,6 +99,11 @@ export function resolveBrowserFollowUpParent(
   if (parent.mode !== "browser") {
     throw new Error(`Parent session ${parent.id} is not a browser session.`);
   }
+  if (parent.browser?.remoteRecovery || parent.browser?.remoteRun) {
+    throw new Error(
+      `Parent session ${parent.id} belongs to a remote browser account. Refusing to create an unpinned follow-up that could submit on a different account; use the originating ChatGPT account's history${parent.browser?.remoteRecovery ? ` or recover first with \`oracle session ${parent.id} --render\`` : ""}.`,
+    );
+  }
   const browserConfig = parent.browser?.config;
   if (!browserConfig) {
     throw new Error(`Parent session ${parent.id} is missing browser configuration.`);

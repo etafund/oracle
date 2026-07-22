@@ -48,6 +48,70 @@ const MINIMAL_RESULT: BrowserRunResult = {
   answerChars: 10,
 };
 
+describe("client: accepted route attribution", () => {
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "logs and persists the worker account and lane from accepted-run headers",
+    async () => {
+      const fake = await startFakeRunServer((res) => {
+        res.writeHead(200, {
+          "Content-Type": "application/x-ndjson",
+          "X-Oracle-Run-Id": "run-header-1",
+          "X-Oracle-Account-Id": "acct2",
+          "X-Oracle-Lane-Id": "acct2-9474",
+        });
+        res.end(`${JSON.stringify({ type: "done", ok: true, result: MINIMAL_RESULT })}\n`);
+      });
+      try {
+        const logs: string[] = [];
+        const executor = createRemoteBrowserExecutor({
+          host: `127.0.0.1:${fake.port}`,
+          token: "secret",
+        });
+        const result = await executor({ prompt: "x", config: {}, log: (line) => logs.push(line) });
+        expect(result.remoteRun).toMatchObject({
+          runId: "run-header-1",
+          accountId: "acct2",
+          laneId: "acct2-9474",
+          terminalDoneOk: true,
+        });
+        expect(logs).toContain(
+          "[remote] Accepted run route: run=run-header-1 account=acct2 lane=acct2-9474.",
+        );
+      } finally {
+        await fake.close();
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)("ignores malformed route labels", async () => {
+    const fake = await startFakeRunServer((res) => {
+      res.writeHead(200, {
+        "Content-Type": "application/x-ndjson",
+        "X-Oracle-Run-Id": "run-header-2",
+        "X-Oracle-Account-Id": "acct 2",
+        "X-Oracle-Lane-Id": "acct2/9474",
+      });
+      res.end(
+        `${JSON.stringify({ type: "done", ok: true, runId: "run-event-2", result: MINIMAL_RESULT })}\n`,
+      );
+    });
+    try {
+      const executor = createRemoteBrowserExecutor({
+        host: `127.0.0.1:${fake.port}`,
+        token: "secret",
+      });
+      const result = await executor({ prompt: "x", config: {} });
+      expect(result.remoteRun).toMatchObject({
+        runId: "run-event-2",
+        accountId: null,
+        laneId: null,
+      });
+    } finally {
+      await fake.close();
+    }
+  });
+});
+
 describe("client: stream-inactivity deadline and line-buffer cap", () => {
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
     "an idle-but-open stream aborts after the configured deadline",

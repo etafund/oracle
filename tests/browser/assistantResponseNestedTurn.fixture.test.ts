@@ -302,7 +302,10 @@ describe("ChatGPT nested assistant turn fixture", () => {
     expect(snapshot?.text).toContain("inner assistant role node owns the text");
     expect(snapshot?.text).not.toContain("Stale prior answer");
     expect(snapshot?.messageId).toBe("assistant-msg-current");
-    expect(snapshot?.turnId).toBe("assistant-message-current");
+    // The extractor binds to the outermost conversation turn so sibling
+    // controls (notably Copy) stay in the same authoritative scope as the
+    // nested assistant message.
+    expect(snapshot?.turnId).toBe("conversation-turn-4");
     expect(snapshot?.afterLatestUser).toBe(true);
     expect(snapshot?.turnIndex).toBeLessThan(99);
     expect(runtime.evaluate).toHaveBeenCalledWith(

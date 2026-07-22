@@ -26,6 +26,7 @@ import {
   closeTab,
   closeRemoteChromeTarget,
   closeBlankChromeTabs,
+  OrphanedChromeTargetError,
 } from "./chromeLifecycle.js";
 import { clearStaleChatGptConversationCookies, syncCookies } from "./cookies.js";
 import {
@@ -121,6 +122,15 @@ import {
   createConversationUrlMonitor,
   type ConversationUrlMonitor,
 } from "./conversationUrlMonitor.js";
+import {
+  decideConversationUrlAdoption,
+  extractConversationIdFromUrl,
+  isConversationUrl,
+} from "./conversationIdentity.js";
+import {
+  assertCapturedAssistantResponseBound,
+  type CapturedAssistantMeta,
+} from "./actions/captureBinding.js";
 
 export type { BrowserAutomationConfig, BrowserRunOptions, BrowserRunResult } from "./types.js";
 export { CHATGPT_URL, DEFAULT_MODEL_STRATEGY, DEFAULT_MODEL_TARGET } from "./constants.js";
@@ -559,6 +569,20 @@ type AssistantAnswer = {
   meta: { turnId?: string | null; messageId?: string | null };
 };
 
+async function applyBoundAssistantSnapshotReplacement<T>(
+  runtime: ChromeClient["Runtime"],
+  meta: CapturedAssistantMeta,
+  logger: BrowserLogger,
+  replace: () => T,
+): Promise<T> {
+  // Every DOM re-read that can overwrite an already-captured answer must
+  // independently prove ownership. The assertion intentionally sits in the
+  // same helper as the mutation so new fallback paths cannot accidentally
+  // validate one snapshot and apply another.
+  await assertCapturedAssistantResponseBound(runtime, meta, logger);
+  return replace();
+}
+
 async function waitForAssistantOrGeneratedImageResponse(params: {
   Runtime: ChromeClient["Runtime"];
   waitForText: () => Promise<AssistantAnswer>;
@@ -580,6 +604,11 @@ async function waitForAssistantOrGeneratedImageResponse(params: {
     params.expectedConversationId,
   );
   if (response) {
+    // Image-request runs use the snapshot poller directly instead of the
+    // pageActions text-capture facade. Apply the same post-capture structural
+    // binding here so an image (or text fallback) from another shared tab can
+    // never bypass the submitted-message ownership proof.
+    await assertCapturedAssistantResponseBound(params.Runtime, response.meta, params.logger);
     if (response.html?.includes("/backend-api/estuary/content?id=file_")) {
       params.logger("[browser] Captured generated image response before text appeared.");
     }
@@ -935,10 +964,18 @@ function shouldCloseOwnedRunTargetAfterRun(options: {
   ownsTarget: boolean;
   keepBrowser: boolean;
   policy?: BrowserCloseOwnedRunTargetPolicy;
+  orphanedTargetNeedsCleanup?: boolean;
 }): boolean {
   if (!options.ownsTarget) {
     // Borrowed (attached) tab: never close a target this run did not create.
     return false;
+  }
+  if (options.orphanedTargetNeedsCleanup) {
+    // Target creation succeeded but attachment and the first rollback close
+    // both failed. The target id is known, so every topology must retry its
+    // physical close before releasing capacity, even when the ordinary
+    // attempted-run policy would preserve tabs for reattach.
+    return true;
   }
   if ((options.policy ?? "auto") === "always") {
     // serve/manual-login policy: the shared browser stays alive, but THIS
@@ -992,9 +1029,26 @@ export function clearBrowserCleanupTaint(): void {
   lastBrowserCleanupTaint = null;
 }
 
-function latchBrowserCleanupTaint(reason: string, logger?: BrowserLogger): void {
+export function latchBrowserCleanupTaint(reason: string, logger?: BrowserLogger): void {
   lastBrowserCleanupTaint = { at: new Date().toISOString(), reason };
   logger?.(`[browser] CLEANUP-TAINT: ${reason}`);
+}
+
+async function releaseBrowserTabLeaseOrTaint(
+  lease: BrowserTabLease,
+  logger: BrowserLogger,
+  context: string,
+): Promise<boolean> {
+  try {
+    await lease.release();
+    return true;
+  } catch (error) {
+    latchBrowserCleanupTaint(
+      `${context} tab-lease release failed (${lease.id}): ${error instanceof Error ? error.message : String(error)}`,
+      logger,
+    );
+    return false;
+  }
 }
 
 type OwnedTargetCloseOutcome =
@@ -1010,7 +1064,7 @@ type OwnedTargetCloseOutcome =
  * /ready instead of reporting settled-clean (tabs would otherwise accumulate
  * silently under the "always" close policy).
  */
-async function closeOwnedTargetWithDeadline(
+export async function closeOwnedTargetWithDeadline(
   closePromise: Promise<boolean | void>,
   logger: BrowserLogger,
   context: { targetId: string | null; timeoutMs?: number },
@@ -1293,7 +1347,9 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
   }
   const runtimeHintCb = options.runtimeHintCb;
   let lastTargetId: string | undefined;
-  let lastUrl: string | undefined;
+  let lastUrl: string | undefined = config.resumeConversationUrl || undefined;
+  let canonicalConversationId = extractConversationIdFromUrl(config.resumeConversationUrl ?? "");
+  let conversationIdentityConflict: BrowserAutomationError | null = null;
   let promptSubmitted = false;
   let modelSelectionEvidence: BrowserModelSelectionEvidence | undefined;
   let tabLease: BrowserTabLease | null = null;
@@ -1330,11 +1386,55 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       logger(`Failed to persist runtime hint: ${message}`);
     }
   };
-  const markPromptSubmitted = async (): Promise<void> => {
-    if (promptSubmitted) {
+  const observeConversationUrl = async (
+    observedUrl: string,
+    label: string,
+    emit = true,
+  ): Promise<void> => {
+    const decision = decideConversationUrlAdoption(canonicalConversationId, observedUrl);
+    if (decision.kind === "conflict") {
+      const error = new BrowserAutomationError(
+        `ChatGPT conversation identity changed from ${decision.expectedConversationId} to ${decision.observedConversationId} (${label}). Refusing cross-conversation capture.`,
+        {
+          stage: "capture-binding",
+          code: "capture-binding-conversation-changed",
+          expectedConversationId: decision.expectedConversationId,
+          observedConversationId: decision.observedConversationId,
+        },
+      );
+      conversationIdentityConflict = error;
+      logger(`[browser] ${error.message}`);
+      throw error;
+    }
+    if (decision.kind === "noncanonical") {
+      // Preserve a provisional/root URL only until a durable identity exists;
+      // it must never clear or replace the first canonical conversation.
+      if (!canonicalConversationId) lastUrl = observedUrl;
+    } else {
+      canonicalConversationId = decision.conversationId;
+      lastUrl = observedUrl;
+    }
+    if (emit) await emitRuntimeHint();
+  };
+  const expectedConversationId = (): string | undefined => {
+    if (conversationIdentityConflict) throw conversationIdentityConflict;
+    return canonicalConversationId;
+  };
+  const markPromptSubmitted = async (submittedPrompt?: string): Promise<void> => {
+    const firstSubmission = !promptSubmitted;
+    promptSubmitted = true;
+    if (typeof submittedPrompt === "string") {
+      try {
+        await options.submittedPromptPreviewCb?.(submittedPrompt.slice(0, 160));
+      } catch (error) {
+        logger(
+          `Failed to retain submitted prompt recovery prefix: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    if (!firstSubmission) {
       return;
     }
-    promptSubmitted = true;
     await emitRuntimeHint();
     void conversationUrlMonitor?.schedule("post-submit", config.timeoutMs ?? 120_000);
   };
@@ -1444,6 +1544,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       timeoutMs: config.timeoutMs,
       logger,
       sessionId: options.sessionId,
+      signal: options.signal,
     });
   }
 
@@ -1466,7 +1567,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     if (tabLease) {
       const handle = tabLease;
       tabLease = null;
-      await handle.release().catch(() => undefined);
+      await releaseBrowserTabLeaseOrTaint(handle, logger, "browser launch rollback");
     }
     if (usingCopiedProfile) {
       await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
@@ -1502,6 +1603,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
 
   let client: ChromeClient | null = null;
   let isolatedTargetId: string | null = null;
+  let orphanedTargetNeedsCleanup = false;
   let ownsTarget = true;
   const startedAt = Date.now();
   let answerText = "";
@@ -1513,6 +1615,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
   let removeDialogHandler: (() => void) | null = null;
   let appliedCookies = 0;
   let preserveBrowserOnError = false;
+  let ownedTargetCleanupProved = true;
 
   try {
     try {
@@ -1525,7 +1628,9 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         client = attached.client;
         isolatedTargetId = attached.targetId ?? null;
         lastTargetId = attached.targetId ?? undefined;
-        lastUrl = attached.tab.url || lastUrl;
+        if (attached.tab.url) {
+          await observeConversationUrl(attached.tab.url, "attached-tab", false);
+        }
         ownsTarget = false;
         logger(
           `Attached to existing ChatGPT tab ${attached.targetId}${attached.tab.url ? ` (${attached.tab.url})` : ""}`,
@@ -1559,6 +1664,14 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         });
       }
     } catch (error) {
+      if (error instanceof OrphanedChromeTargetError) {
+        isolatedTargetId = error.targetId;
+        lastTargetId = error.targetId;
+        orphanedTargetNeedsCleanup = true;
+        logger(
+          `[browser] Isolated target ${error.targetId} survived its first rollback close; retrying bounded cleanup before releasing its tab lease.`,
+        );
+      }
       const hint = describeDevtoolsFirewallHint(chromeHost, chrome.port);
       if (hint) {
         logger(hint);
@@ -1759,7 +1872,9 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         if (client?.Target?.getTargetInfo) {
           const info = await client.Target.getTargetInfo({});
           lastTargetId = info?.targetInfo?.targetId ?? lastTargetId;
-          lastUrl = info?.targetInfo?.url ?? lastUrl;
+          if (info?.targetInfo?.url) {
+            await observeConversationUrl(info.targetInfo.url, "target-snapshot", false);
+          }
         }
       } catch {
         // ignore
@@ -1770,7 +1885,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           returnByValue: true,
         });
         if (typeof result?.value === "string") {
-          lastUrl = result.value;
+          await observeConversationUrl(result.value, "runtime-snapshot", false);
         }
       } catch {
         // ignore
@@ -1798,10 +1913,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         });
         return typeof result?.value === "string" ? result.value : null;
       },
-      persistUrl: async (url) => {
-        lastUrl = url;
-        await emitRuntimeHint();
-      },
+      persistUrl: async (url) => observeConversationUrl(url, "conversation-url-monitor"),
       logger,
     });
     conversationUrlMonitor = activeConversationUrlMonitor;
@@ -2063,7 +2175,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         log: logger,
         state: providerState,
       });
-      await markPromptSubmitted();
+      await markPromptSubmitted(prompt);
       emitRunProgressMarker("prompt_committed");
       const providerBaselineTurns = providerState.baselineTurns;
       if (typeof providerBaselineTurns === "number" && Number.isFinite(providerBaselineTurns)) {
@@ -2083,7 +2195,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
             {
               minTurnIndex: baselineTurns ?? undefined,
               expectedPrompt: prompt,
-              expectedConversationId: lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined,
+              expectedConversationId: expectedConversationId(),
             },
           );
           if (!verified) {
@@ -2152,6 +2264,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         ),
       );
       await updateConversationHint("post-deep-research", 15_000).catch(() => false);
+      expectedConversationId();
       runStatus = "complete";
       emitRunProgressMarker("done");
       const durationMs = Date.now() - startedAt;
@@ -2212,8 +2325,6 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     // Helper to normalize text for echo detection (collapse whitespace, lowercase)
     const normalizeForComparison = (text: string): string =>
       text.toLowerCase().replace(/\s+/g, " ").trim();
-    const expectedConversationId = () =>
-      lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined;
     const waitForFreshAssistantResponse = async (baselineNormalized: string, timeoutMs: number) => {
       const baselinePrefix =
         baselineNormalized.length >= 80
@@ -2279,6 +2390,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       await captureRuntimeSnapshot().catch(() => undefined);
       const conversationUrl = await readConversationUrl(Runtime);
       if (conversationUrl && isConversationUrl(conversationUrl)) {
+        await observeConversationUrl(conversationUrl, "assistant-recheck");
         logger(`[browser] Rechecking assistant response at ${conversationUrl}`);
         await raceWithDisconnect(Page.navigate({ url: conversationUrl }));
         await raceWithDisconnect(delay(1000));
@@ -2433,7 +2545,9 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           logger("Detected stale assistant response; waiting for new response...");
           const refreshed = await waitForFreshAssistantResponse(baselineNormalized, 15_000);
           if (refreshed) {
-            turnAnswer = refreshed;
+            await applyBoundAssistantSnapshotReplacement(Runtime, refreshed.meta, logger, () => {
+              turnAnswer = refreshed;
+            });
           }
         }
       }
@@ -2443,7 +2557,9 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       const copiedMarkdown = await raceWithDisconnect(
         withRetries(
           async () => {
-            const attempt = await captureAssistantMarkdown(Runtime, turnAnswer.meta, logger);
+            const attempt = await captureAssistantMarkdown(Runtime, turnAnswer.meta, logger, {
+              requireSourceIdentity: true,
+            });
             if (!attempt) {
               throw new Error("copy-missing");
             }
@@ -2469,6 +2585,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         await maybeRecoverLongAssistantResponse({
           runtime: Runtime,
           baselineTurns,
+          expectedConversationId: expectedConversationId(),
           answerText: turnAnswerText,
           answerMarkdown: turnAnswerMarkdown,
           logger,
@@ -2492,9 +2609,19 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           trimmedMarkdown.length > 0 &&
           lengthDelta >= Math.max(12, Math.floor(trimmedMarkdown.length * 0.75));
         if ((missingCopy || likelyTruncatedCopy) && !finalIsEcho && finalText !== trimmedMarkdown) {
-          logger("Refreshed assistant response via final DOM snapshot");
-          turnAnswerText = finalText;
-          turnAnswerMarkdown = finalText;
+          await applyBoundAssistantSnapshotReplacement(
+            Runtime,
+            {
+              turnId: finalSnapshot?.turnId ?? undefined,
+              messageId: finalSnapshot?.messageId ?? undefined,
+            },
+            logger,
+            () => {
+              logger("Refreshed assistant response via final DOM snapshot");
+              turnAnswerText = finalText;
+              turnAnswerMarkdown = finalText;
+            },
+          );
         }
       }
 
@@ -2516,6 +2643,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         logger("Detected prompt echo in response; waiting for actual assistant response...");
         const deadline = Date.now() + 15_000;
         let bestText: string | null = null;
+        let bestMeta: CapturedAssistantMeta | null = null;
         let stableCount = 0;
         while (Date.now() < deadline) {
           const snapshot = await readAssistantSnapshot(
@@ -2528,6 +2656,10 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           if (!isStillEcho) {
             if (!bestText || text.length > bestText.length) {
               bestText = text;
+              bestMeta = {
+                turnId: snapshot?.turnId ?? undefined,
+                messageId: snapshot?.messageId ?? undefined,
+              };
               stableCount = 0;
             } else if (text === bestText) {
               stableCount += 1;
@@ -2539,15 +2671,18 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           await new Promise((resolve) => setTimeout(resolve, 300));
         }
         if (bestText) {
-          logger("Recovered assistant response after detecting prompt echo");
-          turnAnswerText = bestText;
-          turnAnswerMarkdown = bestText;
+          await applyBoundAssistantSnapshotReplacement(Runtime, bestMeta ?? {}, logger, () => {
+            logger("Recovered assistant response after detecting prompt echo");
+            turnAnswerText = bestText;
+            turnAnswerMarkdown = bestText;
+          });
         }
       }
       const minAnswerChars = 16;
       if (turnAnswerText.trim().length > 0 && turnAnswerText.trim().length < minAnswerChars) {
         const deadline = Date.now() + 12_000;
         let bestText = turnAnswerText.trim();
+        let bestMeta: CapturedAssistantMeta | null = null;
         let stableCycles = 0;
         while (Date.now() < deadline) {
           const snapshot = await readAssistantSnapshot(
@@ -2558,6 +2693,10 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           const text = typeof snapshot?.text === "string" ? snapshot.text.trim() : "";
           if (text && text.length > bestText.length) {
             bestText = text;
+            bestMeta = {
+              turnId: snapshot?.turnId ?? undefined,
+              messageId: snapshot?.messageId ?? undefined,
+            };
             stableCycles = 0;
           } else {
             stableCycles += 1;
@@ -2568,9 +2707,11 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           await delay(400);
         }
         if (bestText.length > turnAnswerText.trim().length) {
-          logger("Refreshed short assistant response from latest DOM snapshot");
-          turnAnswerText = bestText;
-          turnAnswerMarkdown = bestText;
+          await applyBoundAssistantSnapshotReplacement(Runtime, bestMeta ?? {}, logger, () => {
+            logger("Refreshed short assistant response from latest DOM snapshot");
+            turnAnswerText = bestText;
+            turnAnswerMarkdown = bestText;
+          });
         }
       }
       return {
@@ -2716,6 +2857,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         imageArtifacts.savedImages.length === imageArtifacts.imageCount &&
         fileArtifacts.savedFiles.length === fileArtifacts.fileCount,
     });
+    expectedConversationId();
     runStatus = "complete";
     emitRunProgressMarker("done");
     const durationMs = Date.now() - startedAt;
@@ -2856,6 +2998,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         ownsTarget,
         keepBrowser: effectiveKeepBrowser,
         policy: resolveCloseOwnedRunTargetPolicy(config),
+        orphanedTargetNeedsCleanup,
       }) &&
       isolatedTargetId &&
       chrome?.port
@@ -2863,9 +3006,13 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       const closeOwnedRunTab = async (isolatedTargetId: string): Promise<boolean> => {
         return await closeTab(chrome.port, isolatedTargetId, logger, chromeHost);
       };
-      await closeOwnedTargetWithDeadline(closeOwnedRunTab(isolatedTargetId), logger, {
-        targetId: isolatedTargetId,
-      });
+      ownedTargetCleanupProved = await closeOwnedTargetWithDeadline(
+        closeOwnedRunTab(isolatedTargetId),
+        logger,
+        {
+          targetId: isolatedTargetId,
+        },
+      );
     }
     let keepBrowserOpen = shouldKeepLocalBrowserOpen({
       effectiveKeepBrowser,
@@ -2938,10 +3085,14 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         ).catch(() => false);
       }
     }
-    if (tabLease) {
+    if (tabLease && ownedTargetCleanupProved) {
       const handle = tabLease;
       tabLease = null;
-      await handle.release().catch(() => undefined);
+      await releaseBrowserTabLeaseOrTaint(handle, logger, "browser run cleanup");
+    } else if (tabLease) {
+      logger(
+        `[browser] Keeping ChatGPT browser slot ${tabLease.id.slice(0, 8)} active because owned-target cleanup was not proved.`,
+      );
     }
     removeDialogHandler?.();
     removeTerminationHooks?.();
@@ -3098,17 +3249,21 @@ async function waitForLogin({
 async function maybeRecoverLongAssistantResponse({
   runtime,
   baselineTurns,
+  expectedConversationId,
   answerText,
   answerMarkdown,
   logger,
   allowMarkdownUpdate,
+  wait = delay,
 }: {
   runtime: ChromeClient["Runtime"];
   baselineTurns: number | null;
+  expectedConversationId?: string;
   answerText: string;
   answerMarkdown: string;
   logger: BrowserLogger;
   allowMarkdownUpdate: boolean;
+  wait?: (ms: number) => Promise<void>;
 }): Promise<{ answerText: string; answerMarkdown: string }> {
   // Learned: long streaming responses can still be rendering after initial capture.
   // Add a brief delay and re-poll to catch any additional content (#71).
@@ -3117,23 +3272,34 @@ async function maybeRecoverLongAssistantResponse({
     return { answerText, answerMarkdown };
   }
 
-  await delay(1500);
+  await wait(1500);
   let bestLength = capturedLength;
   let bestText = answerText;
+  let bestMeta: AssistantAnswer["meta"] | null = null;
   for (let i = 0; i < 5; i++) {
-    const laterSnapshot = await readAssistantSnapshot(runtime, baselineTurns ?? undefined).catch(
-      () => null,
-    );
+    const laterSnapshot = await readAssistantSnapshot(
+      runtime,
+      baselineTurns ?? undefined,
+      expectedConversationId,
+    ).catch(() => null);
     const laterText = typeof laterSnapshot?.text === "string" ? laterSnapshot.text.trim() : "";
     if (laterText.length > bestLength) {
       bestLength = laterText.length;
       bestText = laterText;
-      await delay(800); // More content appeared, keep waiting
+      bestMeta = {
+        turnId: laterSnapshot?.turnId ?? undefined,
+        messageId: laterSnapshot?.messageId ?? undefined,
+      };
+      await wait(800); // More content appeared, keep waiting
     } else {
       break; // Stable, stop polling
     }
   }
   if (bestLength > capturedLength) {
+    // This text replaces an answer that already passed structural validation,
+    // so the replacement must independently prove it is still the response to
+    // this run's submitted user message on the bound conversation.
+    await assertCapturedAssistantResponseBound(runtime, bestMeta ?? {}, logger);
     logger(`Recovered ${bestLength - capturedLength} additional chars via delayed re-read`);
     return {
       answerText: bestText,
@@ -3365,11 +3531,14 @@ async function runRemoteBrowserMode(
   let client: ChromeClient | null = null;
   let remoteTargetId: string | null = null;
   let tabLease: BrowserTabLease | null = null;
-  let lastUrl: string | undefined;
+  let lastUrl: string | undefined = config.resumeConversationUrl || undefined;
+  let canonicalConversationId = extractConversationIdFromUrl(config.resumeConversationUrl ?? "");
+  let conversationIdentityConflict: BrowserAutomationError | null = null;
   let promptSubmitted = false;
   let modelSelectionEvidence: BrowserModelSelectionEvidence | undefined;
   let attachedExistingTab = false;
   let ownsTarget = true;
+  let orphanedTargetNeedsCleanup = false;
   let conversationUrlMonitor: ConversationUrlMonitor | null = null;
   const runtimeHintCb = options.runtimeHintCb;
   const emitRuntimeHint = async () => {
@@ -3400,11 +3569,53 @@ async function runRemoteBrowserMode(
       logger(`Failed to persist runtime hint: ${message}`);
     }
   };
-  const markPromptSubmitted = async (): Promise<void> => {
-    if (promptSubmitted) {
+  const observeConversationUrl = async (
+    observedUrl: string,
+    label: string,
+    emit = true,
+  ): Promise<void> => {
+    const decision = decideConversationUrlAdoption(canonicalConversationId, observedUrl);
+    if (decision.kind === "conflict") {
+      const error = new BrowserAutomationError(
+        `ChatGPT conversation identity changed from ${decision.expectedConversationId} to ${decision.observedConversationId} (${label}). Refusing cross-conversation capture.`,
+        {
+          stage: "capture-binding",
+          code: "capture-binding-conversation-changed",
+          expectedConversationId: decision.expectedConversationId,
+          observedConversationId: decision.observedConversationId,
+        },
+      );
+      conversationIdentityConflict = error;
+      logger(`[browser] ${error.message}`);
+      throw error;
+    }
+    if (decision.kind === "noncanonical") {
+      if (!canonicalConversationId) lastUrl = observedUrl;
+    } else {
+      canonicalConversationId = decision.conversationId;
+      lastUrl = observedUrl;
+    }
+    if (emit) await emitRuntimeHint();
+  };
+  const expectedConversationId = (): string | undefined => {
+    if (conversationIdentityConflict) throw conversationIdentityConflict;
+    return canonicalConversationId;
+  };
+  const markPromptSubmitted = async (submittedPrompt?: string): Promise<void> => {
+    const firstSubmission = !promptSubmitted;
+    promptSubmitted = true;
+    if (typeof submittedPrompt === "string") {
+      try {
+        await options.submittedPromptPreviewCb?.(submittedPrompt.slice(0, 160));
+      } catch (error) {
+        logger(
+          `Failed to retain submitted prompt recovery prefix: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    if (!firstSubmission) {
       return;
     }
-    promptSubmitted = true;
     await emitRuntimeHint();
     void conversationUrlMonitor?.schedule("post-submit", config.timeoutMs ?? 120_000);
   };
@@ -3433,6 +3644,7 @@ async function runRemoteBrowserMode(
   let runStatus: "attempted" | "complete" = "attempted";
   let stopThinkingMonitor: (() => void) | null = null;
   let removeDialogHandler: (() => void) | null = null;
+  let ownedTargetCleanupProved = true;
   let connection: Awaited<ReturnType<typeof connectToRemoteChrome>> | null = null;
   const browserWSEndpoint = config.remoteChromeBrowserWSEndpoint ?? undefined;
   const chromeProfileRoot = config.remoteChromeProfileRoot ?? undefined;
@@ -3451,6 +3663,7 @@ async function runRemoteBrowserMode(
         sessionId: options.sessionId,
         chromeHost: host,
         chromePort: port,
+        signal: options.signal,
       });
     }
     if (config.browserTabRef) {
@@ -3461,23 +3674,36 @@ async function runRemoteBrowserMode(
       });
       client = attached.client;
       remoteTargetId = attached.targetId ?? null;
-      lastUrl = attached.tab.url || lastUrl;
+      if (attached.tab.url) {
+        await observeConversationUrl(attached.tab.url, "attached-remote-tab", false);
+      }
       attachedExistingTab = true;
       ownsTarget = false;
       logger(
         `Attached to existing remote ChatGPT tab ${attached.targetId}${attached.tab.url ? ` (${attached.tab.url})` : ""}`,
       );
     } else {
-      connection = await connectToRemoteChrome(
-        host,
-        port,
-        logger,
-        "about:blank",
-        browserWSEndpoint,
-        {
-          approvalWaitMs: config.attachRunning && browserWSEndpoint ? 20_000 : undefined,
-        },
-      );
+      try {
+        connection = await connectToRemoteChrome(
+          host,
+          port,
+          logger,
+          "about:blank",
+          browserWSEndpoint,
+          {
+            approvalWaitMs: config.attachRunning && browserWSEndpoint ? 20_000 : undefined,
+          },
+        );
+      } catch (error) {
+        if (error instanceof OrphanedChromeTargetError) {
+          remoteTargetId = error.targetId;
+          orphanedTargetNeedsCleanup = true;
+          logger(
+            `[browser] Remote isolated target ${error.targetId} survived its first rollback close; retrying bounded cleanup before releasing its tab lease.`,
+          );
+        }
+        throw error;
+      }
       client = connection.client;
       remoteTargetId = connection.targetId ?? null;
       ownsTarget = true;
@@ -3541,10 +3767,7 @@ async function runRemoteBrowserMode(
         });
         return typeof result?.value === "string" ? result.value : null;
       },
-      persistUrl: async (url) => {
-        lastUrl = url;
-        await emitRuntimeHint();
-      },
+      persistUrl: async (url) => observeConversationUrl(url, "conversation-url-monitor"),
       logger,
     });
     conversationUrlMonitor = activeConversationUrlMonitor;
@@ -3583,7 +3806,7 @@ async function runRemoteBrowserMode(
         returnByValue: true,
       });
       if (typeof result?.value === "string") {
-        lastUrl = result.value;
+        await observeConversationUrl(result.value, "runtime-snapshot", false);
       }
       await emitRuntimeHint();
     } catch {
@@ -3803,7 +4026,7 @@ async function runRemoteBrowserMode(
         log: logger,
         state: providerState,
       });
-      await markPromptSubmitted();
+      await markPromptSubmitted(prompt);
       emitRunProgressMarker("prompt_committed");
       const providerBaselineTurns = providerState.baselineTurns;
       if (typeof providerBaselineTurns === "number" && Number.isFinite(providerBaselineTurns)) {
@@ -3863,6 +4086,7 @@ async function runRemoteBrowserMode(
         ),
       );
       await activeConversationUrlMonitor.update("post-deep-research", 15_000).catch(() => false);
+      expectedConversationId();
       const durationMs = Date.now() - startedAt;
       const tokens = estimateTokenCount(researchResult.text);
       const reportArtifact = await saveOptionalArtifact(
@@ -3921,8 +4145,6 @@ async function runRemoteBrowserMode(
     // Helper to normalize text for echo detection (collapse whitespace, lowercase)
     const normalizeForComparison = (text: string): string =>
       text.toLowerCase().replace(/\s+/g, " ").trim();
-    const expectedConversationId = () =>
-      lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined;
     const waitForFreshAssistantResponse = async (baselineNormalized: string, timeoutMs: number) => {
       const baselinePrefix =
         baselineNormalized.length >= 80
@@ -3986,7 +4208,7 @@ async function runRemoteBrowserMode(
       await raceWithAbort(delay(recheckDelayMs));
       const conversationUrl = await readConversationUrl(Runtime);
       if (conversationUrl && isConversationUrl(conversationUrl)) {
-        lastUrl = conversationUrl;
+        await observeConversationUrl(conversationUrl, "assistant-recheck");
         logger(`[browser] Rechecking assistant response at ${conversationUrl}`);
         await raceWithAbort(Page.navigate({ url: conversationUrl }));
         await raceWithAbort(delay(1000));
@@ -4142,7 +4364,9 @@ async function runRemoteBrowserMode(
           logger("Detected stale assistant response; waiting for new response...");
           const refreshed = await waitForFreshAssistantResponse(baselineNormalized, 15_000);
           if (refreshed) {
-            turnAnswer = refreshed;
+            await applyBoundAssistantSnapshotReplacement(Runtime, refreshed.meta, logger, () => {
+              turnAnswer = refreshed;
+            });
           }
         }
       }
@@ -4153,7 +4377,9 @@ async function runRemoteBrowserMode(
       const copiedMarkdown = await raceWithAbort(
         withRetries(
           async () => {
-            const attempt = await captureAssistantMarkdown(Runtime, turnAnswer.meta, logger);
+            const attempt = await captureAssistantMarkdown(Runtime, turnAnswer.meta, logger, {
+              requireSourceIdentity: true,
+            });
             if (!attempt) {
               throw new Error("copy-missing");
             }
@@ -4178,6 +4404,7 @@ async function runRemoteBrowserMode(
         await maybeRecoverLongAssistantResponse({
           runtime: Runtime,
           baselineTurns,
+          expectedConversationId: expectedConversationId(),
           answerText: turnAnswerText,
           answerMarkdown: turnAnswerMarkdown,
           logger,
@@ -4203,9 +4430,19 @@ async function runRemoteBrowserMode(
           trimmedMarkdown.length > 0 &&
           lengthDelta >= Math.max(12, Math.floor(trimmedMarkdown.length * 0.75));
         if ((missingCopy || likelyTruncatedCopy) && !finalIsEcho && finalText !== trimmedMarkdown) {
-          logger("Refreshed assistant response via final DOM snapshot");
-          turnAnswerText = finalText;
-          turnAnswerMarkdown = finalText;
+          await applyBoundAssistantSnapshotReplacement(
+            Runtime,
+            {
+              turnId: finalSnapshot?.turnId ?? undefined,
+              messageId: finalSnapshot?.messageId ?? undefined,
+            },
+            logger,
+            () => {
+              logger("Refreshed assistant response via final DOM snapshot");
+              turnAnswerText = finalText;
+              turnAnswerMarkdown = finalText;
+            },
+          );
         }
       }
 
@@ -4227,6 +4464,7 @@ async function runRemoteBrowserMode(
         logger("Detected prompt echo in response; waiting for actual assistant response...");
         const deadline = Date.now() + 15_000;
         let bestText: string | null = null;
+        let bestMeta: CapturedAssistantMeta | null = null;
         let stableCount = 0;
         while (Date.now() < deadline) {
           const snapshot = await readAssistantSnapshot(
@@ -4239,6 +4477,10 @@ async function runRemoteBrowserMode(
           if (!isStillEcho) {
             if (!bestText || text.length > bestText.length) {
               bestText = text;
+              bestMeta = {
+                turnId: snapshot?.turnId ?? undefined,
+                messageId: snapshot?.messageId ?? undefined,
+              };
               stableCount = 0;
             } else if (text === bestText) {
               stableCount += 1;
@@ -4250,15 +4492,18 @@ async function runRemoteBrowserMode(
           await new Promise((resolve) => setTimeout(resolve, 300));
         }
         if (bestText) {
-          logger("Recovered assistant response after detecting prompt echo");
-          turnAnswerText = bestText;
-          turnAnswerMarkdown = bestText;
+          await applyBoundAssistantSnapshotReplacement(Runtime, bestMeta ?? {}, logger, () => {
+            logger("Recovered assistant response after detecting prompt echo");
+            turnAnswerText = bestText;
+            turnAnswerMarkdown = bestText;
+          });
         }
       }
       const minAnswerChars = 16;
       if (turnAnswerText.trim().length > 0 && turnAnswerText.trim().length < minAnswerChars) {
         const deadline = Date.now() + 12_000;
         let bestText = turnAnswerText.trim();
+        let bestMeta: CapturedAssistantMeta | null = null;
         let stableCycles = 0;
         while (Date.now() < deadline) {
           const snapshot = await readAssistantSnapshot(
@@ -4269,6 +4514,10 @@ async function runRemoteBrowserMode(
           const text = typeof snapshot?.text === "string" ? snapshot.text.trim() : "";
           if (text && text.length > bestText.length) {
             bestText = text;
+            bestMeta = {
+              turnId: snapshot?.turnId ?? undefined,
+              messageId: snapshot?.messageId ?? undefined,
+            };
             stableCycles = 0;
           } else {
             stableCycles += 1;
@@ -4279,9 +4528,11 @@ async function runRemoteBrowserMode(
           await delay(400);
         }
         if (bestText.length > turnAnswerText.trim().length) {
-          logger("Refreshed short assistant response from latest DOM snapshot");
-          turnAnswerText = bestText;
-          turnAnswerMarkdown = bestText;
+          await applyBoundAssistantSnapshotReplacement(Runtime, bestMeta ?? {}, logger, () => {
+            logger("Refreshed short assistant response from latest DOM snapshot");
+            turnAnswerText = bestText;
+            turnAnswerMarkdown = bestText;
+          });
         }
       }
       return {
@@ -4425,6 +4676,7 @@ async function runRemoteBrowserMode(
     const answerChars = answerText.length;
     const answerTokens = estimateTokenCount(answerMarkdown);
 
+    expectedConversationId();
     runStatus = "complete";
     emitRunProgressMarker("done");
     return {
@@ -4511,20 +4763,25 @@ async function runRemoteBrowserMode(
         ownsTarget,
         keepBrowser: Boolean(config.keepBrowser),
         policy: resolveCloseOwnedRunTargetPolicy(config),
+        orphanedTargetNeedsCleanup,
       }) &&
       remoteTargetId
     ) {
       const closeOwnedRunTarget = async (): Promise<boolean> => {
         return await closeRemoteChromeTarget(host, port, remoteTargetId ?? undefined, logger);
       };
-      await closeOwnedTargetWithDeadline(closeOwnedRunTarget(), logger, {
+      ownedTargetCleanupProved = await closeOwnedTargetWithDeadline(closeOwnedRunTarget(), logger, {
         targetId: remoteTargetId,
       });
     }
-    if (tabLease) {
+    if (tabLease && ownedTargetCleanupProved) {
       const handle = tabLease;
       tabLease = null;
-      await handle.release().catch(() => undefined);
+      await releaseBrowserTabLeaseOrTaint(handle, logger, "remote browser run cleanup");
+    } else if (tabLease) {
+      logger(
+        `[browser] Keeping ChatGPT browser slot ${tabLease.id.slice(0, 8)} active because owned-target cleanup was not proved.`,
+      );
     }
     // Don't kill remote Chrome - it's not ours to manage
     const totalSeconds = (Date.now() - startedAt) / 1000;
@@ -4549,9 +4806,11 @@ export const __test__ = {
   shouldReloadAfterAssistantError,
   isManualLoginProfileInitialized,
   isImageOnlyUiChromeText,
+  maybeRecoverLongAssistantResponse,
   listIgnoredRemoteChromeFlags,
   resolveManualLoginWaitMs,
   closeOwnedTargetWithDeadline,
+  releaseBrowserTabLeaseOrTaint,
   resolveCloseOwnedRunTargetPolicy,
   mergeModeSelectionEvidence,
   assertProtectedSolProEvidence,
@@ -4560,6 +4819,8 @@ export const __test__ = {
   verifyProtectedSolProSelectionForSubmit,
   shouldCloseOwnedRunTargetAfterRun,
   shouldKeepLocalBrowserOpen,
+  waitForAssistantOrGeneratedImageResponse,
+  applyBoundAssistantSnapshotReplacement,
 };
 export { syncCookies } from "./cookies.js";
 export {
@@ -4850,10 +5111,6 @@ async function readConversationTurnCount(
   return null;
 }
 
-function isConversationUrl(url: string): boolean {
-  return /\/c\/[a-z0-9-]+/i.test(url);
-}
-
 function describeDevtoolsFirewallHint(host: string, port: number): string | null {
   if (!isWsl()) return null;
   return [
@@ -4871,11 +5128,6 @@ function isWsl(): boolean {
   if (process.platform !== "linux") return false;
   if (process.env.WSL_DISTRO_NAME) return true;
   return os.release().toLowerCase().includes("microsoft");
-}
-
-function extractConversationIdFromUrl(url: string): string | undefined {
-  const match = url.match(/\/c\/([a-zA-Z0-9-]+)/);
-  return match?.[1];
 }
 
 async function resolveUserDataBaseDir(): Promise<string> {

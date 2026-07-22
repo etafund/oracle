@@ -3,6 +3,8 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import type { Writable } from "node:stream";
+import { finished } from "node:stream/promises";
 import type {
   SessionMetadata,
   SessionMode,
@@ -29,6 +31,11 @@ import {
   runBrowserSessionExecution,
   type BrowserSessionRunnerDeps,
 } from "../browser/sessionRunner.js";
+import {
+  appendArtifacts,
+  saveBrowserTranscriptArtifact,
+  saveDeepResearchReportArtifact,
+} from "../browser/artifacts.js";
 import { renderMarkdownAnsi } from "./markdownRenderer.js";
 import { formatResponseMetadata, formatTransportMetadata } from "./sessionDisplay.js";
 import { markErrorLogged } from "./errorUtils.js";
@@ -53,8 +60,31 @@ import { cwd as getCwd } from "node:process";
 import { resumeBrowserSession } from "../browser/reattach.js";
 import { hasRecoverableChatGptConversation } from "../browser/reattachability.js";
 import { resolveRecoveryUrl } from "../browser/recoverConversation.js";
+import { extractConversationIdFromUrl } from "../browser/conversationIdentity.js";
 import { estimateTokenCount } from "../browser/utils.js";
 import type { BrowserLogger } from "../browser/types.js";
+import type { BrowserRunResult } from "../browserMode.js";
+import {
+  getRemoteBrowserFailedRouteFromError,
+  getRemoteBrowserRecoveryFromError,
+  RemoteRunFailedError,
+  type RemoteBrowserFailedRoute,
+  type RemoteBrowserRecoveryCarrier,
+} from "../remote/client.js";
+import {
+  deleteRemoteBrowserRecoverySecret,
+  toPublicRemoteRecoveryMetadata,
+  writeRemoteBrowserRecoverySecret,
+} from "../remote/sessionRecoveryStore.js";
+import {
+  claimRemoteBrowserRecoveryCompletion,
+  isFailedRemoteBrowserOrigin,
+  isRemoteBrowserRecoveryCompletionPersisted,
+  ownsRemoteBrowserRecoveryCompletion,
+  recoverStoredRemoteBrowserSession,
+  releaseRemoteBrowserRecoveryCompletion,
+  RemoteBrowserRecoveryUnavailableError,
+} from "../remote/sessionRecovery.js";
 import { formatElapsed } from "../oracle/format.js";
 import { formatBrowserReattachGuidance } from "./reattachGuidance.js";
 import { getOracleHomeDir } from "../oracleHome.js";
@@ -97,9 +127,176 @@ const isTty = process.stdout.isTTY;
 const dim = (text: string): string => (isTty ? kleur.dim(text) : text);
 const CLAUDE_CODE_SESSION_FINALIZED = Symbol("claudeCodeSessionFinalized");
 
+async function endRecoveryLogStream(stream: { end: () => void }): Promise<void> {
+  const completion =
+    typeof (stream as Partial<Writable>).once === "function" ? finished(stream as Writable) : null;
+  stream.end();
+  await completion;
+}
+
 type ClaudeCodeFinalizedError = Error & {
   [CLAUDE_CODE_SESSION_FINALIZED]?: true;
 };
+
+interface RemoteBrowserFailurePersistenceDeps {
+  updateSession?: typeof sessionStore.updateSession;
+  writeSecret?: typeof writeRemoteBrowserRecoverySecret;
+  deleteSecret?: typeof deleteRemoteBrowserRecoverySecret;
+}
+
+export class RemoteBrowserFailureSupersededError extends Error {
+  constructor(
+    message: string,
+    readonly browser: SessionMetadata["browser"],
+  ) {
+    super(message);
+    this.name = "RemoteBrowserFailureSupersededError";
+  }
+}
+
+function failedRemoteRouteMatches(
+  metadata: SessionMetadata,
+  expected: RemoteBrowserFailedRoute,
+): boolean {
+  const actual = metadata.browser?.remoteRun;
+  return (
+    actual?.terminalDoneOk === false &&
+    actual.runId === expected.runId &&
+    actual.accountId === expected.accountId &&
+    (actual.laneId ?? null) === (expected.laneId ?? null)
+  );
+}
+
+/**
+ * Publish failed-route evidence before touching the private sidecar. A crash
+ * after that first metadata commit therefore remains fail-closed. The public
+ * executable coordinate is added only by CAS against the same failed route;
+ * an orphaned/stale sidecar is compare-deleted on an ordinary CAS loss.
+ */
+export async function persistRemoteBrowserFailureRecoveryState(
+  input: {
+    sessionId: string;
+    browser: SessionMetadata["browser"];
+    failedRoute: RemoteBrowserFailedRoute;
+    recoveryCarrier?: RemoteBrowserRecoveryCarrier | null;
+  },
+  deps: RemoteBrowserFailurePersistenceDeps = {},
+): Promise<SessionMetadata["browser"]> {
+  const updateSession = deps.updateSession ?? sessionStore.updateSession.bind(sessionStore);
+  const writeSecret = deps.writeSecret ?? writeRemoteBrowserRecoverySecret;
+  const deleteSecret = deps.deleteSecret ?? deleteRemoteBrowserRecoverySecret;
+  let browser: SessionMetadata["browser"] = {
+    ...input.browser,
+    remoteRun: input.failedRoute,
+  };
+
+  let routeMarked = false;
+  const marked = await updateSession(input.sessionId, (current) => {
+    routeMarked = false;
+    const currentRun = current.browser?.remoteRun;
+    const currentCoordinate = current.browser?.remoteRecovery;
+    const sameFailedRoute = failedRemoteRouteMatches(current, input.failedRoute);
+    if (
+      current.status === "completed" ||
+      currentRun?.terminalDoneOk === true ||
+      current.browser?.remoteRecoveryCompletionClaim ||
+      (currentRun && !sameFailedRoute) ||
+      (currentCoordinate && currentCoordinate.originRunId !== input.failedRoute.runId)
+    ) {
+      return {};
+    }
+    routeMarked = true;
+    return {
+      browser: {
+        ...input.browser,
+        ...current.browser,
+        remoteRun: input.failedRoute,
+      },
+    };
+  });
+  browser = marked?.browser ?? browser;
+
+  // A terminal/newer generation or active completion owner won the CAS.
+  // Refuse to touch any sidecar and return its fresh browser state.
+  if (!routeMarked) {
+    throw new RemoteBrowserFailureSupersededError(
+      "A terminal/newer browser generation or active recovery writer superseded this failed run.",
+      browser,
+    );
+  }
+
+  if (!input.recoveryCarrier) return browser;
+  await writeSecret(input.sessionId, input.recoveryCarrier);
+  const coordinate = toPublicRemoteRecoveryMetadata(input.recoveryCarrier);
+  let published = false;
+  const publishedMetadata = await updateSession(input.sessionId, (current) => {
+    // The updater may be retried on a fresher metadata generation.
+    published = false;
+    if (
+      !failedRemoteRouteMatches(current, input.failedRoute) ||
+      current.browser?.remoteRecoveryCompletionClaim
+    ) {
+      return {};
+    }
+    published = true;
+    return {
+      browser: {
+        ...current.browser,
+        remoteRecovery: coordinate,
+      },
+    };
+  });
+  if (!published) {
+    const freshBrowser = publishedMetadata?.browser ?? browser;
+    const sameOriginStillNeedsSidecar =
+      freshBrowser?.remoteRecovery?.originRunId === input.failedRoute.runId ||
+      freshBrowser?.remoteRecoveryCompletionClaim?.originRunId === input.failedRoute.runId;
+    if (!sameOriginStillNeedsSidecar) {
+      await deleteSecret(input.sessionId, input.failedRoute.runId).catch(() => false);
+    }
+    throw new RemoteBrowserFailureSupersededError(
+      "A newer browser generation or active recovery writer won while the public coordinate was being published.",
+      freshBrowser,
+    );
+  }
+  return publishedMetadata?.browser ?? { ...browser, remoteRecovery: coordinate };
+}
+
+async function persistRemoteRecoveryArtifacts(input: {
+  sessionId: string;
+  prompt: string;
+  answerMarkdown: string;
+  conversationUrl?: string;
+  browserConfig: BrowserSessionConfig;
+  existingArtifacts?: SessionArtifact[];
+  logger: BrowserLogger;
+}): Promise<SessionArtifact[]> {
+  let artifacts = input.existingArtifacts;
+  if (input.browserConfig.researchMode === "deep") {
+    const report = await saveDeepResearchReportArtifact({
+      sessionId: input.sessionId,
+      reportMarkdown: input.answerMarkdown,
+      conversationUrl: input.conversationUrl,
+      logger: input.logger,
+    }).catch(() => null);
+    artifacts = appendArtifacts(artifacts, [report]);
+  }
+  // Unlike the ordinary helper, recovery must always write a fresh transcript
+  // for this claim. An older transcript may describe the failed capture and
+  // is not durable evidence for the newly recovered answer.
+  const transcript = await saveBrowserTranscriptArtifact({
+    sessionId: input.sessionId,
+    prompt: input.prompt,
+    answerMarkdown: input.answerMarkdown,
+    conversationUrl: input.conversationUrl,
+    artifacts,
+    logger: input.logger,
+  });
+  if (!transcript) {
+    throw new Error("Remote recovery produced no durable transcript artifact; refusing commit.");
+  }
+  return appendArtifacts(artifacts, [transcript]) ?? [transcript];
+}
 
 export interface SessionRunParams {
   sessionMeta: SessionMetadata;
@@ -112,6 +309,20 @@ export interface SessionRunParams {
   version: string;
   notifications?: NotificationSettings;
   browserDeps?: BrowserSessionRunnerDeps;
+  /** Narrow injection seam for deterministic recovery-race tests. */
+  remoteFailureDeps?: {
+    getFailedRoute?: typeof getRemoteBrowserFailedRouteFromError;
+    getRecovery?: typeof getRemoteBrowserRecoveryFromError;
+    persistState?: typeof persistRemoteBrowserFailureRecoveryState;
+  };
+  /** Narrow injection seam for submitted-session recovery race tests. */
+  remoteRecoveryDeps?: {
+    claim?: typeof claimRemoteBrowserRecoveryCompletion;
+    recoverStored?: typeof recoverStoredRemoteBrowserSession;
+    release?: typeof releaseRemoteBrowserRecoveryCompletion;
+    deleteSecret?: typeof deleteRemoteBrowserRecoverySecret;
+    persistArtifacts?: typeof persistRemoteRecoveryArtifacts;
+  };
   muteStdout?: boolean;
   claudeCodeRunner?: ClaudeCodeSessionRunner;
 }
@@ -226,6 +437,8 @@ export async function performSessionRun({
   version,
   notifications,
   browserDeps,
+  remoteFailureDeps,
+  remoteRecoveryDeps,
   muteStdout = false,
   claudeCodeRunner = runLocalClaudeCodeSession,
 }: SessionRunParams): Promise<void> {
@@ -234,15 +447,44 @@ export async function performSessionRun({
     write(chunk);
     return muteStdout ? true : process.stdout.write(chunk);
   };
-  let currentBrowser: SessionMetadata["browser"] = browserConfig
-    ? { config: browserConfig }
-    : sessionMeta.browser;
-  await sessionStore.updateSession(sessionMeta.id, {
-    status: "running",
-    startedAt: new Date().toISOString(),
-    mode,
-    ...(browserConfig ? { browser: { config: browserConfig } } : {}),
+  let startRefused = false;
+  const startedSession = await sessionStore.updateSession(sessionMeta.id, (current) => {
+    // A session runner may have been spawned from an older metadata snapshot.
+    // Merge the freshest browser state and never reopen a terminal remote run
+    // or trample an in-flight recovery completion claim.
+    startRefused = false;
+    if (
+      mode === "browser" &&
+      (current.browser?.remoteRecoveryCompletionClaim ||
+        current.browser?.remoteRun?.terminalDoneOk === true)
+    ) {
+      startRefused = true;
+      return {};
+    }
+    return {
+      status: "running",
+      startedAt: new Date().toISOString(),
+      mode,
+      ...(browserConfig
+        ? {
+            browser: {
+              ...sessionMeta.browser,
+              ...current.browser,
+              config: browserConfig,
+            },
+          }
+        : {}),
+    };
   });
+  if (startRefused) {
+    throw new RemoteBrowserRecoveryUnavailableError(
+      `Session ${sessionMeta.id} already has a terminal remote result or an active recovery completion writer; refusing a stale runner start.`,
+    );
+  }
+  sessionMeta = startedSession ?? sessionMeta;
+  let currentBrowser: SessionMetadata["browser"] = browserConfig
+    ? { ...sessionMeta.browser, config: browserConfig }
+    : sessionMeta.browser;
   const notificationSettings =
     notifications ?? deriveNotificationSettingsFromMetadata(sessionMeta, process.env);
   const modelForStatus = runOptions.model ?? sessionMeta.model;
@@ -416,6 +658,7 @@ export async function performSessionRun({
           modelForStatus,
           notificationSettings,
           log,
+          deps: remoteRecoveryDeps,
         })
       ) {
         return;
@@ -427,6 +670,7 @@ export async function performSessionRun({
           modelSelection?: BrowserModelSelectionEvidence,
         ) => {
           const browser = {
+            ...currentBrowser,
             config: browserConfig,
             runtime,
             ...(modelSelection ? { modelSelection } : {}),
@@ -820,12 +1064,79 @@ export async function performSessionRun({
     );
   } catch (error: unknown) {
     const message = formatError(error);
-    log(`ERROR: ${message}`);
     markErrorLogged(error);
     if (isFinalizedClaudeCodeError(error)) {
       throw error;
     }
     const userError = asOracleUserError(error);
+    const remoteRecoveryCarrier = (
+      remoteFailureDeps?.getRecovery ?? getRemoteBrowserRecoveryFromError
+    )(error);
+    const failedRemoteRoute =
+      (remoteFailureDeps?.getFailedRoute ?? getRemoteBrowserFailedRouteFromError)(error) ??
+      (remoteRecoveryCarrier
+        ? {
+            runId: remoteRecoveryCarrier.recovery.originRunId,
+            accountId: remoteRecoveryCarrier.accountId,
+            laneId: remoteRecoveryCarrier.laneId,
+            terminalDoneOk: false as const,
+            provenance: null,
+          }
+        : null);
+    const deferredFailureLogs: string[] = [];
+    let failureLogsFlushed = false;
+    const failureLog = (entry?: string): void => {
+      if (!entry) return;
+      if (failedRemoteRoute && !failureLogsFlushed) {
+        deferredFailureLogs.push(entry);
+        return;
+      }
+      log(entry);
+    };
+    const flushFailureLogs = (): void => {
+      if (!failedRemoteRoute || failureLogsFlushed) return;
+      failureLogsFlushed = true;
+      log(`ERROR: ${message}`);
+      for (const entry of deferredFailureLogs) log(entry);
+      deferredFailureLogs.length = 0;
+    };
+    if (!failedRemoteRoute) log(`ERROR: ${message}`);
+    if (mode === "browser" && failedRemoteRoute) {
+      currentBrowser = { ...currentBrowser, remoteRun: failedRemoteRoute };
+      try {
+        currentBrowser = await (
+          remoteFailureDeps?.persistState ?? persistRemoteBrowserFailureRecoveryState
+        )({
+          sessionId: sessionMeta.id,
+          browser: currentBrowser,
+          failedRoute: failedRemoteRoute,
+          recoveryCarrier: remoteRecoveryCarrier,
+        });
+      } catch (storeError) {
+        if (storeError instanceof RemoteBrowserFailureSupersededError) {
+          return;
+        }
+        // The helper commits the nonsecret failed-route marker before touching
+        // the sidecar. Even an interruption here therefore remains fail-closed.
+        const reason = storeError instanceof Error ? storeError.message : String(storeError);
+        failureLog(
+          dim(
+            `Could not store private remote recovery capability (${reason}); preserving remote route and refusing automatic/local recovery.`,
+          ),
+        );
+        const existingCoordinate = currentBrowser?.remoteRecovery;
+        if (existingCoordinate?.originRunId === failedRemoteRoute.runId) {
+          currentBrowser = { ...currentBrowser, remoteRun: failedRemoteRoute };
+        } else {
+          const { remoteRecovery: _remoteRecovery, ...withoutExecutableCoordinate } =
+            currentBrowser ?? {};
+          currentBrowser = {
+            ...withoutExecutableCoordinate,
+            remoteRun: failedRemoteRoute,
+          };
+        }
+      }
+    }
     const connectionLost =
       userError?.category === "browser-automation" &&
       (userError.details as { stage?: string } | undefined)?.stage === "connection-lost";
@@ -835,6 +1146,39 @@ export async function performSessionRun({
     const cloudflareChallenge =
       userError?.category === "browser-automation" &&
       (userError.details as { stage?: string } | undefined)?.stage === "cloudflare-challenge";
+    const persistFailureSession = async (updates: Partial<SessionMetadata>): Promise<boolean> => {
+      if (!failedRemoteRoute) {
+        await sessionStore.updateSession(sessionMeta.id, updates);
+        return true;
+      }
+      let applied = false;
+      await sessionStore.updateSession(sessionMeta.id, (current) => {
+        // The updater may retry; the last invocation owns the verdict.
+        applied = false;
+        if (
+          current.status === "completed" ||
+          current.browser?.remoteRun?.terminalDoneOk === true ||
+          current.browser?.remoteRecoveryCompletionClaim ||
+          !failedRemoteRouteMatches(current, failedRemoteRoute)
+        ) {
+          return {};
+        }
+        applied = true;
+        return {
+          ...updates,
+          ...(updates.browser
+            ? {
+                browser: {
+                  ...current.browser,
+                  ...updates.browser,
+                  remoteRun: failedRemoteRoute,
+                },
+              }
+            : {}),
+        };
+      });
+      return applied;
+    };
     const browserCanReattach = !browserConfig?.copyProfileSource;
     let reattachGuidanceLogged = false;
     const logBrowserReattachGuidance = (runtime?: BrowserRuntimeMetadata | null): void => {
@@ -847,7 +1191,7 @@ export async function performSessionRun({
         return;
       }
       reattachGuidanceLogged = true;
-      log(formatBrowserReattachGuidance(sessionMeta.id));
+      failureLog(formatBrowserReattachGuidance(sessionMeta.id));
     };
     if (connectionLost && mode === "browser" && browserCanReattach) {
       const runtime = (userError.details as { runtime?: BrowserRuntimeMetadata } | undefined)
@@ -857,12 +1201,12 @@ export async function performSessionRun({
         !hasRecoverableChatGptConversation(recoverableRuntime) &&
         recoverableRuntime?.promptSubmitted !== true
       ) {
-        log(
+        failureLog(
           dim(
             "Chrome disconnected before a ChatGPT conversation was created; marking session error.",
           ),
         );
-        if (modelForStatus) {
+        if (modelForStatus && !failedRemoteRoute) {
           await sessionStore.updateModelRun(sessionMeta.id, modelForStatus, {
             status: "error",
             completedAt: new Date().toISOString(),
@@ -874,7 +1218,7 @@ export async function performSessionRun({
             },
           });
         }
-        await sessionStore.updateSession(sessionMeta.id, {
+        const failureApplied = await persistFailureSession({
           status: "error",
           completedAt: new Date().toISOString(),
           errorMessage: message,
@@ -891,17 +1235,21 @@ export async function performSessionRun({
             details: userError.details,
           },
         });
+        if (!failureApplied) return;
         logBrowserReattachGuidance();
+        flushFailureLogs();
         throw error;
       }
-      log(dim("Chrome disconnected before completion; keeping session running for reattach."));
-      if (modelForStatus) {
+      failureLog(
+        dim("Chrome disconnected before completion; keeping session running for reattach."),
+      );
+      if (modelForStatus && !failedRemoteRoute) {
         await sessionStore.updateModelRun(sessionMeta.id, modelForStatus, {
           status: "running",
           completedAt: undefined,
         });
       }
-      await sessionStore.updateSession(sessionMeta.id, {
+      const failureApplied = await persistFailureSession({
         status: "running",
         errorMessage: message,
         mode,
@@ -912,14 +1260,16 @@ export async function performSessionRun({
         },
         response: { status: "running", incompleteReason: "chrome-disconnected" },
       });
+      if (!failureApplied) return;
       logBrowserReattachGuidance(runtime ?? sessionMeta.browser?.runtime);
+      flushFailureLogs();
       return;
     }
     if (assistantTimeout && mode === "browser" && browserCanReattach) {
       const runtime = (userError.details as { runtime?: BrowserRuntimeMetadata } | undefined)
         ?.runtime;
-      log(dim("Assistant response timed out; marking capture incomplete for reattach."));
-      if (modelForStatus) {
+      failureLog(dim("Assistant response timed out; marking capture incomplete for reattach."));
+      if (modelForStatus && !failedRemoteRoute) {
         await sessionStore.updateModelRun(sessionMeta.id, modelForStatus, {
           status: "error",
           completedAt: new Date().toISOString(),
@@ -931,7 +1281,7 @@ export async function performSessionRun({
           },
         });
       }
-      await sessionStore.updateSession(sessionMeta.id, {
+      const failureApplied = await persistFailureSession({
         status: "error",
         completedAt: new Date().toISOString(),
         errorMessage: message,
@@ -948,6 +1298,8 @@ export async function performSessionRun({
           details: userError.details,
         },
       });
+      if (!failureApplied) return;
+      flushFailureLogs();
       const autoReattachIntervalMs = browserConfig?.autoReattachIntervalMs ?? 0;
       if (autoReattachIntervalMs > 0) {
         const autoRuntime = runtime ?? currentBrowser?.runtime;
@@ -971,29 +1323,29 @@ export async function performSessionRun({
     if (cloudflareChallenge && mode === "browser") {
       const details = userError.details as { reuseProfileHint?: string } | undefined;
       if (browserCanReattach) {
-        log(
+        failureLog(
           dim("Cloudflare challenge detected; browser left running so you can complete the check."),
         );
         if (details?.reuseProfileHint) {
-          log(dim(`Reuse this browser profile with: ${details.reuseProfileHint}`));
+          failureLog(dim(`Reuse this browser profile with: ${details.reuseProfileHint}`));
         }
       } else {
-        log(dim("Cloudflare challenge detected; copied profile closed and removed."));
+        failureLog(dim("Cloudflare challenge detected; copied profile closed and removed."));
       }
     }
     if (userError) {
-      log(dim(`User error (${userError.category}): ${userError.message}`));
+      failureLog(dim(`User error (${userError.category}): ${userError.message}`));
     }
     const responseMetadata = error instanceof OracleResponseError ? error.metadata : undefined;
     const metadataLine = formatResponseMetadata(responseMetadata);
     if (metadataLine) {
-      log(dim(`Response metadata: ${metadataLine}`));
+      failureLog(dim(`Response metadata: ${metadataLine}`));
     }
     const transportMetadata =
       error instanceof OracleTransportError ? { reason: error.reason } : undefined;
     const transportLine = formatTransportMetadata(transportMetadata);
     if (transportLine) {
-      log(dim(`Transport: ${transportLine}`));
+      failureLog(dim(`Transport: ${transportLine}`));
     }
     const browserRuntime =
       mode === "browser" && browserCanReattach
@@ -1002,7 +1354,7 @@ export async function performSessionRun({
     if (!cloudflareChallenge && browserCanReattach) {
       logBrowserReattachGuidance(browserRuntime ?? currentBrowser?.runtime);
     }
-    await sessionStore.updateSession(sessionMeta.id, {
+    const failureApplied = await persistFailureSession({
       status: "error",
       completedAt: new Date().toISOString(),
       errorMessage: message,
@@ -1031,7 +1383,9 @@ export async function performSessionRun({
           }
         : undefined,
     });
-    if (modelForStatus) {
+    if (!failureApplied) return;
+    flushFailureLogs();
+    if (modelForStatus && !failedRemoteRoute) {
       await sessionStore.updateModelRun(sessionMeta.id, modelForStatus, {
         status: "error",
         completedAt: new Date().toISOString(),
@@ -1039,14 +1393,6 @@ export async function performSessionRun({
     }
     throw error;
   }
-}
-
-function extractChatGptConversationId(url: string | null | undefined): string | undefined {
-  if (!url) {
-    return undefined;
-  }
-  const match = url.match(/\/c\/([^/?#]+)/);
-  return match?.[1];
 }
 
 function buildSubmittedRecoveryRuntime(
@@ -1066,7 +1412,7 @@ function buildSubmittedRecoveryRuntime(
     // target id from a previous process. Re-resolve by URL/conversation first.
     chromeTargetId: undefined,
     tabUrl: recoveryUrl,
-    conversationId: extractChatGptConversationId(recoveryUrl) ?? runtime.conversationId,
+    conversationId: extractConversationIdFromUrl(recoveryUrl) ?? runtime.conversationId,
   };
 }
 
@@ -1077,6 +1423,7 @@ async function recoverSubmittedBrowserSessionBeforeFreshRun({
   modelForStatus,
   notificationSettings,
   log,
+  deps,
 }: {
   sessionMeta: SessionMetadata;
   browserConfig: BrowserSessionConfig;
@@ -1084,14 +1431,49 @@ async function recoverSubmittedBrowserSessionBeforeFreshRun({
   modelForStatus?: string;
   notificationSettings: NotificationSettings;
   log: (message?: string) => void;
+  deps?: SessionRunParams["remoteRecoveryDeps"];
 }): Promise<boolean> {
-  const runtime = buildSubmittedRecoveryRuntime(sessionMeta);
-  if (!runtime) {
+  const remoteOrigin = isFailedRemoteBrowserOrigin(sessionMeta);
+  const coordinateRuntime = sessionMeta.browser?.remoteRecovery?.runtime;
+  const runtime =
+    buildSubmittedRecoveryRuntime(sessionMeta) ??
+    (coordinateRuntime
+      ? {
+          ...coordinateRuntime,
+          promptSubmitted: true as const,
+        }
+      : null);
+  if (!runtime && !remoteOrigin) {
     return false;
   }
 
   const nextAction = `oracle session ${sessionMeta.id} --render`;
+  const hasRemoteRecovery = Boolean(sessionMeta.browser?.remoteRecovery);
+  if (remoteOrigin && !hasRemoteRecovery) {
+    throw new BrowserAutomationError(
+      `Stored session ${sessionMeta.id} belongs to a failed remote browser route, but no executable private recovery capability is available. Refusing a fresh or local browser run. Open the conversation in the originating ChatGPT account's history.`,
+      {
+        stage: "submitted-session-recovery",
+        ...(runtime ? { runtime } : {}),
+        retryable: false,
+        nextAction,
+        remoteRun: sessionMeta.browser?.remoteRun,
+      },
+    );
+  }
+  if (!runtime) {
+    throw new BrowserAutomationError(
+      `Stored session ${sessionMeta.id} belongs to a failed remote browser route but has no safe conversation coordinate. Refusing a fresh or local browser run. Open the originating ChatGPT account's history.`,
+      {
+        stage: "submitted-session-recovery",
+        retryable: false,
+        nextAction,
+        remoteRun: sessionMeta.browser?.remoteRun,
+      },
+    );
+  }
   const canAttemptRecovery =
+    hasRemoteRecovery ||
     hasRecoverableChatGptConversation(runtime) ||
     Boolean(runtime.chromePort || runtime.chromeBrowserWSEndpoint || runtime.chromeProfileRoot);
   if (!canAttemptRecovery) {
@@ -1117,60 +1499,170 @@ async function recoverSubmittedBrowserSessionBeforeFreshRun({
     }
   }) as BrowserLogger;
   logger.verbose = true;
+  const attemptedOriginRunId = sessionMeta.browser?.remoteRecovery?.originRunId;
+  let completionClaim: Awaited<ReturnType<typeof claimRemoteBrowserRecoveryCompletion>> = null;
+  let recoveryCommitted = false;
 
   try {
-    const result = await resumeBrowserSession(runtime, browserConfig, logger, {
-      promptPreview: sessionMeta.promptPreview,
-    });
+    if (hasRemoteRecovery) {
+      completionClaim = await (deps?.claim ?? claimRemoteBrowserRecoveryCompletion)(
+        sessionMeta.id,
+        attemptedOriginRunId,
+      );
+      if (!completionClaim) {
+        throw new RemoteBrowserRecoveryUnavailableError(
+          "A newer remote recovery attempt or another completion writer owns this session; refusing a stale recovery dispatch.",
+        );
+      }
+    }
+    const result = hasRemoteRecovery
+      ? await (deps?.recoverStored ?? recoverStoredRemoteBrowserSession)(sessionMeta, {
+          log,
+          completionClaim: completionClaim!,
+        })
+      : await resumeBrowserSession(runtime, browserConfig, logger, {
+          promptPreview: sessionMeta.promptPreview,
+        });
+    const remoteResult = hasRemoteRecovery ? (result as BrowserRunResult) : undefined;
+    const recoveredTabUrl = remoteResult?.tabUrl;
+    const recoveredConversationId = remoteResult?.conversationId;
+    const recoveredRemoteRun = remoteResult?.remoteRun;
     const answerText = result.answerMarkdown || result.answerText || "";
     const outputTokens = estimateTokenCount(answerText);
-    const artifacts = await ensureSessionArtifacts({
-      sessionId: sessionMeta.id,
-      prompt: runOptions.prompt,
-      answerMarkdown: answerText,
-      conversationUrl: runtime.tabUrl,
-      browserConfig,
-      existingArtifacts: sessionMeta.artifacts,
-      logger,
-    });
+    const artifacts = hasRemoteRecovery
+      ? await (deps?.persistArtifacts ?? persistRemoteRecoveryArtifacts)({
+          sessionId: sessionMeta.id,
+          prompt: runOptions.prompt,
+          answerMarkdown: answerText,
+          conversationUrl: recoveredTabUrl ?? runtime.tabUrl,
+          browserConfig,
+          existingArtifacts: sessionMeta.artifacts,
+          logger,
+        })
+      : await ensureSessionArtifacts({
+          sessionId: sessionMeta.id,
+          prompt: runOptions.prompt,
+          answerMarkdown: answerText,
+          conversationUrl: recoveredTabUrl ?? runtime.tabUrl,
+          browserConfig,
+          existingArtifacts: sessionMeta.artifacts,
+          logger,
+        });
     const logWriter = sessionStore.createLogWriter(sessionMeta.id);
     logWriter.logLine(
       "[submitted-session-recovery] captured assistant response without resubmitting",
     );
     logWriter.logLine("Answer:");
     logWriter.logLine(answerText);
-    logWriter.stream.end();
+    await endRecoveryLogStream(logWriter.stream);
     const usage = {
       inputTokens: 0,
       outputTokens,
       reasoningTokens: 0,
       totalTokens: outputTokens,
     };
-    if (modelForStatus) {
+    let completionApplied = !completionClaim;
+    try {
+      await sessionStore.updateSession(sessionMeta.id, (current) => {
+        completionApplied = false;
+        if (completionClaim && !ownsRemoteBrowserRecoveryCompletion(current, completionClaim)) {
+          return {};
+        }
+        const {
+          remoteRecovery: _remoteRecovery,
+          remoteRecoveryCompletionClaim: _completionClaim,
+          ...freshBrowser
+        } = current.browser ?? sessionMeta.browser ?? {};
+        completionApplied = true;
+        return {
+          status: "completed",
+          completedAt: new Date().toISOString(),
+          usage,
+          errorMessage: undefined,
+          browser: {
+            ...freshBrowser,
+            config: browserConfig,
+            runtime: {
+              ...runtime,
+              tabUrl: recoveredTabUrl ?? runtime.tabUrl,
+              conversationId: recoveredConversationId ?? runtime.conversationId,
+              promptSubmitted: true,
+            },
+            remoteRun: recoveredRemoteRun,
+          },
+          artifacts: mergeArtifacts(current.artifacts ?? sessionMeta.artifacts, artifacts),
+          response: { status: "completed" },
+          error: undefined,
+          transport: undefined,
+        };
+      });
+      if (!completionApplied) {
+        throw new RemoteBrowserRecoveryUnavailableError(
+          "Recovery completion ownership changed before finalization; refusing a stale success commit.",
+        );
+      }
+      recoveryCommitted = Boolean(completionClaim);
+    } catch (error) {
+      const persisted = completionClaim
+        ? await sessionStore.readSession(sessionMeta.id).catch(() => null)
+        : null;
+      if (
+        !completionClaim ||
+        !isRemoteBrowserRecoveryCompletionPersisted(persisted, recoveredRemoteRun, artifacts)
+      ) {
+        throw error;
+      }
+      recoveryCommitted = true;
+    }
+    if (modelForStatus && !hasRemoteRecovery) {
       await sessionStore.updateModelRun(sessionMeta.id, modelForStatus, {
         status: "completed",
         completedAt: new Date().toISOString(),
         usage,
       });
     }
-    await sessionStore.updateSession(sessionMeta.id, {
-      status: "completed",
-      completedAt: new Date().toISOString(),
-      usage,
-      errorMessage: undefined,
-      browser: {
-        config: browserConfig,
-        runtime,
-        harvest: sessionMeta.browser?.harvest,
-        archive: sessionMeta.browser?.archive,
-        modelSelection: sessionMeta.browser?.modelSelection,
-        warnings: sessionMeta.browser?.warnings,
-      },
-      artifacts: mergeArtifacts(sessionMeta.artifacts, artifacts),
-      response: { status: "completed" },
-      error: undefined,
-      transport: undefined,
-    });
+    if (hasRemoteRecovery) {
+      try {
+        await (deps?.deleteSecret ?? deleteRemoteBrowserRecoverySecret)(
+          sessionMeta.id,
+          attemptedOriginRunId,
+        );
+      } catch (error) {
+        try {
+          log(
+            dim(
+              `Recovered session metadata was committed, but private recovery cleanup failed (${error instanceof Error ? error.message : String(error)}).`,
+            ),
+          );
+        } catch {}
+      }
+      await writeAssistantOutput(runOptions.writeOutputPath, answerText, log).catch((error) => {
+        try {
+          log(
+            dim(
+              `Recovered session is committed; output-file write failed (${error instanceof Error ? error.message : String(error)}).`,
+            ),
+          );
+        } catch {}
+      });
+      await sendSessionNotification(
+        {
+          sessionId: sessionMeta.id,
+          sessionName: sessionMeta.options?.slug ?? sessionMeta.id,
+          mode: sessionMeta.mode ?? "browser",
+          model: sessionMeta.model ?? runOptions.model,
+          usage,
+          characters: answerText.length,
+        },
+        notificationSettings,
+        log,
+        answerText.slice(0, 140),
+      ).catch(() => undefined);
+      try {
+        log(kleur.green("Submitted-session recovery succeeded; session marked completed."));
+      } catch {}
+      return true;
+    }
     await writeAssistantOutput(runOptions.writeOutputPath, answerText, log);
     await sendSessionNotification(
       {
@@ -1188,6 +1680,27 @@ async function recoverSubmittedBrowserSessionBeforeFreshRun({
     log(kleur.green("Submitted-session recovery succeeded; session marked completed."));
     return true;
   } catch (error) {
+    if (recoveryCommitted) {
+      if (completionClaim) {
+        await (deps?.deleteSecret ?? deleteRemoteBrowserRecoverySecret)(
+          sessionMeta.id,
+          attemptedOriginRunId,
+        ).catch(() => false);
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      log(
+        dim(
+          `Submitted-session recovery was already committed; ignoring post-commit output/notification failure (${message}).`,
+        ),
+      );
+      return true;
+    }
+    if (completionClaim && !recoveryCommitted) {
+      await (deps?.release ?? releaseRemoteBrowserRecoveryCompletion)(
+        sessionMeta.id,
+        completionClaim,
+      ).catch(() => undefined);
+    }
     const message = error instanceof Error ? error.message : String(error);
     throw new BrowserAutomationError(
       `Stored browser session ${sessionMeta.id} already submitted a prompt; reattach failed (${message}). Refusing to start a fresh browser run. Next action: ${nextAction}`,
@@ -1286,6 +1799,7 @@ async function runLocalClaudeCodeSession(
     ? resolveClaudeCodeMaxRateLimitRotations(
         input.runOptions.claudeCode?.maxRateLimitRotations,
         process.env,
+        { lane: input.runOptions.lane },
       )
     : 0;
 
@@ -3192,7 +3706,19 @@ async function autoReattachUntilComplete({
   notificationSettings: NotificationSettings;
   log: (message?: string) => void;
 }): Promise<boolean> {
-  if (!runtime || !browserConfig) {
+  const remoteMetadata = { ...sessionMeta, browser: browserMetadata };
+  const remoteOrigin = isFailedRemoteBrowserOrigin(remoteMetadata);
+  const hasRemoteRecovery = Boolean(browserMetadata?.remoteRecovery);
+  const attemptedOriginRunId = browserMetadata?.remoteRecovery?.originRunId;
+  if (remoteOrigin && !hasRemoteRecovery) {
+    log(
+      dim(
+        "Auto-reattach stopped: this is a failed remote browser route without an executable private recovery capability. Open the originating ChatGPT account's history; local recovery is refused.",
+      ),
+    );
+    return false;
+  }
+  if ((!runtime && !remoteOrigin) || !browserConfig) {
     log(dim("Auto-reattach disabled: missing runtime or browser config."));
     return false;
   }
@@ -3234,31 +3760,133 @@ async function autoReattachUntilComplete({
     }
     attempt += 1;
     log(dim(`Auto-reattach attempt ${attempt}...`));
+    let completionClaim: Awaited<ReturnType<typeof claimRemoteBrowserRecoveryCompletion>> = null;
+    let recoveryCommitted = false;
     try {
+      const attemptTimeoutMs = Math.max(1, Math.min(timeoutMs, remainingBudgetMs));
       const reattachConfig: BrowserSessionConfig = {
         ...browserConfig,
-        timeoutMs,
+        timeoutMs: attemptTimeoutMs,
       };
-      const result = await resumeBrowserSession(runtime, reattachConfig, logger, {
-        promptPreview: sessionMeta.promptPreview,
-      });
+      const attemptAbort = hasRemoteRecovery ? new AbortController() : null;
+      const attemptTimer = attemptAbort
+        ? setTimeout(() => attemptAbort.abort(), attemptTimeoutMs)
+        : null;
+      let result;
+      try {
+        if (hasRemoteRecovery) {
+          completionClaim = await claimRemoteBrowserRecoveryCompletion(
+            sessionMeta.id,
+            attemptedOriginRunId,
+          );
+          if (!completionClaim) {
+            throw new RemoteBrowserRecoveryUnavailableError(
+              "A newer remote recovery attempt or another completion writer owns this session; refusing a stale recovery dispatch.",
+            );
+          }
+        }
+        result = hasRemoteRecovery
+          ? await recoverStoredRemoteBrowserSession(remoteMetadata, {
+              log,
+              signal: attemptAbort?.signal,
+              browserConfig: reattachConfig,
+              completionClaim: completionClaim!,
+            })
+          : await resumeBrowserSession(runtime!, reattachConfig, logger, {
+              promptPreview: sessionMeta.promptPreview,
+            });
+      } finally {
+        if (attemptTimer) clearTimeout(attemptTimer);
+      }
+      const remoteResult = hasRemoteRecovery ? (result as BrowserRunResult) : undefined;
+      const recoveredTabUrl = remoteResult?.tabUrl;
+      const recoveredConversationId = remoteResult?.conversationId;
+      const recoveredRemoteRun = remoteResult?.remoteRun;
       const answerText = result.answerMarkdown || result.answerText || "";
       const outputTokens = estimateTokenCount(answerText);
-      const artifacts = await ensureSessionArtifacts({
-        sessionId: sessionMeta.id,
-        prompt: runOptions.prompt,
-        answerMarkdown: answerText,
-        conversationUrl: runtime.tabUrl,
-        browserConfig,
-        existingArtifacts: sessionMeta.artifacts,
-        logger,
-      });
+      const artifacts = hasRemoteRecovery
+        ? await persistRemoteRecoveryArtifacts({
+            sessionId: sessionMeta.id,
+            prompt: runOptions.prompt,
+            answerMarkdown: answerText,
+            conversationUrl: recoveredTabUrl ?? runtime?.tabUrl,
+            browserConfig,
+            existingArtifacts: sessionMeta.artifacts,
+            logger,
+          })
+        : await ensureSessionArtifacts({
+            sessionId: sessionMeta.id,
+            prompt: runOptions.prompt,
+            answerMarkdown: answerText,
+            conversationUrl: recoveredTabUrl ?? runtime?.tabUrl,
+            browserConfig,
+            existingArtifacts: sessionMeta.artifacts,
+            logger,
+          });
       const logWriter = sessionStore.createLogWriter(sessionMeta.id);
       logWriter.logLine(`[auto-reattach] captured assistant response on attempt ${attempt}`);
       logWriter.logLine("Answer:");
       logWriter.logLine(answerText);
-      logWriter.stream.end();
-      if (modelForStatus) {
+      await endRecoveryLogStream(logWriter.stream);
+      let completionApplied = !completionClaim;
+      try {
+        await sessionStore.updateSession(sessionMeta.id, (current) => {
+          completionApplied = false;
+          if (completionClaim && !ownsRemoteBrowserRecoveryCompletion(current, completionClaim)) {
+            return {};
+          }
+          const {
+            remoteRecovery: _remoteRecovery,
+            remoteRecoveryCompletionClaim: _completionClaim,
+            ...completedBrowserMetadata
+          } = current.browser ?? browserMetadata ?? {};
+          completionApplied = true;
+          return {
+            status: "completed",
+            completedAt: new Date().toISOString(),
+            usage: {
+              inputTokens: 0,
+              outputTokens,
+              reasoningTokens: 0,
+              totalTokens: outputTokens,
+            },
+            errorMessage: undefined,
+            browser: {
+              ...completedBrowserMetadata,
+              config: browserConfig,
+              runtime: {
+                ...runtime,
+                tabUrl: recoveredTabUrl ?? runtime?.tabUrl,
+                conversationId: recoveredConversationId ?? runtime?.conversationId,
+                promptSubmitted: true,
+              },
+              remoteRun: recoveredRemoteRun,
+            },
+            artifacts: mergeArtifacts(current.artifacts ?? sessionMeta.artifacts, artifacts),
+            response: { status: "completed" },
+            error: undefined,
+            transport: undefined,
+          };
+        });
+        if (!completionApplied) {
+          throw new RemoteBrowserRecoveryUnavailableError(
+            "Recovery completion ownership changed before finalization; refusing a stale success commit.",
+          );
+        }
+        recoveryCommitted = Boolean(completionClaim);
+      } catch (error) {
+        const persisted = completionClaim
+          ? await sessionStore.readSession(sessionMeta.id).catch(() => null)
+          : null;
+        if (
+          !completionClaim ||
+          !isRemoteBrowserRecoveryCompletionPersisted(persisted, recoveredRemoteRun, artifacts)
+        ) {
+          throw error;
+        }
+        recoveryCommitted = true;
+      }
+      if (modelForStatus && !hasRemoteRecovery) {
         await sessionStore.updateModelRun(sessionMeta.id, modelForStatus, {
           status: "completed",
           completedAt: new Date().toISOString(),
@@ -3270,26 +3898,48 @@ async function autoReattachUntilComplete({
           },
         });
       }
-      await sessionStore.updateSession(sessionMeta.id, {
-        status: "completed",
-        completedAt: new Date().toISOString(),
-        usage: {
-          inputTokens: 0,
-          outputTokens,
-          reasoningTokens: 0,
-          totalTokens: outputTokens,
-        },
-        errorMessage: undefined,
-        browser: {
-          ...browserMetadata,
-          config: browserConfig,
-          runtime,
-        },
-        artifacts: mergeArtifacts(sessionMeta.artifacts, artifacts),
-        response: { status: "completed" },
-        error: undefined,
-        transport: undefined,
-      });
+      if (hasRemoteRecovery) {
+        try {
+          await deleteRemoteBrowserRecoverySecret(sessionMeta.id, attemptedOriginRunId);
+        } catch (error) {
+          try {
+            log(
+              dim(
+                `Recovered session metadata was committed, but private recovery cleanup failed (${error instanceof Error ? error.message : String(error)}).`,
+              ),
+            );
+          } catch {}
+        }
+        await writeAssistantOutput(runOptions.writeOutputPath, answerText, log).catch((error) => {
+          try {
+            log(
+              dim(
+                `Recovered session is committed; output-file write failed (${error instanceof Error ? error.message : String(error)}).`,
+              ),
+            );
+          } catch {}
+        });
+        await sendSessionNotification(
+          {
+            sessionId: sessionMeta.id,
+            sessionName: sessionMeta.options?.slug ?? sessionMeta.id,
+            mode: sessionMeta.mode ?? "browser",
+            model: sessionMeta.model ?? runOptions.model,
+            usage: {
+              inputTokens: 0,
+              outputTokens,
+            },
+            characters: answerText.length,
+          },
+          notificationSettings,
+          log,
+          answerText.slice(0, 140),
+        ).catch(() => undefined);
+        try {
+          log(kleur.green("Auto-reattach succeeded; session marked completed."));
+        } catch {}
+        return true;
+      }
       await writeAssistantOutput(runOptions.writeOutputPath, answerText, log);
       await sendSessionNotification(
         {
@@ -3310,8 +3960,46 @@ async function autoReattachUntilComplete({
       log(kleur.green("Auto-reattach succeeded; session marked completed."));
       return true;
     } catch (error) {
+      if (recoveryCommitted) {
+        if (completionClaim) {
+          await deleteRemoteBrowserRecoverySecret(sessionMeta.id, attemptedOriginRunId).catch(
+            () => false,
+          );
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        log(
+          dim(
+            `Auto-reattach recovery was already committed; ignoring post-commit output/notification failure (${message}).`,
+          ),
+        );
+        return true;
+      }
+      if (completionClaim && !recoveryCommitted) {
+        await releaseRemoteBrowserRecoveryCompletion(sessionMeta.id, completionClaim).catch(
+          () => undefined,
+        );
+      }
       const message = error instanceof Error ? error.message : String(error);
       log(dim(`Auto-reattach attempt ${attempt} failed: ${message}`));
+      if (error instanceof RemoteBrowserRecoveryUnavailableError) {
+        log(
+          dim(
+            "Auto-reattach stopped because the account-bound recovery capability is no longer executable.",
+          ),
+        );
+        return false;
+      }
+      if (
+        hasRemoteRecovery &&
+        (!(error instanceof RemoteRunFailedError) || error.retryable !== true)
+      ) {
+        log(
+          dim(
+            "Auto-reattach stopped after a non-retryable remote recovery failure; the originating-account marker is preserved.",
+          ),
+        );
+        return false;
+      }
     }
     const remainingAfterAttemptMs = maxDeadline - Date.now();
     if (remainingAfterAttemptMs <= 0) {
