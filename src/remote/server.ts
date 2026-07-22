@@ -25,7 +25,11 @@ import type {
   RemoteUploadIntegrity,
 } from "./types.js";
 import { MAX_REMOTE_ARTIFACT_BYTES } from "./types.js";
-import { getQuarantineLatchState } from "../browser/quarantineLatch.js";
+import {
+  ACCOUNT_QUARANTINE_ERROR_CLASS,
+  getQuarantineLatchState,
+  tripQuarantineLatch,
+} from "../browser/quarantineLatch.js";
 import { BrowserAutomationError, type OracleUserError } from "../oracle/errors.js";
 import { getCookies, type Cookie } from "@steipete/sweet-cookie";
 import { CHATGPT_URL } from "../browser/constants.js";
@@ -72,6 +76,7 @@ import type {
 import {
   resumeBrowserSessionInIsolatedFleetTab,
   type IsolatedFleetRecoveryOptions,
+  type IsolatedFleetRecoveryResult,
 } from "../browser/reattach.js";
 
 export interface RemoteServerOptions {
@@ -133,10 +138,10 @@ export interface RemoteServerOptions {
 
 interface RemoteServerDeps {
   runBrowser?: typeof runBrowserMode;
+  /** Test seam for exercising the process-local fail-closed fallback. */
+  tripQuarantine?: typeof tripQuarantineLatch;
   /** Capture-only recovery seam; never submits a prompt. */
-  recoverBrowser?: (
-    options: IsolatedFleetRecoveryOptions,
-  ) => Promise<{ answerText: string; answerMarkdown: string }>;
+  recoverBrowser?: (options: IsolatedFleetRecoveryOptions) => Promise<IsolatedFleetRecoveryResult>;
   /**
    * Test/future-instrumentation hook after the browser has returned a result
    * but before the worker emits artifacts/provenance/done and releases the
@@ -152,6 +157,27 @@ interface RemoteServerDeps {
    * tests can exercise the tainted path without breaking a real browser.
    */
   cleanupTaint?: () => BrowserCleanupTaint | null;
+}
+
+interface InMemoryQuarantineFailure {
+  reason: string;
+  runId: string;
+  sessionId: string | null;
+  source: "remote-terminal-gate";
+  at: string;
+  /** Stable, path-free code suitable for authenticated operational surfaces. */
+  failureCode: string;
+}
+
+function quarantinePersistenceFailureCode(error: unknown): string {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return typeof code === "string" && /^[A-Z0-9_]{1,32}$/.test(code)
+    ? `storage_${code.toLowerCase()}`
+    : "storage_unavailable";
+}
+
+function publicQuarantineLabel(value: string | null | undefined, fallback: string): string {
+  return sanitizeIdentityLabel(value ?? undefined) ?? fallback;
 }
 
 interface RemoteServerInstance {
@@ -464,6 +490,7 @@ export async function createRemoteServer(
 ): Promise<RemoteServerInstance> {
   const runBrowser = deps.runBrowser ?? runBrowserMode;
   const recoverBrowser = deps.recoverBrowser ?? resumeBrowserSessionInIsolatedFleetTab;
+  const tripAccountQuarantine = deps.tripQuarantine ?? tripQuarantineLatch;
   const resolvedToken = await resolveServeAuthToken({
     tokenFile: options.tokenFile,
     token: options.token,
@@ -548,6 +575,13 @@ export async function createRemoteServer(
     15 * 60 * 1000;
   let lastRunProgressAtMs: number | null = null;
   let boundPort: number | null = null;
+  // Defense in depth for the rare but safety-critical case where a terminal
+  // challenge is proven but the durable latch cannot be published (disk full,
+  // permissions, filesystem failure). This process must still refuse /ready
+  // and every later /runs request until an operator repairs storage and
+  // restarts it; silently advertising the account as clean would invite an
+  // automated retry into the challenged account.
+  let inMemoryQuarantine: InMemoryQuarantineFailure | null = null;
 
   /**
    * Layered, fail-closed readiness for supervision probes (probed DIRECTLY,
@@ -596,6 +630,39 @@ export async function createRemoteServer(
       manifest: null,
     };
     try {
+      // Account quarantine is the terminal account-level state and outranks
+      // attach, cleanup, lease, and capacity diagnostics. Reading it first also
+      // avoids probing browser substrate for an account automation must not
+      // touch until a human clears the latch.
+      const quarantine = await getQuarantineLatchState({ accountId });
+      const quarantined = quarantine.quarantined || inMemoryQuarantine !== null;
+      const publicReason =
+        (quarantine.record ? publicQuarantineLabel(quarantine.record.reason, "latched") : null) ??
+        (quarantine.readError ? "latch_unreadable" : null) ??
+        inMemoryQuarantine?.reason ??
+        null;
+      base.quarantine = {
+        quarantined,
+        reason: publicReason,
+        source: quarantine.record
+          ? publicQuarantineLabel(quarantine.record.source, "unknown")
+          : (inMemoryQuarantine?.source ?? null),
+        persistence: quarantine.quarantined
+          ? quarantine.record
+            ? "durable_record"
+            : "durable_sentinel"
+          : inMemoryQuarantine
+            ? "process_local_fallback"
+            : "clear",
+        failureCode: quarantine.readError
+          ? "latch_metadata_unreadable"
+          : (inMemoryQuarantine?.failureCode ?? null),
+      };
+      if (quarantined) {
+        base.reason = `account_quarantined: ${publicReason ?? "latch_present"}`;
+        return { statusCode: 503, body: base };
+      }
+
       if (attachOnly) {
         const probe = await probeAttachTargetCached();
         base.chromeReachable = attachTargetChromeReachable(probe);
@@ -610,25 +677,6 @@ export async function createRemoteServer(
       base.cleanupTaint = taint;
       if (taint) {
         base.reason = `cleanup-tainted: ${taint.reason}`;
-        return { statusCode: 503, body: base };
-      }
-
-      // ACCOUNT-SAFETY HARD HALT: a quarantined account makes this worker
-      // unready regardless of everything else, and stays unready until a
-      // human clears the latch. Fail closed: an unreadable latch file counts
-      // as quarantined. /runs applies the same check at admission so the
-      // refusal holds even when probes race a router drain.
-      const quarantine = await getQuarantineLatchState({ accountId });
-      base.quarantine = {
-        quarantined: quarantine.quarantined,
-        record: quarantine.record,
-        readError: quarantine.readError,
-        // Worker-local path for the human operator who must clear it;
-        // /ready is a bearer-authenticated ops surface.
-        latchPath: quarantine.latchPath,
-      };
-      if (quarantine.quarantined) {
-        base.reason = `account_quarantined: ${quarantine.record?.reason ?? quarantine.readError ?? "latch present"}`;
         return { statusCode: 503, body: base };
       }
 
@@ -730,6 +778,70 @@ export async function createRemoteServer(
     "X-Oracle-Lane-Id": laneId,
     "X-Oracle-Account-Id": accountId,
   });
+
+  /**
+   * Terminal safety invariant for remote workers: once a run is classified
+   * as account_quarantine, the same authoritative account id used by /ready
+   * and /runs admission must be latched before the terminal event is sent.
+   *
+   * Most browser-side challenge gates already trip the durable latch first,
+   * but older navigation checks (notably ensureNotBlocked) only throw a typed
+   * stage. This choke point closes that gap and also protects future detectors
+   * from accidentally emitting a quarantine class without the matching hard
+   * stop. Sentinel-first publication means a metadata write failure still
+   * fences sibling/restarted workers. Failure before the final pathname can
+   * be created falls back to a path-free process-local hard stop.
+   */
+  const ensureTerminalAccountQuarantine = async (params: {
+    details: Record<string, unknown> | undefined;
+    runId: string;
+    sessionId: string | null;
+  }): Promise<void> => {
+    if (inMemoryQuarantine) {
+      return;
+    }
+    const state = typeof params.details?.state === "string" ? params.details.state : null;
+    const stage = typeof params.details?.stage === "string" ? params.details.stage : null;
+    const reason =
+      state === "account_security_block" || stage === "chatgpt-account-blocked"
+        ? "account_security_block"
+        : "verification_interstitial";
+    try {
+      const outcome = await tripAccountQuarantine({
+        accountId,
+        reason,
+        detail: stage ? `terminal browser stage: ${stage}` : "terminal challenge classification",
+        runId: params.runId,
+        sessionId: params.sessionId,
+        source: "remote-terminal-gate",
+      });
+      if (!outcome.recordPersisted) {
+        logger(
+          "[serve] CRITICAL: quarantine metadata persistence was incomplete; " +
+            "the durable fail-closed sentinel remains active.",
+        );
+      }
+    } catch (error) {
+      // tripQuarantineLatch returning successfully is the publication proof:
+      // either this caller created the final sentinel or O_EXCL observed an
+      // existing exact entry. Any thrown storage error is ambiguous, even if
+      // a fail-closed read also says "quarantined" (EACCES/ENOTDIR cannot prove
+      // that the final entry exists). Retain the process-local fence.
+      const failureCode = quarantinePersistenceFailureCode(error);
+      inMemoryQuarantine = {
+        reason,
+        runId: params.runId,
+        sessionId: params.sessionId,
+        source: "remote-terminal-gate",
+        at: new Date().toISOString(),
+        failureCode,
+      };
+      logger(
+        "[serve] CRITICAL: failed to publish the account quarantine sentinel; " +
+          `this worker is hard-stopped in memory (code=${failureCode}).`,
+      );
+    }
+  };
 
   if (!process.listenerCount("unhandledRejection")) {
     process.on("unhandledRejection", (reason) => {
@@ -930,6 +1042,25 @@ export async function createRemoteServer(
         });
         return;
       }
+      // Admission is authoritative and account quarantine outranks every
+      // retryable local-capacity condition. In particular, a latched worker
+      // must never answer 409 busy/cleanup-tainted and invite a router retry.
+      // This check also occurs before body parsing or any browser/CDP action.
+      const admissionQuarantine = await getQuarantineLatchState({ accountId });
+      if (admissionQuarantine.quarantined || inMemoryQuarantine) {
+        refuseRun(503, "account_quarantined", {
+          errorClass: "account_quarantine",
+          retryable: false,
+          reason:
+            (admissionQuarantine.record
+              ? publicQuarantineLabel(admissionQuarantine.record.reason, "latched")
+              : null) ??
+            (admissionQuarantine.readError ? "latch_unreadable" : null) ??
+            inMemoryQuarantine?.reason ??
+            "latch_present",
+        });
+        return;
+      }
       const admissionCleanupTaint = cleanupTaintProvider();
       if (admissionCleanupTaint) {
         // Readiness is advisory; admission is authoritative. A worker with an
@@ -993,23 +1124,6 @@ export async function createRemoteServer(
         | undefined;
       let uploadIntegrity: RemoteUploadIntegrity | null = null;
       try {
-        // ACCOUNT-SAFETY HARD HALT: while the quarantine latch exists this
-        // worker refuses every run, independent of any router-side drain (a
-        // drain can race a caller retry; the worker-side refusal is the hard
-        // stop). The latch is cleared only manually by a human. This is
-        // defensive fault isolation — no automation may retry into, restart
-        // into, or work around a challenged account. Fail closed: a latch
-        // file that exists but cannot be read counts as quarantined.
-        const quarantine = await getQuarantineLatchState({ accountId });
-        if (quarantine.quarantined) {
-          refuseRun(503, "account_quarantined", {
-            errorClass: "account_quarantine",
-            retryable: false,
-            reason: quarantine.record?.reason ?? quarantine.readError ?? "quarantine latch present",
-          });
-          return;
-        }
-
         try {
           const body = await readRequestBody(
             req,
@@ -1372,7 +1486,7 @@ export async function createRemoteServer(
               });
               const answerMarkdown = recovered.answerMarkdown || recovered.answerText;
               bindingVerified = true;
-              bindingQuality = "message-handle";
+              bindingQuality = recovered.bindingQuality;
               return {
                 answerText: recovered.answerText,
                 answerMarkdown,
@@ -1418,7 +1532,6 @@ export async function createRemoteServer(
           activeRun.completedAtMs = completedAtMs;
           lastRunProgressAtMs = completedAtMs;
         }
-        await deps.beforeFinalizeRun?.({ runId, result });
         const artifactRegistration = await registerRemoteArtifacts({
           runId,
           result,
@@ -1426,6 +1539,29 @@ export async function createRemoteServer(
           logger,
         });
         const artifactDescriptors = artifactRegistration.descriptors;
+        // Deliberately run the finalization seam after asynchronous artifact
+        // registration but before any artifact/result event is observable.
+        // This models the exact sibling-lane quarantine race we must close.
+        await deps.beforeFinalizeRun?.({ runId, result });
+        const successProvenance = await buildRunProvenance({
+          result,
+          bindingVerified,
+          bindingQuality,
+          accountId,
+          inMemoryQuarantined: inMemoryQuarantine !== null,
+        });
+        if (successProvenance.challengeClean !== true) {
+          throw new BrowserAutomationError(
+            "Account quarantine could not be ruled out before remote result finalization.",
+            {
+              stage: "account-quarantine",
+              code: ACCOUNT_QUARANTINE_ERROR_CLASS,
+              oracleErrorClass: ACCOUNT_QUARANTINE_ERROR_CLASS,
+              retryable: false,
+              state: successProvenance.challengeClean === false ? "latched" : "unverifiable",
+            },
+          );
+        }
         if (artifactDescriptors.length > 0) {
           sendEvent({
             type: "log",
@@ -1446,12 +1582,7 @@ export async function createRemoteServer(
           ok: true,
           errorClass: null,
           retryable: null,
-          provenance: await buildRunProvenance({
-            result,
-            bindingVerified,
-            bindingQuality,
-            accountId,
-          }),
+          provenance: successProvenance,
           result: sanitizeResult(result, artifactRegistration.warnings),
           // Repeat the staging proof on the terminal event so consumers that
           // only persist the result still get the upload-plumbing evidence.
@@ -1488,14 +1619,59 @@ export async function createRemoteServer(
         }
         const declaredClass = details?.oracleErrorClass;
         const declaredRetryable = details?.retryable;
-        runErrorClass = isRunErrorClass(declaredClass)
-          ? declaredClass
-          : classifyRunErrorClass(message, submittedAt !== null);
+        const declaredRunErrorClass = isRunErrorClass(declaredClass) ? declaredClass : null;
+        runErrorClass =
+          declaredRunErrorClass ?? classifyRunErrorClass(message, submittedAt !== null);
+        // Central account-safety invariant. Browser gates normally publish
+        // the latch before throwing, but legacy navigation detection throws
+        // only {stage:"cloudflare-challenge"}; the message heuristic then
+        // classified the terminal event as account_quarantine while /ready
+        // still advertised the account as clean. Conversely, a security-block
+        // gate can publish a latch while its message lacks the heuristic's
+        // challenge/captcha/interstitial vocabulary. Reconcile both directions
+        // before provenance or the terminal event becomes observable.
+        const terminalStage = typeof details?.stage === "string" ? details.stage : null;
+        const terminalState = typeof details?.state === "string" ? details.state : null;
+        const typedQuarantineSignal =
+          terminalStage === "cloudflare-challenge" ||
+          terminalStage === "chatgpt-account-blocked" ||
+          (terminalStage === "challenge-gate" &&
+            (terminalState === "verification_interstitial" ||
+              terminalState === "account_security_block"));
+        const terminalQuarantine = await getQuarantineLatchState({ accountId });
+        const authoritativeQuarantineSignal =
+          declaredRunErrorClass === "account_quarantine" ||
+          typedQuarantineSignal ||
+          terminalQuarantine.quarantined ||
+          inMemoryQuarantine !== null;
+        if (authoritativeQuarantineSignal) {
+          runErrorClass = "account_quarantine";
+        } else if (runErrorClass === "account_quarantine") {
+          // `classifyRunErrorClass` keeps a legacy message heuristic for event
+          // taxonomy, but free-form error text is not strong enough to mutate
+          // durable account state. In particular, UI-warning collection can
+          // quote visible assistant text containing words such as "challenge"
+          // or "interstitial". Without a typed/declared signal or an existing
+          // latch, retain ordinary pre/post-submit transport semantics.
+          runErrorClass =
+            submittedAt === null
+              ? "transport_interrupted_before_submit"
+              : "transport_interrupted_after_submit";
+        }
+        if (runErrorClass === "account_quarantine") {
+          await ensureTerminalAccountQuarantine({
+            details,
+            runId,
+            sessionId: payload?.options?.sessionId ?? null,
+          });
+        }
         runRetryable =
-          typeof declaredRetryable === "boolean"
-            ? declaredRetryable
-            : runErrorClass === "capacity_busy" ||
-              runErrorClass === "transport_interrupted_before_submit";
+          runErrorClass === "account_quarantine"
+            ? false
+            : typeof declaredRetryable === "boolean"
+              ? declaredRetryable
+              : runErrorClass === "capacity_busy" ||
+                runErrorClass === "transport_interrupted_before_submit";
         const recovery = recoveryRequest
           ? undefined
           : buildRemoteRunRecoveryHint(details, latestRuntimeHint, {
@@ -1508,7 +1684,10 @@ export async function createRemoteServer(
           type: "done",
           ok: false,
           errorClass: runErrorClass,
-          errorMessage: sanitizeErrorMessage(message),
+          errorMessage:
+            runErrorClass === "account_quarantine"
+              ? "Account quarantined; human review and manual clearance are required."
+              : sanitizeErrorMessage(message),
           retryable: runRetryable,
           ...(recovery ? { recovery } : {}),
           provenance: await buildRunProvenance({
@@ -1516,10 +1695,15 @@ export async function createRemoteServer(
             bindingVerified,
             bindingQuality,
             accountId,
+            inMemoryQuarantined: inMemoryQuarantine !== null,
           }),
         });
+        const logMessage =
+          runErrorClass === "account_quarantine"
+            ? "account quarantine hard stop"
+            : sanitizeErrorMessage(message);
         logger(
-          `[serve] Run ${runId} failed after ${Date.now() - runStartedAt}ms (${runErrorClass}, retryable=${runRetryable}): ${message}`,
+          `[serve] Run ${runId} failed after ${Date.now() - runStartedAt}ms (${runErrorClass}, retryable=${runRetryable}): ${logMessage}`,
         );
       } finally {
         busy = false;
@@ -2290,13 +2474,19 @@ async function buildRunProvenance(params: {
   bindingVerified: boolean | null;
   bindingQuality: SubmittedMessageBindingQuality | null;
   accountId: string;
+  /** Process-local hard stop when durable quarantine publication failed. */
+  inMemoryQuarantined?: boolean;
 }): Promise<RemoteRunProvenanceSummary> {
   let challengeClean: boolean | null = null;
-  try {
-    const latch = await getQuarantineLatchState({ accountId: params.accountId });
-    challengeClean = !latch.quarantined;
-  } catch {
-    challengeClean = null;
+  if (params.inMemoryQuarantined) {
+    challengeClean = false;
+  } else {
+    try {
+      const latch = await getQuarantineLatchState({ accountId: params.accountId });
+      challengeClean = !latch.quarantined;
+    } catch {
+      challengeClean = null;
+    }
   }
   const selection = params.result?.modelSelection ?? null;
   return {

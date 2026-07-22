@@ -201,7 +201,7 @@ describe("observer expression lockstep", () => {
     expect(anchorIndex).toBeLessThan(settleIndex);
     expect(expression).toContain("const overallDeadline = waitStartedAt +");
     expect(expression).toMatch(
-      /Date\.now\(\) - waitStartedAt < COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS/,
+      /ELAPSED_BASELINE_MS \+ \(Date\.now\(\) - waitStartedAt\) <\s*COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS/,
     );
     // No elapsed gate may measure from settle entry.
     expect(expression).not.toContain("settleStartedAt");

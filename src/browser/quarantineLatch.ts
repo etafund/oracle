@@ -18,13 +18,15 @@
 //   verification step; the account owner resolves it by hand. This is
 //   defensive fault isolation, never anti-detection.
 //
-// Atomic-write and fail-closed-read patterns follow the tab-lease registry
-// hardening (tabLeaseRegistry.ts, f62639b2): same-directory temp file +
-// fsync + atomic publish; unreadable/corrupt latch reads FAIL CLOSED as
-// "quarantined" because a corrupt latch still proves something tripped it.
+// Publication is deliberately sentinel-first: the final latch pathname is
+// created exclusively before its JSON metadata is written. An empty, torn,
+// or otherwise unreadable final file therefore still fences every worker and
+// survives a worker restart. Metadata is fsynced when possible, but safety
+// depends only on the final pathname existing; unreadable/corrupt latch reads
+// FAIL CLOSED as "quarantined" because a corrupt latch still proves something
+// tripped it.
 
-import { randomUUID } from "node:crypto";
-import { link, mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { mkdir, open, readFile, rm, type FileHandle } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { BrowserAutomationError } from "../oracle/errors.js";
@@ -84,15 +86,23 @@ export interface TripQuarantineLatchOutcome {
   latchPath: string;
   /** True when an earlier trip already latched this account; its record is kept. */
   alreadyLatched: boolean;
+  /** False when only the fail-closed final-path sentinel could be persisted. */
+  recordPersisted: boolean;
+}
+
+interface TripQuarantineLatchDeps {
+  /** Test seam for a failure after the final pathname has been published. */
+  writeRecord?: (handle: FileHandle, payload: string) => Promise<void>;
 }
 
 export class AccountQuarantinedError extends BrowserAutomationError {
   constructor(state: QuarantineLatchState, context?: { reason?: string; source?: string }) {
-    const reason = context?.reason ?? state.record?.reason ?? state.readError ?? "unknown";
+    const reason =
+      context?.reason ?? state.record?.reason ?? (state.readError ? "latch_unreadable" : "unknown");
     super(
       `Account is quarantined (${reason}); refusing to run. ` +
-        "A human must resolve the account state and manually clear the latch file " +
-        `at ${state.latchPath}. Automation never retries into or around a quarantined account.`,
+        "A human must resolve the account state and manually clear the latch. " +
+        "Automation never retries into or around a quarantined account.",
       {
         stage: "account-quarantine",
         code: ACCOUNT_QUARANTINE_ERROR_CLASS,
@@ -101,7 +111,6 @@ export class AccountQuarantinedError extends BrowserAutomationError {
         accountId: state.record?.accountId ?? null,
         reason,
         source: context?.source ?? state.record?.source ?? null,
-        latchPath: state.latchPath,
       },
     );
     this.name = "AccountQuarantinedError";
@@ -207,15 +216,17 @@ export async function getQuarantineLatchState(
 }
 
 /**
- * Trip the latch atomically: write a same-directory temp file (fsynced),
- * then publish with link() so exactly one tripper wins and the FIRST trip's
- * record is preserved; later trips observe `alreadyLatched: true`. If link()
- * is unsupported by the filesystem, fall back to rename() — last-writer-wins
- * on the record, but the account still ends latched, which is the property
- * that matters.
+ * Trip the latch with sentinel-first publication. The final pathname is
+ * created with O_EXCL before any JSON is written, so exactly one tripper wins
+ * and every peer immediately fails closed. If writing or fsyncing the record
+ * then fails, the empty/torn final file is intentionally retained: readers
+ * already treat it as quarantined, which preserves the safety invariant
+ * across sibling workers and process restarts. Only failure to create the
+ * final directory entry at all remains unable to publish shared state.
  */
 export async function tripQuarantineLatch(
   input: TripQuarantineLatchInput,
+  deps: TripQuarantineLatchDeps = {},
 ): Promise<TripQuarantineLatchOutcome> {
   const accountId =
     sanitizeQuarantineAccountId(input.accountId) ??
@@ -236,34 +247,56 @@ export async function tripQuarantineLatch(
       "then delete this file to clear the quarantine. No automated process may delete it.",
   };
   await mkdir(path.dirname(latchPath), { recursive: true });
-  const tempPath = `${latchPath}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
-  const handle = await open(tempPath, "w");
+  let handle: FileHandle;
   try {
-    await handle.writeFile(`${JSON.stringify(record, null, 2)}\n`, "utf8");
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-  try {
-    await link(tempPath, latchPath);
-    await rm(tempPath, { force: true }).catch(() => undefined);
-    return { record, latchPath, alreadyLatched: false };
+    handle = await open(latchPath, "wx", 0o600);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException | null)?.code;
     if (code === "EEXIST") {
       // First trip wins; keep its record.
-      await rm(tempPath, { force: true }).catch(() => undefined);
       const existing = await getQuarantineLatchState({ ...input, accountId });
       return {
         record: existing.record ?? record,
         latchPath,
         alreadyLatched: true,
+        recordPersisted: existing.record !== null,
       };
     }
-    // Filesystem without link() support: publish via rename instead.
-    await rename(tempPath, latchPath);
-    return { record, latchPath, alreadyLatched: false };
+    throw error;
   }
+
+  // Persist the directory entry before enriching the sentinel. Directory
+  // fsync is unavailable on some platforms/filesystems; the final pathname
+  // still provides process-restart safety there, while file fsync below
+  // preserves the complete record when supported.
+  if (process.platform !== "win32") {
+    const directoryHandle = await open(path.dirname(latchPath), "r").catch(() => null);
+    if (directoryHandle) {
+      await directoryHandle.sync().catch(() => undefined);
+      await directoryHandle.close().catch(() => undefined);
+    }
+  }
+
+  let recordPersisted = true;
+  const payload = `${JSON.stringify(record, null, 2)}\n`;
+  try {
+    if (deps.writeRecord) {
+      await deps.writeRecord(handle, payload);
+    } else {
+      await handle.writeFile(payload, "utf8");
+    }
+    await handle.sync();
+  } catch {
+    // Never remove the published final pathname. An invalid file is the
+    // durable fail-closed sentinel when rich metadata could not be stored.
+    recordPersisted = false;
+  } finally {
+    await handle.close().catch(() => {
+      recordPersisted = false;
+    });
+  }
+
+  return { record, latchPath, alreadyLatched: false, recordPersisted };
 }
 
 /**

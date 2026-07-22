@@ -134,12 +134,9 @@ const LOGIN_WALL_PHRASES = [
 
 export interface AccessProbeOptions {
   /**
-   * PRE-RESULT re-probe only: exclude the assistant turns' rendered text from the
-   * body sample so the just-captured answer's own prose can never classify the
-   * live page as a challenge wall. A genuine interstitial replaces the whole page
-   * (its text is NOT inside an assistant turn), so the wall stays detectable while
-   * an answer that merely quotes challenge vocabulary no longer self-quarantines
-   * a healthy worker. Left off for the pre-run gate, which must see the full body.
+   * Compatibility-only test knob. Conversation turns are now always excluded:
+   * user prompts and assistant answers are untrusted content, not page-access
+   * chrome, at both pre-run and pre-result gates.
    */
   excludeAssistantText?: boolean;
 }
@@ -148,9 +145,10 @@ function buildAccessStateProbeExpression(options: AccessProbeOptions = {}): stri
   const interstitialScriptSelector = JSON.stringify(CLOUDFLARE_SCRIPT_SELECTOR);
   const interstitialTitle = JSON.stringify(CLOUDFLARE_TITLE.toLowerCase());
   const inputSelectors = JSON.stringify(INPUT_SELECTORS);
-  const excludeAssistantText = options.excludeAssistantText === true;
+  void options;
   // READ-ONLY by contract: no clicks, no focus, no key events, no fetches.
   return `(() => {
+    const INPUT_SELECTORS = ${inputSelectors};
     const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
     const isVisible = (node) => {
       if (!(node instanceof HTMLElement) || typeof node.getBoundingClientRect !== 'function') {
@@ -171,29 +169,55 @@ function buildAccessStateProbeExpression(options: AccessProbeOptions = {}): stri
         ? location.hostname
         : '';
     const title = typeof document.title === 'string' ? document.title : null;
-    const excludeAssistantText = ${excludeAssistantText ? "true" : "false"};
     const rawBodyText = document.body ? (document.body.innerText || '') : '';
     let scopedBodyText = rawBodyText;
-    if (excludeAssistantText && document.body) {
-      // Drop the assistant turns' rendered text before sampling. A genuine wall
-      // replaces the page (its text lives outside any assistant turn), so this
-      // keeps real interstitial/security-block phrases detectable while an answer
-      // that merely quotes challenge vocabulary is removed. Read-only: the live
-      // DOM is never mutated (substrings are removed from a copied string).
-      const assistantTurns = Array.from(
-        document.querySelectorAll('[data-message-author-role="assistant"], [data-turn="assistant"]'),
-      );
-      for (const turn of assistantTurns) {
-        const turnText =
-          turn && (turn.innerText || turn.textContent) ? (turn.innerText || turn.textContent) : '';
-        if (turnText) {
-          scopedBodyText = scopedBodyText.split(turnText).join(' ');
-        }
+    if (document.body) {
+      // Drop ALL rendered conversation turns before sampling. Both user and
+      // assistant text can legitimately discuss challenge/debug phrases; only
+      // page chrome is evidence of an access wall. Read-only: the live DOM is
+      // never mutated (substrings are removed from a copied string).
+      const excludedNodes = new Set(Array.from(
+        document.querySelectorAll(
+          '[data-message-author-role="assistant"], [data-message-author-role="user"], [data-turn="assistant"], [data-turn="user"]',
+        ),
+      ));
+      // The dispatch-boundary gate runs after Oracle has typed the prompt, so
+      // composer text is user-controlled too. Sidebar/history titles are also
+      // conversation content and cannot be access-state evidence.
+      for (const selector of INPUT_SELECTORS) {
+        for (const node of document.querySelectorAll(selector)) excludedNodes.add(node);
       }
+      for (const node of document.querySelectorAll(
+        'nav a[href*="/c/"], aside a[href*="/c/"], [data-testid^="history-item-"], [data-testid="conversation-title"]',
+      )) {
+        excludedNodes.add(node);
+      }
+      // Build page-chrome text structurally. Global string replacement is not
+      // safe: if a real wall and a composer both say "verify you are human",
+      // removing the composer's value must not erase the independent wall.
+      const chunks = [];
+      const visit = (node) => {
+        if (!node || excludedNodes.has(node)) return;
+        if (node.nodeType === 3) {
+          const value = String(node.nodeValue || '');
+          if (value) chunks.push(value);
+          return;
+        }
+        if (node.nodeType === 1) {
+          const tag = String(node.tagName || '').toLowerCase();
+          if (['script', 'style', 'noscript', 'template'].includes(tag)) return;
+          if (node.hidden === true || node.getAttribute?.('aria-hidden') === 'true') return;
+          const style = window.getComputedStyle?.(node);
+          if (style && (style.display === 'none' || style.visibility === 'hidden')) return;
+        }
+        for (const child of Array.from(node.childNodes || [])) visit(child);
+      };
+      visit(document.body);
+      scopedBodyText = chunks.join(' ');
     }
     const bodySample = normalize(scopedBodyText).slice(0, ${BODY_SAMPLE_CHARS});
 
-    const composerNodes = ${inputSelectors}
+    const composerNodes = INPUT_SELECTORS
       .map((selector) => document.querySelector(selector))
       .filter(Boolean);
     const composerPresent = composerNodes.length > 0;
@@ -225,7 +249,9 @@ function buildAccessStateProbeExpression(options: AccessProbeOptions = {}): stri
     return {
       url: href,
       title,
-      interstitialTitle: Boolean(title && title.toLowerCase().includes(${interstitialTitle})),
+      interstitialTitle: Boolean(
+        title && normalize(title).replace(/[.…]+$/gu, '').trim() === ${interstitialTitle}
+      ),
       interstitialScript: Boolean(document.querySelector(${interstitialScriptSelector})),
       interstitialUrlMarker: Boolean(href && /\\/cdn-cgi\\/challenge|__cf_chl/.test(href)),
       bodySample,
@@ -270,7 +296,7 @@ function coerceAccessFacts(value: unknown): BrowserAccessFacts | null {
 /** Pure classification over probed facts — exported for unit tests and serve reuse. */
 export function classifyBrowserAccessFacts(facts: BrowserAccessFacts): BrowserAccessReport {
   const signals: string[] = [];
-  const body = facts.bodySample;
+  const body = facts.bodySample.toLowerCase();
 
   if (facts.interstitialTitle) signals.push("interstitial-title");
   if (facts.interstitialScript) signals.push("interstitial-script");
@@ -307,14 +333,17 @@ export function classifyBrowserAccessFacts(facts: BrowserAccessFacts): BrowserAc
   };
 
   // ChatGPT can transiently load Cloudflare's challenge-platform script inside
-  // an otherwise healthy signed-in app. Script presence alone is only a
-  // challenge signal when the usable app session is absent; title, URL, and
-  // wall text remain authoritative even if stale app DOM is still mounted.
-  const authoritativeInterstitial = signals.some(
-    (signal) => signal.startsWith("interstitial-") && signal !== "interstitial-script",
-  );
+  // an otherwise healthy signed-in app. The document title is also mutable by
+  // the application/content. Neither a transient script nor the exact generic
+  // title may overrule a fully usable signed-in app. Title + script is not
+  // independent corroboration: both can be correlated residue from the same
+  // completed challenge transition. URL/wall-text evidence remains
+  // authoritative even when stale usable app DOM is still mounted.
+  const authoritativeInterstitial =
+    facts.interstitialUrlMarker || signals.includes("interstitial-text");
   const scriptWithoutUsableApp = facts.interstitialScript && !appSessionOk;
-  if (authoritativeInterstitial || scriptWithoutUsableApp) {
+  const titleWithoutUsableApp = facts.interstitialTitle && !appSessionOk;
+  if (authoritativeInterstitial || scriptWithoutUsableApp || titleWithoutUsableApp) {
     return { state: "verification_interstitial", ...base };
   }
   if (securityBlock) {
@@ -383,26 +412,40 @@ async function refuseForState(
   if (QUARANTINE_STATE_CLASSES.has(report.state)) {
     // Trip the latch BEFORE surfacing the terminal error so a crash in
     // between still leaves the worker latched.
-    const outcome = await tripQuarantineLatch({
-      ...(options.quarantine ?? {}),
-      reason: report.state,
-      detail: `signals: ${report.signals.join(",") || "none"}`,
-      runId: options.runId ?? null,
-      sessionId: options.sessionId ?? null,
-      source: `${gate}-gate`,
-    });
-    logger(
-      `[browser] ${report.state} detected at ${gate} gate; account quarantine latch ` +
-        `${outcome.alreadyLatched ? "already present" : "tripped"} at ${outcome.latchPath}. ` +
-        "Stopping cleanly; a human must resolve the account state and clear the latch manually.",
-    );
+    try {
+      const outcome = await tripQuarantineLatch({
+        ...(options.quarantine ?? {}),
+        reason: report.state,
+        detail: `signals: ${report.signals.join(",") || "none"}`,
+        runId: options.runId ?? null,
+        sessionId: options.sessionId ?? null,
+        source: `${gate}-gate`,
+      });
+      const persistenceNote = outcome.recordPersisted
+        ? "durable record published"
+        : "durable fail-closed sentinel published; metadata incomplete";
+      logger(
+        `[browser] ${report.state} detected at ${gate} gate; account quarantine latch ` +
+          `${outcome.alreadyLatched ? "already present" : "tripped"} (${persistenceNote}). ` +
+          "Stopping cleanly; a human must resolve the account state and clear the latch manually.",
+      );
+    } catch {
+      // Preserve the authoritative typed challenge signal even if storage
+      // cannot publish the final sentinel. Remote serve uses this signal to
+      // install its process-local fail-closed fallback. Never replace it with
+      // or log a raw filesystem error/path.
+      logger(
+        `[browser] CRITICAL: ${report.state} detected at ${gate} gate but durable quarantine ` +
+          "publication failed; preserving the terminal account-quarantine hard stop.",
+      );
+    }
     throw new ChallengeGateError(
       gate,
       report,
-      `${report.state} detected at the ${gate} gate; the run was stopped and the account ` +
-        `was quarantined (latch: ${outcome.latchPath}). Automation never attempts to solve, ` +
+      `${report.state} detected at the ${gate} gate; the run was stopped and account ` +
+        "quarantine is required. Automation never attempts to solve, " +
         "retry, or evade a verification step — resolve the account state manually, then " +
-        "delete the latch file.",
+        "clear the latch.",
     );
   }
   logger(`[browser] ${report.state} detected at ${gate} gate; refusing to proceed.`);
@@ -483,7 +526,7 @@ export function screenCapturedAnswerForAccessArtifacts(
   for (const marker of ARTIFACT_HTML_MARKERS) {
     if (rawHtml.includes(marker)) {
       signals.push("artifact-html-marker");
-      return { artifact: true, state: "verification_interstitial", signals };
+      break;
     }
   }
   const normalized = String(text ?? "")
@@ -521,11 +564,12 @@ export function screenCapturedAnswerForAccessArtifacts(
 
 /**
  * PRE-RESULT gate: never emit an access-wall page as an answer. Runs a pure
- * content screen over the captured text/html, then a live read-only re-probe
- * of the page state. Challenge-class findings trip the quarantine latch
- * before the typed error surfaces. An indeterminate live probe passes — the
- * capture already survived structural binding validation, and this gate
- * refuses only on positive evidence.
+ * content screen over the captured text/html plus a live read-only re-probe
+ * of the page state. Only corroborated live challenge-class findings trip the
+ * quarantine latch before the typed error surfaces; answer-owned content can
+ * suppress a suspect result but cannot mutate durable account state. An
+ * indeterminate live probe still suppresses a suspect capture, while a clean
+ * structurally bound capture passes.
  */
 export async function assertCapturedAnswerNotAccessArtifact(
   runtime: ChromeClient["Runtime"],
@@ -533,19 +577,49 @@ export async function assertCapturedAnswerNotAccessArtifact(
   logger: BrowserLogger,
   options: AccessGateOptions = {},
 ): Promise<void> {
+  // A sibling lane may have tripped the shared account latch while this run
+  // was already streaming. Never emit even a clean-looking captured answer
+  // after that account-wide hard stop, and avoid touching the page at all.
+  await assertNotQuarantined(options.quarantine ?? {});
   const verdict = screenCapturedAnswerForAccessArtifacts(captured.text, captured.html);
+  // Captured answer text/html is assistant-owned content, not independent
+  // evidence about the live account. Probe first so only a corroborated live
+  // wall can publish durable quarantine state. A suspicious capture on an
+  // otherwise healthy/indeterminate page is still suppressed below.
+  await assertPreResultAccessState(runtime, logger, options);
   if (verdict.artifact && verdict.state) {
-    const report: BrowserAccessReport = {
-      state: verdict.state,
-      at: new Date().toISOString(),
-      url: null,
-      title: null,
-      signals: verdict.signals,
-      composerUsable: false,
-      appSessionOk: false,
-    };
-    await refuseForState("pre-result", report, logger, options);
+    logger(
+      "[browser] Captured result matched an access-artifact pattern, but the live page did " +
+        "not corroborate an account-state transition; suppressing the result without " +
+        "publishing account quarantine.",
+    );
+    throw new BrowserAutomationError(
+      "Captured assistant result failed the access-artifact screen while the current page " +
+        "remained usable; suppressing the captured result.",
+      {
+        stage: "captured-access-artifact",
+        code: `captured-access-artifact-${verdict.state}`,
+        gate: "pre-result",
+        artifactState: verdict.state,
+        signals: verdict.signals,
+        retryable: false,
+      },
+    );
   }
+}
+
+/**
+ * Live half of the PRE-RESULT gate. This is also used when capture itself
+ * fails before an artifact exists and immediately after page mutations: a
+ * challenge wall must outrank a generic timeout/session error, and a sibling
+ * lane's durable account latch must stop the current lane without probing.
+ */
+export async function assertPreResultAccessState(
+  runtime: ChromeClient["Runtime"],
+  logger: BrowserLogger,
+  options: AccessGateOptions = {},
+): Promise<void> {
+  await assertNotQuarantined(options.quarantine ?? {});
   // Scope the live re-probe to the page CHROME, not the captured answer: the
   // body sample excludes the assistant turns so an answer that merely quotes
   // challenge vocabulary (e.g. an agent asking Oracle about CAPTCHAs) cannot

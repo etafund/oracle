@@ -47,6 +47,7 @@
 import { describe, expect, test, vi } from "vitest";
 import os from "node:os";
 import path from "node:path";
+import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -109,6 +110,13 @@ function slice(source: string, startAnchor: string, endAnchor: string): string {
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function stopChild(child: ReturnType<typeof spawn>): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const exited = once(child, "exit");
+  child.kill();
+  await exited;
 }
 
 describe("tab-lease registry: fail-closed fault isolation (red harness)", () => {
@@ -259,7 +267,7 @@ describe("tab-lease registry: fail-closed fault isolation (red harness)", () => 
       await writeFile(registryFile(dir), full.slice(0, Math.floor(full.length * 0.7)), "utf8");
       await expect(hasOtherActiveBrowserTabLeases(dir, "my-lease")).resolves.toBe(true);
     } finally {
-      child.kill();
+      await stopChild(child);
       await rm(dir, { recursive: true, force: true });
     }
   });
@@ -350,7 +358,7 @@ describe("tab-lease registry: fail-closed fault isolation (red harness)", () => 
       }
       expect(outcome.stolen).toBe(false);
     } finally {
-      child.kill();
+      await stopChild(child);
       if (stolenLeaseRelease) await stolenLeaseRelease().catch(() => undefined);
       await rm(dir, { recursive: true, force: true });
     }

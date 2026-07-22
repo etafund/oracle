@@ -159,6 +159,7 @@ describe("promptComposer", () => {
       expect(error.details).toMatchObject({
         stage: "submit-prompt",
         code: "prompt-commit-timeout",
+        retryable: false,
         commitProbe: expect.objectContaining({
           hasNewTurn: false,
           composerCleared: true,
@@ -170,6 +171,59 @@ describe("promptComposer", () => {
       const commitProbe = error.details?.commitProbe as Record<string, unknown>;
       expect(commitProbe).not.toHaveProperty("lastTurn");
       expect(commitProbe).not.toHaveProperty("editorValue");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("large post-dispatch commit timeout is not classified as retry-safe prompt-too-large", async () => {
+    vi.useFakeTimers();
+    try {
+      const runtime = {
+        evaluate: vi
+          .fn()
+          .mockResolvedValueOnce({ result: { value: 4 } })
+          .mockResolvedValue({
+            result: {
+              value: {
+                baseline: 4,
+                turnsCount: 4,
+                userMatched: false,
+                prefixMatched: false,
+                lastMatched: false,
+                hasNewTurn: false,
+                stopVisible: false,
+                assistantVisible: false,
+                composerCleared: true,
+                inConversation: true,
+              },
+            },
+          }),
+      } as unknown as {
+        evaluate: (args: { expression: string; returnByValue?: boolean }) => Promise<unknown>;
+      };
+
+      const promise = promptComposer.verifyPromptCommitted(
+        runtime as never,
+        "x".repeat(50_000),
+        150,
+      );
+      const assertion = promise.then(
+        () => {
+          throw new Error("expected verifyPromptCommitted to reject");
+        },
+        (error: unknown) => error,
+      );
+      await vi.advanceTimersByTimeAsync(250);
+
+      await expect(assertion).resolves.toMatchObject({
+        details: {
+          stage: "submit-prompt",
+          code: "prompt-commit-timeout",
+          promptLength: 50_000,
+          retryable: false,
+        },
+      });
     } finally {
       vi.useRealTimers();
     }
@@ -226,6 +280,8 @@ describe("promptComposer", () => {
         (() => undefined) as never,
         undefined,
         ["oracle-attach-verify.txt"],
+        undefined,
+        "attachment-binding-1",
       );
       const assertion = expect(promise).rejects.toThrow(/after 45s/i);
       await vi.advanceTimersByTimeAsync(46_000);
@@ -233,6 +289,100 @@ describe("promptComposer", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  test("does not run the final pre-dispatch hook before a send target exists", async () => {
+    const beforeDispatch = vi.fn();
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: { value: { status: "missing", reason: "same-composer-send-missing" } },
+      }),
+    };
+
+    await expect(
+      promptComposer.attemptSendButton(
+        runtime as never,
+        {} as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        beforeDispatch,
+      ),
+    ).resolves.toBe(false);
+    expect(beforeDispatch).not.toHaveBeenCalled();
+  });
+
+  test("a rejected route/account preflight dispatches no mouse or key event", async () => {
+    const preflightError = new Error("protected route changed");
+    const input = { dispatchMouseEvent: vi.fn(), dispatchKeyEvent: vi.fn() };
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: { value: { status: "point", x: 10, y: 20 } },
+      }),
+    };
+
+    await expect(
+      promptComposer.attemptSendButton(
+        runtime as never,
+        input as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        vi.fn().mockRejectedValue(preflightError),
+      ),
+    ).rejects.toBe(preflightError);
+    expect(input.dispatchMouseEvent).not.toHaveBeenCalled();
+    expect(input.dispatchKeyEvent).not.toHaveBeenCalled();
+  });
+
+  test("a composer/send remount after preflight dispatches nothing", async () => {
+    const input = { dispatchMouseEvent: vi.fn(), dispatchKeyEvent: vi.fn() };
+    const runtime = {
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({ result: { value: { status: "point", x: 10, y: 20 } } })
+        .mockResolvedValueOnce({
+          result: {
+            value: {
+              status: "binding-missing",
+              reason: "send-target-remounted-after-preflight",
+            },
+          },
+        }),
+    };
+
+    await expect(
+      promptComposer.attemptSendButton(
+        runtime as never,
+        input as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        vi.fn().mockResolvedValue(undefined),
+      ),
+    ).rejects.toMatchObject({
+      details: { code: "send-target-changed-after-preflight" },
+    });
+    expect(input.dispatchMouseEvent).not.toHaveBeenCalled();
+    expect(input.dispatchKeyEvent).not.toHaveBeenCalled();
+  });
+
+  test("DOM click fallback must prove dispatch instead of reporting fake success", async () => {
+    const runtime = {
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({ result: { value: { status: "point", x: 10, y: 20 } } })
+        .mockResolvedValueOnce({ result: { value: false } }),
+    };
+
+    await expect(
+      promptComposer.attemptSendButton(runtime as never, {} as never),
+    ).rejects.toMatchObject({
+      details: { code: "send-target-disappeared-before-dispatch" },
+    });
   });
 
   test("only attachment sends get the longer send-button deadline", () => {

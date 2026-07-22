@@ -45,6 +45,7 @@ import {
 import { waitForDeepResearchCompletion } from "./actions/deepResearch.js";
 import {
   assertCapturedAnswerNotAccessArtifact,
+  assertPreResultAccessState,
   assertPreRunAccessState,
 } from "./actions/challengeDetection.js";
 import {
@@ -89,6 +90,32 @@ export interface ReattachDeps {
 export interface ReattachResult {
   answerText: string;
   answerMarkdown: string;
+}
+
+async function preserveChallengeOverReattachWait<T>(
+  operation: Promise<T>,
+  runtime: ChromeClient["Runtime"],
+  logger: BrowserLogger,
+  accountId?: string,
+): Promise<T> {
+  try {
+    return await operation;
+  } catch (error) {
+    await assertPreResultAccessState(runtime, logger, {
+      quarantine: { accountId },
+    });
+    throw error;
+  }
+}
+
+/**
+ * A successful isolated fleet recovery has re-proved the saved user turn and
+ * captured the assistant that follows that exact message handle. Keeping the
+ * proof tier in the return type prevents callers from silently manufacturing
+ * stronger provenance than the recovery path actually returned.
+ */
+export interface IsolatedFleetRecoveryResult extends ReattachResult {
+  bindingQuality: "message-handle";
 }
 
 class ProvisionalConversationTargetMissingError extends Error {}
@@ -185,6 +212,7 @@ export async function resumeBrowserSession(
       resumeBrowserSessionViaNewChrome(runtimeMeta, configMeta, logger, deps));
   let closeAttachedConnection: (() => Promise<void>) | null = null;
   let provenConversation: ProvenConversationIdentity | null = null;
+  let attachedRuntime: ChromeClient["Runtime"] | null = null;
   const closeAttached = async (): Promise<void> => {
     const close = closeAttachedConnection;
     closeAttachedConnection = null;
@@ -270,6 +298,7 @@ export async function resumeBrowserSession(
 
     const client: ChromeClient = connection.client;
     const { Runtime, DOM, Page } = client;
+    attachedRuntime = Runtime;
     if (Runtime?.enable) {
       await Runtime.enable();
     }
@@ -420,12 +449,17 @@ export async function resumeBrowserSession(
     if (config?.researchMode === "deep") {
       const waitForDeepResearch =
         deps.waitForDeepResearchCompletion ?? waitForDeepResearchCompletion;
-      const researchResult = await withTimeout(
-        waitForDeepResearch(Runtime, logger, timeoutMs, minTurnIndex ?? undefined, Page, client, {
-          requireScopedTargetOwner: true,
-        }),
-        timeoutMs + 5_000,
-        "Reattach Deep Research response timed out",
+      const researchResult = await preserveChallengeOverReattachWait(
+        withTimeout(
+          waitForDeepResearch(Runtime, logger, timeoutMs, minTurnIndex ?? undefined, Page, client, {
+            requireScopedTargetOwner: true,
+          }),
+          timeoutMs + 5_000,
+          "Reattach Deep Research response timed out",
+        ),
+        Runtime,
+        logger,
+        deps.accountId,
       );
       if (deps.requirePromptPreviewMatch) {
         await assertCapturedAssistantResponseBound(Runtime, {}, logger);
@@ -438,6 +472,9 @@ export async function resumeBrowserSession(
         provenConversation,
         "Deep Research reattach completed on a different route",
       );
+      await assertCapturedAnswerNotAccessArtifact(Runtime, { text: researchResult.text }, logger, {
+        quarantine: { accountId: deps.accountId },
+      });
       await closeAttached();
       return {
         answerText: researchResult.text,
@@ -462,14 +499,19 @@ export async function resumeBrowserSession(
       provenConversation,
       "Reattach response capture drifted to a different route",
     );
-    const recovered = await recoverPromptEcho(
+    const recovered = await preserveChallengeOverReattachWait(
+      recoverPromptEcho(
+        Runtime,
+        answer,
+        promptEcho,
+        logger,
+        minTurnIndex,
+        timeoutMs,
+        provenConversation.conversationId,
+      ),
       Runtime,
-      answer,
-      promptEcho,
       logger,
-      minTurnIndex,
-      timeoutMs,
-      provenConversation.conversationId,
+      deps.accountId,
     );
     if (deps.requirePromptPreviewMatch) {
       await assertCapturedAssistantResponseBound(Runtime, recovered.meta, logger);
@@ -480,12 +522,17 @@ export async function resumeBrowserSession(
       "Reattach prompt-echo recovery drifted to a different route",
     );
     const markdown =
-      (await withTimeout(
-        captureMarkdown(Runtime, recovered.meta, logger, {
-          requireSourceIdentity: deps.requirePromptPreviewMatch === true,
-        }),
-        15_000,
-        "Reattach markdown capture timed out",
+      (await preserveChallengeOverReattachWait(
+        withTimeout(
+          captureMarkdown(Runtime, recovered.meta, logger, {
+            requireSourceIdentity: deps.requirePromptPreviewMatch === true,
+          }),
+          15_000,
+          "Reattach markdown capture timed out",
+        ),
+        Runtime,
+        logger,
+        deps.accountId,
       )) ?? recovered.text;
     if (deps.requirePromptPreviewMatch) {
       await assertCapturedAssistantResponseBound(Runtime, recovered.meta, logger);
@@ -496,10 +543,26 @@ export async function resumeBrowserSession(
       "Reattach markdown capture drifted to a different route",
     );
     const aligned = alignPromptEchoMarkdown(recovered.text, markdown, promptEcho, logger);
+    await assertCapturedAnswerNotAccessArtifact(
+      Runtime,
+      { text: aligned.answerText, html: aligned.answerMarkdown },
+      logger,
+      { quarantine: { accountId: deps.accountId } },
+    );
 
     await closeAttached();
     return { answerText: aligned.answerText, answerMarkdown: aligned.answerMarkdown };
   } catch (error) {
+    if (attachedRuntime) {
+      try {
+        await assertPreResultAccessState(attachedRuntime, logger, {
+          quarantine: { accountId: deps.accountId },
+        });
+      } catch (accessError) {
+        await closeAttached();
+        throw accessError;
+      }
+    }
     await closeAttached();
     if (
       error instanceof ProvisionalConversationTargetMissingError ||
@@ -544,6 +607,12 @@ export interface IsolatedFleetRecoveryOptions {
   accountId?: string;
   /** Test seam; production uses the strict isolated-target connector. */
   connectWithNewTabFn?: typeof connectWithNewTab;
+  /** Test seam; production acquires a normal profile-scoped fleet lease. */
+  acquireBrowserTabLeaseFn?: typeof acquireBrowserTabLease;
+  /** Test seam; production closes owned targets through the DevTools endpoint. */
+  closeRemoteChromeTargetFn?: typeof closeRemoteChromeTarget;
+  /** Test seam; production runs the exact-target, capture-only reattach path. */
+  resumeBrowserSessionFn?: typeof resumeBrowserSession;
 }
 
 class IndeterminateRecoveryTargetConnectError extends Error {
@@ -555,16 +624,72 @@ class IndeterminateRecoveryTargetConnectError extends Error {
   }
 }
 
+function isCanonicalRecoveryChallenge(error: unknown): error is BrowserAutomationError {
+  if (!(error instanceof BrowserAutomationError)) return false;
+  const stage = error.details?.stage;
+  if (stage === "cloudflare-challenge" || stage === "account-quarantine") {
+    return true;
+  }
+  const state = error.details?.state;
+  return (
+    stage === "challenge-gate" &&
+    (state === "verification_interstitial" || state === "account_security_block")
+  );
+}
+
+function withPreservedRecoveryRuntime(
+  error: BrowserAutomationError,
+  options: {
+    runtime: IsolatedFleetRecoveryOptions["runtime"];
+    profileDir: string;
+    chromeHost: string;
+    chromePort: number;
+    chromeTargetId: string;
+  },
+): BrowserAutomationError {
+  const priorRuntime =
+    error.details?.runtime &&
+    typeof error.details.runtime === "object" &&
+    !Array.isArray(error.details.runtime)
+      ? (error.details.runtime as BrowserRuntimeMetadata)
+      : {};
+  const preservedRuntime: BrowserRuntimeMetadata = {
+    ...priorRuntime,
+    ...options.runtime,
+    browserTransport: "cdp",
+    chromeHost: options.chromeHost,
+    chromePort: options.chromePort,
+    chromeProfileRoot: options.profileDir,
+    userDataDir: options.runtime.userDataDir ?? options.profileDir,
+    chromeTargetId: options.chromeTargetId,
+    tabUrl: options.runtime.tabUrl,
+    conversationId: options.runtime.conversationId,
+    promptSubmitted: true,
+    controllerPid: process.pid,
+  };
+  return new BrowserAutomationError(
+    error.message,
+    {
+      ...error.details,
+      runtime: preservedRuntime,
+      recoveryTargetPreserved: true,
+    },
+    error,
+  );
+}
+
 /**
  * Recover a submitted fleet run without touching an existing lane tab. A
  * normal tab lease is acquired, a new owned tab is opened at the exact
  * canonical conversation, the saved user turn is proved, and only then is
- * the assistant response captured. The owned tab is closed before the lease
- * is released; no prompt submission path is reachable.
+ * the assistant response captured. Ordinary completion/failure closes the
+ * owned tab before releasing its lease. A canonical headful challenge keeps
+ * that exact tab and lease paired for human inspection. No prompt submission
+ * path is reachable.
  */
 export async function resumeBrowserSessionInIsolatedFleetTab(
   options: IsolatedFleetRecoveryOptions,
-): Promise<ReattachResult> {
+): Promise<IsolatedFleetRecoveryResult> {
   const {
     runtime,
     config,
@@ -579,6 +704,9 @@ export async function resumeBrowserSessionInIsolatedFleetTab(
     signal,
     accountId,
     connectWithNewTabFn = connectWithNewTab,
+    acquireBrowserTabLeaseFn = acquireBrowserTabLease,
+    closeRemoteChromeTargetFn = closeRemoteChromeTarget,
+    resumeBrowserSessionFn = resumeBrowserSession,
   } = options;
   let lease: BrowserTabLease | null = null;
   let isolated: Awaited<ReturnType<typeof connectWithNewTab>> | null = null;
@@ -588,6 +716,7 @@ export async function resumeBrowserSessionInIsolatedFleetTab(
   let orphanedTargetId: string | null = null;
   let closeOwnedPromise: Promise<void> | null = null;
   let deferredConnectCleanup = false;
+  let preserveChallengeTarget = false;
   const closeOwned = (): Promise<void> => {
     if (closeOwnedPromise) return closeOwnedPromise;
     closeOwnedPromise = (async () => {
@@ -601,7 +730,7 @@ export async function resumeBrowserSessionInIsolatedFleetTab(
         );
       });
       const closed = await closeOwnedTargetWithDeadline(
-        closeRemoteChromeTarget(chromeHost, chromePort, targetId, logger),
+        closeRemoteChromeTargetFn(chromeHost, chromePort, targetId, logger),
         logger,
         { targetId: targetId ?? null },
       );
@@ -617,7 +746,7 @@ export async function resumeBrowserSessionInIsolatedFleetTab(
   let removeAbortListener: () => void = () => {};
   try {
     try {
-      lease = await acquireBrowserTabLease(profileDir, {
+      lease = await acquireBrowserTabLeaseFn(profileDir, {
         maxConcurrentTabs,
         timeoutMs: leaseTimeoutMs,
         logger,
@@ -679,7 +808,7 @@ export async function resumeBrowserSessionInIsolatedFleetTab(
               void lateConnection.client.close().catch(() => undefined);
               if (lateTargetId) {
                 const closed = await closeOwnedTargetWithDeadline(
-                  closeRemoteChromeTarget(chromeHost, chromePort, lateTargetId, logger),
+                  closeRemoteChromeTargetFn(chromeHost, chromePort, lateTargetId, logger),
                   logger,
                   { targetId: lateTargetId },
                 );
@@ -694,7 +823,7 @@ export async function resumeBrowserSessionInIsolatedFleetTab(
             async (lateError) => {
               if (lateError instanceof OrphanedChromeTargetError) {
                 const closed = await closeOwnedTargetWithDeadline(
-                  closeRemoteChromeTarget(chromeHost, chromePort, lateError.targetId, logger),
+                  closeRemoteChromeTargetFn(chromeHost, chromePort, lateError.targetId, logger),
                   logger,
                   { targetId: lateError.targetId },
                 );
@@ -776,7 +905,7 @@ export async function resumeBrowserSessionInIsolatedFleetTab(
       })(),
     );
 
-    const recovery = resumeBrowserSession(
+    const recovery = resumeBrowserSessionFn(
       {
         ...runtime,
         chromeHost,
@@ -795,7 +924,28 @@ export async function resumeBrowserSessionInIsolatedFleetTab(
     );
     recoveryResult = await raceAbort(recovery);
   } catch (error) {
-    primaryError = error;
+    const targetId = isolated?.targetId;
+    if (
+      config?.headless !== true &&
+      lease &&
+      targetId &&
+      closeOwnedPromise === null &&
+      isCanonicalRecoveryChallenge(error)
+    ) {
+      preserveChallengeTarget = true;
+      primaryError = withPreservedRecoveryRuntime(error, {
+        runtime,
+        profileDir,
+        chromeHost,
+        chromePort,
+        chromeTargetId: targetId,
+      });
+      logger(
+        `[browser] Preserving isolated recovery target ${targetId} and its active lane lease for manual challenge resolution.`,
+      );
+    } else {
+      primaryError = error;
+    }
     hasPrimaryError = true;
   }
 
@@ -804,26 +954,42 @@ export async function resumeBrowserSessionInIsolatedFleetTab(
   // advertises a free slot to sibling lanes.
   let cleanupError: unknown;
   if (!deferredConnectCleanup) {
-    try {
-      await closeOwned();
-    } catch (error) {
-      cleanupError = error;
-      logger(
-        `Failed to close isolated recovery tab: ${error instanceof Error ? error.message : String(error)}`,
-      );
+    if (preserveChallengeTarget) {
+      // Disconnect this controller without closing the page target. The exact
+      // target and its capacity lease remain paired for human inspection.
+      void isolated?.client.close().catch((error) => {
+        logger(
+          `Recovery CDP detach failed while preserving the challenge target: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+    } else {
+      try {
+        await closeOwned();
+      } catch (error) {
+        cleanupError = error;
+        logger(
+          `Failed to close isolated recovery tab: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
   }
   if (lease && !cleanupError && !deferredConnectCleanup) {
-    await lease.release().catch((error) => {
-      cleanupError ??= error;
-      latchBrowserCleanupTaint(
-        `isolated recovery lease release failed (${lease?.id ?? "unknown"}): ${error instanceof Error ? error.message : String(error)}`,
-        logger,
-      );
+    if (preserveChallengeTarget) {
       logger(
-        `Failed to release isolated recovery tab lease: ${error instanceof Error ? error.message : String(error)}`,
+        `[browser] Keeping isolated recovery lease ${lease.id.slice(0, 8)} active for preserved challenge target ${isolated?.targetId ?? "unknown"}.`,
       );
-    });
+    } else {
+      await lease.release().catch((error) => {
+        cleanupError ??= error;
+        latchBrowserCleanupTaint(
+          `isolated recovery lease release failed (${lease?.id ?? "unknown"}): ${error instanceof Error ? error.message : String(error)}`,
+          logger,
+        );
+        logger(
+          `Failed to release isolated recovery tab lease: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+    }
   } else if (lease && (cleanupError || deferredConnectCleanup)) {
     logger(
       `[browser] Keeping isolated recovery lease ${lease.id.slice(0, 8)} active because owned-target close was not proved.`,
@@ -851,7 +1017,7 @@ export async function resumeBrowserSessionInIsolatedFleetTab(
       retryable: false,
     });
   }
-  return recoveryResult;
+  return { ...recoveryResult, bindingQuality: "message-handle" };
 }
 
 async function refreshAttachRuntime(
@@ -945,11 +1111,15 @@ async function resumeBrowserSessionViaNewChrome(
   });
 
   await navigateToChatGPT(Page, Runtime, CHATGPT_URL, logger);
-  await ensureNotBlocked(Runtime, resolved.headless, logger);
+  await ensureNotBlocked(Runtime, resolved.headless, logger, {
+    quarantine: { accountId: deps.accountId },
+  });
   await ensureLoggedIn(Runtime, logger, { appliedCookies });
   if (resolved.url !== CHATGPT_URL) {
     await navigateToChatGPT(Page, Runtime, resolved.url, logger);
-    await ensureNotBlocked(Runtime, resolved.headless, logger);
+    await ensureNotBlocked(Runtime, resolved.headless, logger, {
+      quarantine: { accountId: deps.accountId },
+    });
   }
   await ensurePromptReady(Runtime, resolved.inputTimeoutMs, logger);
 
@@ -961,7 +1131,9 @@ async function resumeBrowserSessionViaNewChrome(
   if (conversationUrl) {
     logger(`Reopening conversation at ${conversationUrl}`);
     await navigateToChatGPT(Page, Runtime, conversationUrl, logger);
-    await ensureNotBlocked(Runtime, resolved.headless, logger);
+    await ensureNotBlocked(Runtime, resolved.headless, logger, {
+      quarantine: { accountId: deps.accountId },
+    });
     await ensurePromptReady(Runtime, resolved.inputTimeoutMs, logger);
   } else {
     const conversationId =
@@ -1023,23 +1195,25 @@ async function resumeBrowserSessionViaNewChrome(
     (deps.promptPreview ? null : await readConversationTurnIndex(Runtime, logger));
   if (resolved.researchMode === "deep") {
     const waitForDeepResearch = deps.waitForDeepResearchCompletion ?? waitForDeepResearchCompletion;
-    const researchResult = await waitForDeepResearch(
+    const researchResult = await preserveChallengeOverReattachWait(
+      waitForDeepResearch(Runtime, logger, timeoutMs, minTurnIndex ?? undefined, Page, client, {
+        requireScopedTargetOwner: true,
+      }),
       Runtime,
       logger,
-      timeoutMs,
-      minTurnIndex ?? undefined,
-      Page,
-      client,
-      {
-        requireScopedTargetOwner: true,
-      },
+      deps.accountId,
     );
-    await assertCapturedAnswerNotAccessArtifact(Runtime, { text: researchResult.text }, logger);
+    await assertCapturedAnswerNotAccessArtifact(Runtime, { text: researchResult.text }, logger, {
+      quarantine: { accountId: deps.accountId },
+    });
     await assertConversationIdentityStillOpen(
       Runtime,
       provenConversation,
       "Deep Research recovery completed on a different route",
     );
+    await assertCapturedAnswerNotAccessArtifact(Runtime, { text: researchResult.text }, logger, {
+      quarantine: { accountId: deps.accountId },
+    });
     await cleanup();
     return {
       answerText: researchResult.text,
@@ -1053,20 +1227,26 @@ async function resumeBrowserSessionViaNewChrome(
     logger,
     minTurnIndex ?? undefined,
     provenConversation.conversationId,
+    deps.accountId,
   );
   await assertConversationIdentityStillOpen(
     Runtime,
     provenConversation,
     "Recovered response capture drifted to a different route",
   );
-  const recovered = await recoverPromptEcho(
+  const recovered = await preserveChallengeOverReattachWait(
+    recoverPromptEcho(
+      Runtime,
+      answer,
+      promptEcho,
+      logger,
+      minTurnIndex,
+      timeoutMs,
+      provenConversation.conversationId,
+    ),
     Runtime,
-    answer,
-    promptEcho,
     logger,
-    minTurnIndex,
-    timeoutMs,
-    provenConversation.conversationId,
+    deps.accountId,
   );
   await assertConversationIdentityStillOpen(
     Runtime,
@@ -1074,15 +1254,26 @@ async function resumeBrowserSessionViaNewChrome(
     "Recovered prompt-echo capture drifted to a different route",
   );
   const markdown =
-    (await captureMarkdown(Runtime, recovered.meta, logger, {
-      requireSourceIdentity: true,
-    })) ?? recovered.text;
+    (await preserveChallengeOverReattachWait(
+      captureMarkdown(Runtime, recovered.meta, logger, {
+        requireSourceIdentity: true,
+      }),
+      Runtime,
+      logger,
+      deps.accountId,
+    )) ?? recovered.text;
   await assertConversationIdentityStillOpen(
     Runtime,
     provenConversation,
     "Recovered markdown capture drifted to a different route",
   );
   const aligned = alignPromptEchoMarkdown(recovered.text, markdown, promptEcho, logger);
+  await assertCapturedAnswerNotAccessArtifact(
+    Runtime,
+    { text: aligned.answerText, html: aligned.answerMarkdown },
+    logger,
+    { quarantine: { accountId: deps.accountId } },
+  );
 
   await cleanup();
 

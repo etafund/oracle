@@ -1,6 +1,6 @@
 import path from "node:path";
 import os from "node:os";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { describe, expect, test, vi } from "vitest";
 import {
   __test__,
@@ -35,6 +35,30 @@ describe("shouldPreserveBrowserOnErrorForTest", () => {
     });
     expect(shouldPreserveBrowserOnErrorForTest(error, true)).toBe(false);
   });
+
+  test.each(["verification_interstitial", "account_security_block"])(
+    "preserves a headful browser for canonical %s challenge gates",
+    (state) => {
+      const error = new BrowserAutomationError("Manual verification required.", {
+        stage: "challenge-gate",
+        state,
+      });
+      expect(shouldPreserveBrowserOnErrorForTest(error, false)).toBe(true);
+      expect(classifyPreservedBrowserErrorForTest(error, false)).toBe("cloudflare-challenge");
+      expect(shouldPreserveBrowserOnErrorForTest(error, true)).toBe(false);
+    },
+  );
+
+  test.each(["login_required", "rate_limited"])(
+    "does not preserve refusal-only %s gates",
+    (state) => {
+      const error = new BrowserAutomationError("Run refused.", {
+        stage: "challenge-gate",
+        state,
+      });
+      expect(shouldPreserveBrowserOnErrorForTest(error, false)).toBe(false);
+    },
+  );
 
   test("preserves the browser for headful assistant capture errors", () => {
     const timeout = new BrowserAutomationError("assistant timed out", {
@@ -74,6 +98,32 @@ describe("shouldPreserveBrowserOnErrorForTest", () => {
 
     expect(classifyPreservedBrowserErrorForTest(error, false)).toBe("cloudflare-challenge");
   });
+
+  test.each(["cloudflare-challenge", "account-quarantine"])(
+    "does not replace an already canonical %s error while preferring challenge failures",
+    async (stage) => {
+      const error = new BrowserAutomationError("Manual verification required.", {
+        stage,
+        state: "verification_interstitial",
+        oracleErrorClass: "account_quarantine",
+        retryable: false,
+      });
+      const Runtime = {
+        evaluate: vi.fn().mockRejectedValue(new Error("canonical errors must not re-probe")),
+      } as unknown as ChromeClient["Runtime"];
+
+      await expect(
+        __test__.preferChallengeOverPageFailure(
+          error,
+          Runtime,
+          vi.fn() as unknown as BrowserLogger,
+          { accountId: "acct-canonical-challenge" },
+        ),
+      ).resolves.toBe(error);
+      expect(Runtime.evaluate).not.toHaveBeenCalled();
+      expect(classifyPreservedBrowserErrorForTest(error, false)).toBe("cloudflare-challenge");
+    },
+  );
 });
 
 describe("browser run target cleanup", () => {
@@ -132,6 +182,117 @@ describe("browser run target cleanup", () => {
         keepBrowser: false,
       }),
     ).toBe(false);
+  });
+
+  test("preserved headful errors keep the exact owned tab even under always-close policy", () => {
+    expect(
+      __test__.shouldCloseOwnedRunTargetAfterRun({
+        runStatus: "attempted",
+        ownsTarget: true,
+        keepBrowser: true,
+        policy: "always",
+        preserveOwnedTargetOnError: true,
+      }),
+    ).toBe(false);
+    expect(
+      __test__.shouldCloseOwnedRunTargetAfterRun({
+        runStatus: "attempted",
+        ownsTarget: true,
+        keepBrowser: true,
+        policy: "always",
+        preserveOwnedTargetOnError: false,
+      }),
+    ).toBe(true);
+  });
+
+  test.each([
+    {
+      label: "a preserved owned challenge target",
+      options: {
+        runStatus: "attempted" as const,
+        ownsTarget: true,
+        preserveOwnedTargetOnError: true,
+      },
+      expected: true,
+    },
+    {
+      label: "a preserved owned reattachable capture target",
+      options: {
+        runStatus: "attempted" as const,
+        ownsTarget: true,
+        preserveOwnedTargetOnError: true,
+      },
+      expected: true,
+    },
+    {
+      label: "a borrowed target",
+      options: {
+        runStatus: "attempted" as const,
+        ownsTarget: false,
+        preserveOwnedTargetOnError: true,
+      },
+      expected: false,
+    },
+    {
+      label: "an orphaned target that requires cleanup",
+      options: {
+        runStatus: "attempted" as const,
+        ownsTarget: true,
+        preserveOwnedTargetOnError: true,
+        orphanedTargetNeedsCleanup: true,
+      },
+      expected: false,
+    },
+    {
+      label: "a headless, copied-profile, or ordinary non-preserved failure",
+      options: {
+        runStatus: "attempted" as const,
+        ownsTarget: true,
+        preserveOwnedTargetOnError: false,
+      },
+      expected: false,
+    },
+    {
+      label: "a completed run",
+      options: {
+        runStatus: "complete" as const,
+        ownsTarget: true,
+        preserveOwnedTargetOnError: true,
+      },
+      expected: false,
+    },
+  ])("retained tab-lease decision: $label", ({ options, expected }) => {
+    expect(__test__.shouldRetainBrowserTabLeaseAfterRun(options)).toBe(expected);
+  });
+
+  test("local and remote cleanup both guard lease release behind preserved-target retention", async () => {
+    const source = (
+      await readFile(new URL("../../src/browser/index.ts", import.meta.url), "utf8")
+    ).replace(/\s+/gu, "");
+    const slice = (start: string, end: string): string => {
+      const startIndex = source.indexOf(start);
+      const endIndex = source.indexOf(end, startIndex + start.length);
+      expect(startIndex, `missing cleanup start anchor: ${start}`).toBeGreaterThanOrEqual(0);
+      expect(endIndex, `missing cleanup end anchor: ${end}`).toBeGreaterThan(startIndex);
+      return source.slice(startIndex, endIndex);
+    };
+    const assertRetainBeforeRelease = (cleanup: string): void => {
+      const decisionIndex = cleanup.indexOf(
+        "constretainPreservedOwnedTargetLease=shouldRetainBrowserTabLeaseAfterRun({",
+      );
+      const retainIndex = cleanup.indexOf("if(tabLease&&retainPreservedOwnedTargetLease){");
+      const releaseIndex = cleanup.indexOf("elseif(tabLease&&ownedTargetCleanupProved){");
+      expect(decisionIndex).toBeGreaterThanOrEqual(0);
+      expect(retainIndex).toBeGreaterThan(decisionIndex);
+      expect(releaseIndex).toBeGreaterThan(retainIndex);
+    };
+
+    assertRetainBeforeRelease(
+      slice("exportasyncfunctionrunBrowserMode", "asyncfunctionpickAvailableDebugPort"),
+    );
+    assertRetainBeforeRelease(
+      slice("asyncfunctionrunRemoteBrowserMode", "export{estimateTokenCount}"),
+    );
   });
 });
 
@@ -382,6 +543,91 @@ describe("GPT-5.6 Sol + Pro evidence integration", () => {
     await expect(verifyAttempt()).resolves.toMatchObject({ verified: true });
     expect(selectModel).toHaveBeenCalledTimes(2);
     expect(selectMode).toHaveBeenCalledTimes(2);
+  });
+
+  test("runs mutating protected-route selection before attachment preparation", async () => {
+    const events: string[] = [];
+    await __test__.prepareSubmissionComposerWithProtectedRoute({
+      hasAttachments: true,
+      verifyProtectedRoute: async () => {
+        events.push("select-route");
+      },
+      prepareComposer: async () => {
+        events.push("prepare-composer");
+      },
+      prepareMutatingComposerMode: async () => {
+        events.push("activate-deep-research");
+      },
+      prepareAttachments: async () => {
+        events.push("upload-attachment");
+      },
+    });
+
+    expect(events).toEqual([
+      "select-route",
+      "prepare-composer",
+      "activate-deep-research",
+      "upload-attachment",
+    ]);
+  });
+
+  test("fails closed before upload when protected-route verification fails", async () => {
+    const prepareComposer = vi.fn();
+    const activateDeepResearch = vi.fn();
+    const uploadAttachment = vi.fn();
+
+    await expect(
+      __test__.prepareSubmissionComposerWithProtectedRoute({
+        hasAttachments: true,
+        verifyProtectedRoute: async () => {
+          throw new Error("Sol + Pro not verified");
+        },
+        prepareComposer,
+        prepareMutatingComposerMode: activateDeepResearch,
+        prepareAttachments: uploadAttachment,
+      }),
+    ).rejects.toThrow(/not verified/i);
+
+    expect(prepareComposer).not.toHaveBeenCalled();
+    expect(activateDeepResearch).not.toHaveBeenCalled();
+    expect(uploadAttachment).not.toHaveBeenCalled();
+  });
+
+  test("fails closed before upload when Deep Research activation fails", async () => {
+    const uploadAttachment = vi.fn();
+
+    await expect(
+      __test__.prepareSubmissionComposerWithProtectedRoute({
+        hasAttachments: true,
+        verifyProtectedRoute: async () => {},
+        prepareComposer: async () => {},
+        prepareMutatingComposerMode: async () => {
+          throw new Error("Deep Research unavailable");
+        },
+        prepareAttachments: uploadAttachment,
+      }),
+    ).rejects.toThrow(/Deep Research unavailable/i);
+
+    expect(uploadAttachment).not.toHaveBeenCalled();
+  });
+
+  test("preserves the historical last-moment selection order for text-only runs", async () => {
+    const events: string[] = [];
+    await __test__.prepareSubmissionComposerWithProtectedRoute({
+      hasAttachments: false,
+      verifyProtectedRoute: async () => {
+        events.push("select-route");
+      },
+      prepareComposer: async () => {
+        events.push("prepare-text-composer");
+      },
+      prepareMutatingComposerMode: async () => {
+        events.push("activate-deep-research");
+      },
+      prepareAttachments: async () => {},
+    });
+
+    expect(events).toEqual(["prepare-text-composer", "activate-deep-research", "select-route"]);
   });
 
   test("refuses a protected submit before running selectors when policy was weakened", async () => {
@@ -655,6 +901,167 @@ describe("ChatGPT UI warning detection", () => {
     expect(__test__.shouldReloadAfterAssistantError(timeout)).toBe(true);
     expect(__test__.isAssistantResponseTimeoutError(recheckSessionError)).toBe(false);
     expect(__test__.shouldReloadAfterAssistantError(recheckSessionError)).toBe(false);
+  });
+});
+
+describe("assistant canonical reload recovery", () => {
+  const conversationId = "11111111-1111-4111-8111-111111111111";
+  const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+
+  test("hydrates the same canonical conversation before its one retry", async () => {
+    const sequence: string[] = [];
+    const Runtime = {
+      evaluate: vi.fn().mockImplementation(async () => {
+        sequence.push("read-url");
+        return { result: { value: conversationUrl } };
+      }),
+    } as unknown as ChromeClient["Runtime"];
+    const Page = {
+      navigate: vi.fn().mockImplementation(async () => {
+        sequence.push("navigate");
+      }),
+    } as unknown as ChromeClient["Page"];
+    const firstError = new Error(
+      "assistant-response short capture could not be confirmed before timeout",
+    );
+    const waitForResponse = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        sequence.push("capture-1");
+        throw firstError;
+      })
+      .mockImplementationOnce(async (...args: unknown[]) => {
+        sequence.push("capture-2");
+        expect(args[4]).toBe(conversationId);
+        return {
+          text: "DIAG-OK",
+          meta: { turnId: "conversation-turn-2", messageId: "assistant-message" },
+        };
+      });
+    const waitForHydration = vi.fn().mockImplementation(async () => {
+      sequence.push("hydrate");
+      return 2;
+    });
+    const wait = vi.fn().mockImplementation(async () => {
+      sequence.push("delay");
+    });
+    const assertAccess = vi.fn().mockImplementation(async (...args: unknown[]) => {
+      sequence.push("access");
+      expect(args[2]).toEqual({ quarantine: { accountId: "acct1" } });
+    });
+    const now = vi.fn().mockReturnValueOnce(10_000).mockReturnValueOnce(25_000);
+
+    await expect(
+      __test__.waitForAssistantResponseWithReload(
+        Runtime,
+        Page,
+        30_000,
+        vi.fn() as unknown as BrowserLogger,
+        1,
+        conversationId,
+        "acct1",
+        {
+          waitForResponse: waitForResponse as never,
+          waitForHydration: waitForHydration as never,
+          wait,
+          assertAccess,
+          elapsedBaselineMs: 70_000,
+          now,
+        },
+      ),
+    ).resolves.toMatchObject({ text: "DIAG-OK" });
+
+    expect(sequence).toEqual([
+      "capture-1",
+      "read-url",
+      "delay",
+      "navigate",
+      "access",
+      "hydrate",
+      "capture-2",
+    ]);
+    expect(wait).toHaveBeenCalledWith(1_500);
+    expect(Page.navigate).toHaveBeenCalledOnce();
+    expect(Page.navigate).toHaveBeenCalledWith({ url: conversationUrl });
+    expect(assertAccess).toHaveBeenCalledOnce();
+    expect(waitForHydration).toHaveBeenCalledWith(Runtime, 30_000, expect.any(Function), {
+      ensurePromptReady: expect.any(Function),
+      requirePriorTurns: true,
+      expectedConversationUrl: conversationUrl,
+    });
+    // The fallback surface receives no Input domain and performs no submit or
+    // click; its only page mutation is the one canonical navigation above.
+    expect(Runtime.evaluate).toHaveBeenCalledTimes(1);
+    expect(waitForResponse).toHaveBeenCalledTimes(2);
+    expect(waitForResponse.mock.calls[0]?.[6]).toBe(70_000);
+    expect(waitForResponse.mock.calls[1]?.[6]).toBe(85_000);
+  });
+
+  test("refuses to reopen a different canonical conversation", async () => {
+    const wrongConversationUrl = "https://chatgpt.com/c/22222222-2222-4222-8222-222222222222";
+    const firstError = new Error("assistant-response watchdog timeout");
+    const Runtime = {
+      evaluate: vi.fn().mockResolvedValue({ result: { value: wrongConversationUrl } }),
+    } as unknown as ChromeClient["Runtime"];
+    const Page = { navigate: vi.fn() } as unknown as ChromeClient["Page"];
+    const waitForResponse = vi.fn().mockRejectedValue(firstError);
+    const waitForHydration = vi.fn();
+    const wait = vi.fn();
+
+    await expect(
+      __test__.waitForAssistantResponseWithReload(
+        Runtime,
+        Page,
+        30_000,
+        vi.fn() as unknown as BrowserLogger,
+        1,
+        conversationId,
+        "acct1",
+        {
+          waitForResponse: waitForResponse as never,
+          waitForHydration: waitForHydration as never,
+          wait,
+        },
+      ),
+    ).rejects.toBe(firstError);
+
+    expect(Page.navigate).not.toHaveBeenCalled();
+    expect(waitForHydration).not.toHaveBeenCalled();
+    expect(wait).not.toHaveBeenCalled();
+    expect(waitForResponse).toHaveBeenCalledOnce();
+  });
+
+  test("refuses to adopt the current conversation when no expected canonical id is bound", async () => {
+    const firstError = new Error("assistant-response watchdog timeout");
+    const Runtime = {
+      evaluate: vi.fn().mockResolvedValue({ result: { value: conversationUrl } }),
+    } as unknown as ChromeClient["Runtime"];
+    const Page = { navigate: vi.fn() } as unknown as ChromeClient["Page"];
+    const waitForResponse = vi.fn().mockRejectedValue(firstError);
+    const waitForHydration = vi.fn();
+    const wait = vi.fn();
+
+    await expect(
+      __test__.waitForAssistantResponseWithReload(
+        Runtime,
+        Page,
+        30_000,
+        vi.fn() as unknown as BrowserLogger,
+        1,
+        undefined,
+        "acct1",
+        {
+          waitForResponse: waitForResponse as never,
+          waitForHydration: waitForHydration as never,
+          wait,
+        },
+      ),
+    ).rejects.toBe(firstError);
+
+    expect(Page.navigate).not.toHaveBeenCalled();
+    expect(waitForHydration).not.toHaveBeenCalled();
+    expect(wait).not.toHaveBeenCalled();
+    expect(waitForResponse).toHaveBeenCalledOnce();
   });
 });
 
@@ -976,6 +1383,34 @@ describe("runSubmissionWithRecoveryForTest", () => {
         logger: vi.fn<(message: string) => void>(),
       }),
     ).rejects.toThrow(/prompt too large again/i);
+  });
+
+  test("never submits a fallback after an ambiguous post-dispatch commit timeout", async () => {
+    const commitTimeout = new BrowserAutomationError("prompt commit was not observed", {
+      stage: "submit-prompt",
+      code: "prompt-commit-timeout",
+      retryable: false,
+    });
+    const submit = vi.fn().mockRejectedValue(commitTimeout);
+    const prepareFallbackSubmission = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      runSubmissionWithRecoveryForTest({
+        prompt: "x".repeat(50_000),
+        attachments: [],
+        fallbackSubmission: {
+          prompt: "fallback prompt",
+          attachments: [{ path: "/tmp/fallback.txt", displayPath: "fallback.txt", sizeBytes: 12 }],
+        },
+        submit,
+        reloadPromptComposer: vi.fn().mockResolvedValue(undefined),
+        prepareFallbackSubmission,
+        logger: vi.fn<(message: string) => void>(),
+      }),
+    ).rejects.toBe(commitTimeout);
+
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(prepareFallbackSubmission).not.toHaveBeenCalled();
   });
 });
 

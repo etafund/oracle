@@ -5,11 +5,14 @@ import {
   buildAnswerNowPlaceholderPredicateJsForTest,
   buildAssistantSnapshotExpressionForTest,
   buildResponseObserverExpressionForTest,
+  buildSafeCollapsibleExpansionPredicateForTest,
   buildStopButtonVisibilityExpressionForTest,
+  canAdoptAssistantSnapshotIdentityForTest,
   isFinishedAssistantSnapshotStableForTest,
   isAnswerNowPlaceholderTextForTest,
   matchesThinkingStatusLabelForTest,
   normalizeAssistantSnapshotForTest,
+  recoveryElapsedBaselineForTest,
   shouldAcceptStableAssistantSnapshotForTest,
   shouldConfirmAssistantCompletion,
   shouldReplaceAssistantSnapshotForTest,
@@ -47,7 +50,47 @@ function evaluateAnswerNowPredicate(text: string): boolean {
   ).runInNewContext({ String }) as boolean;
 }
 
+function evaluateCollapsibleExpansionSafety(fixture: {
+  text?: string;
+  testId?: string;
+  ariaLabel?: string;
+  title?: string;
+  unsafeAncestor?: boolean;
+}): boolean {
+  const predicate = buildSafeCollapsibleExpansionPredicateForTest("shouldExpand");
+  const attributes: Record<string, string | undefined> = {
+    "data-testid": fixture.testId,
+    "aria-label": fixture.ariaLabel,
+    title: fixture.title,
+  };
+  const button = {
+    textContent: fixture.text ?? "",
+    getAttribute: (name: string) => attributes[name] ?? null,
+    closest: () => (fixture.unsafeAncestor ? {} : null),
+  };
+  return new Script(`${predicate}\nshouldExpand(button);`).runInNewContext({ button }) as boolean;
+}
+
 describe("assistant thinking-status capture", () => {
+  test("keeps the original wait age when a short-answer recovery polls again", () => {
+    expect(recoveryElapsedBaselineForTest(12 * 60_000, 1_000, 3_500)).toBe(722_500);
+    expect(recoveryElapsedBaselineForTest(12 * 60_000, 3_500, 1_000)).toBe(720_000);
+  });
+
+  test("keeps a reload/recheck wait age inside the in-page compact-answer gate", () => {
+    const expression = buildResponseObserverExpressionForTest(
+      60_000,
+      undefined,
+      undefined,
+      12 * 60_000,
+    );
+
+    expect(expression).toContain("const ELAPSED_BASELINE_MS = 720000");
+    expect(expression).toContain(
+      "ELAPSED_BASELINE_MS + (Date.now() - waitStartedAt) < COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS",
+    );
+  });
+
   const statusLabels = [
     "Pro thinking",
     "Finalizing answer",
@@ -88,6 +131,37 @@ describe("assistant thinking-status capture", () => {
         "While finalizing the answer, do not click Answer now; the explanation follows.",
       ),
     ).toBe(false);
+  });
+
+  test.each([
+    { text: "Show more" },
+    { text: "Expand response" },
+    { testId: "assistant-markdown-toggle" },
+  ])("allows ordinary response-content expansion: %o", (fixture) => {
+    expect(evaluateCollapsibleExpansionSafety(fixture)).toBe(true);
+  });
+
+  test.each([
+    { text: "Show thinking" },
+    { text: "Show reasoning" },
+    { text: "Show analysis" },
+    { text: "Expand thought process" },
+    { text: "Show more", unsafeAncestor: true },
+    { text: "Show", testId: "thinking-toggle" },
+    { text: "Show", testId: "reasoning-toggle" },
+    { text: "Show", testId: "analysis-toggle" },
+    { text: "Show", testId: "stop-answer-now-button" },
+    { testId: "assistant-markdown-toggle", ariaLabel: "Answer now" },
+    { testId: "assistant-markdown-toggle", title: "Show chain-of-thought" },
+  ])("never expands thinking/reasoning/analysis controls: %o", (fixture) => {
+    expect(evaluateCollapsibleExpansionSafety(fixture)).toBe(false);
+  });
+
+  test("wires the fail-closed expander guard into assistant extraction", () => {
+    const expression = buildAssistantSnapshotExpressionForTest();
+    expect(expression).toContain("const shouldExpandCollapsible = (button) =>");
+    expect(expression).toContain("if (shouldExpandCollapsible(button))");
+    expect(expression).toContain("stop-answer-now-button");
   });
 
   test("uses the active-status predicate in snapshot capture", () => {
@@ -352,6 +426,47 @@ describe("assistant thinking-status capture", () => {
     ).toBe(true);
   });
 
+  test("accepts a stable short Pro answer with exact-turn completion proof", () => {
+    expect(
+      shouldAcceptStableAssistantSnapshotForTest({
+        stopVisible: false,
+        // Regression: the independent last-turn probe can miss while ChatGPT
+        // re-renders the outer turn, even though the snapshot's own turn has
+        // finished controls.
+        completionVisible: false,
+        exactTurnComplete: true,
+        thinkingActive: false,
+        thinkingObserved: true,
+        currentLength: "DIAG-OK".length,
+        stableCycles: 12,
+        requiredStableCycles: 12,
+        completionStableTarget: 12,
+        stableMs: 8_000,
+        minStableMs: 8_000,
+        elapsedMs: 120_000,
+      }),
+    ).toBe(true);
+  });
+
+  test("does not mistake a paused short Pro preamble for a completed turn", () => {
+    expect(
+      shouldAcceptStableAssistantSnapshotForTest({
+        stopVisible: false,
+        completionVisible: false,
+        exactTurnComplete: false,
+        thinkingActive: false,
+        thinkingObserved: true,
+        currentLength: "1) Verdict".length,
+        stableCycles: 30,
+        requiredStableCycles: 12,
+        completionStableTarget: 12,
+        stableMs: 30_000,
+        minStableMs: 8_000,
+        elapsedMs: 120_000,
+      }),
+    ).toBe(false);
+  });
+
   test("shares all stop-control selectors with completion capture", () => {
     let observedSelector = "";
     new Script(buildStopButtonVisibilityExpressionForTest()).runInContext(
@@ -444,6 +559,7 @@ describe("finish-aware thinking-status disambiguation (status-word answers)", ()
   test.each(STATUS_WORD_ANSWERS)("keeps a FINISHED one-word answer %j", (word) => {
     const kept = normalizeAssistantSnapshotForTest({ text: word, turnComplete: true });
     expect(kept?.text).toBe(word);
+    expect(kept?.turnComplete).toBe(true);
   });
 
   test.each(STATUS_WORD_ANSWERS)("still drops the LIVE status placeholder %j", (word) => {
@@ -529,6 +645,39 @@ describe("shouldReplaceAssistantSnapshot", () => {
         hasBetterId: false,
         hasDifferentText: false,
       }),
+    ).toBe(false);
+  });
+
+  test("never grafts ids from a shorter unrelated assistant turn", () => {
+    const current =
+      "Primary answer A with its own detailed conclusion, evidence, and recommendations. ".repeat(
+        12,
+      );
+    const unrelated =
+      "Assistant answer B belongs to a later turn and must not donate its message identity.";
+
+    expect(canAdoptAssistantSnapshotIdentityForTest(current, unrelated)).toBe(false);
+  });
+
+  test("allows ids only for normalized-equal or near-complete boundary truncation", () => {
+    const full =
+      "This is the same assistant answer with enough distinctive content to bind safely. ".repeat(
+        10,
+      );
+    const nearCompletePrefix = full.slice(0, Math.floor(full.length * 0.95));
+
+    expect(canAdoptAssistantSnapshotIdentityForTest(full, full.replace(/\s+/g, " ").trim())).toBe(
+      true,
+    );
+    expect(canAdoptAssistantSnapshotIdentityForTest(full, nearCompletePrefix)).toBe(true);
+    expect(canAdoptAssistantSnapshotIdentityForTest(full, full.slice(0, 60))).toBe(false);
+    expect(
+      canAdoptAssistantSnapshotIdentityForTest(
+        full,
+        full,
+        { turnId: "assistant-turn-a" },
+        { turnId: "assistant-turn-b" },
+      ),
     ).toBe(false);
   });
 });

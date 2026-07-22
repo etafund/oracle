@@ -41,6 +41,93 @@ const NONCOMPACT_ACCEPT_CONFIRM_SAMPLES = 8;
 // point compact answers also need finished-action controls.
 const COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS = 60_000;
 
+// Generic response-content expansion must never touch Pro-thinking controls.
+// These controls can live inside the same assistant turn as the eventual
+// Markdown, so scoping to `messageRoot` alone is not a sufficient safety
+// boundary. "Answer now" is especially load-bearing: clicking it interrupts
+// extended reasoning and changes the answer Oracle was asked to wait for.
+const UNSAFE_COLLAPSIBLE_CONTROL_FRAGMENTS = [
+  "answer now",
+  "thinking",
+  "reasoning",
+  "analysis",
+  "analyzing",
+  "thought for",
+  "thought process",
+  "chain of thought",
+] as const;
+
+const UNSAFE_COLLAPSIBLE_ANCESTOR_SELECTOR = [
+  '[data-testid="stop-answer-now-button"]',
+  '[data-testid*="thinking" i]',
+  '[data-testid*="reasoning" i]',
+  '[data-testid*="analysis" i]',
+  '[aria-label*="answer now" i]',
+  '[aria-label*="thinking" i]',
+  '[aria-label*="reasoning" i]',
+  '[aria-label*="analysis" i]',
+  '[class*="thinking" i]',
+  '[class*="reasoning" i]',
+  '[class*="analysis" i]',
+].join(", ");
+
+function buildSafeCollapsibleExpansionPredicate(functionName: string): string {
+  const unsafeFragmentsLiteral = JSON.stringify(UNSAFE_COLLAPSIBLE_CONTROL_FRAGMENTS);
+  const unsafeAncestorLiteral = JSON.stringify(UNSAFE_COLLAPSIBLE_ANCESTOR_SELECTOR);
+  return `const ${functionName} = (button) => {
+    const normalize = (value) => String(value || '')
+      .toLowerCase()
+      .replace(/[_-]+/g, ' ')
+      .replace(/\\s+/g, ' ')
+      .trim();
+    const label = normalize(button?.textContent);
+    const testid = normalize(button?.getAttribute?.('data-testid'));
+    const identity = [
+      label,
+      testid,
+      normalize(button?.getAttribute?.('aria-label')),
+      normalize(button?.getAttribute?.('title')),
+    ].filter(Boolean).join(' ');
+    const unsafeFragments = ${unsafeFragmentsLiteral};
+    if (unsafeFragments.some((fragment) => identity.includes(fragment))) {
+      return false;
+    }
+    if (typeof button?.closest === 'function' && button.closest(${unsafeAncestorLiteral})) {
+      return false;
+    }
+    return (
+      label.includes('more') ||
+      label.includes('expand') ||
+      label.includes('show') ||
+      testid.includes('markdown') ||
+      testid.includes('toggle')
+    );
+  };`;
+}
+
+function buildVisibleFinishedActionPredicateJs(functionName: string): string {
+  const selector = JSON.stringify(FINISHED_ACTIONS_SELECTOR);
+  return `const ${functionName} = (root) => {
+    if (!root || typeof root.querySelectorAll !== 'function') return false;
+    return Array.from(root.querySelectorAll(${selector})).some((control) => {
+      if (!(control instanceof HTMLElement)) return false;
+      if (control.isConnected === false || control.hidden || control.getAttribute('aria-hidden') === 'true') {
+        return false;
+      }
+      const rect = control.getBoundingClientRect?.();
+      if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+      const style = window.getComputedStyle?.(control);
+      if (!style) return true;
+      return (
+        style.display !== 'none' &&
+        style.visibility !== 'hidden' &&
+        style.visibility !== 'collapse' &&
+        Number.parseFloat(style.opacity || '1') > 0
+      );
+    });
+  };`;
+}
+
 // Watchdog poll cadence. Tight (400ms) by default so completion/challenge
 // detection stays prompt. While a thinking indicator is CONFIRMED active the
 // answer provably cannot be final yet, so the poll widens to shed CDP load on
@@ -325,6 +412,12 @@ type AssistantCompletionState = {
   stopVisible: boolean;
   completionVisible: boolean;
   /**
+   * Completion controls captured from the same DOM turn as the candidate text.
+   * This is stronger than the independent page-wide completion probe because
+   * it cannot accidentally describe a different assistant turn.
+   */
+  exactTurnComplete?: boolean;
+  /**
    * True when a ChatGPT "Pro thinking" / reasoning indicator is active for the
    * latest assistant turn. During Pro thinking the stop button legitimately
    * disappears while a short streamed preamble is visible, so stop-button
@@ -383,6 +476,7 @@ const isFinishedAssistantSnapshotStable = ({
 function shouldAcceptStableAssistantSnapshot({
   stopVisible,
   completionVisible,
+  exactTurnComplete = false,
   thinkingActive,
   currentLength,
   stableCycles,
@@ -399,7 +493,7 @@ function shouldAcceptStableAssistantSnapshot({
   const compactAnswer = shortAnswer || mediumAnswer;
   const stableEnough = stableCycles >= requiredStableCycles && stableMs >= minStableMs;
   const completionEnough =
-    completionVisible &&
+    (completionVisible || exactTurnComplete) &&
     isFinishedAssistantSnapshotStable({
       currentLength,
       stableCycles,
@@ -475,12 +569,14 @@ export async function waitForAssistantResponse(
   logger: BrowserLogger,
   minTurnIndex?: number,
   expectedConversationId?: string,
+  elapsedBaselineMs = 0,
 ): Promise<{
   text: string;
   html?: string;
   meta: { turnId?: string | null; messageId?: string | null };
 }> {
   const start = Date.now();
+  const normalizedElapsedBaselineMs = Math.max(0, elapsedBaselineMs);
   logger("Waiting for ChatGPT response");
   // Learned: two paths are needed:
   // 1) DOM observer (fast when mutations fire),
@@ -489,6 +585,7 @@ export async function waitForAssistantResponse(
     timeoutMs,
     minTurnIndex,
     expectedConversationId,
+    normalizedElapsedBaselineMs,
   );
   const evaluationPromise = Runtime.evaluate({
     expression,
@@ -510,6 +607,7 @@ export async function waitForAssistantResponse(
     minTurnIndex,
     expectedConversationId,
     pollerAbort.signal,
+    normalizedElapsedBaselineMs,
   ).then(
     (value) => ({ kind: "poll" as const, value }),
     (error) => {
@@ -560,7 +658,7 @@ export async function waitForAssistantResponse(
           logger,
           minTurnIndex,
           expectedConversationId,
-          Date.now() - start,
+          normalizedElapsedBaselineMs + (Date.now() - start),
         );
         if (recovered) {
           return recovered;
@@ -588,7 +686,7 @@ export async function waitForAssistantResponse(
         logger,
         minTurnIndex,
         expectedConversationId,
-        Date.now() - start,
+        normalizedElapsedBaselineMs + (Date.now() - start),
       );
       if (recovered) {
         return recovered;
@@ -621,8 +719,9 @@ export async function waitForAssistantResponse(
     return candidate;
   }
   // The evaluation path can race ahead of completion. If ChatGPT is still streaming, wait for the watchdog poller.
-  const elapsedMs = Date.now() - start;
-  const remainingMs = Math.max(0, timeoutMs - elapsedMs);
+  const localElapsedMs = Date.now() - start;
+  const totalElapsedMs = normalizedElapsedBaselineMs + localElapsedMs;
+  const remainingMs = Math.max(0, timeoutMs - localElapsedMs);
   const candidateText = String(candidate?.text ?? "").trim();
   const suspiciouslyShort = isImplausiblyShortAnswer(candidateText.length);
   if (remainingMs > 0) {
@@ -677,7 +776,7 @@ export async function waitForAssistantResponse(
         minTurnIndex,
         expectedConversationId,
         undefined,
-        elapsedMs,
+        totalElapsedMs,
       );
       if (completed && String(completed.text ?? "").trim().length >= candidateText.length) {
         return completed;
@@ -713,7 +812,8 @@ export async function waitForAssistantResponse(
       const stillStreaming =
         (firstRead?.text ?? "") !== (secondRead?.text ?? "") || stopNow || thinkingNow;
       if (stillStreaming || completionNow) {
-        const remainingBudgetMs = Math.max(0, timeoutMs - (Date.now() - start));
+        const lateLocalElapsedMs = Date.now() - start;
+        const remainingBudgetMs = Math.max(0, timeoutMs - lateLocalElapsedMs);
         if (stillStreaming && remainingBudgetMs > 0) {
           logger("Calm classification was stale; generation resumed — extending confirmation");
           const lateCompleted = await pollAssistantCompletion(
@@ -722,7 +822,7 @@ export async function waitForAssistantResponse(
             minTurnIndex,
             expectedConversationId,
             undefined,
-            Date.now() - start,
+            normalizedElapsedBaselineMs + lateLocalElapsedMs,
           );
           if (
             lateCompleted &&
@@ -745,7 +845,8 @@ export async function waitForAssistantResponse(
       }
       if (
         suspiciouslyShort ||
-        (preambleSizedCandidate && Date.now() - start >= COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS)
+        (preambleSizedCandidate &&
+          normalizedElapsedBaselineMs + (Date.now() - start) >= COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS)
       ) {
         await logDomFailure(Runtime, logger, "assistant-response-unconfirmed-completion");
         throw new Error(
@@ -902,6 +1003,10 @@ export function buildAssistantExtractorForTest(name: string): string {
   return buildAssistantExtractor(name);
 }
 
+export function buildSafeCollapsibleExpansionPredicateForTest(name: string): string {
+  return buildSafeCollapsibleExpansionPredicate(name);
+}
+
 export function buildAssistantSnapshotExpressionForTest(
   minTurnIndex?: number,
   expectedConversationId?: string,
@@ -927,6 +1032,7 @@ export function normalizeAssistantSnapshotForTest(
   text: string;
   html?: string;
   meta: { turnId?: string | null; messageId?: string | null };
+  turnComplete?: boolean;
 } | null {
   return normalizeAssistantSnapshot(snapshot);
 }
@@ -949,8 +1055,14 @@ export function buildResponseObserverExpressionForTest(
   timeoutMs = 60_000,
   minTurnIndex?: number,
   expectedConversationId?: string,
+  elapsedBaselineMs = 0,
 ): string {
-  return buildResponseObserverExpression(timeoutMs, minTurnIndex, expectedConversationId);
+  return buildResponseObserverExpression(
+    timeoutMs,
+    minTurnIndex,
+    expectedConversationId,
+    elapsedBaselineMs,
+  );
 }
 
 async function recoverAssistantResponse(
@@ -985,13 +1097,36 @@ async function recoverAssistantResponse(
     if (isImplausiblyShortAnswer(recovered.text.length)) {
       logger("Recovered an implausibly short response; waiting for completion proof");
       const remainingMs = Math.max(0, recoveryTimeoutMs - (Date.now() - recoveryStartedAt));
-      return pollAssistantCompletion(Runtime, remainingMs, minTurnIndex, expectedConversationId);
+      return pollAssistantCompletion(
+        Runtime,
+        remainingMs,
+        minTurnIndex,
+        expectedConversationId,
+        undefined,
+        recoveryElapsedBaseline(elapsedBaselineMs, recoveryStartedAt, Date.now()),
+      );
     }
     logger("Recovered assistant response via polling fallback");
     return recovered;
   }
   await logConversationSnapshot(Runtime, logger).catch(() => undefined);
   return null;
+}
+
+function recoveryElapsedBaseline(
+  elapsedBaselineMs: number,
+  recoveryStartedAt: number,
+  now: number,
+): number {
+  return Math.max(0, elapsedBaselineMs) + Math.max(0, now - recoveryStartedAt);
+}
+
+export function recoveryElapsedBaselineForTest(
+  elapsedBaselineMs: number,
+  recoveryStartedAt: number,
+  now: number,
+): number {
+  return recoveryElapsedBaseline(elapsedBaselineMs, recoveryStartedAt, now);
 }
 
 async function parseAssistantEvaluationResult(
@@ -1107,10 +1242,15 @@ async function refreshAssistantSnapshot(
   if (
     !shouldReplaceAssistantSnapshot({ currentLength, latestLength, hasBetterId, hasDifferentText })
   ) {
-    // The re-read may still carry the message/turn ids the candidate lacks
-    // (e.g. the candidate came from the markdown fallback): keep the longer
-    // candidate text but adopt the ids so exact-turn copy targeting works.
-    if (hasBetterId) {
+    // The re-read may carry message/turn ids the candidate lacks (e.g. the
+    // candidate came from the markdown fallback), but identity metadata is
+    // load-bearing: never graft ids from a different latest assistant turn
+    // onto already-captured text. Only equivalent text may borrow those ids;
+    // otherwise keep the safe text-only candidate and skip exact-turn copy.
+    if (
+      hasBetterId &&
+      canAdoptAssistantSnapshotIdentity(current.text, best.text, current.meta, best.meta)
+    ) {
       logger("Adopted message ids from latest snapshot without replacing text");
       return {
         ...current,
@@ -1125,6 +1265,45 @@ async function refreshAssistantSnapshot(
   }
   logger("Refreshed assistant response via latest snapshot");
   return best;
+}
+
+function normalizeAssistantIdentityText(text: string): string {
+  return cleanAssistantText(text).replace(/\s+/g, " ").trim();
+}
+
+function canAdoptAssistantSnapshotIdentity(
+  currentText: string,
+  latestText: string,
+  currentMeta: { turnId?: string | null } = {},
+  latestMeta: { turnId?: string | null } = {},
+): boolean {
+  if (currentMeta.turnId && latestMeta.turnId && currentMeta.turnId !== latestMeta.turnId) {
+    return false;
+  }
+  const current = normalizeAssistantIdentityText(currentText);
+  const latest = normalizeAssistantIdentityText(latestText);
+  if (!current || !latest) return false;
+  if (current === latest) return true;
+
+  // Permit only near-complete prefix/suffix truncation from the same render.
+  // A high ratio plus a meaningful minimum prevents generic short snippets
+  // (headings, teasers, status text) from donating another turn's identity.
+  const shorter = current.length <= latest.length ? current : latest;
+  const longer = current.length > latest.length ? current : latest;
+  return (
+    shorter.length >= 64 &&
+    shorter.length / longer.length >= 0.9 &&
+    (longer.startsWith(shorter) || longer.endsWith(shorter))
+  );
+}
+
+export function canAdoptAssistantSnapshotIdentityForTest(
+  currentText: string,
+  latestText: string,
+  currentMeta: { turnId?: string | null } = {},
+  latestMeta: { turnId?: string | null } = {},
+): boolean {
+  return canAdoptAssistantSnapshotIdentity(currentText, latestText, currentMeta, latestMeta);
 }
 
 /**
@@ -1233,6 +1412,10 @@ async function pollAssistantCompletion(
       const accepted = shouldAcceptStableAssistantSnapshot({
         stopVisible,
         completionVisible,
+        // The extractor computes this on the exact outer turn that supplied
+        // normalized.text. Keep it separate from completionVisible, whose
+        // independent last-turn lookup can miss during a ChatGPT DOM re-render.
+        exactTurnComplete: normalized.turnComplete === true,
         thinkingActive,
         currentLength,
         stableCycles,
@@ -1350,6 +1533,7 @@ async function isCompletionVisible(Runtime: ChromeClient["Runtime"]): Promise<bo
 
 function buildCompletionVisibleExpression(): string {
   return `(() => {
+    ${buildVisibleFinishedActionPredicateJs("hasVisibleFinishedAction")}
     // Find the LAST assistant turn to check completion status
     // Must match the same logic as buildAssistantExtractor for consistency
     const ASSISTANT_SELECTOR = '${ASSISTANT_ROLE_SELECTOR}';
@@ -1379,7 +1563,7 @@ function buildCompletionVisibleExpression(): string {
       lastAssistantTurn.closest('article[data-testid^="conversation-turn"], section[data-testid^="conversation-turn"], div[data-testid^="conversation-turn"]') ||
       lastAssistantTurn;
     // Check if the last assistant turn has finished action buttons (copy, thumbs up/down, share)
-    if (turnScope.querySelector('${FINISHED_ACTIONS_SELECTOR}')) {
+    if (hasVisibleFinishedAction(turnScope)) {
       return true;
     }
     // Also check for "Done" text in the last assistant turn's markdown
@@ -1392,6 +1576,7 @@ function normalizeAssistantSnapshot(snapshot: AssistantSnapshot | null): {
   text: string;
   html?: string;
   meta: { turnId?: string | null; messageId?: string | null };
+  turnComplete?: boolean;
 } | null {
   const text = snapshot?.text ? cleanAssistantText(snapshot.text) : "";
   if (!text.trim()) {
@@ -1417,6 +1602,7 @@ function normalizeAssistantSnapshot(snapshot: AssistantSnapshot | null): {
     text,
     html: snapshot?.html ?? undefined,
     meta: { turnId: snapshot?.turnId ?? undefined, messageId: snapshot?.messageId ?? undefined },
+    turnComplete: snapshot?.turnComplete === true,
   };
 }
 
@@ -1481,6 +1667,7 @@ function buildResponseObserverExpression(
   timeoutMs: number,
   minTurnIndex?: number,
   expectedConversationId?: string,
+  elapsedBaselineMs = 0,
 ): string {
   const selectorsLiteral = JSON.stringify(ANSWER_SELECTORS);
   const assistantLiteral = JSON.stringify(ASSISTANT_ROLE_SELECTOR);
@@ -1493,15 +1680,18 @@ function buildResponseObserverExpression(
     ? JSON.stringify(normalizedExpectedConversationId)
     : "null";
   const currentConversationIdExpression = buildConversationIdFromHrefExpression("href");
+  const normalizedElapsedBaselineMs = Math.max(0, elapsedBaselineMs);
   return `(() => {
     ${buildClickDispatcher()}
     const SELECTORS = ${selectorsLiteral};
     const STOP_SELECTOR = ${JSON.stringify(STOP_CONTROL_SELECTOR)};
     const FINISHED_SELECTOR = '${FINISHED_ACTIONS_SELECTOR}';
+    ${buildVisibleFinishedActionPredicateJs("hasVisibleFinishedAction")}
     const PREAMBLE_SIZED_ANSWER_CHARS = ${PREAMBLE_SIZED_ANSWER_CHARS};
     const PREAMBLE_COMPLETION_STABLE_MS = ${PREAMBLE_COMPLETION_STABLE_MS};
     const NONCOMPACT_ACCEPT_CONFIRM_SAMPLES = ${NONCOMPACT_ACCEPT_CONFIRM_SAMPLES};
     const COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS = ${COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS};
+    const ELAPSED_BASELINE_MS = ${normalizedElapsedBaselineMs};
     const isFinishedSnapshotStable = ${isFinishedAssistantSnapshotStable.toString()};
     // Anchor for every elapsed-time gate in this expression. waitForSettle can
     // start minutes into the wait (captureViaObserver resolves only when the
@@ -1644,7 +1834,7 @@ function buildResponseObserverExpression(
         lastAssistantTurn.closest('article[data-testid^="conversation-turn"], section[data-testid^="conversation-turn"], div[data-testid^="conversation-turn"]') ||
         lastAssistantTurn;
       // Check for action buttons in this specific turn
-      if (turnScope.querySelector(FINISHED_SELECTOR)) return true;
+      if (hasVisibleFinishedAction(turnScope)) return true;
       // Check for "Done" text in this turn's markdown
       const markdowns = turnScope.querySelectorAll('.markdown');
       return Array.from(markdowns).some((n) => (n.textContent || '').trim() === 'Done');
@@ -1741,7 +1931,11 @@ function buildResponseObserverExpression(
         const minStableMs =
           size.shortAnswer ? 8_000 : size.mediumAnswer ? 1_200 : size.longAnswer ? 2_000 : 3_000;
         const stopVisible = Boolean(document.querySelector(STOP_SELECTOR));
-        const finishedVisible = isLastAssistantTurnFinished();
+        // Prefer the completion control captured from the exact turn that also
+        // supplied the candidate text. The independent last-turn lookup is a
+        // compatibility fallback for layouts whose extractor lacks the flag.
+        const finishedVisible =
+          refreshed?.turnComplete === true || isLastAssistantTurnFinished();
         const thinkingActive = isThinkingIndicatorActive();
         const idleMs = Date.now() - lastChangeAt;
 
@@ -1814,7 +2008,7 @@ function buildResponseObserverExpression(
             compactAnswer &&
             !size.ultraShortAnswer &&
             !sawThinking &&
-            Date.now() - waitStartedAt < COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS
+            ELAPSED_BASELINE_MS + (Date.now() - waitStartedAt) < COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS
           ) {
             break;
           }
@@ -1833,11 +2027,16 @@ function buildResponseObserverExpression(
         finalCompact &&
         !finalSize.ultraShortAnswer &&
         (completionAccepted ||
-          (!sawThinking && Date.now() - waitStartedAt < COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS))
+          (!sawThinking &&
+            ELAPSED_BASELINE_MS + (Date.now() - waitStartedAt) <
+              COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS))
       ) {
         return latest ?? snapshot;
       }
-      if (completionAccepted && isLastAssistantTurnFinished()) {
+      if (
+        completionAccepted &&
+        (latest?.turnComplete === true || isLastAssistantTurnFinished())
+      ) {
         return latest ?? snapshot;
       }
       return null;
@@ -1872,6 +2071,8 @@ function buildAssistantExtractor(functionName: string): string {
   const assistantLiteral = JSON.stringify(ASSISTANT_ROLE_SELECTOR);
   return `const ${functionName} = () => {
     ${buildClickDispatcher()}
+    ${buildSafeCollapsibleExpansionPredicate("shouldExpandCollapsible")}
+    ${buildVisibleFinishedActionPredicateJs("hasVisibleFinishedAction")}
     const ASSISTANT_SELECTOR = ${assistantLiteral};
     const isAssistantTurn = (node) => {
       if (!(node instanceof HTMLElement)) return false;
@@ -1905,15 +2106,7 @@ function buildAssistantExtractor(functionName: string): string {
     const expandCollapsibles = (root) => {
       const buttons = Array.from(root.querySelectorAll('button'));
       for (const button of buttons) {
-        const label = (button.textContent || '').toLowerCase();
-        const testid = (button.getAttribute('data-testid') || '').toLowerCase();
-        if (
-          label.includes('more') ||
-          label.includes('expand') ||
-          label.includes('show') ||
-          testid.includes('markdown') ||
-          testid.includes('toggle')
-        ) {
+        if (shouldExpandCollapsible(button)) {
           dispatchClickSequence(button);
         }
       }
@@ -1943,7 +2136,7 @@ function buildAssistantExtractor(functionName: string): string {
       // Finished-action controls only render once the turn is complete. Carry
       // this so downstream placeholder screening can tell a real one-word answer
       // ("Reading") from the live thinking-status placeholder of the same shape.
-      const turnComplete = Boolean(turn.querySelector?.('${FINISHED_ACTIONS_SELECTOR}'));
+      const turnComplete = hasVisibleFinishedAction(turn);
       const messageRoot = turn.querySelector(ASSISTANT_SELECTOR) ?? turn;
       expandCollapsibles(messageRoot);
       const preferred =
@@ -1996,6 +2189,7 @@ function buildMarkdownFallbackExtractor(minTurnLiteral?: string): string {
     : "null";
   return `(() => {
     const __minTurn = ${turnIndexValue};
+    ${buildVisibleFinishedActionPredicateJs("hasVisibleFinishedAction")}
     const roots = [
       document.querySelector('section[data-testid="screen-threadFlyOut"]'),
       document.querySelector('[data-testid="chat-thread"]'),
@@ -2142,7 +2336,7 @@ function buildMarkdownFallbackExtractor(minTurnLiteral?: string): string {
       const afterLatestUser = isAfterLatestUserTurn(node);
       const turnContainer =
         node.closest?.(CONVERSATION_SELECTOR) || node.closest?.('[data-message-author-role], [data-turn]');
-      const turnComplete = Boolean(turnContainer?.querySelector?.('${FINISHED_ACTIONS_SELECTOR}'));
+      const turnComplete = hasVisibleFinishedAction(turnContainer);
       return { text, html, messageId: null, turnId: null, turnIndex, afterLatestUser, turnComplete };
     }
     return null;

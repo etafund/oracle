@@ -2,6 +2,7 @@ import { mkdtemp, rm, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import net from "node:net";
+import { randomUUID } from "node:crypto";
 import { resolveBrowserConfig } from "./config.js";
 import { copyChromeProfile } from "./profileCopy.js";
 import type {
@@ -40,6 +41,7 @@ import {
   ensureModelSelection,
   isRefreshableModelSelectionError,
   clearPromptComposer,
+  bindActiveComposerAttachments,
   waitForAssistantResponse,
   captureAssistantMarkdown,
   clearComposerAttachments,
@@ -73,6 +75,12 @@ import type { BrowserModelSelectionEvidence } from "../sessionStore.js";
 import { CHATGPT_URL, DEFAULT_MODEL_STRATEGY } from "./constants.js";
 import type { LaunchedChrome } from "chrome-launcher";
 import { BrowserAutomationError } from "../oracle/errors.js";
+import {
+  assertCapturedAnswerNotAccessArtifact,
+  assertPreResultAccessState,
+  assertPreRunAccessState,
+} from "./actions/challengeDetection.js";
+import { assertNotQuarantined } from "./quarantineLatch.js";
 import { alignPromptEchoPair, buildPromptEchoMatcher } from "./reattachHelpers.js";
 import { buildConversationTurnCountExpression } from "./conversationTurns.js";
 import type { ProfileRunLock } from "./profileState.js";
@@ -102,7 +110,7 @@ import {
 import { collectGeneratedImageArtifacts } from "./chatgptImages.js";
 import { collectChatGptFileArtifacts } from "./chatgptFiles.js";
 import { runProviderSubmissionFlow } from "./providerDomFlow.js";
-import { chatgptDomProvider } from "./providers/index.js";
+import { chatgptDomProvider, readGpt56SolProRouteReadOnly } from "./providers/index.js";
 import { resolveAttachRunningConnection } from "./attachRunning.js";
 import { connectToExistingChatGptTab } from "./liveTabs.js";
 import { captureBrowserDiagnostics } from "./domDebug.js";
@@ -126,6 +134,7 @@ import {
   decideConversationUrlAdoption,
   extractConversationIdFromUrl,
   isConversationUrl,
+  normalizeChatGptConversationId,
 } from "./conversationIdentity.js";
 import {
   assertCapturedAssistantResponseBound,
@@ -161,7 +170,13 @@ export function redactBrowserConfigForDebugLogForTest(
 
 function isCloudflareChallengeError(error: unknown): error is BrowserAutomationError {
   if (!(error instanceof BrowserAutomationError)) return false;
-  return (error.details as { stage?: string } | undefined)?.stage === "cloudflare-challenge";
+  const details = error.details as { stage?: string; state?: string } | undefined;
+  return (
+    details?.stage === "cloudflare-challenge" ||
+    details?.stage === "account-quarantine" ||
+    (details?.stage === "challenge-gate" &&
+      (details.state === "verification_interstitial" || details.state === "account_security_block"))
+  );
 }
 
 function isReattachableCaptureError(error: unknown): error is BrowserAutomationError {
@@ -563,6 +578,46 @@ async function saveOptionalArtifact<T>(
   }
 }
 
+async function preserveChallengeOverPageFailure<T>(
+  operation: Promise<T>,
+  runtime: ChromeClient["Runtime"],
+  logger: BrowserLogger,
+  options: { accountId?: string; sessionId?: string },
+): Promise<T> {
+  try {
+    return await operation;
+  } catch (error) {
+    throw await preferChallengeOverPageFailure(error, runtime, logger, options);
+  }
+}
+
+async function preferChallengeOverPageFailure(
+  error: unknown,
+  runtime: ChromeClient["Runtime"],
+  logger: BrowserLogger,
+  options: { accountId?: string; sessionId?: string },
+): Promise<unknown> {
+  // Canonical challenge errors have already passed through the account gate,
+  // which publishes the latch before throwing. Re-probing them would hit that
+  // new latch first and replace the exact challenge error with a generic
+  // account-quarantine refusal, losing the preservation classification and
+  // causing the manual-clearance target to be closed under always-close
+  // policy. Only generic page failures need upgrading.
+  if (isCloudflareChallengeError(error)) return error;
+  try {
+    // A navigation/capture wait can fail because a challenge replaced the
+    // document. Let the read-only typed account gate outrank the generic
+    // timeout; a healthy/indeterminate probe preserves the exact original.
+    await assertPreResultAccessState(runtime, logger, {
+      quarantine: { accountId: options.accountId },
+      sessionId: options.sessionId,
+    });
+  } catch (accessError) {
+    return accessError;
+  }
+  return error;
+}
+
 type AssistantAnswer = {
   text: string;
   html?: string;
@@ -591,30 +646,60 @@ async function waitForAssistantOrGeneratedImageResponse(params: {
   expectedConversationId?: string;
   imageOutputRequested: boolean;
   logger: BrowserLogger;
+  accountId?: string;
+  sessionId?: string;
 }): Promise<AssistantAnswer> {
   if (!params.imageOutputRequested) {
     return params.waitForText();
   }
 
+  await assertNotQuarantined({ accountId: params.accountId });
   params.logger("[browser] Waiting for ChatGPT generated image response.");
-  const response = await pollGeneratedImageOrTextAssistantResponse(
-    params.Runtime,
-    params.timeoutMs,
-    params.minTurnIndex,
-    params.expectedConversationId,
-  );
+  let response: AssistantAnswer | null;
+  try {
+    response = await pollGeneratedImageOrTextAssistantResponse(
+      params.Runtime,
+      params.timeoutMs,
+      params.minTurnIndex,
+      params.expectedConversationId,
+    );
+  } catch (error) {
+    await assertPreResultAccessState(params.Runtime, params.logger, {
+      quarantine: { accountId: params.accountId },
+      sessionId: params.sessionId,
+    });
+    throw error;
+  }
   if (response) {
     // Image-request runs use the snapshot poller directly instead of the
     // pageActions text-capture facade. Apply the same post-capture structural
     // binding here so an image (or text fallback) from another shared tab can
     // never bypass the submitted-message ownership proof.
-    await assertCapturedAssistantResponseBound(params.Runtime, response.meta, params.logger);
+    await preserveChallengeOverPageFailure(
+      assertCapturedAssistantResponseBound(params.Runtime, response.meta, params.logger),
+      params.Runtime,
+      params.logger,
+      { accountId: params.accountId, sessionId: params.sessionId },
+    );
+    await assertCapturedAnswerNotAccessArtifact(
+      params.Runtime,
+      { text: response.text, html: response.html },
+      params.logger,
+      {
+        quarantine: { accountId: params.accountId },
+        sessionId: params.sessionId,
+      },
+    );
     if (response.html?.includes("/backend-api/estuary/content?id=file_")) {
       params.logger("[browser] Captured generated image response before text appeared.");
     }
     return response;
   }
 
+  await assertPreResultAccessState(params.Runtime, params.logger, {
+    quarantine: { accountId: params.accountId },
+    sessionId: params.sessionId,
+  });
   throw new Error("assistant response timeout while waiting for generated image or text");
 }
 
@@ -965,6 +1050,7 @@ function shouldCloseOwnedRunTargetAfterRun(options: {
   keepBrowser: boolean;
   policy?: BrowserCloseOwnedRunTargetPolicy;
   orphanedTargetNeedsCleanup?: boolean;
+  preserveOwnedTargetOnError?: boolean;
 }): boolean {
   if (!options.ownsTarget) {
     // Borrowed (attached) tab: never close a target this run did not create.
@@ -977,14 +1063,37 @@ function shouldCloseOwnedRunTargetAfterRun(options: {
     // attempted-run policy would preserve tabs for reattach.
     return true;
   }
+  if (options.runStatus === "attempted" && options.preserveOwnedTargetOnError) {
+    // A headful verification wall must remain on the exact tab the operator
+    // was told to solve; capture-timeout preservation likewise needs that tab
+    // for reattach. The caller retains its lease while the target remains.
+    return false;
+  }
   if ((options.policy ?? "auto") === "always") {
     // serve/manual-login policy: the shared browser stays alive, but THIS
     // run's owned target closes on success AND failure so per-run tabs cannot
-    // structurally accumulate. preserveBrowserOnError (e.g. a Cloudflare
-    // challenge) keeps Chrome running, NOT the tab.
+    // structurally accumulate unless an explicitly preserved error above
+    // requires the exact target for human clearance or capture reattach.
     return true;
   }
   return options.runStatus === "complete" && !options.keepBrowser;
+}
+
+function shouldRetainBrowserTabLeaseAfterRun(options: {
+  runStatus: "attempted" | "complete";
+  ownsTarget: boolean;
+  preserveOwnedTargetOnError?: boolean;
+  orphanedTargetNeedsCleanup?: boolean;
+}): boolean {
+  // Preserving an owned tab without its lease would advertise capacity that
+  // is still physically occupied. Borrowed tabs do not belong to this run,
+  // while orphaned targets must take the mandatory close-before-release path.
+  return (
+    options.runStatus === "attempted" &&
+    options.ownsTarget &&
+    options.preserveOwnedTargetOnError === true &&
+    !options.orphanedTargetNeedsCleanup
+  );
 }
 
 function resolveCloseOwnedRunTargetPolicy(config: {
@@ -1245,6 +1354,69 @@ async function verifyProtectedSolProSelectionForSubmit({
   const evidence = mergeModeSelectionEvidence(modelEvidence, modeEvidence);
   assertProtectedSolProEvidence(desiredModel, evidence);
   return evidence;
+}
+
+async function assertProtectedSolProSelectionReadOnlyBeforeSubmit({
+  desiredModel,
+  runtime,
+  logger,
+  attachmentBindingToken,
+  composerBindingToken,
+}: {
+  desiredModel: string | null | undefined;
+  runtime: ChromeClient["Runtime"];
+  logger: BrowserLogger;
+  attachmentBindingToken?: string;
+  composerBindingToken?: string;
+}): Promise<void> {
+  if (!isDesiredGpt56SolModel(desiredModel)) return;
+  const evidence = await readGpt56SolProRouteReadOnly(
+    runtime,
+    attachmentBindingToken,
+    composerBindingToken,
+  );
+  if (!evidence.verified) {
+    throw new BrowserAutomationError(
+      "GPT-5.6 Sol + Pro could not be verified on the exact dispatch composer; refusing to submit.",
+      {
+        stage: "model-selection",
+        code: "protected-route-readonly-unverified",
+        composerBindingVerified: evidence.composerBindingVerified,
+        modelVerified: evidence.modelVerified,
+        modeVerified: evidence.modeVerified,
+        modelSignalCount: evidence.modelSignals.length,
+        modeSignalCount: evidence.modeSignals.length,
+      },
+    );
+  }
+  logger("Protected route: GPT-5.6 Sol + Pro verified read-only at the dispatch boundary");
+}
+
+async function prepareSubmissionComposerWithProtectedRoute({
+  hasAttachments,
+  verifyProtectedRoute,
+  prepareComposer,
+  prepareMutatingComposerMode,
+  prepareAttachments,
+}: {
+  hasAttachments: boolean;
+  verifyProtectedRoute: () => Promise<void>;
+  prepareComposer: () => Promise<void>;
+  prepareMutatingComposerMode: () => Promise<void>;
+  prepareAttachments: () => Promise<void>;
+}): Promise<void> {
+  // Model/mode selection and Deep Research activation are allowed to remount
+  // the ChatGPT composer. For an attachment-bearing run they therefore must
+  // happen before file registration; text-only runs keep their historical
+  // preparation -> Deep Research -> last-moment selection order.
+  if (hasAttachments) await verifyProtectedRoute();
+  await prepareComposer();
+  if (hasAttachments) await prepareMutatingComposerMode();
+  await prepareAttachments();
+  if (!hasAttachments) {
+    await prepareMutatingComposerMode();
+    await verifyProtectedRoute();
+  }
 }
 
 function isDesiredChatGptProModel(model: string | null | undefined): boolean {
@@ -1801,9 +1973,23 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           navigateToChatGPT(Page, Runtime, config.resumeConversationUrl as string, logger),
         );
       }
-      await raceWithDisconnect(ensureNotBlocked(Runtime, config.headless, logger));
-      await raceWithDisconnect(ensureLoggedIn(Runtime, logger));
-      await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+      await raceWithDisconnect(
+        ensureNotBlocked(Runtime, config.headless, logger, {
+          quarantine: { accountId: options.accountId },
+          sessionId: options.sessionId,
+        }),
+      );
+      await raceWithDisconnect(
+        preserveChallengeOverPageFailure(
+          (async () => {
+            await ensureLoggedIn(Runtime, logger);
+            await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
+          })(),
+          Runtime,
+          logger,
+          { accountId: options.accountId, sessionId: options.sessionId },
+        ),
+      );
       if (isResumingConversation) {
         await raceWithDisconnect(
           waitForResumedConversationHydration(Runtime, config.inputTimeoutMs, logger, {
@@ -1817,25 +2003,47 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       // First load the base ChatGPT homepage to satisfy potential interstitials,
       // then hop to the requested URL if it differs.
       await raceWithDisconnect(navigateToChatGPT(Page, Runtime, baseUrl, logger));
-      await raceWithDisconnect(ensureNotBlocked(Runtime, config.headless, logger));
+      await raceWithDisconnect(
+        ensureNotBlocked(Runtime, config.headless, logger, {
+          quarantine: { accountId: options.accountId },
+          sessionId: options.sessionId,
+        }),
+      );
       // Learned: login checks must happen on the base domain before jumping into project URLs.
       await raceWithDisconnect(
-        waitForLogin({
-          runtime: Runtime,
+        preserveChallengeOverPageFailure(
+          waitForLogin({
+            runtime: Runtime,
+            logger,
+            appliedCookies,
+            manualLogin,
+            timeoutMs: config.timeoutMs,
+            profileDir: userDataDir,
+            keepBrowser: effectiveKeepBrowser,
+          }),
+          Runtime,
           logger,
-          appliedCookies,
-          manualLogin,
-          timeoutMs: config.timeoutMs,
-          profileDir: userDataDir,
-          keepBrowser: effectiveKeepBrowser,
-        }),
+          { accountId: options.accountId, sessionId: options.sessionId },
+        ),
       );
 
       const targetUrl = config.resumeConversationUrl ?? config.url;
       if (isResumingConversation) {
         await raceWithDisconnect(navigateToChatGPT(Page, Runtime, targetUrl, logger));
-        await raceWithDisconnect(ensureNotBlocked(Runtime, config.headless, logger));
-        await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+        await raceWithDisconnect(
+          ensureNotBlocked(Runtime, config.headless, logger, {
+            quarantine: { accountId: options.accountId },
+            sessionId: options.sessionId,
+          }),
+        );
+        await raceWithDisconnect(
+          preserveChallengeOverPageFailure(
+            ensurePromptReady(Runtime, config.inputTimeoutMs, logger),
+            Runtime,
+            logger,
+            { accountId: options.accountId, sessionId: options.sessionId },
+          ),
+        );
       } else if (targetUrl !== baseUrl) {
         await raceWithDisconnect(
           navigateToPromptReadyWithFallback(Page, Runtime, {
@@ -1844,10 +2052,19 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
             timeoutMs: config.inputTimeoutMs,
             headless: config.headless,
             logger,
+            accountId: options.accountId,
+            sessionId: options.sessionId,
           }),
         );
       } else {
-        await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+        await raceWithDisconnect(
+          preserveChallengeOverPageFailure(
+            ensurePromptReady(Runtime, config.inputTimeoutMs, logger),
+            Runtime,
+            logger,
+            { accountId: options.accountId, sessionId: options.sessionId },
+          ),
+        );
       }
       if (isResumingConversation) {
         // A resumed thread loads its prior history after navigation; ChatGPT can reset the
@@ -1947,9 +2164,25 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         selectModel,
         refreshPage: async () => {
           await raceWithDisconnect(Page.reload({ ignoreCache: true }));
-          await raceWithDisconnect(ensureNotBlocked(Runtime, config.headless, logger));
-          await raceWithDisconnect(ensureLoggedIn(Runtime, logger));
-          await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+          await raceWithDisconnect(
+            preserveChallengeOverPageFailure(
+              (async () => {
+                await ensureNotBlocked(Runtime, config.headless, logger, {
+                  quarantine: { accountId: options.accountId },
+                  sessionId: options.sessionId,
+                });
+                await assertPreRunAccessState(Runtime, logger, {
+                  quarantine: { accountId: options.accountId },
+                  sessionId: options.sessionId,
+                });
+                await ensureLoggedIn(Runtime, logger);
+                await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
+              })(),
+              Runtime,
+              logger,
+              { accountId: options.accountId, sessionId: options.sessionId },
+            ),
+          );
         },
         allowRefresh: shouldRefreshInitialModelPicker(config),
         logger,
@@ -2082,65 +2315,83 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         name: path.basename(a.path),
         generatedBundle: a.generatedBundle === true,
       }));
+      const attachmentBindingToken =
+        submissionAttachments.length > 0 ? `oracle-attachment-${randomUUID()}` : undefined;
       let inputOnlyAttachments = false;
-      await raceWithDisconnect(clearPromptComposer(Runtime, logger));
-      await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
-      if (submissionAttachments.length > 0) {
-        if (!DOM) {
-          throw new Error("Chrome DOM domain unavailable while uploading attachments.");
-        }
-        await clearComposerAttachments(Runtime, 5_000, logger);
-        for (
-          let attachmentIndex = 0;
-          attachmentIndex < submissionAttachments.length;
-          attachmentIndex += 1
-        ) {
-          const attachment = submissionAttachments[attachmentIndex];
-          logger(`Uploading attachment: ${attachment.displayPath}`);
-          const uiConfirmed = await uploadAttachmentFile(
-            { runtime: Runtime, dom: DOM, input: Input },
-            attachment,
-            logger,
-            { expectedCount: attachmentIndex + 1 },
-          );
-          if (!uiConfirmed) {
-            inputOnlyAttachments = true;
-          }
-          await delay(500);
-        }
-        // Scale timeout based on number of files: base 45s + 20s per additional file.
-        const baseTimeout = config.inputTimeoutMs ?? 30_000;
-        const perFileTimeout = 20_000;
-        const waitBudget =
-          Math.max(baseTimeout, 45_000) + (submissionAttachments.length - 1) * perFileTimeout;
-        const attachmentWaitBudget = Math.max(config.attachmentTimeoutMs ?? 0, waitBudget);
-        await waitForAttachmentCompletion(Runtime, attachmentWaitBudget, attachmentNames, logger);
-        logger("All attachments uploaded");
-      }
-      if (deepResearch) {
-        await raceWithDisconnect(
-          withRetries(() => activateDeepResearch(Runtime, Input, logger), {
-            retries: 2,
-            delayMs: 500,
-            onRetry: (attempt, error) => {
-              if (options.verbose) {
-                logger(
-                  `[retry] Deep Research activation attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
-                );
+      await prepareSubmissionComposerWithProtectedRoute({
+        hasAttachments: submissionAttachments.length > 0,
+        verifyProtectedRoute: verifyProtectedRouteBeforeSubmit,
+        prepareComposer: async () => {
+          await raceWithDisconnect(clearPromptComposer(Runtime, logger));
+          await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+        },
+        prepareAttachments: async () => {
+          if (submissionAttachments.length > 0) {
+            if (!DOM) {
+              throw new Error("Chrome DOM domain unavailable while uploading attachments.");
+            }
+            await clearComposerAttachments(Runtime, 5_000, logger);
+            for (
+              let attachmentIndex = 0;
+              attachmentIndex < submissionAttachments.length;
+              attachmentIndex += 1
+            ) {
+              const attachment = submissionAttachments[attachmentIndex];
+              logger(`Uploading attachment: ${attachment.displayPath}`);
+              const uiConfirmed = await uploadAttachmentFile(
+                { runtime: Runtime, dom: DOM, input: Input },
+                attachment,
+                logger,
+                { expectedCount: attachmentIndex + 1 },
+              );
+              if (!uiConfirmed) {
+                inputOnlyAttachments = true;
               }
-            },
-          }),
-        );
-        await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
-        logger(
-          `Prompt textarea ready (after Deep Research activation, ${prompt.length.toLocaleString()} chars queued)`,
-        );
-      }
-      // Re-read both protected-route axes at the last safe point before every
-      // submit attempt. runSubmissionWithRecovery calls submitOnce again after
-      // a reload/fallback, and follow-ups use the same closure, so neither path
-      // can inherit stale run-start evidence.
-      await verifyProtectedRouteBeforeSubmit();
+              await delay(500);
+            }
+            // Scale timeout based on number of files: base 45s + 20s per additional file.
+            const baseTimeout = config.inputTimeoutMs ?? 30_000;
+            const perFileTimeout = 20_000;
+            const waitBudget =
+              Math.max(baseTimeout, 45_000) + (submissionAttachments.length - 1) * perFileTimeout;
+            const attachmentWaitBudget = Math.max(config.attachmentTimeoutMs ?? 0, waitBudget);
+            await waitForAttachmentCompletion(
+              Runtime,
+              attachmentWaitBudget,
+              attachmentNames,
+              logger,
+            );
+            await bindActiveComposerAttachments(
+              Runtime,
+              attachmentExpectations,
+              attachmentBindingToken!,
+              logger,
+            );
+            logger("All attachments uploaded");
+          }
+        },
+        prepareMutatingComposerMode: async () => {
+          if (deepResearch) {
+            await raceWithDisconnect(
+              withRetries(() => activateDeepResearch(Runtime, Input, logger), {
+                retries: 2,
+                delayMs: 500,
+                onRetry: (attempt, error) => {
+                  if (options.verbose) {
+                    logger(
+                      `[retry] Deep Research activation attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
+                    );
+                  }
+                },
+              }),
+            );
+            await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+            logger(
+              `Prompt textarea ready (after Deep Research activation, ${prompt.length.toLocaleString()} chars queued)`,
+            );
+          }
+        },
+      });
       // Sol+Pro route verified before submit (the gate did not throw).
       emitRunProgressMarker("model_verified");
       let baselineTurns = await readConversationTurnCount(Runtime, logger);
@@ -2154,6 +2405,17 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         attachmentTimeoutMs: config.attachmentTimeoutMs ?? undefined,
         baselineTurns: baselineTurns ?? undefined,
         attachmentNames: attachmentExpectations,
+        attachmentBindingToken,
+        beforePromptSubmit: (composerBindingToken?: string) =>
+          assertProtectedSolProSelectionReadOnlyBeforeSubmit({
+            desiredModel: config.desiredModel,
+            runtime: Runtime,
+            logger,
+            attachmentBindingToken,
+            composerBindingToken,
+          }),
+        requireBoundSendTarget:
+          isDesiredGpt56SolModel(config.desiredModel) || submissionAttachments.length > 0,
         onPromptSubmitted: markPromptSubmitted,
         // Authoritative account id (server: options.accountId ?? env) so the
         // browser-side quarantine gates trip under the same identity the
@@ -2217,7 +2479,20 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     const reloadPromptComposer = async () => {
       logger("[browser] Composer became unresponsive; reloading page and retrying once.");
       await raceWithDisconnect(Page.reload({ ignoreCache: true }));
-      await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+      await raceWithDisconnect(
+        assertPreRunAccessState(Runtime, logger, {
+          quarantine: { accountId: options.accountId },
+          sessionId: options.sessionId,
+        }),
+      );
+      await raceWithDisconnect(
+        preserveChallengeOverPageFailure(
+          ensurePromptReady(Runtime, config.inputTimeoutMs, logger),
+          Runtime,
+          logger,
+          { accountId: options.accountId, sessionId: options.sessionId },
+        ),
+      );
     };
 
     let baselineTurns: number | null = null;
@@ -2231,7 +2506,14 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         attachments,
         fallbackSubmission,
         submit: (submissionPrompt, submissionAttachments) =>
-          raceWithDisconnect(submitOnce(submissionPrompt, submissionAttachments)),
+          raceWithDisconnect(
+            preserveChallengeOverPageFailure(
+              submitOnce(submissionPrompt, submissionAttachments),
+              Runtime,
+              logger,
+              { accountId: options.accountId, sessionId: options.sessionId },
+            ),
+          ),
         reloadPromptComposer,
         prepareFallbackSubmission: async () => {
           await raceWithDisconnect(clearPromptComposer(Runtime, logger));
@@ -2250,23 +2532,37 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     if (deepResearch) {
       await raceWithDisconnect(waitForResearchPlanAutoConfirm(Runtime, logger));
       const researchResult = await raceWithDisconnect(
-        waitForDeepResearchCompletion(
+        preserveChallengeOverPageFailure(
+          waitForDeepResearchCompletion(
+            Runtime,
+            logger,
+            config.timeoutMs,
+            baselineTurns,
+            Page,
+            client,
+            {
+              ignoredTargetKeys: deepResearchTargetKeys,
+              targetBaselineCaptured: deepResearchTargetBaselineCaptured,
+            },
+          ),
           Runtime,
           logger,
-          config.timeoutMs,
-          baselineTurns,
-          Page,
-          client,
+          { accountId: options.accountId, sessionId: options.sessionId },
+        ),
+      );
+      await raceWithDisconnect(
+        assertCapturedAnswerNotAccessArtifact(
+          Runtime,
+          { text: researchResult.text, html: researchResult.html },
+          logger,
           {
-            ignoredTargetKeys: deepResearchTargetKeys,
-            targetBaselineCaptured: deepResearchTargetBaselineCaptured,
+            quarantine: { accountId: options.accountId },
+            sessionId: options.sessionId,
           },
         ),
       );
       await updateConversationHint("post-deep-research", 15_000).catch(() => false);
       expectedConversationId();
-      runStatus = "complete";
-      emitRunProgressMarker("done");
       const durationMs = Date.now() - startedAt;
       const tokens = estimateTokenCount(researchResult.text);
       const reportArtifact = await saveOptionalArtifact(
@@ -2301,6 +2597,19 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         followUpCount: 0,
         requiredArtifactsSaved: Boolean(reportArtifact && transcriptArtifact),
       });
+      await raceWithDisconnect(
+        assertCapturedAnswerNotAccessArtifact(
+          Runtime,
+          { text: researchResult.text, html: researchResult.html },
+          logger,
+          {
+            quarantine: { accountId: options.accountId },
+            sessionId: options.sessionId,
+          },
+        ),
+      );
+      runStatus = "complete";
+      emitRunProgressMarker("done");
       return {
         answerText: researchResult.text,
         answerMarkdown: researchResult.text,
@@ -2380,7 +2689,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     };
     const recheckDelayMs = Math.max(0, config.assistantRecheckDelayMs ?? 0);
     const recheckTimeoutMs = Math.max(0, config.assistantRecheckTimeoutMs ?? 0);
-    const attemptAssistantRecheck = async () => {
+    const attemptAssistantRecheck = async (assistantWaitStartedAt: number) => {
       if (!recheckDelayMs) return null;
       logger(
         `[browser] Assistant response timed out; waiting ${formatElapsed(recheckDelayMs)} before rechecking conversation.`,
@@ -2394,10 +2703,22 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         logger(`[browser] Rechecking assistant response at ${conversationUrl}`);
         await raceWithDisconnect(Page.navigate({ url: conversationUrl }));
         await raceWithDisconnect(delay(1000));
+        await raceWithDisconnect(
+          assertPreRunAccessState(Runtime, logger, {
+            quarantine: { accountId: options.accountId },
+            sessionId: options.sessionId,
+          }),
+        );
       }
       // Validate session before attempting recheck - sessions can expire during the delay
       const sessionValid = await validateChatGPTSession(Runtime, logger);
       if (!sessionValid.valid) {
+        await raceWithDisconnect(
+          assertPreResultAccessState(Runtime, logger, {
+            quarantine: { accountId: options.accountId },
+            sessionId: options.sessionId,
+          }),
+        );
         logger(`[browser] Session validation failed: ${sessionValid.reason}`);
         // Update session metadata to indicate login is needed
         await emitRuntimeHint();
@@ -2440,12 +2761,17 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
                 baselineTurns ?? undefined,
                 expectedConversationId(),
                 options.accountId,
+                {
+                  elapsedBaselineMs: Math.max(0, Date.now() - assistantWaitStartedAt),
+                },
               ),
             timeoutMs,
             logger,
             minTurnIndex: baselineTurns ?? undefined,
             expectedConversationId: expectedConversationId(),
             imageOutputRequested,
+            accountId: options.accountId,
+            sessionId: options.sessionId,
           }),
         ),
       );
@@ -2462,6 +2788,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       label: string,
     ): Promise<BrowserConversationTurn & { answerHtml: string }> => {
       let turnAnswer: AssistantAnswer;
+      const assistantWaitStartedAt = Date.now();
       try {
         await updateConversationHint("assistant-wait", 15_000).catch(() => false);
         emitRunProgressMarker("response_waiting");
@@ -2484,12 +2811,16 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
               minTurnIndex: baselineTurns ?? undefined,
               expectedConversationId: expectedConversationId(),
               imageOutputRequested,
+              accountId: options.accountId,
+              sessionId: options.sessionId,
             }),
           ),
         );
       } catch (error) {
         if (isAssistantResponseTimeoutError(error)) {
-          const rechecked = await attemptAssistantRecheckOrRethrow(attemptAssistantRecheck);
+          const rechecked = await attemptAssistantRecheckOrRethrow(() =>
+            attemptAssistantRecheck(assistantWaitStartedAt),
+          );
           if (rechecked) {
             turnAnswer = rechecked;
           } else {
@@ -2740,7 +3071,14 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           prompt: followUpPrompt,
           attachments: [],
           submit: (submissionPrompt, submissionAttachments) =>
-            raceWithDisconnect(submitOnce(submissionPrompt, submissionAttachments)),
+            raceWithDisconnect(
+              preserveChallengeOverPageFailure(
+                submitOnce(submissionPrompt, submissionAttachments),
+                Runtime,
+                logger,
+                { accountId: options.accountId, sessionId: options.sessionId },
+              ),
+            ),
           reloadPromptComposer,
           prepareFallbackSubmission: async () => {
             await raceWithDisconnect(clearPromptComposer(Runtime, logger));
@@ -2857,6 +3195,17 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         imageArtifacts.savedImages.length === imageArtifacts.imageCount &&
         fileArtifacts.savedFiles.length === fileArtifacts.fileCount,
     });
+    await raceWithDisconnect(
+      assertCapturedAnswerNotAccessArtifact(
+        Runtime,
+        { text: answerText, html: answerHtml },
+        logger,
+        {
+          quarantine: { accountId: options.accountId },
+          sessionId: options.sessionId,
+        },
+      ),
+    );
     expectedConversationId();
     runStatus = "complete";
     emitRunProgressMarker("done");
@@ -2888,9 +3237,18 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       controllerPid: process.pid,
     };
   } catch (error) {
-    const normalizedError = error instanceof Error ? error : new Error(String(error));
+    let normalizedError = error instanceof Error ? error : new Error(String(error));
     const socketClosed = connectionClosedUnexpectedly || isWebSocketClosureError(normalizedError);
     connectionClosedUnexpectedly = connectionClosedUnexpectedly || socketClosed;
+    if (!socketClosed && client?.Runtime) {
+      const preferred = await preferChallengeOverPageFailure(
+        normalizedError,
+        client.Runtime,
+        logger,
+        { accountId: options.accountId, sessionId: options.sessionId },
+      );
+      normalizedError = preferred instanceof Error ? preferred : new Error(String(preferred));
+    }
     const preservedErrorKind = classifyPreservedBrowserError(normalizedError, config.headless);
     if (preservedErrorKind === "cloudflare-challenge") {
       if (usingCopiedProfile) {
@@ -2898,7 +3256,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           "Cloudflare challenge detected; closing Chrome and removing the copied profile because copy-profile runs cannot be retained.",
         );
         throw new BrowserAutomationError(
-          "Cloudflare challenge detected. Copy-profile runs cannot be retained; complete the check in the source Chrome profile, then rerun.",
+          "Cloudflare challenge detected. Copy-profile runs cannot be retained; complete the check in the source Chrome profile, then manually clear the account quarantine before retrying Oracle.",
           { stage: "cloudflare-challenge", reattachable: false },
           normalizedError,
         );
@@ -2921,7 +3279,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       logger("Cloudflare challenge detected; leaving browser open so you can complete the check.");
       logger(`Reuse this browser profile with: ${reuseProfileHint}`);
       throw new BrowserAutomationError(
-        "Cloudflare challenge detected. Complete the “Just a moment…” check in the open browser, then rerun.",
+        "Cloudflare challenge detected. Complete the “Just a moment…” check in the open browser, then manually clear the account quarantine before retrying Oracle.",
         {
           stage: "cloudflare-challenge",
           runtime,
@@ -2999,6 +3357,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         keepBrowser: effectiveKeepBrowser,
         policy: resolveCloseOwnedRunTargetPolicy(config),
         orphanedTargetNeedsCleanup,
+        preserveOwnedTargetOnError: preserveBrowserOnError,
       }) &&
       isolatedTargetId &&
       chrome?.port
@@ -3085,7 +3444,17 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         ).catch(() => false);
       }
     }
-    if (tabLease && ownedTargetCleanupProved) {
+    const retainPreservedOwnedTargetLease = shouldRetainBrowserTabLeaseAfterRun({
+      runStatus,
+      ownsTarget,
+      preserveOwnedTargetOnError: preserveBrowserOnError,
+      orphanedTargetNeedsCleanup,
+    });
+    if (tabLease && retainPreservedOwnedTargetLease) {
+      logger(
+        `[browser] Keeping ChatGPT browser slot ${tabLease.id.slice(0, 8)} active with its preserved owned target.`,
+      );
+    } else if (tabLease && ownedTargetCleanupProved) {
       const handle = tabLease;
       tabLease = null;
       await releaseBrowserTabLeaseOrTaint(handle, logger, "browser run cleanup");
@@ -3642,6 +4011,7 @@ async function runRemoteBrowserMode(
   let answerHtml = "";
   let connectionClosedUnexpectedly = false;
   let runStatus: "attempted" | "complete" = "attempted";
+  let preserveOwnedTargetOnError = false;
   let stopThinkingMonitor: (() => void) | null = null;
   let removeDialogHandler: (() => void) | null = null;
   let ownedTargetCleanupProved = true;
@@ -3786,9 +4156,23 @@ async function runRemoteBrowserMode(
     } else if (!attachedExistingTab) {
       await raceWithAbort(navigateToChatGPT(Page, Runtime, config.url, logger));
     }
-    await raceWithAbort(ensureNotBlocked(Runtime, config.headless, logger));
-    await raceWithAbort(ensureLoggedIn(Runtime, logger, { remoteSession: true }));
-    await raceWithAbort(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+    await raceWithAbort(
+      ensureNotBlocked(Runtime, config.headless, logger, {
+        quarantine: { accountId: options.accountId },
+        sessionId: options.sessionId,
+      }),
+    );
+    await raceWithAbort(
+      preserveChallengeOverPageFailure(
+        (async () => {
+          await ensureLoggedIn(Runtime, logger, { remoteSession: true });
+          await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
+        })(),
+        Runtime,
+        logger,
+        { accountId: options.accountId, sessionId: options.sessionId },
+      ),
+    );
     if (config.resumeConversationUrl) {
       await raceWithAbort(
         waitForResumedConversationHydration(Runtime, config.inputTimeoutMs, logger, {
@@ -3841,14 +4225,37 @@ async function runRemoteBrowserMode(
         selectModel,
         refreshPage: async () => {
           await raceWithAbort(Page.reload({ ignoreCache: true }));
-          await raceWithAbort(ensureNotBlocked(Runtime, config.headless, logger));
-          await raceWithAbort(ensureLoggedIn(Runtime, logger, { remoteSession: true }));
-          await raceWithAbort(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+          await raceWithAbort(
+            preserveChallengeOverPageFailure(
+              (async () => {
+                await ensureNotBlocked(Runtime, config.headless, logger, {
+                  quarantine: { accountId: options.accountId },
+                  sessionId: options.sessionId,
+                });
+                await assertPreRunAccessState(Runtime, logger, {
+                  quarantine: { accountId: options.accountId },
+                  sessionId: options.sessionId,
+                });
+                await ensureLoggedIn(Runtime, logger, { remoteSession: true });
+                await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
+              })(),
+              Runtime,
+              logger,
+              { accountId: options.accountId, sessionId: options.sessionId },
+            ),
+          );
         },
         allowRefresh: shouldRefreshInitialModelPicker(config),
         logger,
       });
-      await raceWithAbort(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+      await raceWithAbort(
+        preserveChallengeOverPageFailure(
+          ensurePromptReady(Runtime, config.inputTimeoutMs, logger),
+          Runtime,
+          logger,
+          { accountId: options.accountId, sessionId: options.sessionId },
+        ),
+      );
       logger(
         `Prompt textarea ready (after model switch, ${promptText.length.toLocaleString()} chars queued)`,
       );
@@ -3944,55 +4351,71 @@ async function runRemoteBrowserMode(
         name: path.basename(a.path),
         generatedBundle: a.generatedBundle === true,
       }));
-      await raceWithAbort(clearPromptComposer(Runtime, logger));
-      await raceWithAbort(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
-      if (submissionAttachments.length > 0) {
-        if (!DOM) {
-          throw new Error("Chrome DOM domain unavailable while uploading attachments.");
-        }
-        await clearComposerAttachments(Runtime, 5_000, logger);
-        // Use remote file transfer for remote Chrome (reads local files and injects via CDP)
-        for (const attachment of submissionAttachments) {
-          logger(`Uploading attachment: ${attachment.displayPath}`);
-          await raceWithAbort(
-            uploadAttachmentViaDataTransfer({ runtime: Runtime, dom: DOM }, attachment, logger),
-          );
-          await raceWithAbort(delay(500));
-        }
-        // Scale timeout based on number of files: base 30s + 15s per additional file
-        const baseTimeout = config.inputTimeoutMs ?? 30_000;
-        const perFileTimeout = 15_000;
-        const waitBudget =
-          Math.max(baseTimeout, 30_000) + (submissionAttachments.length - 1) * perFileTimeout;
-        const attachmentWaitBudget = Math.max(config.attachmentTimeoutMs ?? 0, waitBudget);
-        await raceWithAbort(
-          waitForAttachmentCompletion(Runtime, attachmentWaitBudget, attachmentNames, logger),
-        );
-        logger("All attachments uploaded");
-      }
-      if (deepResearch) {
-        await raceWithAbort(
-          withRetries(() => activateDeepResearch(Runtime, Input, logger), {
-            retries: 2,
-            delayMs: 500,
-            onRetry: (attempt, error) => {
-              if (options.verbose) {
-                logger(
-                  `[retry] Deep Research activation attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
-                );
-              }
-            },
-          }),
-        );
-        await raceWithAbort(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
-        logger(
-          `Prompt textarea ready (after Deep Research activation, ${prompt.length.toLocaleString()} chars queued)`,
-        );
-      }
-      // submitOnce is shared by the initial request, dead-composer/fallback
-      // retries, and follow-ups. Re-verify the exact model and checked Pro mode
-      // here so a reload or UI drift cannot reuse stale run-start evidence.
-      await verifyProtectedRouteBeforeSubmit();
+      const attachmentBindingToken =
+        submissionAttachments.length > 0 ? `oracle-attachment-${randomUUID()}` : undefined;
+      await prepareSubmissionComposerWithProtectedRoute({
+        hasAttachments: submissionAttachments.length > 0,
+        verifyProtectedRoute: verifyProtectedRouteBeforeSubmit,
+        prepareComposer: async () => {
+          await raceWithAbort(clearPromptComposer(Runtime, logger));
+          await raceWithAbort(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+        },
+        prepareAttachments: async () => {
+          if (submissionAttachments.length > 0) {
+            if (!DOM) {
+              throw new Error("Chrome DOM domain unavailable while uploading attachments.");
+            }
+            await clearComposerAttachments(Runtime, 5_000, logger);
+            // Use remote file transfer for remote Chrome (reads local files and injects via CDP)
+            for (const attachment of submissionAttachments) {
+              logger(`Uploading attachment: ${attachment.displayPath}`);
+              await raceWithAbort(
+                uploadAttachmentViaDataTransfer({ runtime: Runtime, dom: DOM }, attachment, logger),
+              );
+              await raceWithAbort(delay(500));
+            }
+            // Scale timeout based on number of files: base 30s + 15s per additional file
+            const baseTimeout = config.inputTimeoutMs ?? 30_000;
+            const perFileTimeout = 15_000;
+            const waitBudget =
+              Math.max(baseTimeout, 30_000) + (submissionAttachments.length - 1) * perFileTimeout;
+            const attachmentWaitBudget = Math.max(config.attachmentTimeoutMs ?? 0, waitBudget);
+            await raceWithAbort(
+              waitForAttachmentCompletion(Runtime, attachmentWaitBudget, attachmentNames, logger),
+            );
+            await raceWithAbort(
+              bindActiveComposerAttachments(
+                Runtime,
+                attachmentExpectations,
+                attachmentBindingToken!,
+                logger,
+              ),
+            );
+            logger("All attachments uploaded");
+          }
+        },
+        prepareMutatingComposerMode: async () => {
+          if (deepResearch) {
+            await raceWithAbort(
+              withRetries(() => activateDeepResearch(Runtime, Input, logger), {
+                retries: 2,
+                delayMs: 500,
+                onRetry: (attempt, error) => {
+                  if (options.verbose) {
+                    logger(
+                      `[retry] Deep Research activation attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
+                    );
+                  }
+                },
+              }),
+            );
+            await raceWithAbort(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+            logger(
+              `Prompt textarea ready (after Deep Research activation, ${prompt.length.toLocaleString()} chars queued)`,
+            );
+          }
+        },
+      });
       // Sol+Pro route verified before submit (the gate did not throw).
       emitRunProgressMarker("model_verified");
       let baselineTurns = await readConversationTurnCount(Runtime, logger);
@@ -4005,6 +4428,17 @@ async function runRemoteBrowserMode(
         attachmentTimeoutMs: config.attachmentTimeoutMs ?? undefined,
         baselineTurns: baselineTurns ?? undefined,
         attachmentNames: attachmentExpectations,
+        attachmentBindingToken,
+        beforePromptSubmit: (composerBindingToken?: string) =>
+          assertProtectedSolProSelectionReadOnlyBeforeSubmit({
+            desiredModel: config.desiredModel,
+            runtime: Runtime,
+            logger,
+            attachmentBindingToken,
+            composerBindingToken,
+          }),
+        requireBoundSendTarget:
+          isDesiredGpt56SolModel(config.desiredModel) || submissionAttachments.length > 0,
         onPromptSubmitted: markPromptSubmitted,
         // Authoritative account id (server: options.accountId ?? env) so the
         // browser-side quarantine gates trip under the same identity the
@@ -4042,7 +4476,20 @@ async function runRemoteBrowserMode(
     const reloadPromptComposer = async () => {
       logger("[browser] Composer became unresponsive; reloading page and retrying once.");
       await raceWithAbort(Page.reload({ ignoreCache: true }));
-      await raceWithAbort(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+      await raceWithAbort(
+        assertPreRunAccessState(Runtime, logger, {
+          quarantine: { accountId: options.accountId },
+          sessionId: options.sessionId,
+        }),
+      );
+      await raceWithAbort(
+        preserveChallengeOverPageFailure(
+          ensurePromptReady(Runtime, config.inputTimeoutMs, logger),
+          Runtime,
+          logger,
+          { accountId: options.accountId, sessionId: options.sessionId },
+        ),
+      );
     };
 
     let baselineTurns: number | null = null;
@@ -4054,7 +4501,13 @@ async function runRemoteBrowserMode(
         prompt: promptText,
         attachments,
         fallbackSubmission: options.fallbackSubmission,
-        submit: submitOnce,
+        submit: (submissionPrompt, submissionAttachments) =>
+          preserveChallengeOverPageFailure(
+            submitOnce(submissionPrompt, submissionAttachments),
+            Runtime,
+            logger,
+            { accountId: options.accountId, sessionId: options.sessionId },
+          ),
         reloadPromptComposer,
         prepareFallbackSubmission: async () => {
           await raceWithAbort(clearPromptComposer(Runtime, logger));
@@ -4072,16 +4525,32 @@ async function runRemoteBrowserMode(
     if (deepResearch) {
       await raceWithAbort(waitForResearchPlanAutoConfirm(Runtime, logger));
       const researchResult = await raceWithAbort(
-        waitForDeepResearchCompletion(
+        preserveChallengeOverPageFailure(
+          waitForDeepResearchCompletion(
+            Runtime,
+            logger,
+            config.timeoutMs,
+            baselineTurns,
+            Page,
+            client,
+            {
+              ignoredTargetKeys: deepResearchTargetKeys,
+              targetBaselineCaptured: deepResearchTargetBaselineCaptured,
+            },
+          ),
           Runtime,
           logger,
-          config.timeoutMs,
-          baselineTurns,
-          Page,
-          client,
+          { accountId: options.accountId, sessionId: options.sessionId },
+        ),
+      );
+      await raceWithAbort(
+        assertCapturedAnswerNotAccessArtifact(
+          Runtime,
+          { text: researchResult.text, html: researchResult.html },
+          logger,
           {
-            ignoredTargetKeys: deepResearchTargetKeys,
-            targetBaselineCaptured: deepResearchTargetBaselineCaptured,
+            quarantine: { accountId: options.accountId },
+            sessionId: options.sessionId,
           },
         ),
       );
@@ -4121,6 +4590,17 @@ async function runRemoteBrowserMode(
         followUpCount: 0,
         requiredArtifactsSaved: Boolean(reportArtifact && transcriptArtifact),
       });
+      await raceWithAbort(
+        assertCapturedAnswerNotAccessArtifact(
+          Runtime,
+          { text: researchResult.text, html: researchResult.html },
+          logger,
+          {
+            quarantine: { accountId: options.accountId },
+            sessionId: options.sessionId,
+          },
+        ),
+      );
       runStatus = "complete";
       emitRunProgressMarker("done");
       return {
@@ -4200,7 +4680,7 @@ async function runRemoteBrowserMode(
     };
     const recheckDelayMs = Math.max(0, config.assistantRecheckDelayMs ?? 0);
     const recheckTimeoutMs = Math.max(0, config.assistantRecheckTimeoutMs ?? 0);
-    const attemptAssistantRecheck = async () => {
+    const attemptAssistantRecheck = async (assistantWaitStartedAt: number) => {
       if (!recheckDelayMs) return null;
       logger(
         `[browser] Assistant response timed out; waiting ${formatElapsed(recheckDelayMs)} before rechecking conversation.`,
@@ -4212,10 +4692,22 @@ async function runRemoteBrowserMode(
         logger(`[browser] Rechecking assistant response at ${conversationUrl}`);
         await raceWithAbort(Page.navigate({ url: conversationUrl }));
         await raceWithAbort(delay(1000));
+        await raceWithAbort(
+          assertPreRunAccessState(Runtime, logger, {
+            quarantine: { accountId: options.accountId },
+            sessionId: options.sessionId,
+          }),
+        );
       }
       // Validate session before attempting recheck - sessions can expire during the delay
       const sessionValid = await validateChatGPTSession(Runtime, logger);
       if (!sessionValid.valid) {
+        await raceWithAbort(
+          assertPreResultAccessState(Runtime, logger, {
+            quarantine: { accountId: options.accountId },
+            sessionId: options.sessionId,
+          }),
+        );
         logger(`[browser] Session validation failed: ${sessionValid.reason}`);
         // Update session metadata to indicate login is needed
         await emitRuntimeHint();
@@ -4259,12 +4751,17 @@ async function runRemoteBrowserMode(
                 baselineTurns ?? undefined,
                 expectedConversationId(),
                 options.accountId,
+                {
+                  elapsedBaselineMs: Math.max(0, Date.now() - assistantWaitStartedAt),
+                },
               ),
             timeoutMs,
             logger,
             minTurnIndex: baselineTurns ?? undefined,
             expectedConversationId: expectedConversationId(),
             imageOutputRequested,
+            accountId: options.accountId,
+            sessionId: options.sessionId,
           }),
         ),
       );
@@ -4281,6 +4778,7 @@ async function runRemoteBrowserMode(
       label: string,
     ): Promise<BrowserConversationTurn & { answerHtml: string }> => {
       let turnAnswer: AssistantAnswer;
+      const assistantWaitStartedAt = Date.now();
       try {
         await activeConversationUrlMonitor.update("assistant-wait", 15_000).catch(() => false);
         emitRunProgressMarker("response_waiting");
@@ -4303,12 +4801,16 @@ async function runRemoteBrowserMode(
               minTurnIndex: baselineTurns ?? undefined,
               expectedConversationId: expectedConversationId(),
               imageOutputRequested,
+              accountId: options.accountId,
+              sessionId: options.sessionId,
             }),
           ),
         );
       } catch (error) {
         if (isAssistantResponseTimeoutError(error)) {
-          const rechecked = await attemptAssistantRecheckOrRethrow(attemptAssistantRecheck);
+          const rechecked = await attemptAssistantRecheckOrRethrow(() =>
+            attemptAssistantRecheck(assistantWaitStartedAt),
+          );
           if (rechecked) {
             turnAnswer = rechecked;
           } else {
@@ -4560,7 +5062,13 @@ async function runRemoteBrowserMode(
         runSubmissionWithRecovery({
           prompt: followUpPrompt,
           attachments: [],
-          submit: submitOnce,
+          submit: (submissionPrompt, submissionAttachments) =>
+            preserveChallengeOverPageFailure(
+              submitOnce(submissionPrompt, submissionAttachments),
+              Runtime,
+              logger,
+              { accountId: options.accountId, sessionId: options.sessionId },
+            ),
           reloadPromptComposer,
           prepareFallbackSubmission: async () => {
             await raceWithAbort(clearPromptComposer(Runtime, logger));
@@ -4672,6 +5180,17 @@ async function runRemoteBrowserMode(
         imageArtifacts.savedImages.length === imageArtifacts.imageCount &&
         fileArtifacts.savedFiles.length === fileArtifacts.fileCount,
     });
+    await raceWithAbort(
+      assertCapturedAnswerNotAccessArtifact(
+        Runtime,
+        { text: answerText, html: answerHtml },
+        logger,
+        {
+          quarantine: { accountId: options.accountId },
+          sessionId: options.sessionId,
+        },
+      ),
+    );
     const durationMs = Date.now() - startedAt;
     const answerChars = answerText.length;
     const answerTokens = estimateTokenCount(answerMarkdown);
@@ -4707,9 +5226,25 @@ async function runRemoteBrowserMode(
       controllerPid: process.pid,
     };
   } catch (error) {
-    const normalizedError = error instanceof Error ? error : new Error(String(error));
+    let normalizedError = error instanceof Error ? error : new Error(String(error));
     const socketClosed = connectionClosedUnexpectedly || isWebSocketClosureError(normalizedError);
     connectionClosedUnexpectedly = connectionClosedUnexpectedly || socketClosed;
+    if (!socketClosed && client?.Runtime) {
+      const preferred = await preferChallengeOverPageFailure(
+        normalizedError,
+        client.Runtime,
+        logger,
+        { accountId: options.accountId, sessionId: options.sessionId },
+      );
+      normalizedError = preferred instanceof Error ? preferred : new Error(String(preferred));
+    }
+    const preservedErrorKind = classifyPreservedBrowserError(normalizedError, config.headless);
+    preserveOwnedTargetOnError = preservedErrorKind !== null;
+    if (preservedErrorKind === "cloudflare-challenge") {
+      logger("Challenge detected; preserving the exact remote browser tab for manual clearance.");
+    } else if (preservedErrorKind === "reattachable-capture") {
+      logger("Assistant capture incomplete; preserving the exact remote browser tab for reattach.");
+    }
 
     if (!socketClosed) {
       logger(`Failed to complete ChatGPT run: ${normalizedError.message}`);
@@ -4764,6 +5299,7 @@ async function runRemoteBrowserMode(
         keepBrowser: Boolean(config.keepBrowser),
         policy: resolveCloseOwnedRunTargetPolicy(config),
         orphanedTargetNeedsCleanup,
+        preserveOwnedTargetOnError,
       }) &&
       remoteTargetId
     ) {
@@ -4774,7 +5310,17 @@ async function runRemoteBrowserMode(
         targetId: remoteTargetId,
       });
     }
-    if (tabLease && ownedTargetCleanupProved) {
+    const retainPreservedOwnedTargetLease = shouldRetainBrowserTabLeaseAfterRun({
+      runStatus,
+      ownsTarget,
+      preserveOwnedTargetOnError,
+      orphanedTargetNeedsCleanup,
+    });
+    if (tabLease && retainPreservedOwnedTargetLease) {
+      logger(
+        `[browser] Keeping ChatGPT browser slot ${tabLease.id.slice(0, 8)} active with its preserved owned target.`,
+      );
+    } else if (tabLease && ownedTargetCleanupProved) {
       const handle = tabLease;
       tabLease = null;
       await releaseBrowserTabLeaseOrTaint(handle, logger, "remote browser run cleanup");
@@ -4807,6 +5353,7 @@ export const __test__ = {
   isManualLoginProfileInitialized,
   isImageOnlyUiChromeText,
   maybeRecoverLongAssistantResponse,
+  preferChallengeOverPageFailure,
   listIgnoredRemoteChromeFlags,
   resolveManualLoginWaitMs,
   closeOwnedTargetWithDeadline,
@@ -4817,9 +5364,12 @@ export const __test__ = {
   selectInitialModelWithRefreshRecovery,
   shouldRefreshInitialModelPicker,
   verifyProtectedSolProSelectionForSubmit,
+  prepareSubmissionComposerWithProtectedRoute,
   shouldCloseOwnedRunTargetAfterRun,
+  shouldRetainBrowserTabLeaseAfterRun,
   shouldKeepLocalBrowserOpen,
   waitForAssistantOrGeneratedImageResponse,
+  waitForAssistantResponseWithReload,
   applyBoundAssistantSnapshotReplacement,
 };
 export { syncCookies } from "./cookies.js";
@@ -4875,15 +5425,28 @@ async function waitForAssistantResponseWithReload(
   minTurnIndex?: number,
   expectedConversationId?: string,
   accountId?: string,
+  deps: {
+    waitForResponse?: typeof waitForAssistantResponse;
+    waitForHydration?: typeof waitForResumedConversationHydration;
+    wait?: typeof delay;
+    assertAccess?: typeof assertPreRunAccessState;
+    elapsedBaselineMs?: number;
+    now?: () => number;
+  } = {},
 ) {
+  const waitForResponse = deps.waitForResponse ?? waitForAssistantResponse;
+  const now = deps.now ?? Date.now;
+  const waitStartedAt = now();
+  const elapsedBaselineMs = Math.max(0, deps.elapsedBaselineMs ?? 0);
   try {
-    return await waitForAssistantResponse(
+    return await waitForResponse(
       Runtime,
       timeoutMs,
       logger,
       minTurnIndex,
       expectedConversationId,
       accountId,
+      elapsedBaselineMs,
     );
   } catch (error) {
     if (!shouldReloadAfterAssistantError(error)) {
@@ -4893,16 +5456,58 @@ async function waitForAssistantResponseWithReload(
     if (!conversationUrl || !isConversationUrl(conversationUrl)) {
       throw error;
     }
-    logger("Assistant response stalled; reloading conversation and retrying once");
+    const openConversationId = extractConversationIdFromUrl(conversationUrl);
+    const normalizedExpectedConversationId = expectedConversationId
+      ? normalizeChatGptConversationId(expectedConversationId)
+      : null;
+    if (
+      !normalizedExpectedConversationId ||
+      !openConversationId ||
+      openConversationId !== normalizedExpectedConversationId
+    ) {
+      throw error;
+    }
+    const retryConversationId = normalizedExpectedConversationId;
+    logger(
+      "Assistant response stalled; reloading the bound conversation and retrying once after hydration",
+    );
+    // Give ChatGPT's backend a short bounded window to persist a just-finished
+    // compact Pro answer before reopening the canonical route. We never accept
+    // the answer on elapsed time alone: the retry still has to pass exact-turn
+    // completion capture and the submit-time user-message binding assertion.
+    await (deps.wait ?? delay)(1_500);
     await Page.navigate({ url: conversationUrl });
-    await delay(1000);
-    return await waitForAssistantResponse(
+    const assertAccess = deps.assertAccess ?? assertPreRunAccessState;
+    await assertAccess(Runtime, logger, {
+      quarantine: { accountId },
+    });
+    try {
+      await (deps.waitForHydration ?? waitForResumedConversationHydration)(
+        Runtime,
+        Math.min(Math.max(timeoutMs, 5_000), 30_000),
+        logger,
+        {
+          // This is capture-only recovery. A still-running Pro response may keep
+          // the composer disabled, so hydration must not wait for a send-ready
+          // composer (and this fallback must never prepare another submission).
+          ensurePromptReady: async () => undefined,
+          requirePriorTurns: true,
+          expectedConversationUrl: conversationUrl,
+        },
+      );
+    } catch (hydrationError) {
+      await assertAccess(Runtime, logger, { quarantine: { accountId } });
+      throw hydrationError;
+    }
+    const retryElapsedBaselineMs = elapsedBaselineMs + Math.max(0, now() - waitStartedAt);
+    return await waitForResponse(
       Runtime,
       timeoutMs,
       logger,
       minTurnIndex,
-      expectedConversationId,
+      retryConversationId,
       accountId,
+      retryElapsedBaselineMs,
     );
   }
 }

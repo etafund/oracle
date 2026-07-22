@@ -11,6 +11,7 @@ import type {
 } from "../../../src/browser/providerDomFlow.js";
 import {
   buildChatGptProDomProbeExpressionForTest,
+  classifyGpt56SolProRouteProbeForTest,
   ChatGptProFsmError,
   chatgptDomProvider,
   wireChatGptProFsm,
@@ -54,6 +55,9 @@ function evaluateChatGptProDomProbeForTest(args: {
       return null;
     },
     querySelectorAll: (selector: string) => {
+      if (selector.includes("#prompt-textarea") || selector.includes("composer-input")) {
+        return [promptInput];
+      }
       if (selector === "button.__composer-pill") return composerPills;
       if (selector.includes("accounts-profile-button")) return accountProfiles;
       return [];
@@ -187,6 +191,56 @@ function makeCtx(
 }
 
 describe("wireChatGptProFsm — adapter wrapper invariants (oracle-byl)", () => {
+  it("verifies the exact Sol + bare Pro route without accepting lookalike model labels", () => {
+    const probeExpression = buildChatGptProDomProbeExpressionForTest();
+    expect(probeExpression).not.toMatch(/\.click\(|dispatchClick|dispatchEvent/);
+
+    expect(
+      classifyGpt56SolProRouteProbeForTest({
+        routeModelSignals: ["GPT-5.6 Sol"],
+        routeModeSignals: ["Pro"],
+      }),
+    ).toMatchObject({ verified: true, modelVerified: true, modeVerified: true });
+
+    expect(
+      classifyGpt56SolProRouteProbeForTest({
+        routeModelSignals: ["GPT-5.6 Sol Mini"],
+        routeModeSignals: ["Pro"],
+      }),
+    ).toMatchObject({ verified: false, modelVerified: false, modeVerified: true });
+    expect(
+      classifyGpt56SolProRouteProbeForTest({
+        routeModelSignals: ["GPT-5.6 Sol", "GPT-5.6 Sol Mini"],
+        routeModeSignals: ["Pro"],
+      }),
+    ).toMatchObject({ verified: false, modelVerified: false, modeVerified: true });
+    expect(
+      classifyGpt56SolProRouteProbeForTest({
+        routeModelSignals: ["GPT-5.6 Sol"],
+        routeModeSignals: ["Pro Extended"],
+      }),
+    ).toMatchObject({ verified: false, modelVerified: true, modeVerified: false });
+    expect(
+      classifyGpt56SolProRouteProbeForTest({
+        routeModelSignals: ["GPT-5.6 Sol"],
+        routeModeSignals: ["Standard"],
+        hasProPill: true,
+      }),
+    ).toMatchObject({ verified: false, modelVerified: true, modeVerified: false });
+    expect(
+      classifyGpt56SolProRouteProbeForTest({
+        routeModelSignals: ["GPT-5.6 Sol"],
+        routeModeSignals: ["Pro"],
+        composerBindingVerified: false,
+      }),
+    ).toMatchObject({
+      verified: false,
+      composerBindingVerified: false,
+      modelVerified: false,
+      modeVerified: false,
+    });
+  });
+
   it("probes the current ChatGPT Extended Pro composer pill as Pro plus effort", () => {
     const probe = evaluateChatGptProDomProbeForTest({
       composerPills: ["Extended Pro"],

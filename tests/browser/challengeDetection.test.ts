@@ -6,7 +6,7 @@
 // property (detection is strictly read-only).
 
 import { describe, expect, test, vi } from "vitest";
-import { mkdtemp } from "node:fs/promises";
+import { chmod, mkdtemp } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -71,6 +71,40 @@ describe("classifyBrowserAccessFacts", () => {
     });
     expect(report.state).toBe("verification_interstitial");
     expect(report.signals).toContain("interstitial-title");
+  });
+
+  test("exact interstitial title and a transient script cannot overrule a usable app", () => {
+    const healthy = classifyBrowserAccessFacts({
+      ...HEALTHY_FACTS,
+      title: "Just a moment...",
+      interstitialTitle: true,
+    });
+    expect(healthy.state).toBe("healthy");
+    expect(healthy.appSessionOk).toBe(true);
+    expect(healthy.signals).toContain("interstitial-title");
+
+    const transientResidue = classifyBrowserAccessFacts({
+      ...HEALTHY_FACTS,
+      title: "Just a moment...",
+      interstitialTitle: true,
+      interstitialScript: true,
+    });
+    expect(transientResidue.state).toBe("healthy");
+    expect(transientResidue.appSessionOk).toBe(true);
+    expect(transientResidue.signals).toContain("interstitial-title");
+    expect(transientResidue.signals).toContain("interstitial-script");
+
+    const challenged = classifyBrowserAccessFacts({
+      ...HEALTHY_FACTS,
+      title: "Just a moment...",
+      interstitialTitle: true,
+      composerPresent: false,
+      composerVisible: false,
+      accountSignal: false,
+      bodySample: "",
+    });
+    expect(challenged.state).toBe("verification_interstitial");
+    expect(challenged.appSessionOk).toBe(false);
   });
 
   test("verification interstitial via URL marker alone", () => {
@@ -233,6 +267,23 @@ describe("assertPreRunAccessState", () => {
     expect(report.state).toBe("healthy");
   });
 
+  test("transient title and script residue does not quarantine a usable signed-in app", async () => {
+    const dir = await tempLatchDir();
+    const report = await assertPreRunAccessState(
+      runtimeReturning({
+        ...HEALTHY_FACTS,
+        title: "Just a moment...",
+        interstitialTitle: true,
+        interstitialScript: true,
+      }),
+      () => {},
+      { quarantine: { dir, accountId: "acct1" } },
+    );
+
+    expect(report.state).toBe("healthy");
+    expect((await getQuarantineLatchState({ dir, accountId: "acct1" })).quarantined).toBe(false);
+  });
+
   test("a latched worker refuses without probing the page", async () => {
     const dir = await tempLatchDir();
     await tripQuarantineLatch({
@@ -278,6 +329,41 @@ describe("assertPreRunAccessState", () => {
     expect(latch.record?.runId).toBe("run-9");
     expect(latch.record?.source).toBe("pre-run-gate");
     expect(logs.join("\n")).toContain("quarantine latch");
+    expect(logs.join("\n")).not.toContain(dir);
+  });
+
+  test("quarantine storage failure preserves the typed challenge hard stop", async () => {
+    const sensitivePath = await tempLatchDir();
+    const logs: string[] = [];
+    // The initial latch read must see an ordinary missing file so the test
+    // reaches the live challenge probe. Removing directory write permission
+    // only after that setup makes the subsequent sentinel creation fail.
+    await chmod(sensitivePath, 0o500);
+    try {
+      await expect(
+        assertPreRunAccessState(
+          runtimeReturning({
+            ...HEALTHY_FACTS,
+            interstitialTitle: true,
+            composerVisible: false,
+            accountSignal: false,
+          }),
+          (message) => logs.push(String(message)),
+          { quarantine: { dir: sensitivePath, accountId: "acct1" } },
+        ),
+      ).rejects.toMatchObject({
+        details: {
+          stage: "challenge-gate",
+          code: "challenge-gate-verification_interstitial",
+          gate: "pre-run",
+          retryable: false,
+        },
+      });
+      expect(logs.join("\n")).toContain("preserving the terminal account-quarantine hard stop");
+      expect(logs.join("\n")).not.toContain(sensitivePath);
+    } finally {
+      await chmod(sensitivePath, 0o700);
+    }
   });
 
   test("login walls refuse but do NOT quarantine the account", async () => {
@@ -338,13 +424,13 @@ describe("screenCapturedAnswerForAccessArtifacts", () => {
     expect(verdict.state).toBe("verification_interstitial");
   });
 
-  test("challenge markup in html is an artifact regardless of text", () => {
+  test("answer-owned challenge markup is only a signal, not an artifact by itself", () => {
     const verdict = screenCapturedAnswerForAccessArtifacts(
-      "Done.",
-      '<script src="/cdn-cgi/challenge-platform/h/b/x.js"></script>',
+      "The endpoint /cdn-cgi/challenge-platform is part of this diagnostic example.",
+      "<pre><code>/cdn-cgi/challenge-platform/h/b/x.js</code></pre>",
     );
-    expect(verdict.artifact).toBe(true);
-    expect(verdict.state).toBe("verification_interstitial");
+    expect(verdict.artifact).toBe(false);
+    expect(verdict.signals).toContain("artifact-html-marker");
   });
 
   test("a login wall snippet is an artifact", () => {
@@ -412,7 +498,46 @@ describe("assertCapturedAnswerNotAccessArtifact (pre-result gate)", () => {
     ).resolves.toBeUndefined();
   });
 
-  test("an interstitial artifact capture trips the latch and fails typed", async () => {
+  test("healthy page plus answer-owned challenge code does not quarantine", async () => {
+    const dir = await tempLatchDir();
+    await expect(
+      assertCapturedAnswerNotAccessArtifact(
+        runtimeReturning(HEALTHY_FACTS),
+        {
+          text: "The /cdn-cgi/challenge-platform path is shown here as code, not a live wall.",
+          html: "<pre><code>/cdn-cgi/challenge-platform/h/b/x.js</code></pre>",
+        },
+        () => {},
+        { quarantine: { dir, accountId: "acct1" } },
+      ),
+    ).resolves.toBeUndefined();
+    expect((await getQuarantineLatchState({ dir, accountId: "acct1" })).quarantined).toBe(false);
+  });
+
+  test("a sibling lane's latch blocks a clean capture without probing the page", async () => {
+    const dir = await tempLatchDir();
+    await tripQuarantineLatch({
+      dir,
+      accountId: "acct1",
+      reason: "verification_interstitial",
+      source: "sibling-lane-test",
+    });
+    const runtime = runtimeReturning(HEALTHY_FACTS);
+
+    await expect(
+      assertCapturedAnswerNotAccessArtifact(
+        runtime,
+        { text: "A fully formed clean answer." },
+        () => {},
+        { quarantine: { dir, accountId: "acct1" } },
+      ),
+    ).rejects.toMatchObject({
+      details: { code: "account_quarantine", retryable: false },
+    });
+    expect(runtime.evaluate).not.toHaveBeenCalled();
+  });
+
+  test("answer text alone is suppressed without publishing account quarantine", async () => {
     const dir = await tempLatchDir();
     await expect(
       assertCapturedAnswerNotAccessArtifact(
@@ -423,27 +548,31 @@ describe("assertCapturedAnswerNotAccessArtifact (pre-result gate)", () => {
       ),
     ).rejects.toMatchObject({
       details: {
-        code: "challenge-gate-verification_interstitial",
+        stage: "captured-access-artifact",
+        code: "captured-access-artifact-verification_interstitial",
         gate: "pre-result",
+        artifactState: "verification_interstitial",
         retryable: false,
       },
     });
     const latch = await getQuarantineLatchState({ dir, accountId: "acct1" });
-    expect(latch.quarantined).toBe(true);
-    expect(latch.record?.source).toBe("pre-result-gate");
+    expect(latch.quarantined).toBe(false);
+    expect(existsSync(path.join(dir, "quarantine-acct1.json"))).toBe(false);
   });
 
-  test("a live interstitial at capture time fails even when the text looks clean", async () => {
+  test("an actual live wall corroborates the capture and publishes account quarantine", async () => {
     const dir = await tempLatchDir();
     await expect(
       assertCapturedAnswerNotAccessArtifact(
         runtimeReturning({
           ...HEALTHY_FACTS,
-          interstitialScript: true,
+          title: "Just a moment...",
+          interstitialTitle: true,
           composerVisible: false,
           accountSignal: false,
+          bodySample: "verify you are human. checking your browser.",
         }),
-        { text: "Partial answer that streamed before the page was replaced." },
+        { text: "Verify you are human. Checking your browser." },
         () => {},
         { quarantine: { dir, accountId: "acct1" } },
       ),
@@ -512,10 +641,16 @@ describe("pre-result probe scopes challenge text away from the captured answer",
   // (e.g. an agent asking Oracle about CAPTCHAs) classified a healthy signed-in
   // worker as a verification interstitial and tripped the quarantine latch.
   class ProbeElement {
+    readonly nodeType = 1;
+    readonly tagName = "DIV";
+    readonly childNodes: Array<{ nodeType: number; nodeValue: string; childNodes: never[] }>;
+
     constructor(
       private readonly ownText = "",
       private readonly visible = true,
-    ) {}
+    ) {
+      this.childNodes = ownText ? [{ nodeType: 3, nodeValue: ownText, childNodes: [] }] : [];
+    }
     get innerText(): string {
       return this.ownText;
     }
@@ -534,16 +669,31 @@ describe("pre-result probe scopes challenge text away from the captured answer",
     excludeAssistantText: boolean;
     chromeText: string;
     answerText: string;
+    userText?: string;
+    title?: string;
+    composerText?: string;
+    historyText?: string;
   }): string {
     const expression = buildAccessStateProbeExpressionForTest({
       excludeAssistantText: opts.excludeAssistantText,
     });
-    const composer = new ProbeElement("", true);
+    const composer = new ProbeElement(opts.composerText ?? "", true);
     const account = new ProbeElement("", true);
     const assistant = new ProbeElement(opts.answerText, true);
+    const user = new ProbeElement(opts.userText ?? "", true);
+    const history = new ProbeElement(opts.historyText ?? "", true);
+    const chrome = new ProbeElement(opts.chromeText, true);
     const document = {
-      title: "ChatGPT",
-      body: { innerText: `${opts.chromeText} ${opts.answerText}`.trim() },
+      title: opts.title ?? "ChatGPT",
+      body: {
+        nodeType: 1,
+        tagName: "BODY",
+        childNodes: [chrome, history, user, assistant, composer],
+        getAttribute: () => null,
+        innerText:
+          `${opts.chromeText} ${opts.historyText ?? ""} ${opts.userText ?? ""} ` +
+          `${opts.answerText} ${opts.composerText ?? ""}`.trim(),
+      },
       querySelector: (selector: string) => {
         if (selector.includes("challenge-platform")) return null;
         if (selector.includes("accounts-profile-button") || selector.includes("history-item-")) {
@@ -553,10 +703,20 @@ describe("pre-result probe scopes challenge text away from the captured answer",
       },
       querySelectorAll: (selector: string) => {
         if (
-          selector.includes('author-role="assistant"') ||
-          selector.includes('data-turn="assistant"')
+          selector.includes('author-role="assistant"') &&
+          selector.includes('author-role="user"')
         ) {
-          return opts.answerText ? [assistant] : [];
+          return [...(opts.answerText ? [assistant] : []), ...(opts.userText ? [user] : [])];
+        }
+        if (selector.includes("history-item-") || selector.includes('nav a[href*="/c/"]')) {
+          return opts.historyText ? [history] : [];
+        }
+        if (
+          selector.includes("prompt-textarea") ||
+          selector.includes("composer-input") ||
+          selector.includes("contenteditable")
+        ) {
+          return [composer];
         }
         return [];
       },
@@ -588,12 +748,68 @@ describe("pre-result probe scopes challenge text away from the captured answer",
     ).toBe("healthy");
   });
 
-  test("the pre-run gate (unscoped) still flags the same body — proving detection is not weakened", () => {
+  test("a healthy resumed conversation strips user and assistant challenge prose pre-run", () => {
     expect(
       classifyViaProbe({
         excludeAssistantText: false,
         chromeText: "how can i help you today?",
         answerText: CHALLENGE_QUOTING_ANSWER,
+        userText: "Diagnose why this page says verify you are human and checking your browser.",
+      }),
+    ).toBe("healthy");
+  });
+
+  test("a ChatGPT conversation title containing just-a-moment prose is not a CF title", () => {
+    expect(
+      classifyViaProbe({
+        excludeAssistantText: false,
+        chromeText: "how can i help you today?",
+        answerText: "A normal answer.",
+        title: "Just a moment while I think — ChatGPT",
+      }),
+    ).toBe("healthy");
+  });
+
+  test("the exact generic title stays healthy when the probed signed-in app is usable", () => {
+    expect(
+      classifyViaProbe({
+        excludeAssistantText: false,
+        chromeText: "how can i help you today?",
+        answerText: "A normal answer.",
+        title: "Just a moment...",
+      }),
+    ).toBe("healthy");
+  });
+
+  test("a typed challenge-debug prompt in the active composer stays healthy", () => {
+    expect(
+      classifyViaProbe({
+        excludeAssistantText: false,
+        chromeText: "how can i help you today?",
+        answerText: "",
+        composerText: "Why does this page say verify you are human and checking your browser?",
+      }),
+    ).toBe("healthy");
+  });
+
+  test("a sidebar conversation title containing challenge prose stays healthy", () => {
+    expect(
+      classifyViaProbe({
+        excludeAssistantText: false,
+        chromeText: "how can i help you today?",
+        answerText: "",
+        historyText: "Verify you are human — browser troubleshooting",
+      }),
+    ).toBe("healthy");
+  });
+
+  test("excluded composer prose cannot erase identical real wall chrome", () => {
+    expect(
+      classifyViaProbe({
+        excludeAssistantText: false,
+        chromeText: "verify you are human",
+        answerText: "",
+        composerText: "verify you are human",
       }),
     ).toBe("verification_interstitial");
   });

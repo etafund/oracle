@@ -1,3 +1,4 @@
+import { posix as posixPath } from "node:path";
 import { TextDecoder } from "node:util";
 
 export type ClaudeCodeStreamName = "stdout" | "stderr";
@@ -16,6 +17,34 @@ export interface ClaudeCodeNormalizedEvent {
   parseError?: string;
   partial?: boolean;
   empty?: boolean;
+}
+
+export type ClaudeCodePlanProtocolFailureReason =
+  | "malformed-exit-envelope"
+  | "missing-exit-envelope"
+  | "invalid-exit-payload"
+  | "missing-terminal-assistant-envelope"
+  | "invalid-assistant-exit-payload"
+  | "missing-write-envelope"
+  | "invalid-plan-marker-path"
+  | "empty-plan-content"
+  | "ambiguous-write-envelopes";
+
+/**
+ * A verified Fable plan/no-tools stream ended in Claude Code's text-rendered
+ * plan protocol, but Oracle could not prove one authoritative plan body.
+ * Callers must retain the raw stream artifact and fail the run rather than
+ * expose the protocol envelope as a successful answer.
+ */
+export class ClaudeCodePlanProtocolError extends Error {
+  readonly code = "fable-plan-protocol-unrecoverable";
+
+  constructor(readonly reason: ClaudeCodePlanProtocolFailureReason) {
+    super(
+      `Verified Fable plan/no-tools output ended in an unrecoverable plan-protocol episode (${reason}); refusing to treat the raw protocol envelope as the final answer.`,
+    );
+    this.name = "ClaudeCodePlanProtocolError";
+  }
 }
 
 interface StreamState {
@@ -222,10 +251,10 @@ export function extractAuthoritativeFinalText(
     const event = events[index];
     const json = objectRecord(event?.json);
     if (json?.type === "result" && typeof json.result === "string") {
-      return json.result;
+      return resolvePlanProtocolCandidate(events, index, json.result, false);
     }
     if (event?.type?.startsWith("result") && typeof event.text === "string") {
-      return event.text;
+      return resolvePlanProtocolCandidate(events, index, event.text, false);
     }
   }
 
@@ -233,17 +262,313 @@ export function extractAuthoritativeFinalText(
     const event = events[index];
     const json = objectRecord(event?.json);
     if (json?.type === "assistant" && typeof event?.text === "string") {
-      return event.text;
+      return resolvePlanProtocolCandidate(events, index, event.text, true);
     }
     if (event?.type === "assistant" && typeof event.text === "string") {
-      return event.text;
+      return resolvePlanProtocolCandidate(events, index, event.text, true);
     }
   }
 
-  return events
-    .filter(isTextDeltaEvent)
-    .map((event) => event.text ?? "")
-    .join("");
+  const textDeltas = events
+    .map((event, index) => ({ event, index }))
+    .filter(({ event }) => isTextDeltaEvent(event));
+  const finalText = textDeltas.map(({ event }) => event.text ?? "").join("");
+  const finalDelta = textDeltas.at(-1);
+  return finalDelta
+    ? resolvePlanProtocolCandidate(events, finalDelta.index, finalText, true)
+    : finalText;
+}
+
+/**
+ * Claude Code plan mode can occasionally serialize its internal plan-file
+ * protocol as ordinary assistant text when Oracle deliberately supplies no
+ * tools. The complete answer then appears in a preceding
+ * `Write { file_path: ~/.claude/plans/..., content: ... }` envelope while the
+ * terminal result contains only `ExitPlanMode` plus a short summary. Recovery
+ * is intentionally a tail-state parser rather than a global search: the Write
+ * must belong to the selected result's contiguous terminal protocol episode.
+ * Ordinary answers that merely discuss Write/ExitPlanMode remain untouched.
+ */
+type PlanProtocolRecovery =
+  | { kind: "not-protocol" }
+  | { kind: "recovered"; content: string }
+  | { kind: "invalid"; reason: ClaudeCodePlanProtocolFailureReason };
+
+function resolvePlanProtocolCandidate(
+  events: readonly ClaudeCodeNormalizedEvent[],
+  candidateIndex: number,
+  candidateText: string,
+  requireVerifiedFablePlan: boolean,
+): string {
+  if (requireVerifiedFablePlan) {
+    const sessionInit = findNearestSessionInit(events, candidateIndex - 1);
+    if (!sessionInit || !isVerifiedFablePlanInit(sessionInit.json)) {
+      return candidateText;
+    }
+  }
+
+  const recoveredPlan = recoverLeakedPlanProtocolContent(events, candidateIndex, candidateText);
+  if (recoveredPlan.kind === "recovered") {
+    return recoveredPlan.content;
+  }
+  if (recoveredPlan.kind === "invalid") {
+    throw new ClaudeCodePlanProtocolError(recoveredPlan.reason);
+  }
+  return candidateText;
+}
+
+function recoverLeakedPlanProtocolContent(
+  events: readonly ClaudeCodeNormalizedEvent[],
+  candidateIndex: number,
+  terminalText: string,
+): PlanProtocolRecovery {
+  const candidateEvent = events[candidateIndex];
+  const candidateJson = objectRecord(candidateEvent?.json);
+  if (
+    candidateJson?.is_error === true ||
+    (typeof candidateJson?.subtype === "string" && candidateJson.subtype !== "success")
+  ) {
+    return { kind: "not-protocol" };
+  }
+
+  const sessionInit = findNearestSessionInit(events, candidateIndex - 1);
+  const verifiedFablePlan = Boolean(sessionInit && isVerifiedFablePlanInit(sessionInit.json));
+  if (sessionInit && !verifiedFablePlan) {
+    return { kind: "not-protocol" };
+  }
+  const terminalExit = parseProtocolObject(terminalText, "ExitPlanMode");
+  if (!terminalExit) {
+    if (!verifiedFablePlan) {
+      return { kind: "not-protocol" };
+    }
+    if (looksLikeProtocolObject(terminalText, "ExitPlanMode")) {
+      return { kind: "invalid", reason: "malformed-exit-envelope" };
+    }
+    if (looksLikeProtocolObject(terminalText, "Write")) {
+      return { kind: "invalid", reason: "missing-exit-envelope" };
+    }
+    return { kind: "not-protocol" };
+  }
+  if (typeof terminalExit.plan !== "string") {
+    return verifiedFablePlan
+      ? { kind: "invalid", reason: "invalid-exit-payload" }
+      : { kind: "not-protocol" };
+  }
+  const sessionStartIndex = sessionInit?.index ?? -1;
+
+  let previous = findPreviousCompleteConversationEvent(
+    events,
+    candidateIndex - 1,
+    sessionStartIndex,
+  );
+  if (!previous || previous.kind !== "assistant" || previous.text === null) {
+    return verifiedFablePlan
+      ? { kind: "invalid", reason: "missing-terminal-assistant-envelope" }
+      : { kind: "not-protocol" };
+  }
+
+  const assistantExit = parseProtocolObject(previous.text, "ExitPlanMode");
+  if (assistantExit) {
+    if (typeof assistantExit.plan !== "string") {
+      return verifiedFablePlan
+        ? { kind: "invalid", reason: "invalid-assistant-exit-payload" }
+        : { kind: "not-protocol" };
+    }
+    previous = findPreviousCompleteConversationEvent(events, previous.index - 1, sessionStartIndex);
+  }
+
+  if (!previous || previous.kind !== "assistant" || previous.text === null) {
+    return verifiedFablePlan
+      ? { kind: "invalid", reason: "missing-write-envelope" }
+      : { kind: "not-protocol" };
+  }
+  const writeEnvelope = parseProtocolObject(previous.text, "Write");
+  if (!writeEnvelope) {
+    return verifiedFablePlan
+      ? { kind: "invalid", reason: "missing-write-envelope" }
+      : { kind: "not-protocol" };
+  }
+  const filePath = typeof writeEnvelope.file_path === "string" ? writeEnvelope.file_path : "";
+  const content = typeof writeEnvelope.content === "string" ? writeEnvelope.content : "";
+  if (!isValidPlanMarkerPath(filePath)) {
+    return verifiedFablePlan
+      ? { kind: "invalid", reason: "invalid-plan-marker-path" }
+      : { kind: "not-protocol" };
+  }
+  if (!content.trim()) {
+    return verifiedFablePlan
+      ? { kind: "invalid", reason: "empty-plan-content" }
+      : { kind: "not-protocol" };
+  }
+
+  const eventBeforeWrite = findPreviousCompleteConversationEvent(
+    events,
+    previous.index - 1,
+    sessionStartIndex,
+  );
+  if (
+    eventBeforeWrite?.kind === "assistant" &&
+    eventBeforeWrite.text !== null &&
+    parseProtocolObject(eventBeforeWrite.text, "Write")
+  ) {
+    // Two adjacent candidates are ambiguous. Do not guess which plan is the
+    // answer, even though the nearer one would usually be the latest.
+    return verifiedFablePlan
+      ? { kind: "invalid", reason: "ambiguous-write-envelopes" }
+      : { kind: "not-protocol" };
+  }
+
+  return { kind: "recovered", content };
+}
+
+interface SessionInitEvent {
+  index: number;
+  json: Record<string, unknown>;
+}
+
+function findNearestSessionInit(
+  events: readonly ClaudeCodeNormalizedEvent[],
+  startIndex: number,
+): SessionInitEvent | null {
+  for (let index = startIndex; index >= 0; index -= 1) {
+    const json = objectRecord(events[index]?.json);
+    if (json?.type === "system" && json.subtype === "init") {
+      return { index, json };
+    }
+  }
+  return null;
+}
+
+function isVerifiedFablePlanInit(init: Record<string, unknown>): boolean {
+  const model = typeof init.model === "string" ? init.model.trim().toLowerCase() : "";
+  return (
+    (model === "fable" || model === "claude-fable-5") &&
+    init.permissionMode === "plan" &&
+    Array.isArray(init.tools) &&
+    init.tools.length === 0
+  );
+}
+
+interface CompleteConversationEvent {
+  index: number;
+  kind: "assistant" | "result";
+  text: string | null;
+}
+
+function findPreviousCompleteConversationEvent(
+  events: readonly ClaudeCodeNormalizedEvent[],
+  startIndex: number,
+  sessionStartIndex: number,
+): CompleteConversationEvent | null {
+  for (let index = startIndex; index > sessionStartIndex; index -= 1) {
+    const event = events[index];
+    const json = objectRecord(event?.json);
+    const type =
+      typeof json?.type === "string"
+        ? json.type
+        : event?.type === "assistant" || event?.type?.startsWith("result")
+          ? event.type.startsWith("result")
+            ? "result"
+            : "assistant"
+          : null;
+    if (type === "assistant") {
+      const text = typeof event?.text === "string" ? event.text : null;
+      if (text === null || !text.trim()) {
+        // Claude can emit a complete thinking-only assistant snapshot between
+        // the text-rendered Write and ExitPlanMode protocol messages. It has
+        // no answer text and is transparent to this terminal episode.
+        continue;
+      }
+      return {
+        index,
+        kind: "assistant",
+        text,
+      };
+    }
+    if (type === "result") {
+      return {
+        index,
+        kind: "result",
+        text: typeof event?.text === "string" ? event.text : null,
+      };
+    }
+  }
+  return null;
+}
+
+/** Parse only Claude Code's exact text-rendered tool protocol envelope. */
+function parseProtocolObject(
+  text: string,
+  command: "Write" | "ExitPlanMode",
+): Record<string, unknown> | null {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith(command)) {
+    return null;
+  }
+  const afterCommand = trimmed.slice(command.length);
+  if (!/^\s/u.test(afterCommand)) {
+    return null;
+  }
+
+  let payload = afterCommand.trim();
+  const inputHeader = /^Input[ \t]*(?:\r?\n)+/u.exec(payload);
+  if (inputHeader) {
+    payload = payload.slice(inputHeader[0].length).trim();
+  }
+  try {
+    return objectRecord(JSON.parse(payload));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Recognize only a text-rendered tool envelope shape, not prose that merely
+ * mentions the command. Invalid JSON and trailing text still count as a
+ * protocol-shaped terminal state so verified Fable runs fail closed.
+ */
+function looksLikeProtocolObject(text: string, command: "Write" | "ExitPlanMode"): boolean {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith(command)) {
+    return false;
+  }
+  const afterCommand = trimmed.slice(command.length);
+  if (!/^\s/u.test(afterCommand)) {
+    return false;
+  }
+  const payload = afterCommand.trim();
+  return payload.startsWith("{") || /^Input[ \t]*(?:\r?\n|$)/u.test(payload);
+}
+
+/**
+ * The path is a protocol marker only. Validate it lexically; never access it.
+ * CAAM deliberately changes HOME, so the prefix is not compared with the
+ * current process's home directory.
+ */
+function isValidPlanMarkerPath(filePath: string): boolean {
+  if (
+    !filePath ||
+    !posixPath.isAbsolute(filePath) ||
+    filePath.includes("\\") ||
+    /[\u0000-\u001f\u007f]/u.test(filePath)
+  ) {
+    return false;
+  }
+  const segments = filePath.split("/");
+  if (segments.some((segment) => segment === "." || segment === "..")) {
+    return false;
+  }
+  if (posixPath.normalize(filePath) !== filePath || segments.length < 4) {
+    return false;
+  }
+
+  const fileName = segments.at(-1) ?? "";
+  return (
+    segments.at(-3) === ".claude" &&
+    segments.at(-2) === "plans" &&
+    fileName.length > ".md".length &&
+    fileName.endsWith(".md")
+  );
 }
 
 export function isTextDeltaEvent(event: ClaudeCodeNormalizedEvent): boolean {

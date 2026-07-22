@@ -1,6 +1,11 @@
 import { describe, expect, test, vi } from "vitest";
-import { resumeBrowserSession, __test__ } from "../../src/browser/reattach.js";
+import {
+  resumeBrowserSession,
+  resumeBrowserSessionInIsolatedFleetTab,
+  __test__,
+} from "../../src/browser/reattach.js";
 import type { BrowserLogger, ChromeClient } from "../../src/browser/types.js";
+import { BrowserAutomationError } from "../../src/oracle/errors.js";
 
 type FakeTarget = { id?: string; targetId?: string; type?: string; url?: string };
 type FakeClient = {
@@ -577,6 +582,138 @@ describe("resumeBrowserSession", () => {
     expect(result.answerText).toBe("fallback");
     expect(close).toHaveBeenCalledOnce();
     expect(recoverSession).toHaveBeenCalled();
+  });
+});
+
+describe("isolated fleet recovery target ownership", () => {
+  const runtime = {
+    tabUrl: "https://chatgpt.com/c/recovery-thread",
+    conversationId: "recovery-thread",
+    promptSubmitted: true as const,
+  };
+
+  function createHarness(recoveryError: unknown, headless = false) {
+    const release = vi.fn(async () => {});
+    const update = vi.fn(async () => {});
+    const closeRemoteChromeTargetFn = vi.fn(async () => true);
+    const closeClient = vi.fn(async () => {});
+    const evaluate = vi.fn(async ({ expression }: { expression: string }) => {
+      if (expression === "document.readyState") {
+        return { result: { value: "complete" } };
+      }
+      return {
+        result: {
+          value: {
+            url: runtime.tabUrl,
+            title: "ChatGPT",
+            interstitialTitle: false,
+            interstitialScript: false,
+            interstitialUrlMarker: false,
+            bodySample: "",
+            composerPresent: true,
+            composerVisible: true,
+            loginCtaVisible: false,
+            onAuthPath: false,
+            accountSignal: true,
+          },
+        },
+      };
+    });
+    const client = {
+      Runtime: { enable: vi.fn(async () => {}), evaluate },
+      Page: { enable: vi.fn(async () => {}), navigate: vi.fn(async () => ({})) },
+      close: closeClient,
+    } as unknown as ChromeClient;
+    const resumeBrowserSessionFn = vi.fn(async () => {
+      throw recoveryError;
+    }) as unknown as typeof resumeBrowserSession;
+
+    const run = () =>
+      resumeBrowserSessionInIsolatedFleetTab({
+        runtime,
+        config: { headless, timeoutMs: 2_000 },
+        logger: vi.fn() as BrowserLogger,
+        chromeHost: "127.0.0.1",
+        chromePort: 9222,
+        profileDir: "/profiles/account-one",
+        promptPreview: "saved recovery prompt",
+        accountId: `isolated-recovery-test-${process.pid}`,
+        connectWithNewTabFn: vi.fn(async () => ({
+          client,
+          targetId: "recovery-target-1",
+        })),
+        acquireBrowserTabLeaseFn: vi.fn(async () => ({
+          id: "lease-recovery-1",
+          release,
+          update,
+        })),
+        closeRemoteChromeTargetFn,
+        resumeBrowserSessionFn,
+      });
+
+    return { closeClient, closeRemoteChromeTargetFn, release, run, update };
+  }
+
+  test.each([
+    { stage: "cloudflare-challenge" },
+    { stage: "account-quarantine" },
+    { stage: "challenge-gate", state: "verification_interstitial" },
+    { stage: "challenge-gate", state: "account_security_block" },
+  ])("preserves the exact target and active lease for canonical challenge %#", async (details) => {
+    const challenge = new BrowserAutomationError("Manual verification required.", {
+      ...details,
+      retryable: false,
+    });
+    const harness = createHarness(challenge);
+
+    const thrown = await harness.run().catch((error: unknown) => error);
+
+    expect(thrown).toBeInstanceOf(BrowserAutomationError);
+    expect((thrown as BrowserAutomationError).details).toMatchObject({
+      ...details,
+      recoveryTargetPreserved: true,
+      runtime: {
+        browserTransport: "cdp",
+        chromeHost: "127.0.0.1",
+        chromePort: 9222,
+        chromeProfileRoot: "/profiles/account-one",
+        chromeTargetId: "recovery-target-1",
+        tabUrl: runtime.tabUrl,
+        conversationId: runtime.conversationId,
+        promptSubmitted: true,
+      },
+    });
+    expect(harness.closeRemoteChromeTargetFn).not.toHaveBeenCalled();
+    expect(harness.release).not.toHaveBeenCalled();
+    expect(harness.update).toHaveBeenCalledWith(
+      expect.objectContaining({ chromeTargetId: "recovery-target-1" }),
+    );
+  });
+
+  test("still closes the owned target before releasing its lease after an ordinary failure", async () => {
+    const harness = createHarness(new Error("ordinary recovery failure"));
+
+    await expect(harness.run()).rejects.toThrow("ordinary recovery failure");
+
+    expect(harness.closeRemoteChromeTargetFn).toHaveBeenCalledOnce();
+    expect(harness.release).toHaveBeenCalledOnce();
+    expect(harness.closeRemoteChromeTargetFn.mock.invocationCallOrder[0]).toBeLessThan(
+      harness.release.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+  });
+
+  test("does not preserve a headless challenge target that a human cannot inspect", async () => {
+    const challenge = new BrowserAutomationError("Headless verification required.", {
+      stage: "cloudflare-challenge",
+      retryable: false,
+    });
+    const harness = createHarness(challenge, true);
+
+    const thrown = await harness.run().catch((error: unknown) => error);
+
+    expect(thrown).toBe(challenge);
+    expect(harness.closeRemoteChromeTargetFn).toHaveBeenCalledOnce();
+    expect(harness.release).toHaveBeenCalledOnce();
   });
 });
 

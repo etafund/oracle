@@ -1275,6 +1275,118 @@ describe("performSessionRun", () => {
     }
   });
 
+  test("default claude-code runner fails closed on an unrecoverable verified Fable plan protocol", async () => {
+    vi.mocked(fsPromises.mkdir).mockRestore();
+    vi.mocked(fsPromises.writeFile).mockRestore();
+
+    const root = fs.mkdtempSync(path.join(os.homedir(), ".oracle-claude-code-protocol-test-"));
+    const oracleHome = path.join(root, "oracle-home");
+    const sessionsDir = path.join(root, "sessions");
+    const sessionDir = path.join(sessionsDir, "sess-1");
+    const repoDir = path.join(root, "repo");
+    const binDir = path.join(root, "bin");
+    const argvPath = path.join(root, "claude-argv.json");
+    const stdinPath = path.join(root, "claude-stdin.txt");
+    const markerPath = path.join(root, "claude-spawned.txt");
+    for (const dir of [oracleHome, sessionsDir, sessionDir, repoDir, binDir]) {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      fs.chmodSync(dir, 0o700);
+    }
+    const exitEnvelope = `ExitPlanMode\n\n${JSON.stringify({ plan: "Summary only." })}`;
+    createFakeClaudeExecutable({
+      binDir,
+      argvPath,
+      stdinPath,
+      markerPath,
+      stdoutEvents: [
+        fakeClaudeCodeInitEvent(),
+        {
+          type: "assistant",
+          message: {
+            content: [
+              {
+                type: "text",
+                text: `Write\n\n${JSON.stringify({
+                  file_path: "relative/.claude/plans/review.md",
+                  content: "untrusted recovered answer",
+                })}`,
+              },
+            ],
+          },
+        },
+        {
+          type: "assistant",
+          message: { content: [{ type: "text", text: exitEnvelope }] },
+        },
+        {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          result: exitEnvelope,
+          modelUsage: { "claude-fable-5": {} },
+          total_cost_usd: 0,
+        },
+      ],
+    });
+    sessionStoreMock.sessionsDir.mockReturnValue(sessionsDir);
+    sessionStoreMock.getPaths.mockResolvedValue({
+      dir: sessionDir,
+      metadata: path.join(sessionDir, "meta.json"),
+      request: path.join(sessionDir, "request.json"),
+      log: path.join(sessionDir, "output.log"),
+    });
+    setOracleHomeDirOverrideForTest(oracleHome);
+
+    try {
+      await withExactEnv(
+        {
+          ...blockedClaudeCodeEnvDefaults,
+          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        },
+        async () => {
+          await expect(
+            performSessionRun({
+              sessionMeta: { ...baseSessionMeta, mode: "claude-code", model: "fable" },
+              runOptions: { prompt: "Review via fake executable", model: "fable" },
+              mode: "claude-code",
+              cwd: repoDir,
+              log,
+              write,
+              version: cliVersion,
+              muteStdout: true,
+            }),
+          ).rejects.toThrow(/unrecoverable plan-protocol episode/i);
+        },
+      );
+
+      const artifactsDir = path.join(sessionDir, "artifacts");
+      expect(
+        fs.readFileSync(path.join(artifactsDir, "claude-code-events.normalized.ndjson"), "utf8"),
+      ).toContain("ExitPlanMode");
+      expect(fs.readFileSync(path.join(artifactsDir, "claude-code-final.md"), "utf8")).toBe("");
+      expect(fs.readFileSync(path.join(artifactsDir, "claude-code-progress.md"), "utf8")).toContain(
+        "unrecoverable plan-protocol episode",
+      );
+      const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+      expect(finalUpdate).toMatchObject({
+        status: "error",
+        mode: "claude-code",
+        errorMessage: expect.stringContaining("unrecoverable plan-protocol episode"),
+        artifacts: expect.arrayContaining([
+          expect.objectContaining({ kind: "claude-code-events-normalized" }),
+          expect.objectContaining({ kind: "claude-code-final" }),
+        ]),
+      });
+      expect(write.mock.calls.map((call) => call[0]).join("")).not.toContain("ExitPlanMode");
+      expect(write.mock.calls.map((call) => call[0]).join("")).not.toContain(
+        "untrusted recovered answer",
+      );
+    } finally {
+      setOracleHomeDirOverrideForTest(null);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("default claude-code runner refuses a busy single-flight lock before spawning", async () => {
     vi.mocked(fsPromises.mkdir).mockRestore();
     vi.mocked(fsPromises.writeFile).mockRestore();

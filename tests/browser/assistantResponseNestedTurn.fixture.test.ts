@@ -131,7 +131,11 @@ function evaluateFixtureExpression<T = unknown>(html: string, expression: string
   const document = parseFixtureDocument(html);
   const location = { href: "https://chatgpt.com/c/nested-turn-fixture" };
   const window = {
-    getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
+    getComputedStyle: (node: FixtureElement) => ({
+      display: node.getAttribute("data-display") ?? "block",
+      visibility: node.getAttribute("data-visibility") ?? "visible",
+      opacity: node.getAttribute("data-opacity") ?? "1",
+    }),
   };
   const evaluate = new Function(
     "document",
@@ -308,6 +312,7 @@ describe("ChatGPT nested assistant turn fixture", () => {
     expect(snapshot?.turnId).toBe("conversation-turn-4");
     expect(snapshot?.afterLatestUser).toBe(true);
     expect(snapshot?.turnIndex).toBeLessThan(99);
+    expect(snapshot?.turnComplete).toBe(true);
     expect(runtime.evaluate).toHaveBeenCalledWith(
       expect.objectContaining({
         expression: buildAssistantSnapshotExpressionForTest(99),
@@ -336,6 +341,24 @@ describe("ChatGPT nested assistant turn fixture", () => {
         withoutLatestTurnActions,
         buildCompletionVisibleExpressionForTest(),
       ),
+    ).toBe(false);
+  });
+
+  test("does not treat hidden controls on the exact assistant turn as completion", async () => {
+    const fixture = await loadBrowserFixture("chatgpt", "nested-assistant-turn");
+    const hiddenLatestActions = fixture.html.replace(
+      /(<div class="turn-actions" data-current-actions>[\s\S]*?<\/div>)/u,
+      (actions) => actions.replace(/<button /gu, '<button data-display="none" '),
+    );
+
+    expect(
+      evaluateFixtureExpression(hiddenLatestActions, buildCompletionVisibleExpressionForTest()),
+    ).toBe(false);
+    expect(
+      evaluateFixtureExpression<{ turnComplete?: boolean }>(
+        hiddenLatestActions,
+        buildAssistantSnapshotExpressionForTest(99),
+      )?.turnComplete,
     ).toBe(false);
   });
 });

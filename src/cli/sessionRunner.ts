@@ -107,6 +107,7 @@ import {
 } from "../claude-code/caamRotation.js";
 import { matchClaudeCodeRateLimitOrChallengeText } from "../claude-code/rateLimitPatterns.js";
 import {
+  ClaudeCodePlanProtocolError,
   ClaudeCodeStreamNormalizer,
   extractAuthoritativeFinalText,
   type ClaudeCodeNormalizedEvent,
@@ -2246,15 +2247,27 @@ async function runClaudeCodeChildAttempt({
         ? `Claude Code local mode stopped because the visible event stream showed an account challenge/auth signal: ${rateLimitOrChallenge.reason}. This is a HARD-HALT — no automatic rotation was attempted. Raw events were saved in ${input.artifactPaths.normalizedEventsPath}.`
         : `Claude Code local mode stopped because the visible event stream showed a rate-limit signal: ${rateLimitOrChallenge.reason}. Raw events were saved in ${input.artifactPaths.normalizedEventsPath}.`
       : undefined;
+  const normalizedEventsNdjson = events.map((event) => JSON.stringify(event)).join("\n");
+  let finalAnswer = "";
+  let planProtocolError: string | undefined;
+  try {
+    finalAnswer = extractAuthoritativeFinalText(events);
+  } catch (error) {
+    if (!(error instanceof ClaudeCodePlanProtocolError)) {
+      throw error;
+    }
+    planProtocolError =
+      `Claude Code local mode stopped because ${error.message} ` +
+      `Raw events were saved in ${input.artifactPaths.normalizedEventsPath}.`;
+  }
   const errorMessage =
     policyViolationError ??
     outputFloodError ??
     abortError ??
     rateLimitOrChallengeError ??
     verificationError ??
-    exitError;
-  const normalizedEventsNdjson = events.map((event) => JSON.stringify(event)).join("\n");
-  const finalAnswer = extractAuthoritativeFinalText(events);
+    exitError ??
+    planProtocolError;
 
   const result: ClaudeCodeRunnerResult = {
     stdoutRaw: Buffer.concat(stdoutChunks),

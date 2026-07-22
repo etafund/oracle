@@ -64,7 +64,10 @@ interface ChatgptDomProviderState {
   attachmentTimeoutMs?: number;
   baselineTurns?: number | null;
   attachmentNames?: AttachmentReadyExpectation[];
+  attachmentBindingToken?: string;
   committedTurns?: number | null;
+  beforePromptSubmit?: (composerBindingToken?: string) => Promise<void> | void;
+  requireBoundSendTarget?: boolean;
   onPromptSubmitted?: (submittedPrompt: string) => Promise<void> | void;
   /**
    * Authoritative worker account id (BrowserRunOptions.accountId, i.e. the
@@ -91,6 +94,10 @@ interface ChatGptProDomProbe {
   modelLabel: string;
   effortLabels: readonly string[];
   selectedEffortLabel: string | null;
+  routeModelSignals: readonly string[];
+  routeModeSignals: readonly string[];
+  hasProPill: boolean;
+  composerBindingVerified: boolean;
   authenticated: boolean;
   promptReady: boolean;
   sendExists: boolean;
@@ -132,9 +139,20 @@ async function submitPromptViaAdapter(ctx: ProviderDomFlowContext): Promise<void
       runtime: state.runtime,
       input: state.input,
       attachmentNames: state.attachmentNames ?? [],
+      attachmentBindingToken: state.attachmentBindingToken,
       baselineTurns: state.baselineTurns ?? undefined,
       inputTimeoutMs: state.inputTimeoutMs ?? undefined,
       attachmentTimeoutMs: state.attachmentTimeoutMs ?? undefined,
+      beforePromptSubmit: async (composerBindingToken) => {
+        // Re-check the shared account latch and live page at the final
+        // pre-dispatch boundary. Another lane may have quarantined this
+        // account while this one was typing/uploading.
+        await assertPreRunAccessState(state.runtime, state.logger, {
+          quarantine: { accountId: state.accountId },
+        });
+        await state.beforePromptSubmit?.(composerBindingToken);
+      },
+      requireBoundSendTarget: state.requireBoundSendTarget,
       onPromptSubmitted: state.onPromptSubmitted,
     },
     ctx.prompt,
@@ -281,6 +299,10 @@ async function resolveChatGptProProbe(ctx: ProviderDomFlowContext): Promise<Chat
     modelLabel,
     effortLabels,
     selectedEffortLabel: domProbe?.selectedEffortLabel ?? null,
+    routeModelSignals: domProbe?.routeModelSignals ?? [],
+    routeModeSignals: domProbe?.routeModeSignals ?? [],
+    hasProPill: domProbe?.hasProPill === true,
+    composerBindingVerified: domProbe?.composerBindingVerified ?? true,
     authenticated: domProbe?.authenticated ?? true,
     promptReady: domProbe?.promptReady ?? true,
     sendExists: domProbe?.sendExists ?? true,
@@ -293,9 +315,11 @@ async function resolveChatGptProProbe(ctx: ProviderDomFlowContext): Promise<Chat
 
 async function readChatGptProDomProbe(
   runtime: ChromeClient["Runtime"],
+  attachmentBindingToken?: string,
+  composerBindingToken?: string,
 ): Promise<ChatGptProDomProbe | null> {
   const result = await runtime.evaluate({
-    expression: buildChatGptProDomProbeExpression(),
+    expression: buildChatGptProDomProbeExpression(attachmentBindingToken, composerBindingToken),
     awaitPromise: true,
     returnByValue: true,
   });
@@ -309,6 +333,14 @@ async function readChatGptProDomProbe(
       : [],
     selectedEffortLabel:
       typeof probe.selectedEffortLabel === "string" ? probe.selectedEffortLabel : null,
+    routeModelSignals: Array.isArray(probe.routeModelSignals)
+      ? probe.routeModelSignals.filter((label): label is string => typeof label === "string")
+      : [],
+    routeModeSignals: Array.isArray(probe.routeModeSignals)
+      ? probe.routeModeSignals.filter((label): label is string => typeof label === "string")
+      : [],
+    hasProPill: probe.hasProPill === true,
+    composerBindingVerified: probe.composerBindingVerified === true,
     authenticated: probe.authenticated !== false,
     promptReady: probe.promptReady === true,
     sendExists: probe.sendExists === true,
@@ -319,7 +351,10 @@ async function readChatGptProDomProbe(
   };
 }
 
-function buildChatGptProDomProbeExpression(): string {
+function buildChatGptProDomProbeExpression(
+  attachmentBindingToken?: string,
+  composerBindingToken?: string,
+): string {
   const modelPickerButtons = JSON.stringify(chatgptSelectorList("model_picker_button"));
   const modelRows = JSON.stringify(chatgptSelectorList("model_row"));
   const effortButtons = JSON.stringify(chatgptSelectorList("effort_picker_button"));
@@ -327,6 +362,8 @@ function buildChatGptProDomProbeExpression(): string {
   const composerInputs = JSON.stringify(chatgptSelectorList("composer_textarea"));
   const sendButtons = JSON.stringify(chatgptSelectorList("send_button"));
   const conversationIdExpression = buildConversationIdFromHrefExpression("url");
+  const attachmentBindingTokenLiteral = JSON.stringify(attachmentBindingToken ?? "");
+  const composerBindingTokenLiteral = JSON.stringify(composerBindingToken ?? "");
 
   return `(() => {
     const MODEL_PICKER_BUTTONS = ${modelPickerButtons};
@@ -335,8 +372,80 @@ function buildChatGptProDomProbeExpression(): string {
     const EFFORT_ROWS = ${effortRows};
     const COMPOSER_INPUTS = ${composerInputs};
     const SEND_BUTTONS = ${sendButtons};
+    const ATTACHMENT_BINDING_TOKEN = ${attachmentBindingTokenLiteral};
+    const COMPOSER_BINDING_TOKEN = ${composerBindingTokenLiteral};
     const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
     const text = (node) => normalize(node?.textContent || node?.getAttribute?.('aria-label') || '');
+    const isVisible = (node) => {
+      if (!node || node.isConnected === false) return false;
+      if (node.hidden === true || node.getAttribute?.('aria-hidden') === 'true') return false;
+      if (typeof node.getBoundingClientRect === 'function') {
+        const rect = node.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return false;
+      }
+      let current = node;
+      while (current && current !== document.documentElement) {
+        if (current.hidden === true || current.getAttribute?.('aria-hidden') === 'true') return false;
+        const style = typeof window === 'object' ? window.getComputedStyle?.(current) : null;
+        if (
+          style &&
+          (style.display === 'none' ||
+            style.visibility === 'hidden' ||
+            style.visibility === 'collapse')
+        ) {
+          return false;
+        }
+        current = current.parentElement;
+      }
+      return true;
+    };
+    const queryVisible = (root, selectors) => {
+      if (!root) return [];
+      const out = [];
+      const seen = new Set();
+      for (const selector of selectors) {
+        for (const node of root.querySelectorAll(selector)) {
+          if (!isVisible(node) || seen.has(node)) continue;
+          seen.add(node);
+          out.push(node);
+        }
+      }
+      return out;
+    };
+    const activePrompt = queryVisible(document, COMPOSER_INPUTS)[0] || null;
+    const boundComposers = ATTACHMENT_BINDING_TOKEN
+      ? queryVisible(document, ['[data-oracle-attachment-binding]']).filter(
+          (node) =>
+            node.getAttribute?.('data-oracle-attachment-binding') === ATTACHMENT_BINDING_TOKEN &&
+            activePrompt &&
+            typeof node.contains === 'function' &&
+            node.contains(activePrompt),
+        )
+      : [];
+    const dispatchBoundComposers = COMPOSER_BINDING_TOKEN
+      ? queryVisible(document, ['[data-oracle-send-composer-binding]']).filter(
+          (node) =>
+            node.getAttribute?.('data-oracle-send-composer-binding') === COMPOSER_BINDING_TOKEN &&
+            activePrompt &&
+            typeof node.contains === 'function' &&
+            node.contains(activePrompt),
+        )
+      : [];
+    const composerBindingVerified =
+      (!ATTACHMENT_BINDING_TOKEN || boundComposers.length === 1) &&
+      (!COMPOSER_BINDING_TOKEN || dispatchBoundComposers.length === 1) &&
+      (!ATTACHMENT_BINDING_TOKEN ||
+        !COMPOSER_BINDING_TOKEN ||
+        boundComposers[0] === dispatchBoundComposers[0]);
+    // The post-upload protected-route probe must use the same exact composer
+    // node that owns the attachment token and active prompt. A document-wide
+    // scan can otherwise combine a stale/hidden Sol selector with an unrelated
+    // global Pro badge and authorize the wrong send controller.
+    const routeRoot = ATTACHMENT_BINDING_TOKEN || COMPOSER_BINDING_TOKEN
+      ? (composerBindingVerified
+          ? (dispatchBoundComposers[0] || boundComposers[0])
+          : null)
+      : document;
     const selected = (node) => {
       if (!node) return false;
       const values = [
@@ -349,39 +458,33 @@ function buildChatGptProDomProbeExpression(): string {
       return values.some((v) => v === 'true' || v === 'checked' || v === 'selected' || v === 'on');
     };
     const firstText = (selectors) => {
-      for (const selector of selectors) {
-        for (const node of document.querySelectorAll(selector)) {
-          const value = text(node);
-          if (value) return value;
-        }
+      for (const node of queryVisible(routeRoot, selectors)) {
+        const value = text(node);
+        if (value) return value;
       }
       return '';
     };
     const selectedText = (selectors) => {
-      for (const selector of selectors) {
-        for (const node of document.querySelectorAll(selector)) {
-          if (!selected(node)) continue;
-          const value = text(node);
-          if (value) return value;
-        }
+      for (const node of queryVisible(routeRoot, selectors)) {
+        if (!selected(node)) continue;
+        const value = text(node);
+        if (value) return value;
       }
       return '';
     };
     const collectTexts = (selectors) => {
       const out = [];
       const seen = new Set();
-      for (const selector of selectors) {
-        for (const node of document.querySelectorAll(selector)) {
-          const value = text(node);
-          if (!value || seen.has(value)) continue;
-          seen.add(value);
-          out.push(value);
-        }
+      for (const node of queryVisible(routeRoot, selectors)) {
+        const value = text(node);
+        if (!value || seen.has(value)) continue;
+        seen.add(value);
+        out.push(value);
       }
       return out;
     };
     const byOracleRole = (role) =>
-      Array.from(document.querySelectorAll('[data-oracle-role="' + role + '"]'));
+      queryVisible(routeRoot, ['[data-oracle-role="' + role + '"]']);
     const fixtureModel =
       byOracleRole('chatgpt-model-option').find(selected)?.textContent?.trim?.() || '';
     const fixtureEfforts = byOracleRole('chatgpt-effort-option')
@@ -395,8 +498,11 @@ function buildChatGptProDomProbeExpression(): string {
     );
     const modelLikeComposerPill =
       composerPillTexts.find((label) => /\\b(pro|gpt|chatgpt|thinking|instant)\\b/i.test(label)) || '';
-    const composerModel =
-      normalize(document.querySelector('[data-testid="composer-model-label"], [data-testid="model-label"]')?.textContent || '');
+    const composerModelNode = queryVisible(routeRoot, [
+      '[data-testid="composer-model-label"]',
+      '[data-testid="model-label"]',
+    ])[0];
+    const composerModel = normalize(composerModelNode?.textContent || '');
     const buttonModel = firstText(MODEL_PICKER_BUTTONS) || modelLikeComposerPill;
     const selectedModel = selectedText(MODEL_ROWS);
     const selectedEffort =
@@ -412,9 +518,25 @@ function buildChatGptProDomProbeExpression(): string {
     if (effortLabels.length === 0 && selectedEffort) {
       effortLabels.push(selectedEffort);
     }
-    const hasProPill = Boolean(
-      document.querySelector('button.__composer-pill[aria-label*="Pro" i], button[aria-label="Pro, click to remove"]')
-    );
+    const hasProPill =
+      composerPillTexts.some((label) => normalize(label).toLowerCase() === 'pro') ||
+      queryVisible(routeRoot, ['button[aria-label="Pro, click to remove" i]']).length > 0;
+    // These are deliberately limited to CURRENT-selection surfaces. Never add
+    // unselected menu rows here: this probe is the fail-closed, non-mutating
+    // check used after an attachment upload, where seeing an available model is
+    // not proof that it is still the active model.
+    const routeModelSignals = Array.from(new Set([
+      fixtureModel,
+      selectedModel,
+      composerModel,
+      buttonModel,
+    ].map(normalize).filter(Boolean)));
+    const routeModeSignals = Array.from(new Set([
+      fixtureSelectedEffort,
+      selectedEffort,
+      ...effortLikeComposerPills,
+      ...(hasProPill ? ['Pro'] : []),
+    ].map(normalize).filter(Boolean)));
     const accountProfileText = normalize(
       Array.from(document.querySelectorAll('[data-testid="accounts-profile-button"]'))
         .map((node) => (node.textContent || '') + ' ' + (node.getAttribute?.('aria-label') || ''))
@@ -432,14 +554,18 @@ function buildChatGptProDomProbeExpression(): string {
           ? 'Pro'
           : hasProPill && !/\\bpro\\b/i.test(baseModel) ? baseModel + ' + Pro' : baseModel)
       : (accountHasPro && hasProEffortSignal ? 'Pro' : '');
-    const promptReady = COMPOSER_INPUTS.some((selector) => Boolean(document.querySelector(selector)));
-    const sendExists = SEND_BUTTONS.some((selector) => Boolean(document.querySelector(selector)));
+    const promptReady = composerBindingVerified && queryVisible(routeRoot, COMPOSER_INPUTS).length > 0;
+    const sendExists = composerBindingVerified && queryVisible(routeRoot, SEND_BUTTONS).length > 0;
     const url = window.location?.href || null;
     const conversationId = ${conversationIdExpression};
     return {
       modelLabel,
       effortLabels,
       selectedEffortLabel: selectedEffort,
+      routeModelSignals,
+      routeModeSignals,
+      hasProPill,
+      composerBindingVerified,
       authenticated: !/\\/auth\\/login|\\/login/i.test(url || ''),
       promptReady,
       sendExists,
@@ -451,8 +577,103 @@ function buildChatGptProDomProbeExpression(): string {
   })()`;
 }
 
-export function buildChatGptProDomProbeExpressionForTest(): string {
-  return buildChatGptProDomProbeExpression();
+export interface Gpt56SolProReadOnlyRouteEvidence {
+  readonly verified: boolean;
+  readonly composerBindingVerified: boolean;
+  readonly modelVerified: boolean;
+  readonly modeVerified: boolean;
+  readonly modelSignals: readonly string[];
+  readonly modeSignals: readonly string[];
+}
+
+function normalizeProtectedRouteLabel(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function classifyGpt56SolProRouteProbe(
+  probe: Pick<
+    ChatGptProDomProbe,
+    "routeModelSignals" | "routeModeSignals" | "hasProPill" | "composerBindingVerified"
+  >,
+): Gpt56SolProReadOnlyRouteEvidence {
+  const modelSignals = Array.from(
+    new Set(probe.routeModelSignals.map(normalizeProtectedRouteLabel).filter(Boolean)),
+  );
+  const modeSignals = Array.from(
+    new Set([
+      ...probe.routeModeSignals.map(normalizeProtectedRouteLabel).filter(Boolean),
+      ...(probe.hasProPill ? ["pro"] : []),
+    ]),
+  );
+  // Every visible signal on the bound composer must agree. Merely finding one
+  // exact label is not sufficient: an exact Sol signal plus a Sol Mini
+  // lookalike, or Standard plus a foreign/global Pro badge, is ambiguous and
+  // therefore fails closed.
+  const modelVerified =
+    probe.composerBindingVerified &&
+    modelSignals.length > 0 &&
+    modelSignals.every((label) => label === "gpt 5 6 sol");
+  const modeVerified =
+    probe.composerBindingVerified &&
+    modeSignals.length > 0 &&
+    modeSignals.every((label) => label === "pro");
+  return {
+    verified: probe.composerBindingVerified && modelVerified && modeVerified,
+    composerBindingVerified: probe.composerBindingVerified,
+    modelVerified,
+    modeVerified,
+    modelSignals,
+    modeSignals,
+  };
+}
+
+/**
+ * Read the already-selected protected route without opening a picker or
+ * dispatching any DOM event. This is safe to call after uploading files: it
+ * can fail closed, but it can never remount the composer by selecting a model.
+ */
+export async function readGpt56SolProRouteReadOnly(
+  runtime: ChromeClient["Runtime"],
+  attachmentBindingToken?: string,
+  composerBindingToken?: string,
+): Promise<Gpt56SolProReadOnlyRouteEvidence> {
+  const probe = await readChatGptProDomProbe(runtime, attachmentBindingToken, composerBindingToken);
+  if (!probe) {
+    return {
+      verified: false,
+      composerBindingVerified: false,
+      modelVerified: false,
+      modeVerified: false,
+      modelSignals: [],
+      modeSignals: [],
+    };
+  }
+  return classifyGpt56SolProRouteProbe(probe);
+}
+
+export function classifyGpt56SolProRouteProbeForTest(args: {
+  routeModelSignals?: readonly string[];
+  routeModeSignals?: readonly string[];
+  hasProPill?: boolean;
+  composerBindingVerified?: boolean;
+}): Gpt56SolProReadOnlyRouteEvidence {
+  return classifyGpt56SolProRouteProbe({
+    routeModelSignals: args.routeModelSignals ?? [],
+    routeModeSignals: args.routeModeSignals ?? [],
+    hasProPill: args.hasProPill === true,
+    composerBindingVerified: args.composerBindingVerified !== false,
+  });
+}
+
+export function buildChatGptProDomProbeExpressionForTest(
+  attachmentBindingToken?: string,
+  composerBindingToken?: string,
+): string {
+  return buildChatGptProDomProbeExpression(attachmentBindingToken, composerBindingToken);
 }
 
 function buildSynthesisGateInput(

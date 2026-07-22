@@ -56,6 +56,7 @@ describe("tripQuarantineLatch", () => {
     });
 
     expect(outcome.alreadyLatched).toBe(false);
+    expect(outcome.recordPersisted).toBe(true);
     const raw = await readFile(outcome.latchPath, "utf8");
     const record = JSON.parse(raw);
     expect(record).toMatchObject({
@@ -70,6 +71,38 @@ describe("tripQuarantineLatch", () => {
     expect(record.clearInstructions).toContain("Manual human action required");
     const leftovers = (await readdir(dir)).filter((name) => name.endsWith(".tmp"));
     expect(leftovers).toEqual([]);
+  });
+
+  test("a metadata write failure leaves the published final path as a fail-closed sentinel", async () => {
+    const dir = await tempLatchDir();
+    const sensitiveFailure = `write failed at ${path.join(dir, "private-detail")}`;
+    const outcome = await tripQuarantineLatch(
+      {
+        dir,
+        accountId: "acct1",
+        reason: "verification_interstitial",
+        source: "remote-terminal-gate",
+      },
+      {
+        writeRecord: async () => {
+          throw new Error(sensitiveFailure);
+        },
+      },
+    );
+
+    expect(outcome.alreadyLatched).toBe(false);
+    expect(outcome.recordPersisted).toBe(false);
+    expect(await readFile(outcome.latchPath, "utf8")).toBe("");
+
+    // A fresh read has no process-local context. The final pathname alone is
+    // sufficient to fence sibling and restarted workers.
+    const freshState = await getQuarantineLatchState({ dir, accountId: "acct1" });
+    expect(freshState).toMatchObject({
+      quarantined: true,
+      record: null,
+      readError: "latch file exists but is not a valid quarantine record",
+    });
+    expect(freshState.readError).not.toContain(sensitiveFailure);
   });
 
   test("first trip wins; later trips keep the original record", async () => {
@@ -88,9 +121,48 @@ describe("tripQuarantineLatch", () => {
     });
 
     expect(second.alreadyLatched).toBe(true);
+    expect(second.recordPersisted).toBe(true);
     expect(second.record.reason).toBe("verification_interstitial");
     const state = await getQuarantineLatchState({ dir, accountId: "acct1" });
     expect(state.record?.source).toBe("pre-run-gate");
+  });
+
+  test("simultaneous trip contenders publish one winner and one durable final latch", async () => {
+    const dir = await tempLatchDir();
+    const outcomes = await Promise.all(
+      Array.from({ length: 12 }, (_, index) =>
+        tripQuarantineLatch({
+          dir,
+          accountId: "acct1",
+          reason: index % 2 === 0 ? "verification_interstitial" : "account_security_block",
+          source: `contender-${index}`,
+          runId: `run-${index}`,
+        }),
+      ),
+    );
+
+    expect(outcomes.filter((outcome) => !outcome.alreadyLatched)).toHaveLength(1);
+    expect(outcomes.every((outcome) => outcome.latchPath === outcomes[0]?.latchPath)).toBe(true);
+    const state = await getQuarantineLatchState({ dir, accountId: "acct1" });
+    expect(state.quarantined).toBe(true);
+    expect(state.record).not.toBeNull();
+    expect(await readdir(dir)).toEqual(["quarantine-acct1.json"]);
+  });
+
+  test("account-scoped trip and manual clear never affect a sibling account", async () => {
+    const dir = await tempLatchDir();
+    await tripQuarantineLatch({
+      dir,
+      accountId: "acct1",
+      reason: "verification_interstitial",
+      source: "pre-run-gate",
+    });
+
+    expect((await getQuarantineLatchState({ dir, accountId: "acct1" })).quarantined).toBe(true);
+    expect((await getQuarantineLatchState({ dir, accountId: "acct2" })).quarantined).toBe(false);
+    await clearQuarantineLatchManually({ dir, accountId: "acct1" });
+    expect((await getQuarantineLatchState({ dir, accountId: "acct1" })).quarantined).toBe(false);
+    expect((await getQuarantineLatchState({ dir, accountId: "acct2" })).quarantined).toBe(false);
   });
 });
 
@@ -151,6 +223,12 @@ describe("assertNotQuarantined", () => {
         reason: "verification_interstitial",
       },
     });
+
+    const localError = new AccountQuarantinedError(
+      await getQuarantineLatchState({ dir, accountId: "acct1" }),
+    );
+    expect(localError.message).not.toContain(dir);
+    expect(localError.details).not.toHaveProperty("latchPath");
   });
 });
 

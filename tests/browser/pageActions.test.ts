@@ -14,6 +14,7 @@ import {
   ensureNotBlocked,
   ensureLoggedIn,
   readAssistantSnapshot,
+  buildBlockingUiDismissalExpressionForTest,
 } from "../../src/browser/pageActions.js";
 import {
   buildLoginProbeExpressionForTest,
@@ -131,9 +132,111 @@ describe("navigateToChatGPT", () => {
 });
 
 describe("navigateToPromptReadyWithFallback", () => {
+  function runBlockingUiDismissalExpression(options: {
+    dialogText: string;
+    buttonLabel: string;
+    title?: string;
+    url?: string;
+    appUsable?: boolean;
+  }) {
+    const clicked = vi.fn();
+    class FakeHTMLElement {
+      constructor(
+        public textContent: string,
+        private readonly controls: FakeHTMLElement[] = [],
+      ) {}
+
+      getAttribute(name: string) {
+        return name === "aria-label" || name === "title" ? this.textContent : "";
+      }
+
+      getBoundingClientRect() {
+        return { width: 120, height: 32 };
+      }
+
+      querySelectorAll() {
+        return this.controls;
+      }
+
+      click() {
+        clicked();
+      }
+    }
+
+    const button = new FakeHTMLElement(options.buttonLabel);
+    const dialog = new FakeHTMLElement(options.dialogText, [button]);
+    const composer = new FakeHTMLElement("");
+    const account = new FakeHTMLElement("");
+    const document = {
+      title: options.title ?? "ChatGPT",
+      querySelectorAll: vi.fn((selector: string) => {
+        if (selector === '[role="dialog"],dialog') return [dialog];
+        if (selector.startsWith("#prompt-textarea")) {
+          return options.appUsable ? [composer] : [];
+        }
+        if (selector.startsWith('[data-testid="accounts-profile-button"')) {
+          return options.appUsable ? [account] : [];
+        }
+        return [];
+      }),
+    };
+    const window = {
+      getComputedStyle: vi.fn(() => ({
+        display: "block",
+        visibility: "visible",
+        opacity: "1",
+      })),
+    };
+    const location = { href: options.url ?? "https://chatgpt.com/" };
+    const evaluate = new Function(
+      "document",
+      "window",
+      "HTMLElement",
+      "location",
+      `return ${buildBlockingUiDismissalExpressionForTest()};`,
+    ) as (
+      document: unknown,
+      window: unknown,
+      HTMLElement: typeof FakeHTMLElement,
+      location: unknown,
+    ) => { dismissed: boolean; blocked: boolean; reason?: string };
+
+    return {
+      result: evaluate(document, window, FakeHTMLElement, location),
+      clicked,
+    };
+  }
+
+  test("never clicks a generic challenge dialog control", () => {
+    const { result, clicked } = runBlockingUiDismissalExpression({
+      dialogText: "Verify you are human. Checking your browser. Continue",
+      buttonLabel: "Continue",
+      title: "Just a moment...",
+    });
+
+    expect(result).toMatchObject({
+      dismissed: false,
+      blocked: true,
+    });
+    expect(clicked).not.toHaveBeenCalled();
+    expect(buildBlockingUiDismissalExpressionForTest()).not.toContain("document.body");
+  });
+
+  test("still dismisses a safe ChatGPT dialog", () => {
+    const { result, clicked } = runBlockingUiDismissalExpression({
+      dialogText: "Welcome to ChatGPT",
+      buttonLabel: "Got it",
+      appUsable: true,
+    });
+
+    expect(result).toEqual({ dismissed: true, blocked: false, action: "confirm" });
+    expect(clicked).toHaveBeenCalledOnce();
+  });
+
   test("falls back to base URL when prompt is missing", async () => {
     const navigate = vi.fn().mockResolvedValue(undefined);
     const ensureNotBlockedMock = vi.fn().mockResolvedValue(undefined);
+    const assertPreResultAccessStateMock = vi.fn().mockResolvedValue(undefined);
     const ensurePromptReadyMock = vi
       .fn()
       .mockRejectedValueOnce(new Error("Prompt textarea did not appear before timeout"))
@@ -156,6 +259,7 @@ describe("navigateToPromptReadyWithFallback", () => {
           navigateToChatGPT: navigate,
           ensureNotBlocked: ensureNotBlockedMock,
           ensurePromptReady: ensurePromptReadyMock,
+          assertPreResultAccessState: assertPreResultAccessStateMock,
         },
       ),
     ).resolves.toEqual({ usedFallback: true });
@@ -172,6 +276,90 @@ describe("navigateToPromptReadyWithFallback", () => {
     expect(ensureNotBlockedMock).toHaveBeenCalledTimes(2);
     expect(ensurePromptReadyMock).toHaveBeenNthCalledWith(1, runtime, 5_000, logger);
     expect(ensurePromptReadyMock).toHaveBeenNthCalledWith(2, runtime, 120_000, logger);
+    expect(assertPreResultAccessStateMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("does not erase a late challenge with fallback navigation", async () => {
+    const navigate = vi.fn().mockResolvedValue(undefined);
+    const readinessError = new Error("Prompt textarea did not appear before timeout");
+    const challenge = new BrowserAutomationError("Manual verification required.", {
+      stage: "challenge-gate",
+      state: "verification_interstitial",
+      oracleErrorClass: "account_quarantine",
+      retryable: false,
+    });
+    const assertPreResultAccessStateMock = vi.fn().mockRejectedValue(challenge);
+    const runtime = {} as unknown as ChromeClient["Runtime"];
+    const page = {} as unknown as ChromeClient["Page"];
+
+    await expect(
+      navigateToPromptReadyWithFallback(
+        page,
+        runtime,
+        {
+          url: "https://chatgpt.com/g/project",
+          fallbackUrl: "https://chatgpt.com/",
+          timeoutMs: 5_000,
+          headless: false,
+          logger,
+          accountId: "acct1",
+        },
+        {
+          navigateToChatGPT: navigate,
+          ensureNotBlocked: vi.fn().mockResolvedValue(undefined),
+          ensurePromptReady: vi.fn().mockRejectedValue(readinessError),
+          assertPreResultAccessState: assertPreResultAccessStateMock,
+        },
+      ),
+    ).rejects.toBe(challenge);
+
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(navigate).not.toHaveBeenCalledWith(page, runtime, "about:blank", logger);
+  });
+
+  test("re-probes and performs no navigation when a challenge appears before dialog dismissal", async () => {
+    const navigate = vi.fn().mockResolvedValue(undefined);
+    const ensurePromptReadyMock = vi.fn().mockResolvedValue(undefined);
+    const challenge = new BrowserAutomationError("Manual verification required.", {
+      stage: "challenge-gate",
+      state: "verification_interstitial",
+      oracleErrorClass: "account_quarantine",
+      retryable: false,
+    });
+    const assertPreResultAccessStateMock = vi.fn().mockRejectedValue(challenge);
+    const runtime = {} as unknown as ChromeClient["Runtime"];
+    const page = {} as unknown as ChromeClient["Page"];
+
+    await expect(
+      navigateToPromptReadyWithFallback(
+        page,
+        runtime,
+        {
+          url: "https://chatgpt.com/g/project",
+          fallbackUrl: "https://chatgpt.com/",
+          timeoutMs: 5_000,
+          headless: false,
+          logger,
+          accountId: "acct1",
+        },
+        {
+          navigateToChatGPT: navigate,
+          ensureNotBlocked: vi.fn().mockResolvedValue(undefined),
+          ensurePromptReady: ensurePromptReadyMock,
+          dismissBlockingUi: vi.fn().mockResolvedValue({
+            dismissed: false,
+            blocked: true,
+            reason: "unsafe-dialog",
+          }),
+          assertPreResultAccessState: assertPreResultAccessStateMock,
+        },
+      ),
+    ).rejects.toBe(challenge);
+
+    expect(assertPreResultAccessStateMock).toHaveBeenCalledOnce();
+    expect(ensurePromptReadyMock).not.toHaveBeenCalled();
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(navigate).not.toHaveBeenCalledWith(page, runtime, "about:blank", logger);
   });
 });
 
@@ -310,53 +498,125 @@ describe("waitForResumedConversationHydration", () => {
 });
 
 describe("ensureNotBlocked", () => {
+  const healthyAccessFacts = {
+    url: "https://chatgpt.com/",
+    title: "ChatGPT",
+    interstitialTitle: false,
+    interstitialScript: false,
+    interstitialUrlMarker: false,
+    bodySample: "how can i help you today?",
+    composerPresent: true,
+    composerVisible: true,
+    loginCtaVisible: false,
+    onAuthPath: false,
+    accountSignal: true,
+  };
+
   test("throws descriptive error when cloudflare detected", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-navigation-quarantine-"));
     const runtime = {
-      evaluate: vi.fn().mockResolvedValue({ result: { value: "Just a moment..." } }),
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: {
+            ...healthyAccessFacts,
+            title: "Just a moment...",
+            interstitialTitle: true,
+            composerPresent: false,
+            composerVisible: false,
+            accountSignal: false,
+          },
+        },
+      }),
     } as unknown as ChromeClient["Runtime"];
-    await expect(ensureNotBlocked(runtime, true, logger)).rejects.toThrow(/headless mode/i);
+    await expect(
+      ensureNotBlocked(runtime, true, logger, {
+        quarantine: { dir, accountId: "acct-navigation-cloudflare" },
+      }),
+    ).rejects.toThrow(/headless mode/i);
     expect(logger).toHaveBeenCalledWith("Cloudflare anti-bot page detected");
+    await expect(
+      getQuarantineLatchState({ dir, accountId: "acct-navigation-cloudflare" }),
+    ).resolves.toMatchObject({
+      quarantined: true,
+      record: { reason: "verification_interstitial", source: "navigation-block-gate" },
+    });
   });
 
-  test("passes through when title clean", async () => {
+  test("passes through a healthy app that loaded the background challenge script", async () => {
     const runtime = {
-      evaluate: vi
-        .fn()
-        .mockResolvedValueOnce({ result: { value: "ChatGPT" } })
-        .mockResolvedValueOnce({ result: { value: false } }),
+      evaluate: vi.fn().mockResolvedValue({
+        result: { value: { ...healthyAccessFacts, interstitialScript: true } },
+      }),
     } as unknown as ChromeClient["Runtime"];
     await expect(ensureNotBlocked(runtime, false, logger)).resolves.toBeUndefined();
   });
 
   test("throws structured browser error when headful cloudflare is detected", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-navigation-quarantine-"));
     const runtime = {
-      evaluate: vi.fn().mockResolvedValue({ result: { value: "Just a moment..." } }),
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: {
+            ...healthyAccessFacts,
+            title: "Just a moment...",
+            interstitialTitle: true,
+            composerPresent: false,
+            composerVisible: false,
+            accountSignal: false,
+          },
+        },
+      }),
     } as unknown as ChromeClient["Runtime"];
     try {
-      await ensureNotBlocked(runtime, false, logger);
+      await ensureNotBlocked(runtime, false, logger, {
+        quarantine: { dir, accountId: "acct-navigation-headful" },
+      });
       throw new Error("expected ensureNotBlocked to throw");
     } catch (error) {
       expect(error).toBeInstanceOf(BrowserAutomationError);
       expect((error as BrowserAutomationError).details).toMatchObject({
         stage: "cloudflare-challenge",
         headless: false,
+        oracleErrorClass: "account_quarantine",
+        retryable: false,
       });
     }
   });
 
   test("throws structured browser error when ChatGPT account security block appears", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-navigation-quarantine-"));
     const runtime = {
-      evaluate: vi
-        .fn()
-        .mockResolvedValueOnce({ result: { value: "ChatGPT" } })
-        .mockResolvedValueOnce({ result: { value: false } })
-        .mockResolvedValueOnce({ result: { value: true } }),
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: {
+            ...healthyAccessFacts,
+            bodySample: "Suspicious activity detected. Secure your account to regain access.",
+            composerPresent: false,
+            composerVisible: false,
+            accountSignal: false,
+          },
+        },
+      }),
     } as unknown as ChromeClient["Runtime"];
 
-    await expect(ensureNotBlocked(runtime, false, logger)).rejects.toMatchObject({
-      details: { stage: "chatgpt-account-blocked" },
+    await expect(
+      ensureNotBlocked(runtime, false, logger, {
+        quarantine: { dir, accountId: "acct-navigation-security" },
+      }),
+    ).rejects.toMatchObject({
+      details: {
+        stage: "chatgpt-account-blocked",
+        oracleErrorClass: "account_quarantine",
+        retryable: false,
+      },
     });
     expect(logger).toHaveBeenCalledWith("ChatGPT account security block detected");
+    await expect(
+      getQuarantineLatchState({ dir, accountId: "acct-navigation-security" }),
+    ).resolves.toMatchObject({
+      quarantined: true,
+      record: { reason: "account_security_block", source: "navigation-block-gate" },
+    });
   });
 });
 
@@ -1555,6 +1815,57 @@ describe("waitForAssistantResponse", () => {
     }
   });
 
+  test("keeps a stable short Pro answer when only its exact turn proves completion", async () => {
+    vi.useFakeTimers();
+    try {
+      const answer = {
+        text: "DIAG-OK",
+        messageId: "mid",
+        turnId: "tid",
+        turnComplete: true,
+      };
+      let batchedReads = 0;
+      const evaluate = vi
+        .fn()
+        .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
+          if (params.awaitPromise) {
+            return { result: { type: "object", value: answer } };
+          }
+          const expression = String(params.expression ?? "");
+          if (expression.includes("stopVisible, completionVisible, thinkingActive")) {
+            batchedReads += 1;
+            return {
+              result: {
+                value: {
+                  snapshot: answer,
+                  stopVisible: false,
+                  // This independent lookup missed in the live incident. The
+                  // exact extracted turn nevertheless carried finished controls.
+                  completionVisible: false,
+                  thinkingActive: batchedReads <= 2,
+                },
+              },
+            };
+          }
+          if (expression.includes("extractAssistantTurn")) {
+            return { result: { value: answer } };
+          }
+          return { result: { value: false } };
+        });
+
+      const promise = waitForAssistantResponse(
+        { evaluate } as unknown as ChromeClient["Runtime"],
+        30_000,
+        logger,
+      );
+      await vi.advanceTimersByTimeAsync(20_000);
+
+      await expect(promise).resolves.toMatchObject({ text: "DIAG-OK" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("does not return a one-character capture without completion evidence", async () => {
     vi.useFakeTimers();
     try {
@@ -1617,8 +1928,8 @@ describe("waitForAssistantResponse", () => {
     expect(capturedExpression).toContain("completionStableTarget,");
     expect(capturedExpression).toContain("stableMs: idleMs,");
     expect(capturedExpression).toContain("const turnScope");
-    expect(capturedExpression).toContain("turnScope.querySelector(FINISHED_SELECTOR)");
-    expect(capturedExpression).not.toContain("document.querySelector(FINISHED_SELECTOR)");
+    expect(capturedExpression).toContain("hasVisibleFinishedAction(turnScope)");
+    expect(capturedExpression).toContain("root.querySelectorAll");
     expect(capturedExpression).toContain("turnScope.querySelectorAll('.markdown')");
     expect(capturedExpression).not.toContain("document.querySelectorAll('.markdown')");
     expect(capturedExpression).toContain("data-message-author-role");
@@ -1709,15 +2020,38 @@ describe("waitForAssistantResponse pre-result gate account-id threading (8t1 reg
     vi.stubEnv("ORACLE_ACCOUNT_ID", "env-account");
 
     const runtime = {
-      evaluate: vi.fn().mockResolvedValue({
-        result: {
-          type: "object",
-          value: {
-            text: "Verify you are human. Checking your browser.",
-            html: "<p>Verify you are human. Checking your browser.</p>",
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({
+          result: {
+            type: "object",
+            value: {
+              text: "Verify you are human. Checking your browser.",
+              html: "<p>Verify you are human. Checking your browser.</p>",
+            },
           },
-        },
-      }),
+        })
+        // The capture text is not authoritative account evidence. Corroborate
+        // it with an independently visible live wall so this regression keeps
+        // testing account-id threading without reintroducing answer-driven
+        // false quarantine.
+        .mockResolvedValue({
+          result: {
+            value: {
+              url: "https://chatgpt.com/",
+              title: "Just a moment...",
+              interstitialTitle: true,
+              interstitialScript: true,
+              interstitialUrlMarker: false,
+              bodySample: "verify you are human. checking your browser.",
+              composerPresent: false,
+              composerVisible: false,
+              loginCtaVisible: false,
+              onAuthPath: false,
+              accountSignal: false,
+            },
+          },
+        }),
     } as unknown as ChromeClient["Runtime"];
 
     await expect(
@@ -1736,6 +2070,173 @@ describe("waitForAssistantResponse pre-result gate account-id threading (8t1 reg
     );
     expect((await getQuarantineLatchState({ accountId: "env-account" })).quarantined).toBe(false);
   }, 10_000);
+
+  test("a challenge that replaces the DOM while capture times out outranks the timeout", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-pageactions-timeout-gate-"));
+    vi.stubEnv("ORACLE_FLEET_DIR", dir);
+    const originalTimeout = new Error("assistant capture timed out");
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: {
+            url: "https://chatgpt.com/",
+            title: "Just a moment...",
+            interstitialTitle: true,
+            interstitialScript: true,
+            interstitialUrlMarker: false,
+            bodySample: "verify you are human. checking your browser.",
+            composerPresent: false,
+            composerVisible: false,
+            loginCtaVisible: false,
+            onAuthPath: false,
+            accountSignal: false,
+          },
+        },
+      }),
+    } as unknown as ChromeClient["Runtime"];
+
+    await expect(
+      waitForAssistantResponse(runtime, 1000, logger, undefined, undefined, "options-account", 0, {
+        waitForUnvalidated: vi.fn().mockRejectedValue(originalTimeout),
+      }),
+    ).rejects.toMatchObject({
+      details: {
+        stage: "challenge-gate",
+        code: "challenge-gate-verification_interstitial",
+        gate: "pre-result",
+        retryable: false,
+      },
+    });
+    expect((await getQuarantineLatchState({ accountId: "options-account" })).quarantined).toBe(
+      true,
+    );
+  });
+
+  test("a challenge that replaces the DOM during binding proof outranks the binding error", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-pageactions-binding-gate-"));
+    vi.stubEnv("ORACLE_FLEET_DIR", dir);
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: {
+            url: "https://chatgpt.com/",
+            title: "Just a moment...",
+            interstitialTitle: true,
+            interstitialScript: true,
+            interstitialUrlMarker: false,
+            bodySample: "verify you are human. checking your browser.",
+            composerPresent: false,
+            composerVisible: false,
+            loginCtaVisible: false,
+            onAuthPath: false,
+            accountSignal: false,
+          },
+        },
+      }),
+    } as unknown as ChromeClient["Runtime"];
+
+    await expect(
+      waitForAssistantResponse(runtime, 1000, logger, undefined, undefined, "binding-account", 0, {
+        waitForUnvalidated: vi.fn().mockResolvedValue({
+          text: "Captured answer",
+          meta: { messageId: "message-1" },
+        }),
+        assertCapturedBound: vi.fn().mockRejectedValue(new Error("binding target disappeared")),
+      }),
+    ).rejects.toMatchObject({
+      details: {
+        stage: "challenge-gate",
+        code: "challenge-gate-verification_interstitial",
+        retryable: false,
+      },
+    });
+    expect((await getQuarantineLatchState({ accountId: "binding-account" })).quarantined).toBe(
+      true,
+    );
+  });
+
+  test("a healthy live gate preserves the exact original capture error", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-pageactions-timeout-clean-"));
+    vi.stubEnv("ORACLE_FLEET_DIR", dir);
+    const originalTimeout = new Error("assistant capture timed out");
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: {
+            url: "https://chatgpt.com/",
+            title: "ChatGPT",
+            interstitialTitle: false,
+            interstitialScript: true,
+            interstitialUrlMarker: false,
+            bodySample: "how can i help you today?",
+            composerPresent: true,
+            composerVisible: true,
+            loginCtaVisible: false,
+            onAuthPath: false,
+            accountSignal: true,
+          },
+        },
+      }),
+    } as unknown as ChromeClient["Runtime"];
+
+    await expect(
+      waitForAssistantResponse(runtime, 1000, logger, undefined, undefined, "options-account", 0, {
+        waitForUnvalidated: vi.fn().mockRejectedValue(originalTimeout),
+      }),
+    ).rejects.toBe(originalTimeout);
+  });
+
+  test("forwards the cumulative wait age to unvalidated response capture", async () => {
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: {
+            url: "https://chatgpt.com/c/bound-conversation",
+            title: "ChatGPT",
+            interstitialTitle: false,
+            interstitialScript: false,
+            interstitialUrlMarker: false,
+            bodySample: "",
+            composerPresent: true,
+            composerVisible: true,
+            loginCtaVisible: false,
+            onAuthPath: false,
+            accountSignal: true,
+          },
+        },
+      }),
+    } as unknown as ChromeClient["Runtime"];
+    const captured = {
+      text: "Bound completed answer",
+      meta: { messageId: "message-1", turnId: "turn-1" },
+    };
+    const waitForUnvalidated = vi.fn().mockResolvedValue(captured);
+
+    await expect(
+      waitForAssistantResponse(
+        runtime,
+        1_000,
+        logger,
+        undefined,
+        "bound-conversation",
+        "options-account",
+        12 * 60_000,
+        {
+          waitForUnvalidated,
+          assertCapturedBound: vi.fn().mockResolvedValue(undefined),
+        },
+      ),
+    ).resolves.toEqual(captured);
+
+    expect(waitForUnvalidated).toHaveBeenCalledWith(
+      runtime,
+      1_000,
+      logger,
+      undefined,
+      "bound-conversation",
+      12 * 60_000,
+    );
+  });
 });
 
 describe("uploadAttachmentFile", () => {

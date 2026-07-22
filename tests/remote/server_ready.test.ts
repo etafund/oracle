@@ -129,8 +129,13 @@ describe("GET /ready", () => {
         expect(body.leaseRegistryReadable).toBe(true);
         expect(body.cleanupTaint).toBeNull();
         const quarantine = body.quarantine as Record<string, unknown>;
-        expect(quarantine.quarantined).toBe(false);
-        expect(quarantine.record).toBeNull();
+        expect(quarantine).toEqual({
+          quarantined: false,
+          reason: null,
+          source: null,
+          persistence: "clear",
+          failureCode: null,
+        });
         expect(body.activeRun).toBeNull();
         expect((body.manifest as Record<string, unknown>).present).toBe(false);
       } finally {

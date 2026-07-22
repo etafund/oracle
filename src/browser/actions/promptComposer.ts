@@ -16,6 +16,7 @@ import { logDomFailure } from "../domDebug.js";
 import { buildClickDispatcher } from "./domEvents.js";
 import { registerSubmittedUserMessage } from "./captureBinding.js";
 import { BrowserAutomationError } from "../../oracle/errors.js";
+import { randomUUID } from "node:crypto";
 
 const ENTER_KEY_EVENT = {
   key: "Enter",
@@ -37,9 +38,12 @@ export async function submitPrompt(
     runtime: ChromeClient["Runtime"];
     input: ChromeClient["Input"];
     attachmentNames?: AttachmentReadyInput[];
+    attachmentBindingToken?: string;
     baselineTurns?: number | null;
     inputTimeoutMs?: number | null;
     attachmentTimeoutMs?: number | null;
+    beforePromptSubmit?: (composerBindingToken?: string) => Promise<void> | void;
+    requireBoundSendTarget?: boolean;
     onPromptSubmitted?: (submittedPrompt: string) => Promise<void> | void;
   },
   prompt: string,
@@ -83,10 +87,7 @@ export async function submitPrompt(
 
       const candidates = [];
       for (const selector of SELECTORS) {
-        const node = document.querySelector(selector);
-        if (node) {
-          candidates.push(node);
-        }
+        candidates.push(...Array.from(document.querySelectorAll(selector)));
       }
       const preferred = candidates.find((node) => isVisible(node)) || candidates[0];
       if (preferred && focusNode(preferred)) {
@@ -125,9 +126,9 @@ export async function submitPrompt(
         const rect = node.getBoundingClientRect();
         return rect.width > 0 && rect.height > 0;
       };
-      const candidates = inputSelectors
-        .map((selector) => document.querySelector(selector))
-        .filter((node) => Boolean(node));
+      const candidates = inputSelectors.flatMap((selector) =>
+        Array.from(document.querySelectorAll(selector)),
+      );
       const active = candidates.find((node) => isVisible(node)) || candidates[0] || null;
       return {
         editorText: editor?.innerText ?? '',
@@ -180,9 +181,9 @@ export async function submitPrompt(
         const rect = node.getBoundingClientRect();
         return rect.width > 0 && rect.height > 0;
       };
-      const candidates = inputSelectors
-        .map((selector) => document.querySelector(selector))
-        .filter((node) => Boolean(node));
+      const candidates = inputSelectors.flatMap((selector) =>
+        Array.from(document.querySelectorAll(selector)),
+      );
       const active = candidates.find((node) => isVisible(node)) || candidates[0] || null;
       return {
         editorText: editor?.innerText ?? '',
@@ -220,8 +221,22 @@ export async function submitPrompt(
     logger,
     deps?.attachmentNames,
     deps?.attachmentTimeoutMs,
+    deps?.attachmentBindingToken,
+    deps.beforePromptSubmit,
   );
   if (!clicked) {
+    if (deps.requireBoundSendTarget) {
+      throw new BrowserAutomationError(
+        "Protected submission never reached a bound clickable send target; refusing Enter fallback.",
+        {
+          stage: "submit-prompt",
+          code: "protected-send-target-unavailable",
+        },
+      );
+    }
+    // Ordinary text-only layouts retain the historical Enter fallback, but
+    // the final account/page hook still runs at the true dispatch boundary.
+    await deps.beforePromptSubmit?.();
     await input.dispatchKeyEvent({
       type: "keyDown",
       ...ENTER_KEY_EVENT,
@@ -240,7 +255,11 @@ export async function submitPrompt(
     // never retried); it must be emitted at click time on the primary path,
     // exactly like the Enter fallback above, and aligned with the
     // onPromptSubmitted flag below.
-    logger("Submitted prompt via send button click");
+    // The remote accounting boundary is dispatch (the prompt may now have
+    // reached the account), while verifyPromptCommitted below is acceptance
+    // proof. Keep the legacy "clicked send button" marker recognised by both
+    // ends of the remote stream, but name the event truthfully.
+    logger("Clicked send button (dispatch attempted; awaiting prompt commit proof)");
   }
   await deps.onPromptSubmitted?.(prompt);
 
@@ -362,7 +381,11 @@ async function waitForDomReady(
   logger?.(`Page did not reach ready/composer state within ${timeoutMs}ms; continuing cautiously.`);
 }
 
-function buildAttachmentReadyExpression(attachmentNames: AttachmentReadyInput[]): string {
+function buildAttachmentReadyExpression(
+  attachmentNames: AttachmentReadyInput[],
+  bindingToken?: string,
+  bindToken = false,
+): string {
   const attachmentExpectations = attachmentNames.map((attachment) => {
     const name = typeof attachment === "string" ? attachment : attachment.name;
     const normalized = name.toLowerCase().replace(/\s+/g, " ").trim();
@@ -374,8 +397,12 @@ function buildAttachmentReadyExpression(attachmentNames: AttachmentReadyInput[])
     };
   });
   const namesLiteral = JSON.stringify(attachmentExpectations);
+  const bindingTokenLiteral = JSON.stringify(bindingToken ?? "");
+  const bindTokenLiteral = JSON.stringify(bindToken);
   return `(() => {
     const expected = ${namesLiteral};
+    const bindingToken = ${bindingTokenLiteral};
+    const bindToken = ${bindTokenLiteral};
     const sendSelectors = ${JSON.stringify(SEND_BUTTON_SELECTORS)};
     const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
     const hasNameBoundary = (text, name) => {
@@ -492,18 +519,33 @@ function buildAttachmentReadyExpression(attachmentNames: AttachmentReadyInput[])
       '[aria-label*="remove attachment"]',
       'button[aria-label*="remove attachment"]',
     ];
-    const sendButton = sendSelectors
-      .map((selector) => document.querySelector(selector))
-      .find(Boolean);
+    const isVisible = (node) => {
+      if (!(node instanceof HTMLElement)) return false;
+      const rect = node.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return false;
+      const style = typeof window === 'object' ? window.getComputedStyle?.(node) : null;
+      return !style || (style.display !== 'none' && style.visibility !== 'hidden');
+    };
+    const promptCandidates = [];
+    for (const selector of ${JSON.stringify(INPUT_SELECTORS)}) {
+      promptCandidates.push(...Array.from(document.querySelectorAll(selector)));
+    }
+    const activePrompt = promptCandidates.find(isVisible) || null;
+    // A binding token is a claim about the exact active editor/controller.
+    // Never mint or verify that claim from a chip or send-button wrapper alone.
+    if (bindingToken && !activePrompt) return false;
     const isUsableComposerRoot = (node) => {
       if (!(node instanceof HTMLElement)) return false;
-      if (String(node.tagName || '').toLowerCase() === 'button') return false;
+      const tagName = String(node.tagName || '').toLowerCase();
+      if (tagName === 'button' || tagName === 'textarea' || tagName === 'input') return false;
+      if (node.getAttribute?.('contenteditable') === 'true') return false;
       const testId = String(node.getAttribute?.('data-testid') || '').toLowerCase();
       if (!testId.includes('composer')) return false;
       return !(
         testId.includes('footer') ||
         testId.includes('action') ||
         testId.includes('plus') ||
+        testId.includes('input') ||
         testId.includes('send')
       );
     };
@@ -517,13 +559,20 @@ function buildAttachmentReadyExpression(attachmentNames: AttachmentReadyInput[])
     };
     const firstComposerRoot = () =>
       Array.from(document.querySelectorAll('[data-testid*="composer"]')).find(isUsableComposerRoot) || null;
+    const fallbackSendButton = sendSelectors
+      .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+      .find(isVisible) || null;
     const composer =
-      closestComposerRoot(sendButton) ||
-      sendButton?.closest?.('form') ||
+      closestComposerRoot(activePrompt) ||
+      activePrompt?.closest?.('form') ||
+      (!activePrompt ? closestComposerRoot(fallbackSendButton) : null) ||
+      (!activePrompt ? fallbackSendButton?.closest?.('form') : null) ||
       firstComposerRoot() ||
-      document.querySelector('form') ||
-      document.body ||
-      document;
+      (!activePrompt ? document.querySelector('form') : null);
+    if (!composer) return false;
+    const sendButton = sendSelectors
+      .flatMap((selector) => Array.from(composer.querySelectorAll(selector)))
+      .find(isVisible) || null;
     // Walk node + ancestors (up to grandparent) + descendants to gather every textual hint.
     // ChatGPT's current chip DOM nests the filename inside truncated child spans, so checking
     // only the node's own textContent/aria/title misses the match.
@@ -649,25 +698,62 @@ function buildAttachmentReadyExpression(attachmentNames: AttachmentReadyInput[])
       visibleExtensionLabelsMatchExpected &&
       removeAffordances.length >= expected.length;
 
-    return chipsReady || inputsReady || countReady;
+    const ready = chipsReady || inputsReady || countReady;
+    if (ready && bindingToken) {
+      if (bindToken) {
+        composer.setAttribute('data-oracle-attachment-binding', bindingToken);
+      } else if (composer.getAttribute('data-oracle-attachment-binding') !== bindingToken) {
+        return false;
+      }
+    }
+    return ready;
   })()`;
 }
 
-export function buildAttachmentReadyExpressionForTest(attachmentNames: AttachmentReadyInput[]) {
-  return buildAttachmentReadyExpression(attachmentNames);
+export function buildAttachmentReadyExpressionForTest(
+  attachmentNames: AttachmentReadyInput[],
+  bindingToken?: string,
+  bindToken = false,
+) {
+  return buildAttachmentReadyExpression(attachmentNames, bindingToken, bindToken);
 }
 
-async function attemptSendButton(
+export async function bindActiveComposerAttachments(
   Runtime: ChromeClient["Runtime"],
-  Input: ChromeClient["Input"],
-  _logger?: BrowserLogger,
-  attachmentNames?: AttachmentReadyInput[],
-  attachmentTimeoutMs?: number | null,
-): Promise<boolean> {
-  const needAttachment = Array.isArray(attachmentNames) && attachmentNames.length > 0;
-  const script = `(() => {
+  attachmentNames: AttachmentReadyInput[],
+  bindingToken: string,
+  logger: BrowserLogger,
+): Promise<void> {
+  const result = await Runtime.evaluate({
+    expression: buildAttachmentReadyExpression(attachmentNames, bindingToken, true),
+    returnByValue: true,
+  });
+  if (result.result?.value === true) return;
+  await logDomFailure(Runtime, logger, "attachment-composer-binding");
+  throw new BrowserAutomationError(
+    "Uploaded attachments could not be bound to the active ChatGPT composer.",
+    {
+      stage: "submit-prompt",
+      code: "attachment-composer-binding-missing",
+      attachmentCount: attachmentNames.length,
+    },
+  );
+}
+
+function buildSendButtonTargetExpression(
+  attachmentBindingToken?: string,
+  sendBindingToken?: string,
+  bindSendTarget = false,
+): string {
+  const attachmentBindingTokenLiteral = JSON.stringify(attachmentBindingToken ?? "");
+  const sendBindingTokenLiteral = JSON.stringify(sendBindingToken ?? "");
+  return `(() => {
     ${buildClickDispatcher()}
-    const selectors = ${JSON.stringify(SEND_BUTTON_SELECTORS)};
+    const inputSelectors = ${JSON.stringify(INPUT_SELECTORS)};
+    const sendSelectors = ${JSON.stringify(SEND_BUTTON_SELECTORS)};
+    const attachmentBindingToken = ${attachmentBindingTokenLiteral};
+    const sendBindingToken = ${sendBindingTokenLiteral};
+    const bindSendTarget = ${JSON.stringify(bindSendTarget)};
     const isVisible = (node) => {
       if (!(node instanceof HTMLElement)) return false;
       const rect = node.getBoundingClientRect();
@@ -687,31 +773,127 @@ async function attemptSendButton(
         style.display === 'none'
       );
     };
+    const promptCandidates = [];
+    for (const selector of inputSelectors) {
+      promptCandidates.push(...Array.from(document.querySelectorAll(selector)));
+    }
+    const activePrompt = promptCandidates.find(isVisible) || null;
+    if (!activePrompt) return { status: 'binding-missing', reason: 'active-prompt-missing' };
+    const isUsableComposerRoot = (node) => {
+      if (!(node instanceof HTMLElement)) return false;
+      const tagName = String(node.tagName || '').toLowerCase();
+      if (tagName === 'button' || tagName === 'textarea' || tagName === 'input') return false;
+      if (node.getAttribute?.('contenteditable') === 'true') return false;
+      const testId = String(node.getAttribute?.('data-testid') || '').toLowerCase();
+      if (!testId.includes('composer')) return false;
+      return !(
+        testId.includes('footer') ||
+        testId.includes('action') ||
+        testId.includes('plus') ||
+        testId.includes('input') ||
+        testId.includes('send')
+      );
+    };
+    const closestComposerRoot = (node) => {
+      let current = node instanceof HTMLElement ? node : null;
+      while (current) {
+        if (isUsableComposerRoot(current)) return current;
+        current = current.parentElement;
+      }
+      return null;
+    };
+    const composer = closestComposerRoot(activePrompt) || activePrompt.closest?.('form') || null;
+    if (!composer || !composer.contains(activePrompt)) {
+      return { status: 'binding-missing', reason: 'active-composer-missing' };
+    }
+    if (
+      attachmentBindingToken &&
+      composer.getAttribute('data-oracle-attachment-binding') !== attachmentBindingToken
+    ) {
+      return { status: 'binding-missing', reason: 'attachment-composer-remounted' };
+    }
     const candidates = [];
-    for (const selector of selectors) {
-      candidates.push(...Array.from(document.querySelectorAll(selector)));
+    for (const selector of sendSelectors) {
+      candidates.push(...Array.from(composer.querySelectorAll(selector)));
     }
     const button = candidates.find((node) => isVisible(node) && isEnabled(node)) || null;
-    if (!button) return { status: 'missing' };
+    if (!button) return { status: 'missing', reason: 'same-composer-send-missing' };
+    if (sendBindingToken) {
+      if (bindSendTarget) {
+        composer.setAttribute('data-oracle-send-composer-binding', sendBindingToken);
+        button.setAttribute('data-oracle-send-binding', sendBindingToken);
+      } else if (
+        composer.getAttribute('data-oracle-send-composer-binding') !== sendBindingToken ||
+        button.getAttribute('data-oracle-send-binding') !== sendBindingToken
+      ) {
+        return { status: 'binding-missing', reason: 'send-target-remounted-after-preflight' };
+      }
+    }
     button.scrollIntoView({ block: 'center', inline: 'center' });
     const rect = button.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) {
-      return { status: 'point', x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    if (rect.width <= 0 || rect.height <= 0) {
+      return { status: 'blocked', reason: 'send-button-empty-rect' };
     }
-    // Last-resort fallback for unusual DOMs where the button is visible but has no useful rect.
-    dispatchClickSequence(button);
-    return { status: 'clicked' };
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+    const hit = document.elementFromPoint(x, y);
+    if (!(hit === button || (hit instanceof Node && button.contains(hit)))) {
+      return { status: 'blocked', reason: 'send-button-hit-test-failed' };
+    }
+    return { status: 'point', x, y };
   })()`;
+}
+
+export function buildSendButtonTargetExpressionForTest(
+  attachmentBindingToken?: string,
+  sendBindingToken?: string,
+  bindSendTarget = false,
+): string {
+  return buildSendButtonTargetExpression(attachmentBindingToken, sendBindingToken, bindSendTarget);
+}
+
+async function attemptSendButton(
+  Runtime: ChromeClient["Runtime"],
+  Input: ChromeClient["Input"],
+  logger?: BrowserLogger,
+  attachmentNames?: AttachmentReadyInput[],
+  attachmentTimeoutMs?: number | null,
+  attachmentBindingToken?: string,
+  beforeDispatch?: (composerBindingToken?: string) => Promise<void> | void,
+): Promise<boolean> {
+  const needAttachment = Array.isArray(attachmentNames) && attachmentNames.length > 0;
+  if (needAttachment && !attachmentBindingToken) {
+    throw new BrowserAutomationError(
+      "Attachment submission is missing its active-composer binding; refusing to dispatch.",
+      {
+        stage: "submit-prompt",
+        code: "attachment-composer-binding-missing",
+        attachmentCount: attachmentNames.length,
+      },
+    );
+  }
+  const sendBindingToken = beforeDispatch ? randomUUID() : undefined;
+  const script = buildSendButtonTargetExpression(
+    attachmentBindingToken,
+    sendBindingToken,
+    Boolean(sendBindingToken),
+  );
+  const postPreflightScript = buildSendButtonTargetExpression(
+    attachmentBindingToken,
+    sendBindingToken,
+    false,
+  );
 
   // Give attachment-bearing submissions more headroom. ChatGPT's chip render can
   // settle slowly for multi-file uploads, but plain text sends should keep the
   // shorter historical deadline.
   const timeoutMs = sendButtonTimeoutMs(attachmentNames, attachmentTimeoutMs);
   const deadline = Date.now() + timeoutMs;
+  let lastTargetDiagnostic: { status?: string; reason?: string } | null = null;
   while (Date.now() < deadline) {
     if (needAttachment) {
       const ready = await Runtime.evaluate({
-        expression: buildAttachmentReadyExpression(attachmentNames),
+        expression: buildAttachmentReadyExpression(attachmentNames, attachmentBindingToken),
         returnByValue: true,
       });
       if (!ready?.result?.value) {
@@ -721,23 +903,82 @@ async function attemptSendButton(
     }
     const { result } = await Runtime.evaluate({ expression: script, returnByValue: true });
     const value = result.value as
-      | { status?: "clicked" | "missing" | "point"; x?: number; y?: number }
+      | {
+          status?: "binding-missing" | "blocked" | "clicked" | "missing" | "point";
+          reason?: string;
+          x?: number;
+          y?: number;
+        }
       | string
       | undefined;
     const status = typeof value === "string" ? value : value?.status;
+    if (value && typeof value === "object") {
+      lastTargetDiagnostic = { status: value.status, reason: value.reason };
+    }
     if (
       status === "point" &&
       typeof value === "object" &&
       typeof value.x === "number" &&
       typeof value.y === "number"
     ) {
-      await clickTrustedPoint(Runtime, Input, value.x, value.y);
+      if (beforeDispatch) {
+        // Run account + protected-route proof only after attachments and an
+        // exact hit-tested send target are ready. Then require the same marked
+        // DOM button/controller to survive that asynchronous proof.
+        await beforeDispatch(sendBindingToken);
+        if (needAttachment) {
+          const ready = await Runtime.evaluate({
+            expression: buildAttachmentReadyExpression(attachmentNames, attachmentBindingToken),
+            returnByValue: true,
+          });
+          if (!ready?.result?.value) {
+            throw new BrowserAutomationError(
+              "Attachment state changed after protected preflight; refusing to dispatch.",
+              {
+                stage: "submit-prompt",
+                code: "attachment-state-changed-after-preflight",
+              },
+            );
+          }
+        }
+        const verified = await Runtime.evaluate({
+          expression: postPreflightScript,
+          returnByValue: true,
+        });
+        const verifiedValue = verified.result?.value as
+          | { status?: string; reason?: string; x?: number; y?: number }
+          | undefined;
+        if (
+          verifiedValue?.status !== "point" ||
+          typeof verifiedValue.x !== "number" ||
+          typeof verifiedValue.y !== "number"
+        ) {
+          throw new BrowserAutomationError(
+            "Send target changed after protected preflight; refusing to dispatch.",
+            {
+              stage: "submit-prompt",
+              code: "send-target-changed-after-preflight",
+              sendTargetStatus: verifiedValue?.status ?? null,
+              sendTargetReason: verifiedValue?.reason ?? null,
+            },
+          );
+        }
+        value.x = verifiedValue.x;
+        value.y = verifiedValue.y;
+      }
+      const dispatched = await clickTrustedPoint(Runtime, Input, value.x, value.y);
+      if (!dispatched) {
+        throw new BrowserAutomationError(
+          "Send target disappeared before dispatch; refusing to report a click.",
+          { stage: "submit-prompt", code: "send-target-disappeared-before-dispatch" },
+        );
+      }
       return true;
     }
-    if (status === "clicked") {
+    if (status === "clicked" && !beforeDispatch) {
       return true;
     }
-    if (status === "missing") {
+    if ((status === "missing" || status === "binding-missing") && !needAttachment) {
       break;
     }
     await delay(100);
@@ -752,8 +993,13 @@ async function attemptSendButton(
         code: "attachment-send-not-ready",
         attachmentNames,
         timeoutMs,
+        sendTargetStatus: lastTargetDiagnostic?.status ?? null,
+        sendTargetReason: lastTargetDiagnostic?.reason ?? null,
       },
     );
+  }
+  if (logger?.verbose && lastTargetDiagnostic) {
+    logger(`Send target unavailable: ${JSON.stringify(lastTargetDiagnostic)}`);
   }
   return false;
 }
@@ -763,14 +1009,14 @@ async function clickTrustedPoint(
   Input: ChromeClient["Input"],
   x: number,
   y: number,
-): Promise<void> {
+): Promise<boolean> {
   if (Input && typeof Input.dispatchMouseEvent === "function") {
     await Input.dispatchMouseEvent({ type: "mouseMoved", x, y });
     await Input.dispatchMouseEvent({ type: "mousePressed", x, y, button: "left", clickCount: 1 });
     await Input.dispatchMouseEvent({ type: "mouseReleased", x, y, button: "left", clickCount: 1 });
-    return;
+    return true;
   }
-  await Runtime.evaluate({
+  const outcome = await Runtime.evaluate({
     expression: `(() => {
       const el = document.elementFromPoint(${JSON.stringify(x)}, ${JSON.stringify(y)});
       if (!(el instanceof HTMLElement)) return false;
@@ -779,6 +1025,7 @@ async function clickTrustedPoint(
     })()`,
     returnByValue: true,
   });
+  return outcome.result?.value === true;
 }
 
 function sendButtonTimeoutMs(
@@ -853,9 +1100,9 @@ async function verifyPromptCommitted(
 	      const rect = node.getBoundingClientRect();
 	      return rect.width > 0 && rect.height > 0;
 	    };
-	    const inputs = inputSelectors
-	      .map((selector) => document.querySelector(selector))
-	      .filter((node) => Boolean(node));
+		    const inputs = inputSelectors.flatMap((selector) =>
+		      Array.from(document.querySelectorAll(selector)),
+		    );
 	    const visibleInputs = inputs.filter((node) => isVisible(node));
 	    const activeInputs = visibleInputs.length > 0 ? visibleInputs : inputs;
 	    const userMatched =
@@ -934,17 +1181,13 @@ async function verifyPromptCommitted(
     );
     await logDomFailure(Runtime, logger, "prompt-commit");
   }
-  if (prompt.trim().length >= 50_000) {
-    throw new BrowserAutomationError(
-      "Prompt did not appear in conversation before timeout (likely too large).",
-      {
-        stage: "submit-prompt",
-        code: "prompt-too-large",
-        promptLength: prompt.trim().length,
-        timeoutMs,
-      },
-    );
-  }
+  // This probe runs only after the send click/key event. Even when a large
+  // prompt is the likely cause, the dispatch outcome is ambiguous: ChatGPT may
+  // have accepted the prompt without exposing the user turn yet. Keep this in
+  // the non-retryable commit-timeout class so runSubmissionWithRecovery cannot
+  // clear the composer and submit an upload fallback on top of a landed turn.
+  // The composer-truncation check above is the only safe, pre-dispatch source
+  // of `prompt-too-large`.
   throw new BrowserAutomationError(
     "Prompt did not appear in conversation before timeout (send may have failed)",
     {
@@ -952,6 +1195,7 @@ async function verifyPromptCommitted(
       code: "prompt-commit-timeout",
       promptLength: prompt.trim().length,
       timeoutMs,
+      retryable: false,
       commitProbe: probe ? summarizeCommitProbe(probe) : undefined,
     },
   );

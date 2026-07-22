@@ -1,15 +1,17 @@
 import type { ChromeClient, BrowserLogger } from "../types.js";
-import {
-  CLOUDFLARE_SCRIPT_SELECTOR,
-  CLOUDFLARE_TITLE,
-  CONVERSATION_TURN_SELECTOR,
-  INPUT_SELECTORS,
-} from "../constants.js";
+import { CONVERSATION_TURN_SELECTOR, INPUT_SELECTORS } from "../constants.js";
 import { delay } from "../utils.js";
 import { logDomFailure } from "../domDebug.js";
 import { assertFreshCaptureTarget } from "./captureBinding.js";
 import { BrowserAutomationError } from "../../oracle/errors.js";
 import { extractConversationIdFromUrl } from "../conversationIdentity.js";
+import {
+  ACCOUNT_QUARANTINE_ERROR_CLASS,
+  assertNotQuarantined,
+  tripQuarantineLatch,
+  type QuarantineLatchOptions,
+} from "../quarantineLatch.js";
+import { assertPreResultAccessState, probeBrowserAccessState } from "./challengeDetection.js";
 
 export function installJavaScriptDialogAutoDismissal(
   Page: ChromeClient["Page"],
@@ -76,20 +78,29 @@ export interface PromptReadyNavigationOptions {
   fallbackTimeoutMs?: number;
   headless: boolean;
   logger: BrowserLogger;
+  /** Authoritative worker account identity for durable challenge quarantine. */
+  accountId?: string;
+  runId?: string | null;
+  sessionId?: string | null;
 }
 
 export interface PromptReadyNavigationDeps {
   navigateToChatGPT?: typeof navigateToChatGPT;
   ensureNotBlocked?: typeof ensureNotBlocked;
   ensurePromptReady?: typeof ensurePromptReady;
+  assertPreResultAccessState?: typeof assertPreResultAccessState;
+  dismissBlockingUi?: typeof dismissBlockingUi;
 }
 
-async function dismissBlockingUi(
-  Runtime: ChromeClient["Runtime"],
-  logger: BrowserLogger,
-): Promise<boolean> {
-  const outcome = await Runtime.evaluate({
-    expression: `(() => {
+interface BlockingUiDismissal {
+  dismissed: boolean;
+  blocked: boolean;
+  action?: string;
+  reason?: string;
+}
+
+export function buildBlockingUiDismissalExpressionForTest(): string {
+  return `(() => {
       const isVisible = (el) => {
         if (!(el instanceof HTMLElement)) return false;
         const rect = el.getBoundingClientRect();
@@ -103,17 +114,55 @@ async function dismissBlockingUi(
       const labelFor = (el) => normalize(el?.textContent || el?.getAttribute?.('aria-label') || el?.getAttribute?.('title'));
       const buttonCandidates = (root) =>
         Array.from(root.querySelectorAll('button,[role="button"],a')).filter((el) => isVisible(el));
+      const composer = Array.from(document.querySelectorAll(
+        '#prompt-textarea,.ProseMirror,textarea[data-id="prompt-textarea"],textarea[name="prompt-textarea"],[contenteditable="true"][role="textbox"]'
+      )).find((el) => isVisible(el));
+      const accountSignal = Array.from(document.querySelectorAll(
+        '[data-testid="accounts-profile-button"],[data-testid^="history-item-"],[data-testid="model-switcher-dropdown-button"],button.__composer-pill'
+      )).some((el) => isVisible(el));
+      const appUsable = Boolean(composer && accountSignal);
+      const pageUrl = String(location?.href || '').toLowerCase();
+      const pageTitle = normalize(document.title).replace(/[.!…]+$/g, '').trim();
+      const challengeUrl =
+        pageUrl.includes('/cdn-cgi/challenge-platform') ||
+        pageUrl.includes('__cf_chl_') ||
+        pageUrl.includes('/challenge-platform/');
+      const challengeTitle = pageTitle === 'just a moment' && !appUsable;
 
-      const roots = [
-        ...Array.from(document.querySelectorAll('[role="dialog"],dialog')),
-        document.body,
-      ].filter(Boolean);
+      // Inspect every actual modal before clicking anything. A challenge can
+      // commit after the preceding access probe, and its generic Continue/OK
+      // control must never be mistaken for a ChatGPT onboarding dialog.
+      const roots = Array.from(document.querySelectorAll('[role="dialog"],dialog')).filter(
+        (root) => isVisible(root),
+      );
+      const unsafePhrases = [
+        'verify you are human',
+        'checking your browser',
+        'enable javascript and cookies',
+        'performing security verification',
+        'security verification',
+        'suspicious activity detected',
+        'secure your account',
+        'unusual traffic',
+      ];
+      const unsafeRoot = roots.find((root) => {
+        const text = normalize(root.textContent);
+        return unsafePhrases.some((phrase) => text.includes(phrase));
+      });
+      if (challengeUrl || challengeTitle || unsafeRoot) {
+        return {
+          dismissed: false,
+          blocked: true,
+          reason: challengeUrl ? 'challenge-url' : challengeTitle ? 'challenge-title' : 'unsafe-dialog',
+        };
+      }
+
       for (const root of roots) {
         const buttons = buttonCandidates(root);
         const close = buttons.find((el) => labelFor(el).includes('close'));
         if (close) {
           (close).click();
-          return { dismissed: true, action: 'close' };
+          return { dismissed: true, blocked: false, action: 'close' };
         }
         const okLike = buttons.find((el) => {
           const label = labelFor(el);
@@ -131,19 +180,74 @@ async function dismissBlockingUi(
         });
         if (okLike) {
           (okLike).click();
-          return { dismissed: true, action: 'confirm' };
+          return { dismissed: true, blocked: false, action: 'confirm' };
         }
       }
-      return { dismissed: false };
-    })()`,
+      return { dismissed: false, blocked: false };
+    })()`;
+}
+
+async function dismissBlockingUi(
+  Runtime: ChromeClient["Runtime"],
+  logger: BrowserLogger,
+): Promise<BlockingUiDismissal> {
+  const outcome = await Runtime.evaluate({
+    expression: buildBlockingUiDismissalExpressionForTest(),
     returnByValue: true,
   }).catch(() => null);
-  const value = outcome?.result?.value as { dismissed?: boolean; action?: string } | undefined;
+  const value = outcome?.result?.value as Partial<BlockingUiDismissal> | undefined;
+  if (value?.blocked) {
+    logger(`[nav] refusing to interact with unsafe blocking UI (${value.reason ?? "unknown"})`);
+    return {
+      dismissed: false,
+      blocked: true,
+      reason: value.reason,
+    };
+  }
   if (value?.dismissed) {
     logger(`[nav] dismissed blocking UI (${value.action ?? "unknown"})`);
-    return true;
+    return {
+      dismissed: true,
+      blocked: false,
+      action: value.action,
+    };
   }
-  return false;
+  return { dismissed: false, blocked: false };
+}
+
+async function dismissSafeBlockingUiOrThrow(
+  Runtime: ChromeClient["Runtime"],
+  logger: BrowserLogger,
+  dismiss: typeof dismissBlockingUi,
+  assertAccess: typeof assertPreResultAccessState,
+  options: Pick<PromptReadyNavigationOptions, "accountId" | "runId" | "sessionId">,
+): Promise<void> {
+  const outcome: BlockingUiDismissal = await dismiss(Runtime, logger).catch(
+    (): BlockingUiDismissal => ({
+      dismissed: false,
+      blocked: false,
+    }),
+  );
+  if (!outcome.blocked) return;
+
+  // Let the canonical classifier publish the durable account quarantine when
+  // the unsafe dialog is a live verification/security wall. If the transient
+  // evidence disappears between the atomic no-click probe and this read, still
+  // fail closed instead of resuming navigation or clicking a generic control.
+  await assertAccess(Runtime, logger, {
+    quarantine: { accountId: options.accountId },
+    runId: options.runId,
+    sessionId: options.sessionId,
+  });
+  throw new BrowserAutomationError(
+    "Refusing to interact with a verification or account-security dialog. Inspect the open browser before retrying.",
+    {
+      stage: "blocking-ui-safety-gate",
+      code: "BROWSER_UNSAFE_BLOCKING_UI",
+      retryable: false,
+      reason: outcome.reason ?? "unsafe-dialog",
+    },
+  );
 }
 
 export async function navigateToPromptReadyWithFallback(
@@ -152,18 +256,46 @@ export async function navigateToPromptReadyWithFallback(
   options: PromptReadyNavigationOptions,
   deps: PromptReadyNavigationDeps = {},
 ): Promise<{ usedFallback: boolean }> {
-  const { url, fallbackUrl, timeoutMs, fallbackTimeoutMs, headless, logger } = options;
+  const {
+    url,
+    fallbackUrl,
+    timeoutMs,
+    fallbackTimeoutMs,
+    headless,
+    logger,
+    accountId,
+    runId,
+    sessionId,
+  } = options;
   const navigate = deps.navigateToChatGPT ?? navigateToChatGPT;
   const ensureBlocked = deps.ensureNotBlocked ?? ensureNotBlocked;
   const ensureReady = deps.ensurePromptReady ?? ensurePromptReady;
+  const assertAccess = deps.assertPreResultAccessState ?? assertPreResultAccessState;
+  const dismiss = deps.dismissBlockingUi ?? dismissBlockingUi;
 
   await navigate(Page, Runtime, url, logger);
-  await ensureBlocked(Runtime, headless, logger);
-  await dismissBlockingUi(Runtime, logger).catch(() => false);
+  await ensureBlocked(Runtime, headless, logger, {
+    quarantine: { accountId },
+    runId,
+    sessionId,
+  });
+  await dismissSafeBlockingUiOrThrow(Runtime, logger, dismiss, assertAccess, {
+    accountId,
+    runId,
+    sessionId,
+  });
   try {
     await ensureReady(Runtime, timeoutMs, logger);
     return { usedFallback: false };
   } catch (error) {
+    // Readiness can fail because a challenge document committed just after the
+    // initial probe. Re-probe before mutating navigation state; otherwise the
+    // about:blank fallback would erase the evidence and retry into the account.
+    await assertAccess(Runtime, logger, {
+      quarantine: { accountId },
+      runId,
+      sessionId,
+    });
     if (!fallbackUrl || fallbackUrl === url) {
       throw error;
     }
@@ -174,10 +306,63 @@ export async function navigateToPromptReadyWithFallback(
     await navigate(Page, Runtime, "about:blank", logger);
     await delay(250);
     await navigate(Page, Runtime, fallbackUrl, logger);
-    await ensureBlocked(Runtime, headless, logger);
-    await dismissBlockingUi(Runtime, logger).catch(() => false);
-    await ensureReady(Runtime, fallbackTimeout, logger);
+    await ensureBlocked(Runtime, headless, logger, {
+      quarantine: { accountId },
+      runId,
+      sessionId,
+    });
+    await dismissSafeBlockingUiOrThrow(Runtime, logger, dismiss, assertAccess, {
+      accountId,
+      runId,
+      sessionId,
+    });
+    try {
+      await ensureReady(Runtime, fallbackTimeout, logger);
+    } catch (fallbackError) {
+      await assertAccess(Runtime, logger, {
+        quarantine: { accountId },
+        runId,
+        sessionId,
+      });
+      throw fallbackError;
+    }
     return { usedFallback: true };
+  }
+}
+
+export interface EnsureNotBlockedOptions {
+  quarantine?: QuarantineLatchOptions;
+  runId?: string | null;
+  sessionId?: string | null;
+}
+
+async function tripLegacyNavigationQuarantine(
+  reason: "verification_interstitial" | "account_security_block",
+  stage: "cloudflare-challenge" | "chatgpt-account-blocked",
+  logger: BrowserLogger,
+  options: EnsureNotBlockedOptions,
+): Promise<void> {
+  try {
+    const outcome = await tripQuarantineLatch({
+      ...(options.quarantine ?? {}),
+      reason,
+      detail: `legacy navigation detector: ${stage}`,
+      runId: options.runId ?? null,
+      sessionId: options.sessionId ?? null,
+      source: "navigation-block-gate",
+    });
+    logger(
+      `[nav] account quarantine ${outcome.alreadyLatched ? "already present" : "tripped"} ` +
+        `(${outcome.recordPersisted ? "durable record published" : "durable fail-closed sentinel published"})`,
+    );
+  } catch {
+    // The current run must still terminate with the typed quarantine class so
+    // the remote worker's terminal choke point can install its process-local
+    // fail-closed fallback. Never leak filesystem paths or raw persistence
+    // errors into browser/remote logs.
+    logger(
+      "[nav] CRITICAL: account quarantine storage was unavailable; refusing the run with a terminal quarantine error",
+    );
   }
 }
 
@@ -185,19 +370,50 @@ export async function ensureNotBlocked(
   Runtime: ChromeClient["Runtime"],
   headless: boolean,
   logger: BrowserLogger,
+  options: EnsureNotBlockedOptions = {},
 ) {
-  if (await isCloudflareInterstitial(Runtime)) {
+  await assertNotQuarantined(options.quarantine ?? {});
+  // Use the canonical classifier rather than the legacy script-presence
+  // heuristic. ChatGPT can load Cloudflare's challenge-platform script in a
+  // healthy signed-in app; only a positively classified wall may quarantine.
+  const access = await probeBrowserAccessState(Runtime);
+  if (access.state === "verification_interstitial") {
     const message = headless
-      ? "Cloudflare challenge detected in headless mode. Re-run with --headful so you can solve the challenge."
-      : "Cloudflare challenge detected. Complete the “Just a moment…” check in the open browser, then rerun.";
+      ? "Cloudflare challenge detected in headless mode. Re-run with --headful so you can solve the challenge, then manually clear the account quarantine before retrying Oracle."
+      : "Cloudflare challenge detected. Complete the “Just a moment…” check in the open browser, then manually clear the account quarantine before retrying Oracle.";
     logger("Cloudflare anti-bot page detected");
-    throw new BrowserAutomationError(message, { stage: "cloudflare-challenge", headless });
+    await tripLegacyNavigationQuarantine(
+      "verification_interstitial",
+      "cloudflare-challenge",
+      logger,
+      options,
+    );
+    throw new BrowserAutomationError(message, {
+      stage: "cloudflare-challenge",
+      headless,
+      code: ACCOUNT_QUARANTINE_ERROR_CLASS,
+      oracleErrorClass: ACCOUNT_QUARANTINE_ERROR_CLASS,
+      retryable: false,
+      state: "verification_interstitial",
+    });
   }
-  if (await isChatGptAccountSecurityBlock(Runtime)) {
+  if (access.state === "account_security_block") {
     const message =
-      "ChatGPT account security block detected. Open chatgpt.com in Chrome, secure the account, then rerun Oracle.";
+      "ChatGPT account security block detected. Open chatgpt.com in Chrome, secure the account, then manually clear the account quarantine before retrying Oracle.";
     logger("ChatGPT account security block detected");
-    throw new BrowserAutomationError(message, { stage: "chatgpt-account-blocked" });
+    await tripLegacyNavigationQuarantine(
+      "account_security_block",
+      "chatgpt-account-blocked",
+      logger,
+      options,
+    );
+    throw new BrowserAutomationError(message, {
+      stage: "chatgpt-account-blocked",
+      code: ACCOUNT_QUARANTINE_ERROR_CLASS,
+      oracleErrorClass: ACCOUNT_QUARANTINE_ERROR_CLASS,
+      retryable: false,
+      state: "account_security_block",
+    });
   }
 }
 
@@ -599,41 +815,6 @@ async function waitForPrompt(
     await delay(200);
   }
   return false;
-}
-
-async function isCloudflareInterstitial(Runtime: ChromeClient["Runtime"]): Promise<boolean> {
-  const { result: titleResult } = await Runtime.evaluate({
-    expression: "document.title",
-    returnByValue: true,
-  });
-  const title = typeof titleResult.value === "string" ? titleResult.value : "";
-  const challengeTitle = CLOUDFLARE_TITLE.toLowerCase();
-  if (title.toLowerCase().includes(challengeTitle)) {
-    return true;
-  }
-
-  const { result } = await Runtime.evaluate({
-    expression: `Boolean(document.querySelector('${CLOUDFLARE_SCRIPT_SELECTOR}'))`,
-    returnByValue: true,
-  });
-  return Boolean(result.value);
-}
-
-async function isChatGptAccountSecurityBlock(Runtime: ChromeClient["Runtime"]): Promise<boolean> {
-  try {
-    const outcome = await Runtime.evaluate({
-      expression: `(() => {
-        const text = String(document.body?.innerText || '').toLowerCase().replace(/\\s+/g, ' ');
-        return text.includes('suspicious activity detected') &&
-          text.includes('secure your account') &&
-          text.includes('regain access');
-      })()`,
-      returnByValue: true,
-    });
-    return Boolean(outcome?.result?.value);
-  } catch {
-    return false;
-  }
 }
 
 type LoginProbeResult = {

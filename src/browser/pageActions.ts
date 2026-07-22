@@ -6,12 +6,17 @@ export {
   ensurePromptReady,
   waitForResumedConversationHydration,
   installJavaScriptDialogAutoDismissal,
+  buildBlockingUiDismissalExpressionForTest,
 } from "./actions/navigation.js";
 export {
   ensureModelSelection,
   isRefreshableModelSelectionError,
 } from "./actions/modelSelection.js";
-export { submitPrompt, clearPromptComposer } from "./actions/promptComposer.js";
+export {
+  submitPrompt,
+  clearPromptComposer,
+  bindActiveComposerAttachments,
+} from "./actions/promptComposer.js";
 export {
   clearComposerAttachments,
   uploadAttachmentFile,
@@ -32,7 +37,10 @@ export {
 import type { BrowserLogger, ChromeClient } from "./types.js";
 import { waitForAssistantResponse as waitForAssistantResponseUnvalidated } from "./actions/assistantResponse.js";
 import { assertCapturedAssistantResponseBound } from "./actions/captureBinding.js";
-import { assertCapturedAnswerNotAccessArtifact } from "./actions/challengeDetection.js";
+import {
+  assertCapturedAnswerNotAccessArtifact,
+  assertPreResultAccessState,
+} from "./actions/challengeDetection.js";
 
 /**
  * Capture facade: waits for the assistant response, then
@@ -60,19 +68,46 @@ export async function waitForAssistantResponse(
   minTurnIndex?: number,
   expectedConversationId?: string,
   accountId?: string,
+  elapsedBaselineMs = 0,
+  deps: {
+    waitForUnvalidated?: typeof waitForAssistantResponseUnvalidated;
+    assertCapturedBound?: typeof assertCapturedAssistantResponseBound;
+  } = {},
 ): Promise<{
   text: string;
   html?: string;
   meta: { turnId?: string | null; messageId?: string | null };
 }> {
-  const captured = await waitForAssistantResponseUnvalidated(
-    Runtime,
-    timeoutMs,
-    logger,
-    minTurnIndex,
-    expectedConversationId,
-  );
-  await assertCapturedAssistantResponseBound(Runtime, captured.meta ?? {}, logger);
+  let captured: Awaited<ReturnType<typeof waitForAssistantResponseUnvalidated>>;
+  try {
+    captured = await (deps.waitForUnvalidated ?? waitForAssistantResponseUnvalidated)(
+      Runtime,
+      timeoutMs,
+      logger,
+      minTurnIndex,
+      expectedConversationId,
+      elapsedBaselineMs,
+    );
+  } catch (error) {
+    // A verification wall can replace the DOM while capture is waiting. Give
+    // the live, read-only account gate precedence over a generic timeout; if
+    // the page is healthy/indeterminate, preserve the exact original error.
+    await assertPreResultAccessState(Runtime, logger, { quarantine: { accountId } });
+    throw error;
+  }
+  try {
+    await (deps.assertCapturedBound ?? assertCapturedAssistantResponseBound)(
+      Runtime,
+      captured.meta ?? {},
+      logger,
+    );
+  } catch (error) {
+    // The answer may have been read just before a challenge replaced the DOM.
+    // Re-probe before surfacing a generic binding failure so the account-wide
+    // hard stop wins while the challenge evidence is still present.
+    await assertPreResultAccessState(Runtime, logger, { quarantine: { accountId } });
+    throw error;
+  }
   await assertCapturedAnswerNotAccessArtifact(
     Runtime,
     { text: captured.text, html: captured.html },

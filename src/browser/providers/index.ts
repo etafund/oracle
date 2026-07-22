@@ -1,4 +1,8 @@
-export { chatgptDomProvider } from "./chatgptDomProvider.js";
+export {
+  chatgptDomProvider,
+  readGpt56SolProRouteReadOnly,
+  type Gpt56SolProReadOnlyRouteEvidence,
+} from "./chatgptDomProvider.js";
 export {
   geminiDeepThinkDomProvider,
   geminiDeepThinkDomProviderWithFsm,
