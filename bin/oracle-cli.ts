@@ -123,6 +123,7 @@ import {
   resolveClaudeCodeCaamProfile,
   validateCaamBasePath,
 } from "../src/claude-code/caamCommand.js";
+import { evaluateBrowserRestart } from "../src/cli/sessionRestartPolicy.js";
 
 // Standard EPIPE handling, wired before anything writes. When Oracle output
 // is piped into a consumer that closes the read end early (`oracle --help |
@@ -181,6 +182,8 @@ interface CliOptions extends OptionValues {
   claudeCodeExecutable?: string;
   caamProfile?: string;
   caamBase?: string;
+  /** Internal provenance retained after lane normalization. */
+  laneInferenceSource?: ResolvedOracleLane["inferredFrom"];
   background?: boolean;
   httpTimeout?: number;
   zombieTimeout?: number;
@@ -371,9 +374,10 @@ function parseLaneOption(value: string): string {
   if (!suggestion) {
     throw new InvalidArgumentError(allowed);
   }
+  const profileSelection = suggestion === "fable-local" ? " --caam-profile <name>" : "";
   throw new InvalidArgumentError(
     `${allowed} Did you mean --lane ${suggestion}? ` +
-      `Try: oracle -p "<prompt>" --lane ${suggestion}   # closest match to --lane ${value}`,
+      `Try: oracle -p "<prompt>" --lane ${suggestion}${profileSelection}   # closest match to --lane ${value}`,
   );
 }
 
@@ -565,7 +569,7 @@ program.hook("preAction", async (thisCommand, actionCommand) => {
     throw buildBarePositionalPromptRefusal(barePositionalToken, thisCommand);
   }
   if (shouldRequirePrompt(routingCliArgs, opts)) {
-    const fixCommand = 'oracle -p "<prompt>" --lane fable-local';
+    const fixCommand = 'oracle -p "<prompt>" --lane fable-local --caam-profile <name>';
     if (isJsonModeRequested(routingCliArgs)) {
       // Emit a single clean json_envelope (via the top-level catch) with a
       // typed prompt_required error + fix_command, instead of writing a human
@@ -579,7 +583,7 @@ program.hook("preAction", async (thisCommand, actionCommand) => {
     // show help (which also writes to stderr).
     console.error(
       chalk.yellow(
-        'Prompt is required. Provide it via --prompt "<text>" or positional [prompt], e.g.: oracle -p "<prompt>" --lane fable-local',
+        'Prompt is required. Provide it via --prompt "<text>" or positional [prompt], e.g.: oracle -p "<prompt>" --lane fable-local --caam-profile <name>',
       ),
     );
     thisCommand.help({ error: true });
@@ -598,7 +602,7 @@ program
   .addOption(new Option("--message <text>", "Alias for --prompt.").hideHelp())
   .option(
     "--followup <sessionId|responseId>",
-    "Continue a stored ChatGPT browser conversation or an OpenAI/Azure Responses API run.",
+    "Continue a stored ChatGPT browser, Fable/Claude Code, or OpenAI/Azure Responses API run.",
   )
   .option(
     "--followup-model <model>",
@@ -770,7 +774,7 @@ program
   .addOption(
     new Option(
       "--caam-profile <name>",
-      "For --lane fable-local, pin the CAAM shallow profile. Selection is fail-closed: Oracle will not fall back to another Claude account.",
+      "Required for --lane fable-local: select the CAAM shallow profile (or set ORACLE_CLAUDE_CODE_CAAM_PROFILE). The reviewed lane never falls back to an unpinned Claude account.",
     ).default(undefined),
   )
   .addOption(
@@ -1747,7 +1751,9 @@ program
 
 program
   .command("restart <id>")
-  .description("Re-run a stored session as a new session (clones options).")
+  .description(
+    "Re-run a stored API session or an explicitly retryable pre-submit browser failure. Submitted/unknown browser and Claude Code sessions are refused.",
+  )
   .addOption(new Option("--wait").default(undefined))
   .addOption(new Option("--no-wait").default(undefined).hideHelp())
   .option("--remote-host <host:port>", "Delegate browser runs to a remote `oracle serve` instance.")
@@ -1877,6 +1883,8 @@ function buildRunOptions(
         }
       : undefined;
   const lane = overrides.lane ?? options.lane;
+  const laneInferenceSource = overrides.laneInferenceSource ?? options.laneInferenceSource;
+  const reviewedFableLane = lane === "fable-local" && laneInferenceSource !== "legacy-engine-model";
   const claudeCode =
     overrides.claudeCode ??
     (options.engine === "claude-code" || lane === "fable-local"
@@ -1891,12 +1899,11 @@ function buildRunOptions(
           disableSlashCommands: true,
           strictMcpConfig: true,
           noChrome: true,
-          // A resumed run (`--followup` resolved to a Claude Code session,
-          // claude-provider-map.md finding #2) keeps persistence on so the
-          // resumed conversation — and any further follow-up — has
-          // something to attach to; a one-shot run keeps today's exact
-          // `--no-session-persistence` behavior.
-          noSessionPersistence: !options.claudeCodeResumeSessionId,
+          // Reviewed Fable runs persist under a builder-owned UUID so their
+          // advertised follow-up path has a real transcript to resume. The
+          // historical direct engine/model compatibility route remains a
+          // non-persistent one-shot unless it is itself a follow-up.
+          noSessionPersistence: !options.claudeCodeResumeSessionId && !reviewedFableLane,
           resumeSessionId: options.claudeCodeResumeSessionId,
           waitForLockMs: options.waitForLock,
           executable: options.claudeCodeExecutable,
@@ -1929,6 +1936,7 @@ function buildRunOptions(
     silent: overrides.silent ?? options.silent,
     search: overrides.search ?? options.search,
     lane,
+    laneInferenceSource,
     claudeCode,
     preview: overrides.preview ?? undefined,
     previewMode: overrides.previewMode ?? options.previewMode,
@@ -2048,6 +2056,7 @@ function applyResolvedLaneCliOptions(
   optionUsesDefault: (name: string) => boolean,
 ): Set<string> {
   options.lane = resolvedLane.lane;
+  options.laneInferenceSource = resolvedLane.inferredFrom;
   const laneOptions = resolvedLane.normalizedEngineOptions;
   const laneForcedBrowserKeys = new Set<string>();
   const engine = laneStringOption(laneOptions, "engine");
@@ -2423,6 +2432,9 @@ function buildRunOptionsFromMetadata(metadata: SessionMetadata): RunOracleOption
     system: stored.system,
     silent: stored.silent,
     search: stored.search,
+    lane: metadata.lane ?? stored.lane,
+    laneInferenceSource: stored.laneInferenceSource,
+    claudeCode: stored.claudeCode,
     preview: false,
     previewMode: undefined,
     apiKey: undefined,
@@ -2666,8 +2678,34 @@ async function runRootCommand(options: CliOptions): Promise<void> {
       validateCaamBasePath(options.caamBase);
     }
     if (options.caamBase !== undefined && !caamProfileForRun) {
-      throw new Error(
-        "--caam-base requires a CAAM profile. Add --caam-profile <name> (or set ORACLE_CLAUDE_CODE_CAAM_PROFILE), or omit --caam-base to use direct Claude.",
+      const legacyDirect = resolvedLane.inferredFrom === "legacy-engine-model";
+      const fixCommand = legacyDirect
+        ? 'oracle --engine claude-code --model fable -p "<prompt>"'
+        : 'oracle --lane fable-local --caam-profile <name> -p "<prompt>"';
+      const nextCommand = "oracle doctor fable --caam-profile <name> --json";
+      throw new PromptValidationError(
+        legacyDirect
+          ? `--caam-base requires a CAAM profile. Add --caam-profile <name> (or ORACLE_CLAUDE_CODE_CAAM_PROFILE=<name>), or omit --caam-base to retain the legacy direct-Claude compatibility route. Retry with: ${fixCommand}`
+          : `--caam-base requires a CAAM profile. Add --caam-profile <name> or set ORACLE_CLAUDE_CODE_CAAM_PROFILE=<name>. Retry with: ${fixCommand}`,
+        {
+          stage: "input_invalid",
+          blockedReason: "caam_base_requires_profile",
+          fixCommand,
+          nextCommand,
+        },
+      );
+    }
+    if (resolvedLane.inferredFrom === "lane" && !caamProfileForRun) {
+      const fixCommand = 'oracle --lane fable-local --caam-profile <name> -p "<prompt>"';
+      const nextCommand = "oracle doctor fable --caam-profile <name> --json";
+      throw new PromptValidationError(
+        `--lane fable-local requires a CAAM subscription profile and refuses to spawn an unpinned \`claude\` process. Retry with: ${fixCommand}. Alternatively set ORACLE_CLAUDE_CODE_CAAM_PROFILE=<name>. Verify the account first with: ${nextCommand}`,
+        {
+          stage: "input_invalid",
+          blockedReason: "caam_profile_required",
+          fixCommand,
+          nextCommand,
+        },
       );
     }
   }
@@ -3704,15 +3742,36 @@ async function restartSession(sessionId: string, options: RestartCommandOptions)
   }
 
   const runOptions = buildRunOptionsFromMetadata(metadata);
+  const sessionMode = getSessionMode(metadata);
   if (!runOptions.prompt) {
-    const message = `Session ${sessionId} has no stored prompt; cannot restart. Start a fresh run instead: oracle -p "<prompt>" --lane fable-local`;
+    const message = `Session ${sessionId} has no stored prompt; cannot restart. Start a fresh run instead: oracle -p "<prompt>" --lane fable-local --caam-profile <name>`;
     console.error(chalk.red(message));
     emitJsonError(message);
     process.exitCode = 1;
     return;
   }
 
-  const sessionMode = getSessionMode(metadata);
+  if (sessionMode === "claude-code") {
+    const message = `oracle restart does not replay Claude Code/Fable sessions because a restart must re-prove the original CAAM account identity. Start a fresh reviewed run instead: oracle -p "<prompt>" --lane fable-local --caam-profile <name>`;
+    console.error(chalk.red(message));
+    emitJsonError(message);
+    process.exitCode = 1;
+    return;
+  }
+
+  const browserRestart = evaluateBrowserRestart(metadata);
+  if (!browserRestart.allowed) {
+    const message = `Refusing to restart browser session ${sessionId}: the saved evidence ${
+      browserRestart.reason === "prompt-submitted"
+        ? "shows that its prompt was submitted"
+        : "does not prove an explicitly retryable pre-submit failure"
+    }. Recover without replaying the prompt: oracle session ${sessionId} --render. If account-affine recovery is unavailable, inspect the originating ChatGPT account's history.`;
+    console.error(chalk.red(message));
+    emitJsonError(message);
+    process.exitCode = 1;
+    return;
+  }
+
   const engine: EngineMode = sessionMode === "browser" ? "browser" : "api";
   const browserConfig = getBrowserConfigFromMetadata(metadata);
   if (sessionMode === "browser" && !browserConfig) {

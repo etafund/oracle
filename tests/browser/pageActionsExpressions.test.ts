@@ -330,12 +330,85 @@ describe("browser automation expressions", () => {
     expect(logger).toHaveBeenCalledWith(expect.stringContaining("retaining the validated text"));
   });
 
-  test("user-turn attachment expression requires non-empty prompt text for prefix fallback", () => {
+  test("user-turn attachment expression applies a minimum reciprocal prompt prefix", () => {
     const expression = buildUserTurnAttachmentExpressionForTest({
       expectedPromptPrefix: "expected prompt text",
     });
     expect(expression).toContain("const textPrefix = text.slice");
     expect(expression).toContain("text.length > 0");
-    expect(expression).toContain("textPrefix.length > 0");
+    expect(expression).toContain("textPrefix.length >= RECIPROCAL_PREFIX_MIN_LENGTH");
+  });
+
+  test("user-turn attachment binding normalizes Markdown and stays on the latest user turn", () => {
+    class FakeHTMLElement {
+      constructor(
+        readonly innerText: string,
+        private readonly role: string,
+        private readonly attachmentCount = 0,
+      ) {}
+
+      readonly dataset: Record<string, string> = {};
+
+      get textContent(): string {
+        return this.innerText;
+      }
+
+      getAttribute(name: string): string {
+        if (name === "data-message-author-role") return this.role;
+        return "";
+      }
+
+      querySelector(): null {
+        return null;
+      }
+
+      querySelectorAll(selector: string): FakeHTMLElement[] {
+        if (selector.includes("attachment") && this.attachmentCount > 0) {
+          return Array.from(
+            { length: this.attachmentCount },
+            () => new FakeHTMLElement("attachment.txt", ""),
+          );
+        }
+        return [];
+      }
+
+      matches(): boolean {
+        return false;
+      }
+    }
+
+    const execute = (turns: FakeHTMLElement[]) => {
+      const document = {
+        querySelectorAll: (selector: string) =>
+          selector === CONVERSATION_TURN_CONTAINER_SELECTOR ? turns : [],
+      };
+      const expression = buildUserTurnAttachmentExpressionForTest({
+        minTurnIndex: 0,
+        expectedPromptPrefix: "# Attachment ownership\n\n- `first value`\n- second   value",
+      });
+      return Function(
+        "document",
+        "location",
+        "URL",
+        "HTMLElement",
+        `return ${expression};`,
+      )(
+        document,
+        { href: "https://chatgpt.com/c/attachment-proof", origin: "https://chatgpt.com" },
+        URL,
+        FakeHTMLElement,
+      ) as { promptMatches?: boolean; attachmentUiCount?: number };
+    };
+
+    expect(
+      execute([new FakeHTMLElement("Attachment ownership\nfirst value\nsecond value", "user", 1)]),
+    ).toMatchObject({ promptMatches: true, attachmentUiCount: 1 });
+
+    expect(
+      execute([
+        new FakeHTMLElement("Attachment ownership\nfirst value\nsecond value", "user", 1),
+        new FakeHTMLElement("newer foreign prompt", "user", 1),
+      ]),
+    ).toMatchObject({ promptMatches: false, attachmentUiCount: 1 });
   });
 });

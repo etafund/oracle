@@ -14,9 +14,17 @@ import {
 import { delay } from "../utils.js";
 import { logDomFailure } from "../domDebug.js";
 import { buildClickDispatcher } from "./domEvents.js";
-import { registerSubmittedUserMessage } from "./captureBinding.js";
+import {
+  registerSubmittedUserMessage,
+  type SubmittedUserMessageBinding,
+} from "./captureBinding.js";
 import { BrowserAutomationError } from "../../oracle/errors.js";
 import { randomUUID } from "node:crypto";
+import {
+  PROMPT_DOM_EXACT_MATCH_DECLARATION,
+  PROMPT_DOM_IDENTITY_NORMALIZER_DECLARATION,
+  PROMPT_DOM_NORMALIZER_DECLARATION,
+} from "../promptDomMatch.js";
 
 const ENTER_KEY_EVENT = {
   key: "Enter",
@@ -45,6 +53,10 @@ export async function submitPrompt(
     beforePromptSubmit?: (composerBindingToken?: string) => Promise<void> | void;
     requireBoundSendTarget?: boolean;
     onPromptSubmitted?: (submittedPrompt: string) => Promise<void> | void;
+    onPromptBound?: (
+      submittedPrompt: string,
+      binding: SubmittedUserMessageBinding,
+    ) => Promise<void> | void;
   },
   prompt: string,
   logger: BrowserLogger,
@@ -52,6 +64,7 @@ export async function submitPrompt(
   const { runtime, input } = deps;
 
   await waitForDomReady(runtime, logger, deps.inputTimeoutMs ?? undefined);
+  const baselineTurns = await acquirePreSubmitBaseline(runtime, deps.baselineTurns);
   const encodedPrompt = JSON.stringify(prompt);
   const focusResult = await runtime.evaluate({
     expression: `(() => {
@@ -264,19 +277,69 @@ export async function submitPrompt(
   await deps.onPromptSubmitted?.(prompt);
 
   const commitTimeoutMs = Math.max(60_000, deps.inputTimeoutMs ?? 0);
+  const submittedAttachmentNames = (deps.attachmentNames ?? [])
+    .map((attachment) => (typeof attachment === "string" ? attachment : attachment.name))
+    .filter((name): name is string => typeof name === "string" && name.length > 0);
   // Learned: the send button can succeed but the turn doesn't appear immediately; verify commit via turns/stop button.
   const committedTurns = await verifyPromptCommitted(
     runtime,
     prompt,
     commitTimeoutMs,
     logger,
-    deps.baselineTurns ?? undefined,
+    baselineTurns,
+    submittedAttachmentNames,
   );
   // Bind this run's capture to the user message that was just committed, so
   // the eventual assistant capture can be structurally proven to answer THIS
   // submission (not a stale turn or another run's cross-talk). Never throws.
-  await registerSubmittedUserMessage(runtime, prompt, logger);
+  const binding = await registerSubmittedUserMessage(runtime, prompt, logger, {
+    attachmentNames: submittedAttachmentNames,
+  });
+  await deps.onPromptBound?.(prompt, binding);
   return committedTurns;
+}
+
+async function acquirePreSubmitBaseline(
+  Runtime: ChromeClient["Runtime"],
+  suppliedBaseline?: number | null,
+): Promise<number> {
+  if (
+    typeof suppliedBaseline === "number" &&
+    Number.isFinite(suppliedBaseline) &&
+    suppliedBaseline >= 0
+  ) {
+    return Math.floor(suppliedBaseline);
+  }
+
+  try {
+    const { result } = await Runtime.evaluate({
+      expression: buildConversationTurnCountExpression(),
+      returnByValue: true,
+    });
+    const observed = result?.value;
+    if (typeof observed === "number" && Number.isFinite(observed) && observed >= 0) {
+      return Math.floor(observed);
+    }
+  } catch (error) {
+    throw new BrowserAutomationError(
+      "Unable to establish a pre-submit conversation baseline; refusing to dispatch the prompt.",
+      {
+        stage: "submit-prompt",
+        code: "prompt-baseline-unavailable",
+        retryable: true,
+      },
+      error,
+    );
+  }
+
+  throw new BrowserAutomationError(
+    "Unable to establish a pre-submit conversation baseline; refusing to dispatch the prompt.",
+    {
+      stage: "submit-prompt",
+      code: "prompt-baseline-unavailable",
+      retryable: true,
+    },
+  );
 }
 
 export async function clearPromptComposer(Runtime: ChromeClient["Runtime"], logger: BrowserLogger) {
@@ -1046,6 +1109,7 @@ async function verifyPromptCommitted(
   timeoutMs: number,
   logger?: BrowserLogger,
   baselineTurns?: number,
+  attachmentNames: string[] = [],
 ): Promise<number | null> {
   const deadline = Date.now() + timeoutMs;
   const encodedPrompt = JSON.stringify(prompt.trim());
@@ -1054,42 +1118,54 @@ async function verifyPromptCommitted(
   const inputSelectorsLiteral = JSON.stringify(INPUT_SELECTORS);
   const stopSelectorLiteral = JSON.stringify(STOP_BUTTON_SELECTOR);
   const assistantSelectorLiteral = JSON.stringify(ASSISTANT_ROLE_SELECTOR);
-  let baseline: number | null =
+  const baseline: number | null =
     typeof baselineTurns === "number" && Number.isFinite(baselineTurns) && baselineTurns >= 0
       ? Math.floor(baselineTurns)
       : null;
-  if (baseline === null) {
-    try {
-      const { result } = await Runtime.evaluate({
-        expression: buildConversationTurnCountExpression(),
-        returnByValue: true,
-      });
-      const raw = typeof result?.value === "number" ? result.value : Number(result?.value);
-      if (Number.isFinite(raw)) {
-        baseline = Math.max(0, Math.floor(raw));
-      }
-    } catch {
-      // ignore; baseline stays unknown
-    }
-  }
   const baselineLiteral = baseline ?? -1;
-  // Learned: ChatGPT can echo/format text; normalize markdown and use prefix matches to detect the sent prompt.
+  const attachmentNamesLiteral = JSON.stringify(attachmentNames);
+  // The only trustworthy baseline is the one captured before dispatch by the
+  // caller. Reading it here would happen after dispatch and could misclassify
+  // an already-present identical turn as this submission.
+  // Learned: ChatGPT can render Markdown differently; compare the complete
+  // normalized prompt instead of a lossy prefix.
   const script = `(() => {
 		    const editor = document.querySelector(${primarySelectorLiteral});
 		    const fallback = document.querySelector(${fallbackSelectorLiteral});
 		    const inputSelectors = ${inputSelectorsLiteral};
-	    const normalize = (value) => {
-	      let text = value?.toLowerCase?.() ?? '';
-	      // Strip markdown *markers* but keep content (ChatGPT renders fence markers differently).
-	      text = text.replace(/\`\`\`[^\\n]*\\n([\\s\\S]*?)\`\`\`/g, ' $1 ');
-	      text = text.replace(/\`\`\`/g, ' ');
-	      text = text.replace(/\`([^\`]*)\`/g, '$1');
-	      return text.replace(/\\s+/g, ' ').trim();
-	    };
-	    const normalizedPrompt = normalize(${encodedPrompt});
-	    const normalizedPromptPrefix = normalizedPrompt.slice(0, 120);
+	    ${PROMPT_DOM_NORMALIZER_DECLARATION}
+	    ${PROMPT_DOM_IDENTITY_NORMALIZER_DECLARATION}
+	    ${PROMPT_DOM_EXACT_MATCH_DECLARATION}
+	    const submittedPrompt = ${encodedPrompt};
+	    const expectedAttachmentNames = ${attachmentNamesLiteral};
 	    const articles = ${buildConversationTurnListExpression()};
-	    const normalizedTurns = articles.map((node) => normalize(node?.innerText));
+	    const normalizedTurnEntries = articles.map((node) => {
+	      const role = String(
+	        node?.getAttribute?.('data-message-author-role') ||
+	        node?.getAttribute?.('data-turn') ||
+	        node?.dataset?.turn ||
+	        '',
+	      ).toLowerCase();
+	      const isUser =
+	        role === 'user' ||
+	        Boolean(node?.querySelector?.('[data-message-author-role="user"], [data-turn="user"]'));
+	      const promptContentCandidates = isUser
+	        ? readRenderedPromptDomContentCandidates(node)
+	        : [];
+	      const matchesPrompt = promptContentCandidates.some((candidate) =>
+	        renderedPromptCandidateMatchesSubmission(
+	          candidate.text,
+	          submittedPrompt,
+	          expectedAttachmentNames,
+	        ),
+	      );
+	      return {
+	        isUser,
+	        matchesPrompt,
+	        text: normalizePromptForDomMatch(node?.innerText || node?.textContent || ''),
+	      };
+	    });
+	    const normalizedTurns = normalizedTurnEntries.map((entry) => entry.text);
 	    const readValue = (node) => {
 	      if (!node) return '';
 	      if (node instanceof HTMLTextAreaElement) return node.value ?? '';
@@ -1104,25 +1180,30 @@ async function verifyPromptCommitted(
 		      Array.from(document.querySelectorAll(selector)),
 		    );
 	    const visibleInputs = inputs.filter((node) => isVisible(node));
-	    const activeInputs = visibleInputs.length > 0 ? visibleInputs : inputs;
-	    const userMatched =
-	      normalizedPrompt.length > 0 && normalizedTurns.some((text) => text.includes(normalizedPrompt));
-	    const prefixMatched =
-	      normalizedPromptPrefix.length > 30 &&
-	      normalizedTurns.some((text) => text.includes(normalizedPromptPrefix));
+		    const activeInputs = visibleInputs.length > 0 ? visibleInputs : inputs;
+	    const userMatched = normalizedTurnEntries.some(
+	      (entry) => entry.isUser && entry.matchesPrompt,
+	    );
+		    let lastUserTurnIndex = -1;
+		    for (let index = normalizedTurnEntries.length - 1; index >= 0; index -= 1) {
+		      if (normalizedTurnEntries[index]?.isUser) {
+		        lastUserTurnIndex = index;
+		        break;
+		      }
+		    }
+	    const lastMatched =
+	      lastUserTurnIndex >= 0 &&
+	      normalizedTurnEntries[lastUserTurnIndex]?.matchesPrompt === true;
 		    const lastTurn = normalizedTurns[normalizedTurns.length - 1] ?? '';
-		    const lastMatched =
-		      normalizedPrompt.length > 0 &&
-		      (lastTurn.includes(normalizedPrompt) ||
-		        (normalizedPromptPrefix.length > 30 && lastTurn.includes(normalizedPromptPrefix)));
 		    const baseline = ${baselineLiteral};
 		    const hasNewTurn = baseline < 0 ? false : normalizedTurns.length > baseline;
+		    const hasNewUserTurn = baseline < 0 ? false : lastUserTurnIndex >= baseline;
 		    const stopVisible = Boolean(document.querySelector(${stopSelectorLiteral}));
 		    const assistantVisible = Boolean(
 		      document.querySelector(${assistantSelectorLiteral}) ||
 		      document.querySelector('[data-testid*="assistant"]'),
 		    );
-	    // Learned: composer clearing + stop button or assistant presence is a reliable fallback signal.
+	    // Keep surrounding UI state for diagnostics, never as commit proof.
       const editorValue = editor?.innerText ?? '';
       const fallbackValue = fallback?.value ?? '';
       const activeEmpty =
@@ -1133,9 +1214,10 @@ async function verifyPromptCommitted(
 		    return {
         baseline,
 	      userMatched,
-	      prefixMatched,
 	      lastMatched,
 	      hasNewTurn,
+	      hasNewUserTurn,
+	      lastUserTurnIndex,
 	      stopVisible,
       assistantVisible,
       composerCleared,
@@ -1156,17 +1238,11 @@ async function verifyPromptCommitted(
       lastProbe = info;
     }
     const turnsCount = (result.value as { turnsCount?: number } | undefined)?.turnsCount;
-    const matchesPrompt = Boolean(info?.lastMatched || info?.userMatched || info?.prefixMatched);
-    const baselineUnknown =
-      typeof info?.baseline === "number" ? info.baseline < 0 : baselineLiteral < 0;
-    if (matchesPrompt && (baselineUnknown || info?.hasNewTurn)) {
-      return typeof turnsCount === "number" && Number.isFinite(turnsCount) ? turnsCount : null;
-    }
-    const fallbackCommit =
-      info?.composerCleared &&
-      Boolean(info?.hasNewTurn) &&
-      ((info?.stopVisible ?? false) || info?.assistantVisible || info?.inConversation);
-    if (fallbackCommit) {
+    // Commit proof requires both a structurally fresh user turn and ownership
+    // by the complete submitted prompt. Composer clearing, stop/assistant UI,
+    // and conversation navigation are useful diagnostics but never ownership
+    // evidence: each can belong to another submission or an older turn.
+    if (info?.hasNewUserTurn && info?.lastMatched) {
       return typeof turnsCount === "number" && Number.isFinite(turnsCount) ? turnsCount : null;
     }
     await delay(100);
@@ -1204,9 +1280,10 @@ async function verifyPromptCommitted(
 interface CommitProbeState {
   baseline?: number;
   userMatched?: boolean;
-  prefixMatched?: boolean;
   lastMatched?: boolean;
   hasNewTurn?: boolean;
+  hasNewUserTurn?: boolean;
+  lastUserTurnIndex?: number;
   stopVisible?: boolean;
   assistantVisible?: boolean;
   composerCleared?: boolean;
@@ -1224,9 +1301,10 @@ function summarizeCommitProbe(probe: CommitProbeState): Record<string, unknown> 
     baseline: probe.baseline,
     turnsCount: probe.turnsCount,
     userMatched: probe.userMatched,
-    prefixMatched: probe.prefixMatched,
     lastMatched: probe.lastMatched,
     hasNewTurn: probe.hasNewTurn,
+    hasNewUserTurn: probe.hasNewUserTurn,
+    lastUserTurnIndex: probe.lastUserTurnIndex,
     stopVisible: probe.stopVisible,
     assistantVisible: probe.assistantVisible,
     composerCleared: probe.composerCleared,

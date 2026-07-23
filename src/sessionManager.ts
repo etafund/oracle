@@ -238,6 +238,14 @@ export interface BrowserRemoteRecoveryCompletionClaim {
 export interface BrowserMetadata {
   config?: BrowserSessionConfig;
   runtime?: BrowserRuntimeMetadata;
+  /**
+   * Normalized ownership preview for the most recently submitted browser
+   * prompt. Unlike `options.prompt`, this advances after in-conversation
+   * follow-ups and is therefore the authoritative local recovery prompt.
+   */
+  submittedPromptPreview?: string;
+  /** Full normalized DOM-identity SHA-256 paired with `submittedPromptPreview`. */
+  submittedPromptDomSha256?: string;
   harvest?: BrowserHarvestMetadata;
   archive?: BrowserArchiveResult;
   modelSelection?: BrowserModelSelectionEvidence;
@@ -288,10 +296,9 @@ export interface ClaudeCodeSessionMetadata {
   total_cost_usd_observed?: number | null;
   /**
    * Multi-turn resume primitive (claude-provider-map.md finding #2): the
-   * stable UUID this run used (or minted) for `--session-id`. Stored on
-   * EVERY claude-code run — including one-shot runs, which mint one but
-   * never pass it to `claude` — so a later `--followup <thisSessionId>`
-   * always has a value to resume from.
+   * stable UUID the reviewed run actually passed as `--session-id`, or the
+   * UUID a follow-up actually passed as `--resume`. Absent for historical
+   * non-persistent compatibility one-shots.
    */
   claude_session_id?: string;
   /**
@@ -493,9 +500,12 @@ export interface StoredRunOptions {
   geminiDeepThinkFallback?: "fail";
   providerBoundary?: SessionProviderBoundaryOptions;
   lane?: string;
+  /** See the matching field on `RunOracleOptions` (`oracle/types.ts`). */
+  laneInferenceSource?: "lane" | "legacy-engine-model" | "mcp-lane" | "mcp-engine-model";
   claudeCode?: {
     executable?: string;
     caamProfile?: string;
+    caamBase?: string;
     model?: string;
     readOnly: true;
     inlineEvents: true;
@@ -928,6 +938,7 @@ export async function initializeSession(
       geminiShowThoughts: options.geminiShowThoughts,
       geminiDeepThinkFallback: options.geminiDeepThinkFallback,
       lane: options.lane,
+      laneInferenceSource: options.laneInferenceSource,
       claudeCode: options.claudeCode,
     },
   };

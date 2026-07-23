@@ -1,9 +1,9 @@
 ---
 title: Followups & Lineage
-description: "Continue a saved ChatGPT browser conversation or an OpenAI / Azure Responses API run."
+description: "Continue a saved ChatGPT browser, Fable/Claude Code, or OpenAI / Azure Responses API run."
 ---
 
-`--followup` chains a new run onto an existing session. Oracle selects the continuation path from the parent: ChatGPT browser sessions reopen the exact saved conversation, while OpenAI and Azure Responses API sessions use the stored provider response id. You can supply an additional prompt + files, and `oracle status` shows the parent/child lineage.
+`--followup` chains a new run onto an existing session. Oracle selects the continuation path from the parent: ChatGPT browser sessions reopen the exact saved conversation, Fable resumes the saved Claude Code session under the same CAAM identity, and OpenAI/Azure Responses API sessions use the stored provider response id. You can supply an additional prompt + files, and `oracle status` shows the parent/child lineage.
 
 ## Why followup instead of starting fresh
 
@@ -43,6 +43,17 @@ Oracle creates a child session, reopens the parent's exact ChatGPT conversation,
 
 Browser resume is fail-closed: Oracle refuses to submit if the saved URL is not a recoverable HTTPS ChatGPT conversation, the page has no stable prior turns, or the browser lands on a different conversation.
 
+For a Fable parent, select the exact same CAAM profile and base. Oracle refuses before spawning if either identity differs:
+
+```bash
+oracle --lane fable-local \
+  --caam-profile my-profile --caam-base "$HOME/orch-homes" \
+  --followup fable-architecture-review \
+  -p "Re-evaluate with this additional file" --file src/changed.ts
+```
+
+Oracle gives each new reviewed Fable run a provider session UUID, verifies Claude's init event reports that same UUID, and stores it with the Oracle session. A followup then uses Claude's real resume path with that UUID under the parent's exact CAAM identity. Sessions created by older builds with Claude session persistence disabled are not recoverable; Oracle refuses them instead of silently starting a fresh conversation.
+
 ## Multi-model parents
 
 When the parent used `--models a,b,c`, pick which lineage to continue from with `--followup-model`:
@@ -62,7 +73,8 @@ Without `--followup-model`, Oracle errors with the available lineage.
 | OpenAI Responses API     | ✅ via `previous_response_id`                                                      |
 | Azure OpenAI (Responses) | ✅ via `previous_response_id`                                                      |
 | ChatGPT browser mode     | ✅ saved sessions; see [Same-run browser multi-turn](#same-run-browser-multi-turn) |
-| Anthropic                | ❌ no Oracle-side response id chaining yet                                         |
+| Fable / Claude Code      | ✅ saved sessions under the exact same CAAM profile and base                       |
+| Anthropic API            | ❌ no Oracle-side response id chaining yet                                         |
 | Gemini                   | ❌                                                                                 |
 | OpenRouter               | ❌                                                                                 |
 | Custom `--base-url`      | ❌ — unknown whether the upstream preserves the id                                 |
@@ -80,7 +92,7 @@ oracle --lane chatgpt-pro \
   --browser-follow-up "Give the final decision"
 ```
 
-Each `--browser-follow-up` is sent after the previous turn completes. Not supported in Deep Research mode.
+Each `--browser-follow-up` is sent after the previous turn completes. Not supported in Deep Research mode. If the run stops before every requested turn is captured, Oracle will not mark the whole multi-turn request complete from one reattached answer: per-turn results are not yet durably checkpointed, so inspect the originating ChatGPT account's history and do not replay the session.
 
 ## Lineage in `oracle status`
 
@@ -103,6 +115,8 @@ Children inherit the parent's slug prefix unless you pass `--slug` explicitly.
 ## Limitations
 
 - Followups don't move between providers. You can't follow up an OpenAI run with a Gemini one — open a new session and re-bundle.
+- Fable followup requires the parent session's exact CAAM profile and canonical base; missing or different account identity is refused before spawn.
+- Fable followup depends on the owner-local Claude transcript in that CAAM shallow home. Moving/deleting it, or using an older non-persistent Oracle session, makes the parent non-resumable.
 - Browser followup requires a recoverable HTTPS ChatGPT conversation URL and an authenticated browser profile. Gemini web sessions are not supported.
 - `previous_response_id` retention on OpenAI / Azure varies by tier. If a followup fails with "response not found," the parent has aged out — start fresh.
 - Custom `--base-url` proxies (LiteLLM, etc.) often strip the response id. Test once before relying on it.

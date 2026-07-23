@@ -173,8 +173,8 @@ export const LANE_TEMPLATES: readonly LaneTemplate[] = [
     accessPath: "claude_code_subscription_cli",
     readiness: "hidden-alpha-only",
     enabledForCli: true,
-    command: 'oracle --lane fable-local --prompt "..." --file path',
-    doctorCommand: "oracle doctor fable --json",
+    command: 'oracle --lane fable-local --caam-profile <profile> --prompt "..." --file path',
+    doctorCommand: "oracle doctor fable --caam-profile <profile> --json",
     transportEligibility: "local-only",
     normalizedEngineOptions: {
       engine: "claude-code",
@@ -196,8 +196,10 @@ export const LANE_TEMPLATES: readonly LaneTemplate[] = [
       "no_tools",
       "no_mcp_servers",
       "fable_model_verified_when_visible",
+      "caam_profile_required_for_reviewed_lane",
       "explicit_caam_profile_selection_fails_closed",
       "caam_doctor_and_launch_share_the_same_base",
+      "claude_session_id_verified_and_persisted_for_followup",
     ],
     keyFlags: ["--lane fable-local", "--caam-profile <profile>", "--caam-base <absolute-path>"],
     attachments: {

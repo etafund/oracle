@@ -255,7 +255,10 @@ describe("session lifecycle", () => {
         model: "fable",
         mode: "claude-code",
         lane: "fable-local",
+        laneInferenceSource: "lane",
         claudeCode: {
+          caamProfile: "cc-saumil",
+          caamBase: "/home/ubuntu/orch-homes",
           model: "fable",
           readOnly: true,
           inlineEvents: true,
@@ -266,7 +269,7 @@ describe("session lifecycle", () => {
           disableSlashCommands: true,
           strictMcpConfig: true,
           noChrome: true,
-          noSessionPersistence: true,
+          noSessionPersistence: false,
         },
       },
       "/tmp/cwd",
@@ -274,7 +277,10 @@ describe("session lifecycle", () => {
 
     expect(metadata.mode).toBe("claude-code");
     expect(metadata.lane).toBe("fable-local");
+    expect(metadata.options.laneInferenceSource).toBe("lane");
     expect(metadata.options.claudeCode).toMatchObject({
+      caamProfile: "cc-saumil",
+      caamBase: "/home/ubuntu/orch-homes",
       readOnly: true,
       outputFormat: "stream-json",
       permissionMode: "plan",
@@ -286,14 +292,17 @@ describe("session lifecycle", () => {
     expect(storedMeta.mode).toBe("claude-code");
     expect(storedMeta.lane).toBe("fable-local");
     expect(storedMeta.options.lane).toBe("fable-local");
+    expect(storedMeta.options.laneInferenceSource).toBe("lane");
     expect(storedMeta.options.claudeCode).toMatchObject({
+      caamProfile: "cc-saumil",
+      caamBase: "/home/ubuntu/orch-homes",
       readOnly: true,
       inlineEvents: true,
       outputFormat: "stream-json",
       permissionMode: "plan",
       toolMode: "none",
       noChrome: true,
-      noSessionPersistence: true,
+      noSessionPersistence: false,
     });
   });
 

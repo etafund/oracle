@@ -11,6 +11,13 @@ import {
   isProvisionalChatGptConversationUrl,
   normalizeChatGptConversationId,
 } from "./conversationIdentity.js";
+import {
+  buildPromptRecoveryOwnershipPreview,
+  normalizePromptForDomMatch,
+  PROMPT_DOM_MATCH_PREFIX_LENGTH,
+  PROMPT_DOM_NORMALIZER_DECLARATION,
+  PROMPT_DOM_RECIPROCAL_PREFIX_MIN_LENGTH,
+} from "./promptDomMatch.js";
 
 export { extractConversationIdFromUrl } from "./conversationIdentity.js";
 
@@ -109,7 +116,7 @@ export async function openConversationFromSidebar(
   verificationTimeoutMs = 2_000,
 ): Promise<boolean> {
   const conversationId = normalizeChatGptConversationId(options.conversationId);
-  const promptPreview = options.promptPreview?.trim() ?? "";
+  const promptPreview = buildPromptRecoveryOwnershipPreview(options.promptPreview);
   // A sidebar entry is recovery evidence only when it can be tied to either a
   // durable saved conversation id or the saved prompt. Without either, the
   // old fallback picked an arbitrary history row and could return another
@@ -124,9 +131,11 @@ export async function openConversationFromSidebar(
       const preferProjects = ${JSON.stringify(Boolean(options.preferProjects))};
       const promptPreview = ${JSON.stringify(promptPreview || null)};
       const attemptIndex = ${Math.max(0, attempt)};
-      const promptNeedleFull = promptPreview ? promptPreview.trim().toLowerCase().slice(0, 100) : '';
+      ${PROMPT_DOM_NORMALIZER_DECLARATION}
+      const promptNeedleFull = promptPreview ? promptPreview.slice(0, 100) : '';
       const promptNeedleShort = promptNeedleFull.replace(/\\s*\\d{4,}\\s*$/, '').trim();
       const promptNeedles = Array.from(new Set([promptNeedleFull, promptNeedleShort].filter(Boolean)));
+      const reciprocalPrefixMinLength = ${PROMPT_DOM_RECIPROCAL_PREFIX_MIN_LENGTH};
       const nav = document.querySelector('nav') || document.querySelector('aside') || document.body;
       if (preferProjects) {
         const projectLink = Array.from(nav.querySelectorAll('a,button'))
@@ -162,7 +171,7 @@ export async function openConversationFromSidebar(
             el.dataset?.conversationId ||
             '',
           testId: clickable.getAttribute('data-testid') || el.getAttribute('data-testid') || '',
-          text: rawText.replace(/\\s+/g, ' ').slice(0, 400),
+          text: normalizePromptForDomMatch(rawText).slice(0, 400),
           inNav: Boolean(clickable.closest('nav,aside')),
         };
       };
@@ -194,9 +203,15 @@ export async function openConversationFromSidebar(
         // generic history control. Require a durable same-origin conversation
         // href first; the caller verifies both the final href and prompt after
         // navigation.
-        const byPrompt = (item) =>
-          hasDurableHref(item) &&
-          promptNeedles.some((needle) => item.text && item.text.toLowerCase().includes(needle));
+        const byPrompt = (item) => {
+          if (!hasDurableHref(item) || !item.text) return false;
+          const candidate = item.text.replace(/(?:…|\\.\\.\\.)$/, '').trim();
+          return promptNeedles.some(
+            (needle) =>
+              item.text.includes(needle) ||
+              (candidate.length >= reciprocalPrefixMinLength && needle.startsWith(candidate)),
+          );
+        };
         const sortBySpecificity = (items) =>
           items
             .filter(byPrompt)
@@ -309,14 +324,17 @@ export async function waitForPromptPreview(
   promptPreview: string,
   timeoutMs: number,
 ): Promise<boolean> {
-  const normalize = (value: string) => value.toLowerCase().replace(/\s+/g, " ").trim();
-  const needleFull = normalize(promptPreview).slice(0, 120);
+  const needleFull = normalizePromptForDomMatch(promptPreview).slice(
+    0,
+    PROMPT_DOM_MATCH_PREFIX_LENGTH,
+  );
   const needleShort = needleFull.replace(/\s*\d{4,}\s*$/, "").trim();
   const needles = Array.from(new Set([needleFull, needleShort].filter(Boolean)));
   if (needles.length === 0) return false;
   const selectorLiteral = JSON.stringify(CONVERSATION_TURN_SELECTOR);
   const expression = `(() => {
     const needles = ${JSON.stringify(needles)};
+    ${PROMPT_DOM_NORMALIZER_DECLARATION}
     const root =
       document.querySelector('section[data-testid="screen-threadFlyOut"]') ||
       document.querySelector('[data-testid="chat-thread"]') ||
@@ -337,9 +355,8 @@ export async function waitForPromptPreview(
     });
     const userTurns = Array.from(new Set([...explicitUserTurns, ...inferredUserTurns]));
     if (userTurns.length === 0) return false;
-    const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
     return userTurns.some((node) => {
-      const text = normalize(node.innerText || node.textContent || '');
+      const text = normalizePromptForDomMatch(node.innerText || node.textContent || '');
       return text && needles.some((needle) => text.includes(needle));
     });
   })()`;
@@ -399,15 +416,11 @@ export async function readConversationTurnIndex(
   }
 }
 
-function normalizeForComparison(text: string): string {
-  return String(text || "")
-    .toLowerCase()
-    .replace(/\\s+/g, " ")
-    .trim();
-}
-
 export function buildPromptEchoMatcher(promptPreview?: string | null): PromptEchoMatcher | null {
-  const normalizedPrompt = normalizeForComparison(promptPreview ?? "");
+  // Normalize the complete saved preview before deriving any prefix. In
+  // particular, a 160-char raw preview may end after an opening backtick and
+  // before its closing delimiter.
+  const normalizedPrompt = normalizePromptForDomMatch(promptPreview ?? "");
   if (!normalizedPrompt) {
     return null;
   }
@@ -418,7 +431,7 @@ export function buildPromptEchoMatcher(promptPreview?: string | null): PromptEch
   const minFragment = Math.min(40, normalizedPrompt.length);
   return {
     isEcho: (text: string) => {
-      const normalized = normalizeForComparison(text);
+      const normalized = normalizePromptForDomMatch(text);
       if (!normalized) return false;
       if (normalized === normalizedPrompt) return true;
       if (promptPrefix.length > 0 && normalized.startsWith(promptPrefix)) return true;

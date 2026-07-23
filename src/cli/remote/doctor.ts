@@ -67,6 +67,17 @@ export async function runRemoteDoctor(options: RemoteDoctorCliOptions): Promise<
       const suffix = probe.health.statusCode ? `HTTP ${probe.health.statusCode}` : "network";
       lines.push(`Auth (/health): ${chalk.red(`${suffix} (${detail})`)}`);
     }
+    const recovery = probe.health.browserRecoveryCompatibility;
+    if (recovery) {
+      const observed = [
+        recovery.protocol ?? "missing protocol",
+        recovery.promptPreviewAlgorithm ?? "missing prompt-preview algorithm",
+        recovery.promptDomIdentityAlgorithm ?? "missing DOM-identity algorithm",
+      ].join("; ");
+      lines.push(
+        `Browser recovery: ${recovery.compatible ? chalk.green("compatible") : chalk.red("incompatible")} (${observed})`,
+      );
+    }
   }
   lines.push(`Status: ${formatStatus(report.status)}`);
   if (report.error) {

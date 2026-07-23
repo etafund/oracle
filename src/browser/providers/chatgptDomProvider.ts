@@ -54,6 +54,7 @@ export {
   type PickHighestVisibleEffortInput,
   type SelectorConfidence,
 } from "../selectors/chatgpt/index.js";
+import type { SubmittedUserMessageBinding } from "../actions/captureBinding.js";
 
 interface ChatgptDomProviderState {
   runtime: ChromeClient["Runtime"];
@@ -69,6 +70,10 @@ interface ChatgptDomProviderState {
   beforePromptSubmit?: (composerBindingToken?: string) => Promise<void> | void;
   requireBoundSendTarget?: boolean;
   onPromptSubmitted?: (submittedPrompt: string) => Promise<void> | void;
+  onPromptBound?: (
+    submittedPrompt: string,
+    binding: SubmittedUserMessageBinding,
+  ) => Promise<void> | void;
   /**
    * Authoritative worker account id (BrowserRunOptions.accountId, i.e. the
    * serve layer's `options.accountId ?? env`). Threaded into the pre-run and
@@ -154,6 +159,7 @@ async function submitPromptViaAdapter(ctx: ProviderDomFlowContext): Promise<void
       },
       requireBoundSendTarget: state.requireBoundSendTarget,
       onPromptSubmitted: state.onPromptSubmitted,
+      onPromptBound: state.onPromptBound,
     },
     ctx.prompt,
     state.logger,

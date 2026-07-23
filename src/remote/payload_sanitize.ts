@@ -5,7 +5,7 @@ import type {
   RemoteAttachmentPayload,
   RemoteSessionRecoveryStage,
 } from "./types.js";
-import { REMOTE_SESSION_RECOVERY_STAGES } from "./types.js";
+import { REMOTE_BROWSER_RECOVERY_PROTOCOL, REMOTE_SESSION_RECOVERY_STAGES } from "./types.js";
 import { extractConversationIdFromUrl } from "../browser/conversationIdentity.js";
 import { sanitizeRemoteRunRecoveryHint } from "./recovery.js";
 
@@ -83,7 +83,10 @@ const RECOVERY_HINT_KEYS = [
   "originRunId",
   "expiresAt",
   "capability",
+  "promptPreviewAlgorithm",
   "promptPreviewSha256",
+  "promptDomIdentityAlgorithm",
+  "promptDomSha256",
   "runtime",
 ] as const;
 const RECOVERY_RUNTIME_KEYS = ["tabUrl", "conversationId", "promptSubmitted"] as const;
@@ -150,9 +153,9 @@ export function sanitizeRemoteRunPayloadForHost(payload: RemoteRunPayload): Remo
 /**
  * Minimize and validate a recovery-only request. No submitted prompt,
  * attachment bytes, CDP endpoint, profile path, or target id crosses this
- * boundary. A non-empty saved prompt prefix is mandatory because the worker
- * must prove the reopened conversation belongs to this session before it may
- * capture an answer.
+ * boundary. A non-empty saved prompt preview is mandatory for candidate
+ * discovery; the worker must match the capability-bound full DOM digest
+ * before it may capture an answer.
  */
 export function sanitizeRemoteBrowserRecoveryRequestForWire(
   value: unknown,
@@ -162,7 +165,7 @@ export function sanitizeRemoteBrowserRecoveryRequestForWire(
   }
   assertOnlyKeys(value, RECOVERY_TOP_LEVEL_KEYS, "remote browser recovery request");
   const input = value as Partial<RemoteBrowserRecoveryRequest>;
-  if (input.schema !== "remote-browser-recovery.v1") {
+  if (input.schema !== REMOTE_BROWSER_RECOVERY_PROTOCOL) {
     throw new Error("Invalid remote browser recovery request schema.");
   }
   assertOnlyKeys(input.recovery, RECOVERY_HINT_KEYS, "remote browser recovery capability");
@@ -188,7 +191,7 @@ export function sanitizeRemoteBrowserRecoveryRequestForWire(
     throw new Error("Invalid remote browser recovery request: prompt preview is required.");
   }
   return {
-    schema: "remote-browser-recovery.v1",
+    schema: REMOTE_BROWSER_RECOVERY_PROTOCOL,
     recovery: {
       ...recovery,
       stage: recovery.stage as RemoteSessionRecoveryStage,

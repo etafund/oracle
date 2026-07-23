@@ -1,0 +1,38 @@
+{
+  "schema_version": "2.0",
+  "artifact": "docs/index.md",
+  "mode": "audit",
+  "rows": [
+    { "unit": "U1", "disposition": "KEPT", "note": "" },
+    { "unit": "U2", "disposition": "KEPT", "note": "" },
+    { "unit": "U3", "disposition": "KEPT", "note": "" },
+    {
+      "unit": "U4",
+      "disposition": "DROPPED",
+      "note": "Approved intentional supersession; see docs/index.md.drops.jsonl (agent:/root#baseline-lossless-approval-2026-07-23)."
+    },
+    { "unit": "U5", "disposition": "KEPT", "note": "" },
+    { "unit": "U6", "disposition": "KEPT", "note": "" },
+    { "unit": "U7", "disposition": "KEPT", "note": "" },
+    { "unit": "U8", "disposition": "KEPT", "note": "" },
+    { "unit": "U9", "disposition": "KEPT", "note": "" },
+    { "unit": "U10", "disposition": "KEPT", "note": "" },
+    { "unit": "U11", "disposition": "KEPT", "note": "" },
+    { "unit": "U12", "disposition": "KEPT", "note": "" },
+    { "unit": "U13", "disposition": "KEPT", "note": "" },
+    { "unit": "U14", "disposition": "KEPT", "note": "" },
+    { "unit": "U15", "disposition": "KEPT", "note": "" },
+    { "unit": "U16", "disposition": "KEPT", "note": "" },
+    { "unit": "U17", "disposition": "KEPT", "note": "" },
+    { "unit": "U18", "disposition": "KEPT", "note": "" },
+    { "unit": "U19", "disposition": "KEPT", "note": "" },
+    { "unit": "U20", "disposition": "KEPT", "note": "" },
+    { "unit": "U21", "disposition": "KEPT", "note": "" },
+    { "unit": "U22", "disposition": "KEPT", "note": "" },
+    { "unit": "U23", "disposition": "KEPT", "note": "" },
+    { "unit": "U24", "disposition": "KEPT", "note": "" },
+    { "unit": "U25", "disposition": "KEPT", "note": "" },
+    { "unit": "U26", "disposition": "KEPT", "note": "" },
+    { "unit": "U27", "disposition": "KEPT", "note": "" }
+  ]
+}

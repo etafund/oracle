@@ -7,26 +7,26 @@ This is the curated cheatsheet. The authoritative source is always `oracle --hel
 
 ## Commands
 
-| Command                        | What it does                                                                                                                       |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `oracle [flags] -p "<prompt>"` | Run a consult.                                                                                                                     |
-| `oracle status`                | List recent sessions (see [Sessions](sessions.md)).                                                                                |
-| `oracle session <id>`          | Replay a stored session. Add `--json` for one `oracle_session.v1` envelope instead of the human transcript.                        |
-| `oracle status <id> --json`    | Same `oracle_session.v1` envelope as `oracle session <id> --json` (read one session, machine-readable).                            |
-| `oracle wait <id>`             | Block until a session is terminal; `--timeout-seconds <n>` bounds it (exit 7 = still running). `--json` emits `oracle_session.v1`. |
-| `oracle cancel <id>`           | Abort an in-flight/detached run (stops the controller, releases its lease, marks it `cancelled`). Idempotent; exit 0 on terminal.  |
-| `oracle restart <id>`          | Re-run with the same prompt + files. `--json` emits one `oracle_session_action.v1` launch receipt (progress moves to stderr).      |
-| `oracle docs check`            | Check documented flags against CLI help metadata.                                                                                  |
-| `oracle doctor lanes --json`   | Print the reviewed lane policy without launching browsers or models.                                                               |
-| `oracle doctor fable --json`   | Check local Claude/CAAM profile, base, auth, ownership, and fail-closed readiness without launching a model.                       |
-| `oracle serve`                 | Run the remote browser host (see [Browser Mode](browser-mode.md)).                                                                 |
-| `oracle remote doctor`         | Probe the configured remote endpoint (TCP + `/health`). `--json` emits a `remote_browser_endpoint.v1` envelope.                    |
-| `oracle remote status`         | Print the resolved remote endpoint config without touching the network. `--json` for machine-readable output.                      |
-| `oracle remote attach`         | Probe attach readiness against a caller-supplied host. Use `--host <h:p> --token-env <ENV>` so the token never appears in argv.    |
-| `oracle bridge doctor --json`  | Same `remote_browser_endpoint.v1` envelope as `oracle remote doctor`, plus bridge-specific connectivity checks.                    |
-| `oracle bridge claude-config`  | Emit a `.mcp.json` for Claude Code (see [MCP](mcp.md)).                                                                            |
-| `oracle tui`                   | Interactive TUI (humans only).                                                                                                     |
-| `oracle-mcp`                   | Stdio MCP server entrypoint.                                                                                                       |
+| Command                                            | What it does                                                                                                                                                                                                                                      |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `oracle [flags] -p "<prompt>"`                     | Run a consult.                                                                                                                                                                                                                                    |
+| `oracle status`                                    | List recent sessions (see [Sessions](sessions.md)).                                                                                                                                                                                               |
+| `oracle session <id>`                              | Replay a stored session. Add `--json` for one `oracle_session.v1` envelope instead of the human transcript.                                                                                                                                       |
+| `oracle status <id> --json`                        | Same `oracle_session.v1` envelope as `oracle session <id> --json` (read one session, machine-readable).                                                                                                                                           |
+| `oracle wait <id>`                                 | Block until a session is terminal; `--timeout-seconds <n>` bounds it (exit 7 = still running). `--json` emits `oracle_session.v1`.                                                                                                                |
+| `oracle cancel <id>`                               | Abort an in-flight/detached run (stops the controller, releases its lease, marks it `cancelled`). Idempotent; exit 0 on terminal.                                                                                                                 |
+| `oracle restart <id>`                              | Re-run the same prompt + files for API sessions or typed retryable pre-submit browser failures. Submitted/unknown browser and Fable sessions are refused. `--json` emits one `oracle_session_action.v1` launch receipt; progress moves to stderr. |
+| `oracle docs check`                                | Check documented flags against CLI help metadata.                                                                                                                                                                                                 |
+| `oracle doctor lanes --json`                       | Print the reviewed lane policy without launching browsers or models.                                                                                                                                                                              |
+| `oracle doctor fable --caam-profile <name> --json` | Check one local Claude/CAAM profile, base, auth, ownership, and fail-closed readiness without launching a model.                                                                                                                                  |
+| `oracle serve`                                     | Run the remote browser host (see [Browser Mode](browser-mode.md)).                                                                                                                                                                                |
+| `oracle remote doctor`                             | Probe the configured remote endpoint (TCP + `/health`). `--json` emits a `remote_browser_endpoint.v1` envelope.                                                                                                                                   |
+| `oracle remote status`                             | Print the resolved remote endpoint config without touching the network. `--json` for machine-readable output.                                                                                                                                     |
+| `oracle remote attach`                             | Probe attach readiness against a caller-supplied host. Use `--host <h:p> --token-env <ENV>` so the token never appears in argv.                                                                                                                   |
+| `oracle bridge doctor --json`                      | Same `remote_browser_endpoint.v1` envelope as `oracle remote doctor`, plus bridge-specific connectivity checks.                                                                                                                                   |
+| `oracle bridge claude-config`                      | Emit a `.mcp.json` for Claude Code (see [MCP](mcp.md)).                                                                                                                                                                                           |
+| `oracle tui`                                       | Interactive TUI (humans only).                                                                                                                                                                                                                    |
+| `oracle-mcp`                                       | Stdio MCP server entrypoint.                                                                                                                                                                                                                      |
 
 ## Core consult flags
 
@@ -35,38 +35,38 @@ The reviewed agent-facing route families are below. `oracle doctor lanes --json`
 | Lane                      | Command shape                                                                       | Notes                                                                                                                                                   |
 | ------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | ChatGPT GPT-5.6 Sol + Pro | `oracle --lane chatgpt-pro -p "..." --file ...`                                     | Selects exact `GPT-5.6 Sol`, separately verifies checked `Pro`, and fails before submit if either is unverified. Remote router/serve hosts are allowed. |
-| Fable xHigh               | `oracle --lane fable-local [--caam-profile <name>] -p "..." --file ...`             | Uses the local Claude Code subscription CLI at fixed `xhigh` effort. Explicit CAAM selection fails closed instead of using another account.             |
+| Fable xHigh               | `oracle --lane fable-local --caam-profile <name> -p "..." --file ...`               | Uses the local Claude Code subscription CLI at fixed `xhigh` effort. The reviewed lane requires explicit CAAM selection and fails closed.               |
 | Gemini 3.1 Deep Think     | `oracle --engine browser --provider gemini --gemini-deep-think -p "..." --file ...` | Uses browser automation and API-substitution guardrails. The explicit `--lane gemini-deep-think` template may report deferred.                          |
 
 Run `oracle doctor lanes --json`, `oracle capabilities --json`, and `oracle remote doctor --json` before remote browser smokes.
 
-| Flag                              | Purpose                                                                                                              |
-| --------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `-p, --prompt <text>`             | Required prompt.                                                                                                     |
-| `-f, --file <paths...>`           | Files / dirs / globs. Repeatable. `!` prefix = exclude.                                                              |
-| `-e, --engine <api\|browser>`     | Force engine. Reviewed ChatGPT/Gemini lanes use browser.                                                             |
-| `-m, --model <name>`              | Single model. For reviewed lanes prefer the command shapes above.                                                    |
-| `--models <list>`                 | Compatibility-only comma-separated API fan-out.                                                                      |
-| `--caam-profile <name>`           | Pin `fable-local` to one CAAM shallow profile/subscription. A requested profile never falls back to direct `claude`. |
-| `--caam-base <absolute-path>`     | Override the CAAM shallow-profile base used by both doctor and launch; normally `$HOME/orch-homes`.                  |
-| `--slug <name>`                   | Stable session slug.                                                                                                 |
-| `--render`                        | Print the assembled bundle to stdout.                                                                                |
-| `--copy`                          | Copy the bundle to the clipboard.                                                                                    |
-| `--write-output <path>`           | Save the final answer to a file; multi-model runs add per-model files plus `<stem>.oracle.json`.                     |
-| `--files-report`                  | Print per-file token usage.                                                                                          |
-| `--dry-run [summary\|json\|full]` | Preview without sending.                                                                                             |
+| Flag                                       | Purpose                                                                                                                             |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `-p, --prompt <text>`                      | Required prompt.                                                                                                                    |
+| `-f, --file <paths...>`                    | Files / dirs / globs. Repeatable. `!` prefix = exclude.                                                                             |
+| `-e, --engine <api\|browser\|claude-code>` | Force engine. Reviewed ChatGPT/Gemini lanes use browser; reviewed Fable is selected with `--lane fable-local`.                      |
+| `-m, --model <name>`                       | Single model. For reviewed lanes prefer the command shapes above.                                                                   |
+| `--models <list>`                          | Compatibility-only comma-separated API fan-out.                                                                                     |
+| `--caam-profile <name>`                    | Required for `fable-local`: select one CAAM shallow profile/subscription. `ORACLE_CLAUDE_CODE_CAAM_PROFILE` is the env alternative. |
+| `--caam-base <absolute-path>`              | Override the CAAM shallow-profile base used by both doctor and launch; normally `$HOME/orch-homes`.                                 |
+| `--slug <name>`                            | Stable session slug.                                                                                                                |
+| `--render`                                 | Print the assembled bundle to stdout.                                                                                               |
+| `--copy`                                   | Copy the bundle to the clipboard.                                                                                                   |
+| `--write-output <path>`                    | Save the final answer to a file; multi-model runs add per-model files plus `<stem>.oracle.json`.                                    |
+| `--files-report`                           | Print per-file token usage.                                                                                                         |
+| `--dry-run [summary\|json\|full]`          | Preview without sending.                                                                                                            |
 
 ## Fable xHigh local lane
 
 `fable-local` is the local Claude Code review lane for Fable xHigh. It is for the local owner running their installed and logged-in `claude` command on the same machine. It is read-only review of Oracle-supplied prompt/file context, separate from Anthropic API mode.
 
-Run the dedicated doctor before spending subscription usage:
+Run the dedicated doctor with the intended profile before spending subscription usage:
 
 ```bash
-oracle doctor fable --json
+oracle doctor fable --caam-profile my-profile --json
 ```
 
-To use the currently logged-in local `claude` directly, omit the CAAM flags. To pin the run to one subscription profile, pass the profile explicitly; use `--caam-base` when the profile base cannot be inferred:
+The reviewed lane requires one subscription profile. Pass it explicitly or set `ORACLE_CLAUDE_CODE_CAAM_PROFILE`; use `--caam-base` when the profile base cannot be inferred:
 
 ```bash
 oracle --lane fable-local \
@@ -75,22 +75,22 @@ oracle --lane fable-local \
   -p "Challenge this migration plan" --file docs/plan.md
 ```
 
-The Fable lane always launches Claude Code with `xhigh` effort; there is no user-adjustable Fable effort flag. Explicit account selection is fail-closed: if the requested CAAM executable, profile, base, doctor check, or launch cannot be verified, Oracle errors without falling back to an unpinned `claude` account. The direct local-Claude path is used only when no CAAM profile was requested.
+The Fable lane always launches Claude Code with `xhigh` effort; there is no user-adjustable Fable effort flag. Account selection is fail-closed: if the requested CAAM executable, profile, base, doctor check, or launch cannot be verified, Oracle errors without falling back to an unpinned `claude` account. Reviewed one-shots persist a Claude transcript under a builder-owned provider session UUID so a later followup can use Claude's real resume path; Oracle verifies that Claude reports the exact same UUID before recording it. The historical direct local-Claude path remains only on the compatibility `--engine claude-code --model fable` form and keeps its non-persistent one-shot behavior.
 
 The lane must refuse when `ANTHROPIC_API_KEY` is present because Claude Code would prefer API-key billing in that environment. It also refuses remote browser, `oracle serve`, router/bridge, background, and multi-model fan-out flows. Cross-invocation `--followup` is supported only when it can resume the same Fable session under the exact same CAAM profile and canonical base; either mismatch (or missing legacy base metadata) is refused.
 
-The lane captures the visible Claude Code event stream only. It does not capture hidden reasoning. Raw visible stream artifacts may include prompts, file snippets, local paths, stderr, and other sensitive visible data; they are owner-local artifacts and are not included in redacted exports by default.
+The lane captures the visible Claude Code event stream only. It does not capture hidden reasoning. Raw visible stream artifacts may include prompts, file snippets, local paths, stderr, and other sensitive visible data; they are owner-local artifacts and are not included in redacted exports by default. The resumable Claude transcript is also owner-local under the selected CAAM profile's shallow home. Older Oracle sessions that recorded `sessionPersistenceDisabled: true` cannot be followed up and are refused before spawn.
 
-Local Claude Code lane runs use a single-flight lock. By default, a second run fails before spawning `claude`; pass `--wait-for-lock <duration>` with `fable-local` to wait explicitly for the current local run to finish.
+Local Claude Code lane runs use a CAAM-profile-scoped single-flight lock. A second run on the same profile fails before spawning `claude`; distinct profiles have distinct locks and may run concurrently. Check the selected profile with `oracle doctor fable --caam-profile <name> --json`, and pass `--wait-for-lock <duration>` when you intentionally want to wait. `oracle doctor lanes --json` exposes only aggregate informational lock state.
 
 MCP `consult` already recognizes `lane:"fable-local"` and `engine:"claude-code"` for hidden-alpha schema discovery, but returns a typed `agent_lane_blocked` route-block before any backend starts. MCP execution waits for separate local-owner, launch-context, inline-event, overflow, and resource-URI work.
 
 ## Followup / lineage
 
-| Flag                            | Purpose                                                                 |
-| ------------------------------- | ----------------------------------------------------------------------- |
-| `--followup <id\|slug\|resp_…>` | Continue a saved ChatGPT browser or OpenAI/Azure Responses API session. |
-| `--followup-model <model>`      | Pick API lineage when the parent used `--models`.                       |
+| Flag                            | Purpose                                                                                                  |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `--followup <id\|slug\|resp_…>` | Continue a saved ChatGPT browser, same-profile Fable/Claude Code, or OpenAI/Azure Responses API session. |
+| `--followup-model <model>`      | Pick API lineage when the parent used `--models`.                                                        |
 
 ## Run control
 

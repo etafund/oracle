@@ -53,7 +53,16 @@ interface BrowserTabLeaseDeps {
   now?: () => number;
   pid?: number;
   isProcessAlive?: (pid: number) => boolean;
+  /** Test seam for the lock-free DevTools target snapshot used by reclamation. */
+  listChromeTargetIds?: (options: {
+    chromeHost: string;
+    chromePort: number;
+    signal?: AbortSignal;
+  }) => Promise<readonly string[]>;
 }
+
+const TARGET_RECLAIM_PROBE_TIMEOUT_MS = 1_500;
+const TARGET_RECLAIM_PROBE_INTERVAL_MS = 5_000;
 
 /**
  * Fail-closed read outcome. `readable: false` means the registry exists but
@@ -172,6 +181,7 @@ export async function acquireBrowserTabLease(
   const startedAt = now();
   let warned = false;
   let lastHeartbeatAt = 0;
+  let lastTargetReclaimProbeAt = Number.NEGATIVE_INFINITY;
   const createLeaseHandle = (): BrowserTabLease => ({
     id: leaseId,
     release: async () => releaseBrowserTabLease(profileDir, leaseId, options.logger),
@@ -186,6 +196,41 @@ export async function acquireBrowserTabLease(
 
   for (;;) {
     throwIfAborted();
+    // A headful challenge intentionally preserves both its exact target and
+    // capacity lease so a human can clear the wall. Once the human closes
+    // that tab, however, the live serve PID would otherwise keep the lease
+    // occupied until the six-hour heartbeat bound. Reconcile that state
+    // before granting capacity. The DevTools read is deliberately OUTSIDE the
+    // registry lock; reclaimMissingBrowserTabLeasesForClosedTargets performs
+    // a second, locked compare-and-remove against the exact snapshot record.
+    if (
+      typeof options.chromeHost === "string" &&
+      options.chromeHost.length > 0 &&
+      typeof options.chromePort === "number" &&
+      Number.isInteger(options.chromePort) &&
+      options.chromePort > 0 &&
+      Date.now() - lastTargetReclaimProbeAt >= TARGET_RECLAIM_PROBE_INTERVAL_MS
+    ) {
+      lastTargetReclaimProbeAt = Date.now();
+      await reclaimMissingBrowserTabLeasesForClosedTargets(
+        profileDir,
+        {
+          chromeHost: options.chromeHost,
+          chromePort: options.chromePort,
+          logger: options.logger,
+          signal: options.signal,
+        },
+        { listChromeTargetIds: deps.listChromeTargetIds },
+      ).catch((error) => {
+        // Probe/read/lock ambiguity fails closed: retain every lease and let
+        // the normal capacity path decide whether to wait. A caller abort is
+        // surfaced by throwIfAborted immediately below.
+        options.logger?.(
+          `[browser] Could not reconcile closed-target tab leases: ${error instanceof Error ? error.message : String(error)}; retaining them fail-closed.`,
+        );
+      });
+      throwIfAborted();
+    }
     const acquired = await withRegistryLock(
       profileDir,
       async () => {
@@ -286,6 +331,163 @@ async function delayWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
     };
     signal.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+interface ClosedTargetLeaseReclaimDeps {
+  listChromeTargetIds?: (options: {
+    chromeHost: string;
+    chromePort: number;
+    signal?: AbortSignal;
+  }) => Promise<readonly string[]>;
+}
+
+/**
+ * Reclaim leases whose recorded, owned Chrome target was manually closed.
+ *
+ * This is deliberately a two-phase operation:
+ * 1. read an atomic registry snapshot without the registry lock;
+ * 2. list Chrome targets over DevTools (also without the registry lock);
+ * 3. take the lock and remove only records that are byte-for-byte identical
+ *    to the snapshot proved missing.
+ *
+ * A failed/ambiguous target probe reclaims nothing. A concurrent lease
+ * update also reclaims nothing. The function never closes a target; it only
+ * releases capacity after a successful target list proves that exact target
+ * no longer exists.
+ */
+export async function reclaimMissingBrowserTabLeasesForClosedTargets(
+  profileDir: string,
+  options: {
+    chromeHost: string;
+    chromePort: number;
+    logger?: BrowserLogger;
+    signal?: AbortSignal;
+  },
+  deps: ClosedTargetLeaseReclaimDeps = {},
+): Promise<number> {
+  const snapshot = await readRegistryOutcome(profileDir);
+  if (!snapshot.readable) {
+    return 0;
+  }
+
+  // Only inspect the endpoint explicitly selected by this acquisition. Do
+  // not follow arbitrary host/port values from a registry file.
+  const endpointRecords = snapshot.valid.filter(
+    (lease) =>
+      lease.chromeHost === options.chromeHost &&
+      lease.chromePort === options.chromePort &&
+      typeof lease.chromeTargetId === "string" &&
+      lease.chromeTargetId.length > 0,
+  );
+  if (endpointRecords.length === 0) {
+    return 0;
+  }
+
+  const snapshotIdCounts = countLeaseIds(snapshot.valid);
+  const listChromeTargetIds = deps.listChromeTargetIds ?? listChromeTargetIdsOverHttp;
+  const liveTargetIds = new Set(
+    await listChromeTargetIds({
+      chromeHost: options.chromeHost,
+      chromePort: options.chromePort,
+      signal: options.signal,
+    }),
+  );
+  const missingSnapshots = new Map<string, string>();
+  for (const lease of endpointRecords) {
+    // Duplicate lease IDs are structurally ambiguous. Keep all of them
+    // fail-closed rather than allowing one observation to remove many.
+    if (
+      snapshotIdCounts.get(lease.id) === 1 &&
+      lease.chromeTargetId &&
+      !liveTargetIds.has(lease.chromeTargetId)
+    ) {
+      missingSnapshots.set(lease.id, JSON.stringify(lease));
+    }
+  }
+  if (missingSnapshots.size === 0) {
+    return 0;
+  }
+
+  const reclaimedIds = await withRegistryLock(
+    profileDir,
+    async () => {
+      const current = await readRegistryOutcomeLocked(profileDir, options.logger);
+      if (!current.readable) {
+        return [] as string[];
+      }
+      const currentIdCounts = countLeaseIds(current.valid);
+      const removed: string[] = [];
+      const remaining = current.valid.filter((lease) => {
+        const snapshotJson = missingSnapshots.get(lease.id);
+        const exactUnchangedMatch =
+          snapshotJson !== undefined &&
+          currentIdCounts.get(lease.id) === 1 &&
+          JSON.stringify(lease) === snapshotJson;
+        if (exactUnchangedMatch) {
+          removed.push(lease.id);
+          return false;
+        }
+        return true;
+      });
+      if (removed.length > 0) {
+        await writeRegistry(profileDir, [...remaining, ...current.opaque]);
+      }
+      return removed;
+    },
+    options.logger,
+    { signal: options.signal, timeoutMs: REGISTRY_MUTATION_LOCK_TIMEOUT_MS },
+  );
+
+  for (const id of reclaimedIds) {
+    options.logger?.(
+      `[browser] Reclaimed ChatGPT browser slot ${id.slice(0, 8)} after its recorded target was manually closed.`,
+    );
+  }
+  return reclaimedIds.length;
+}
+
+function countLeaseIds(leases: readonly BrowserTabLeaseRecord[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const lease of leases) {
+    counts.set(lease.id, (counts.get(lease.id) ?? 0) + 1);
+  }
+  return counts;
+}
+
+async function listChromeTargetIdsOverHttp(options: {
+  chromeHost: string;
+  chromePort: number;
+  signal?: AbortSignal;
+}): Promise<readonly string[]> {
+  const timeoutSignal = AbortSignal.timeout(TARGET_RECLAIM_PROBE_TIMEOUT_MS);
+  const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
+  const host =
+    options.chromeHost.includes(":") && !options.chromeHost.startsWith("[")
+      ? `[${options.chromeHost}]`
+      : options.chromeHost;
+  const response = await fetch(`http://${host}:${options.chromePort}/json/list`, { signal });
+  if (!response.ok) {
+    throw new Error(`DevTools target list returned HTTP ${response.status}.`);
+  }
+  const payload = (await response.json()) as unknown;
+  if (!Array.isArray(payload)) {
+    throw new Error("DevTools target list returned an invalid document.");
+  }
+  const ids = new Set<string>();
+  for (const target of payload) {
+    if (!target || typeof target !== "object") continue;
+    const candidate = target as { id?: unknown; targetId?: unknown };
+    const id =
+      typeof candidate.targetId === "string"
+        ? candidate.targetId
+        : typeof candidate.id === "string"
+          ? candidate.id
+          : null;
+    if (id && id.length > 0) {
+      ids.add(id);
+    }
+  }
+  return [...ids];
 }
 
 export async function updateBrowserTabLease(

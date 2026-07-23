@@ -31,6 +31,10 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { serveRemote } from "../../src/remote/server.js";
+import {
+  REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
+  REMOTE_BROWSER_RUN_PATH,
+} from "../../src/remote/types.js";
 
 const { launchMock } = vi.hoisted(() => ({
   launchMock: vi.fn(async (options?: { port?: number }) => ({
@@ -324,10 +328,11 @@ describe("attach-only serve: fail-closed admission", () => {
         const handle = await startServe(profileDir);
         const port = await waitForListenPort(handle);
 
-        const response = await fetch(`http://127.0.0.1:${port}/runs`, {
+        const response = await fetch(`http://127.0.0.1:${port}${REMOTE_BROWSER_RUN_PATH}`, {
           method: "POST",
           headers: {
             authorization: "Bearer secret",
+            ...REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
             "content-type": "application/json",
           },
           body: JSON.stringify({ prompt: "x", attachments: [], browserConfig: {}, options: {} }),

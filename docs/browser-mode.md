@@ -6,7 +6,7 @@ Oracle’s `--engine browser` supports three different execution paths:
 - **ChatGPT attach-running mode** (GPT-\* models): Oracle attaches to your already-running local Chrome session through Chrome’s local remote-debugging toggle, opens a dedicated tab, and leaves the browser process/profile alone.
 - **Gemini web mode** (Gemini models): talks directly to `gemini.google.com` using your signed-in Chrome cookies (no ChatGPT automation).
 
-The reviewed browser route forms are ChatGPT GPT-5.6 Sol + Pro (`--lane chatgpt-pro`) and Gemini 3.1 Deep Think (`--engine browser --provider gemini --gemini-deep-think`). `oracle doctor lanes --json` reports lane-template readiness for the current checkout. Remote browser hosts and the companion router (`<router-repo>`) are transport for those browser routes. Fable xHigh is a separate local `--lane fable-local` Claude Code path and is not a browser/router mode.
+The reviewed browser route forms are ChatGPT GPT-5.6 Sol + Pro (`--lane chatgpt-pro`) and Gemini 3.1 Deep Think (`--engine browser --provider gemini --gemini-deep-think`). `oracle doctor lanes --json` reports lane-template readiness for the current checkout. Remote browser hosts and the companion router (`<router-repo>`) are transport for those browser routes. Fable xHigh is a separate local `--lane fable-local --caam-profile <name>` Claude Code path and is not a browser/router mode.
 
 If you’re running Gemini, also see `docs/gemini.md`.
 
@@ -103,7 +103,7 @@ Notes:
 - `--browser-max-concurrent-tabs`: soft limit for simultaneous ChatGPT tabs sharing one manual-login profile (default `3`). Additional runs wait up to the browser timeout for a slot and log `[browser] Waiting for ChatGPT browser slot...`.
 - `--browser-auto-reattach-delay`, `--browser-auto-reattach-interval`, `--browser-auto-reattach-timeout`: after a timeout, start periodic auto-reattach attempts (delay before first attempt, repeat interval, per-attempt timeout). This lets Oracle keep polling a finished Pro response without manual `oracle session` runs.
 - `--heartbeat`: browser mode uses this interval to emit long-run ChatGPT status. When ChatGPT exposes a Thinking/Reasoning disclosure, Oracle opens it and logs only liveness metadata such as sidecar presence, UI progress percentage, elapsed time, and last-change age. It does not log the reasoning text.
-- If an assistant response still times out (common with long Pro runs), Oracle marks the session as an incomplete capture, stores reattach/runtime diagnostics, and keeps enough browser metadata for `oracle session <id>` to recover the final answer. Visible ChatGPT rate-limit, temporary-unavailable, and authentication/challenge warnings are included in the error and session metadata instead of being reduced to a generic timeout. Increase `--browser-timeout` only when the browser session is truly unrecoverable.
+- If an assistant response still times out (common with long Pro runs), Oracle marks the session as an incomplete capture and stores route/runtime diagnostics. For one-shot runs, when the worker returned a private account-affine recovery capability bound to the full rendered submitted turn, `oracle session <id> --render` can capture without resubmitting. Prefix-only legacy records and failures before that exact binding deliberately have no executable recovery. Incomplete same-run multi-turn sessions also refuse capture-only completion because one recovered answer cannot prove or reconstruct the requested turn sequence; inspect the originating ChatGPT account's history and do not replay the prompt or session. Visible rate-limit, temporary-unavailable, and authentication/challenge warnings remain typed in session metadata.
 - `--browser-model-strategy <select|current|ignore>`: control ChatGPT model selection. `select` (default) switches to the requested model; `current` keeps the active model and logs its label; `ignore` skips the picker entirely. (Ignored for Gemini web runs.)
 - Temporary Chat can reduce account-sidebar clutter for one-shot browser consults, but it is a different ChatGPT workflow: Oracle skips archive attempts there and the local transcript/artifacts are the durable record. Verify live behavior before relying on Project Sources, Deep Research reports, or multi-turn persistence.
 - `--browser-thinking-time <light|standard|extended|heavy>`: set the ChatGPT thinking-time intensity (Thinking/Pro models only). You can also set a default in `~/.oracle/config.json` via `browser.thinkingTime`.
@@ -155,7 +155,7 @@ Notes:
     ]
     ```
 
-All options are persisted with the session so restarts (`oracle restart <id>`) reuse the same automation settings.
+All options are persisted with the session. `oracle restart <id>` reuses them only for a failure explicitly classified retryable and pre-submit; submitted or indeterminate browser sessions must use account-affine recovery instead.
 
 ### Deep Research mode
 
@@ -321,7 +321,7 @@ Key behavior:
 - Oracle opens a dedicated CDP target (new tab) for each run and closes it afterward so your existing tabs stay untouched.
 - When remote runs are served by an Oracle host with a manual-login profile, the host-side tab lease registry applies the same concurrent tab limit.
 - Attachments are transferred via CDP: Oracle reads each file locally, base64-encodes it, and uses `DataTransfer` inside the remote browser to populate the upload field. Files larger than 20 MB are rejected to keep CDP messages reasonable.
-- When the remote WebSocket disconnects, Oracle errors with “Remote Chrome connection lost…” so you can re-run after restarting the browser.
+- When Oracle reports `Remote Chrome connection lost before Oracle finished.`, inspect the stored session first. Restore or restart the remote browser if needed, but restart the Oracle run only when the failure is explicitly classified retryable and pre-submit; otherwise use `oracle session <id> --render` or inspect the originating account's history.
 
 ### 3. Troubleshooting
 

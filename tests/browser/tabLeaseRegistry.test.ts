@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import {
   acquireBrowserTabLease,
   hasOtherActiveBrowserTabLeases,
@@ -234,6 +234,138 @@ describe("tabLeaseRegistry", () => {
       await writeFile(path.join(dir, "oracle-tab-leases.json"), "{not json at all###", "utf8");
       const snapshot = await listOtherActiveBrowserTabLeaseTargetIds(dir, "any-lease-id");
       expect(snapshot).toEqual({ readable: false, targetIds: [], unattributedCount: 0 });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("reclaims a preserved lease after its exact owned target is manually closed", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-tab-leases-"));
+    const logger = vi.fn();
+    try {
+      const preserved = await acquireBrowserTabLease(dir, {
+        maxConcurrentTabs: 1,
+        timeoutMs: 500,
+        sessionId: "preserved-challenge",
+        chromeHost: "127.0.0.1",
+        chromePort: 9222,
+      });
+      await preserved.update({
+        chromeHost: "127.0.0.1",
+        chromePort: 9222,
+        chromeTargetId: "manually-closed-target",
+      });
+
+      const listChromeTargetIds = vi.fn(async () => {
+        // The DevTools/network observation must never run while the registry
+        // lock is held. A lock-held implementation would fail this premise.
+        const lock = await stat(path.join(dir, "oracle-tab-leases.lock")).catch(() => null);
+        expect(lock).toBeNull();
+        return [] as string[];
+      });
+      const replacement = await acquireBrowserTabLease(
+        dir,
+        {
+          maxConcurrentTabs: 1,
+          timeoutMs: 500,
+          sessionId: "replacement-run",
+          chromeHost: "127.0.0.1",
+          chromePort: 9222,
+          logger,
+        },
+        { listChromeTargetIds },
+      );
+
+      expect(listChromeTargetIds).toHaveBeenCalledOnce();
+      expect(logger).toHaveBeenCalledWith(
+        expect.stringMatching(/Reclaimed ChatGPT browser slot .*manually closed/u),
+      );
+      const registry = JSON.parse(
+        await readFile(path.join(dir, "oracle-tab-leases.json"), "utf8"),
+      ) as { leases: Array<{ id: string; sessionId?: string }> };
+      expect(registry.leases).toEqual([
+        expect.objectContaining({ id: replacement.id, sessionId: "replacement-run" }),
+      ]);
+
+      await replacement.release();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("does not reclaim a target-backed lease when the target still exists", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-tab-leases-"));
+    try {
+      const preserved = await acquireBrowserTabLease(dir, {
+        maxConcurrentTabs: 1,
+        timeoutMs: 500,
+        sessionId: "preserved-live-target",
+        chromeHost: "127.0.0.1",
+        chromePort: 9222,
+      });
+      await preserved.update({ chromeTargetId: "still-live-target" });
+
+      await expect(
+        acquireBrowserTabLease(
+          dir,
+          {
+            maxConcurrentTabs: 1,
+            pollMs: 25,
+            timeoutMs: 150,
+            chromeHost: "127.0.0.1",
+            chromePort: 9222,
+          },
+          { listChromeTargetIds: async () => ["still-live-target"] },
+        ),
+      ).rejects.toThrow(/Timed out waiting for ChatGPT browser slot/u);
+
+      await preserved.release();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("compare-and-remove retains a lease that changes during the target probe", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-tab-leases-"));
+    try {
+      const preserved = await acquireBrowserTabLease(dir, {
+        maxConcurrentTabs: 1,
+        timeoutMs: 500,
+        sessionId: "concurrently-updated",
+        chromeHost: "127.0.0.1",
+        chromePort: 9222,
+      });
+      await preserved.update({ chromeTargetId: "snapshot-target" });
+
+      await expect(
+        acquireBrowserTabLease(
+          dir,
+          {
+            maxConcurrentTabs: 1,
+            pollMs: 25,
+            timeoutMs: 150,
+            chromeHost: "127.0.0.1",
+            chromePort: 9222,
+          },
+          {
+            listChromeTargetIds: async () => {
+              // This update can complete only because the DevTools probe runs
+              // outside the registry lock. It also changes the CAS identity,
+              // so the subsequent locked phase must retain the lease.
+              await preserved.update({ chromeTargetId: "replacement-target" });
+              return [];
+            },
+          },
+        ),
+      ).rejects.toThrow(/Timed out waiting for ChatGPT browser slot/u);
+
+      const registry = JSON.parse(
+        await readFile(path.join(dir, "oracle-tab-leases.json"), "utf8"),
+      ) as { leases: Array<{ chromeTargetId?: string }> };
+      expect(registry.leases).toEqual([
+        expect.objectContaining({ chromeTargetId: "replacement-target" }),
+      ]);
+      await preserved.release();
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

@@ -69,20 +69,20 @@ npx -y @steipete/oracle --lane chatgpt-pro \
   --file src/storage/README.md
 
 # Fable xHigh local lane (xhigh is automatic; doctor makes no paid call)
-npx -y @steipete/oracle doctor fable --json
+npx -y @steipete/oracle doctor fable --caam-profile my-profile --json
 npx -y @steipete/oracle --lane fable-local \
   --caam-profile my-profile --caam-base "$HOME/orch-homes" \
   -p "Review this migration plan" --file docs/plan.md
-# Omit both CAAM flags only when the current local `claude` login is intentional.
+# The reviewed lane requires a CAAM profile; ORACLE_CLAUDE_CODE_CAAM_PROFILE is the env alternative.
 
 # Gemini 3.1 Deep Think browser lane
 npx -y @steipete/oracle --engine browser --provider gemini --gemini-deep-think \
   -p "Cross-check the data layer assumptions" --file "src/**/*.ts"
 
-# Sessions (list and replay) — works the same for every lane above
+# Sessions (list and replay) — works for every lane; restart is browser/API-only and fail-closed
 npx -y @steipete/oracle status --hours 72
 npx -y @steipete/oracle session <id> --render
-npx -y @steipete/oracle restart <id>
+npx -y @steipete/oracle restart <id> # API, or typed retryable pre-submit browser failure only
 ```
 
 For reviewed browser lanes, prefer explicit `--engine browser` or the protected Gemini flags instead of relying on API-key auto-pick. On Linux pass `--browser-chrome-path/--browser-cookie-path` if detection fails; on Windows prefer `--browser-manual-login` or inline cookies if decryption is blocked.
@@ -148,7 +148,7 @@ npx -y @steipete/oracle tui
 
 - Reviewed lanes:
   - ChatGPT GPT-5.6 Sol + Pro: `--lane chatgpt-pro`. Oracle selects the exact model and separately verifies the checked `Pro` mode before submitting.
-  - Fable xHigh: run `oracle doctor fable --json`, then use `--lane fable-local` on the local machine only. Add `--caam-profile <name>` (and, if needed, `--caam-base <absolute-path>`) to pin one subscription; explicit selection fails closed. Fable effort is always `xhigh`.
+  - Fable xHigh: run `oracle doctor fable --caam-profile <name> --json`, then use `--lane fable-local --caam-profile <name>` on the local machine only. The profile is required for the reviewed lane (or set `ORACLE_CLAUDE_CODE_CAAM_PROFILE`); selection fails closed. Fable effort is always `xhigh`.
   - Gemini 3.1 Deep Think: `--engine browser --provider gemini --gemini-deep-think`.
 - Compatibility API mode still accepts API keys in your environment, but the old provider/model matrix is not the preferred agent-facing lane surface.
 - Gemini browser compatibility mode uses Chrome cookies instead of an API key—just be logged into `gemini.google.com` in Chrome (no Python/venv required).
@@ -166,7 +166,7 @@ npx -y @steipete/oracle tui
   ```
   - Oracle bundles a prompt plus the right files for a reviewed lane (ChatGPT GPT-5.6 Sol + Pro, Fable xHigh, Gemini 3.1 Deep Think) and returns a second opinion. Use when stuck, debugging, or reviewing.
   - Run `npx -y @steipete/oracle --help` once per session before first use.
-  - Fable: run `oracle doctor fable --json`, then `oracle --lane fable-local --caam-profile my-profile --caam-base "$HOME/orch-homes" -p "..." --file ...`. Replace `my-profile` with the intended CAAM profile. Fable uses fixed xhigh effort, and an explicit profile never falls back to another Claude account.
+  - Fable: run `oracle doctor fable --caam-profile my-profile --json`, then `oracle --lane fable-local --caam-profile my-profile --caam-base "$HOME/orch-homes" -p "..." --file ...`. Replace `my-profile` with the intended CAAM profile. Fable uses fixed xhigh effort, and the reviewed lane never falls back to another Claude account.
   - Submit: always pass the prompt with -p and context with --file. Never a bare positional — a single-word positional is refused with exit 2; quote a real prompt or use -p. Long Pro runs detach and print a session id.
   - Poll: `oracle wait <id> --json` blocks until the session is terminal and prints one oracle_session.v1 envelope (progress on stderr). Bound it with --timeout-seconds N; exit 7 = still running, so poll again. For live progress on long browser runs, set ORACLE_RUN_PROGRESS_JSON=1 to stream run_progress.v1 NDJSON on stderr.
   - Fetch: `oracle session <id> --json` returns the oracle_session.v1 envelope any time (status, exit_code, usage, output_file, final_answer_path).
@@ -212,11 +212,11 @@ npx -y @steipete/oracle oracle-mcp
 ## Highlights
 
 - Bundle once, send through the reviewed ChatGPT GPT-5.6 Sol + Pro, Fable xHigh, or Gemini 3.1 Deep Think lane.
-- ChatGPT/Gemini browser lanes can run locally or through `oracle serve` / the companion router (`<router-repo>`); Fable xHigh stays local-only through `--lane fable-local`.
+- ChatGPT/Gemini browser lanes can run locally or through `oracle serve` / the companion router (`<router-repo>`); Fable xHigh stays local-only through `--lane fable-local --caam-profile <name>`.
 - Claude Code / MCP browser consults can use the `chatgpt-pro-heavy` preset for a compact ChatGPT Pro second-opinion workflow.
 - Render/copy bundles for manual paste into ChatGPT, Claude, or Gemini when automation is blocked.
 - Long browser runs can be reattached via `oracle session <id>` / `oracle status` instead of restarted.
-- Saved ChatGPT browser conversations and OpenAI/Azure compatibility API runs can continue from `--followup <sessionId|responseId>`; for multi-model API parents, add `--followup-model <model>`.
+- Saved ChatGPT browser conversations, same-account Fable/Claude Code sessions, and OpenAI/Azure compatibility API runs can continue from `--followup <sessionId|responseId>`; for multi-model API parents, add `--followup-model <model>`.
 - Compatibility API and multi-model runs remain available, including Azure/OpenRouter-style routing, but they are not the primary reviewed lane surface.
 - Redacted provider checks via `oracle doctor --providers`, `--route`, and `--preflight` before spending compatibility API time.
 - File safety: globs/excludes, size guards, `--files-report`.
@@ -246,10 +246,10 @@ Use the first command to inspect commits this fork carries on top of upstream, a
 
 Everything below follows the same handful of rules:
 
-- **Fail closed, never fake success.** If the fork can't confirm the right model/mode, or can't capture a complete answer, it returns a typed, recoverable error — not a guess dressed up as a result.
+- **Fail closed, never fake success.** If the fork can't confirm the right model/mode, or can't capture a complete answer, it returns a typed, actionable error — not a guess dressed up as a result. Recovery is offered only when account-affine evidence exists.
 - **Verify in the same session, before submitting.** For protected routes, the requested model and the highest visible reasoning control are confirmed in the live tab _before_ the prompt is sent.
 - **Capture the whole answer.** Output capture waits for genuinely long reasoning to finish, then checks the captured text for truncation.
-- **Recover, don't duplicate.** A dropped connection or a client timeout becomes a resumable session (`oracle session <id> --render`), not a lost run or an accidental second submission.
+- **Recover, don't duplicate.** When a worker returns a private account-affine recovery capability, use `oracle session <id> --render` without resubmitting. If transport fails before that capability arrives, inspect the originating ChatGPT account's history; do not replay an indeterminate prompt.
 - **Privacy by default.** Cookies, tokens, emails, raw prompts/outputs, and page DOM are never written to logs or artifacts — only hashes and structural metadata.
 - **Machine-readable everything.** New commands emit a uniform JSON envelope with `blocked_reason` / `next_command` / `fix_command` / `retry_safe`, so an agent or MCP driver can branch on results without scraping prose.
 - **Attest locally, don't overclaim.** Verification and evidence describe what the web UI showed and what was captured on _your_ machine. They are a local confidence check for you; they make no claim about a provider's backend.
@@ -269,10 +269,10 @@ Long reasoning runs are exactly where naive capture goes wrong. The fork adds:
 
 ### 3) Long-run resilience & recovery
 
-- **Reconnect / auto-reattach** — if the browser connection drops mid-run, Oracle decides between waiting, reattaching, backgrounding, or giving up, with bounded backoff. Exhausting retries yields a _recoverable_ session, never a fabricated "no answer."
-- **Detached finalizer** — a background worker re-renders/attaches a long run until a real transcript is captured, rescuing sessions that would otherwise be left in an error/partial state after a client timeout.
+- **Reconnect / auto-reattach** — if the browser connection drops mid-run, Oracle uses bounded account-affine recovery when the worker returned an executable capability. Without one, it preserves the originating-account marker and directs you to that account's history rather than replaying the prompt.
+- **Detached finalizer** — a background worker re-renders/attaches a long run while its browser/account-affine recovery coordinate remains available; it never turns missing recovery authority into a replay.
 - **`oracle-await`** (shipped helper) — polls a session to completion with structured exit codes (ready / still-running / errored / unknown), so wrappers and agents can wait safely instead of re-running.
-- **Remote-run snapshots & heartbeats** — a long run delegated to `oracle serve` survives network drops as a typed, replayable snapshot, with one-JSON-line-per-beat liveness.
+- **Remote-run snapshots & heartbeats** — a long run delegated to `oracle serve` emits typed terminal/route evidence and one-JSON-line-per-beat liveness. Only a worker-issued private recovery capability makes the snapshot executable; otherwise the account history is the fallback.
 
 ### 4) Same-thread follow-ups & detached sessions
 
@@ -348,7 +348,9 @@ Async run control & read surfaces — also in default `--help`; how an agent sub
 | `oracle wait <id> [--timeout-seconds <n>] [--json]`        | Block until the session is terminal; `--timeout-seconds` bounds it (exit 7 = still running) | No                |
 | `oracle cancel <id> [--json]`                              | Abort a wrong/expensive run; idempotent (exit 0 on an already-terminal session)             | No                |
 | `oracle session <id> --json` / `oracle status <id> --json` | One `oracle_session.v1` envelope (status, `exit_code`, usage, output/artifact paths)        | No                |
-| `oracle doctor lanes --json`                               | Reviewed lane policy + fable-local `single_flight_lock` busy probe (check capacity first)   | No                |
+| `oracle doctor lanes --json`                               | Reviewed lane policy + aggregate informational Fable lock probe                             | No                |
+
+For Fable capacity, `oracle doctor fable --caam-profile <name> --json` is authoritative for the selected profile. Runs sharing that profile serialize; distinct CAAM profiles use distinct locks and may run concurrently.
 
 Exit-code taxonomy (the same dictionary `oracle capabilities --json` advertises; `oracle_session.v1` echoes it as `exit_code`):
 
@@ -406,7 +408,7 @@ Successful models write per-model files such as `/tmp/oracle-panel.gpt-5.4.md`; 
 
 ## Follow-up and lineage
 
-Use `--followup` to continue a saved ChatGPT browser conversation or an existing OpenAI/Azure Responses API run with additional context/files:
+Use `--followup` to continue a saved ChatGPT browser conversation, a same-profile Fable/Claude Code session, or an existing OpenAI/Azure Responses API run with additional context/files:
 
 ```bash
 oracle \
@@ -417,6 +419,15 @@ oracle \
 ```
 
 Browser followup reopens the exact saved conversation and inherits its browser profile, configuration, and model. Resume fails closed before submission if Oracle cannot verify the saved thread and prior turns.
+
+Fable followup must use the exact CAAM profile and base that own the parent Claude session:
+
+```bash
+oracle --lane fable-local --caam-profile my-profile --caam-base "$HOME/orch-homes" \
+  --followup <fable-session-id> -p "Re-evaluate with this change" --file src/changed.ts
+```
+
+Reviewed Fable one-shots create a persisted Claude Code transcript under the selected CAAM profile using a builder-owned session UUID; Oracle verifies and stores that exact UUID. Followups use Claude's real resume path with that UUID. Fable sessions created by older Oracle builds with session persistence disabled are intentionally refused because their formerly recorded UUID did not identify a resumable transcript. The historical direct `--engine claude-code --model fable` compatibility one-shot remains non-persistent.
 
 ```bash
 oracle \
@@ -483,10 +494,10 @@ Visible in default `--help` — the flags the 3 reviewed lanes and everyday sess
 | `-p, --prompt <text>`                                                          | Required prompt.                                                                                                                                                                                                                                                  |
 | `-f, --file <paths...>`                                                        | Attach files/dirs (globs + `!` excludes).                                                                                                                                                                                                                         |
 | `-e, --engine <api\|browser\|claude-code>`                                     | Choose the engine. Reviewed lanes use browser for ChatGPT/Gemini and `claude-code` through `--lane fable-local`.                                                                                                                                                  |
-| `--lane fable-local`                                                           | Run the Fable xHigh local lane. It is local-only and refuses remote/browser/API fan-out.                                                                                                                                                                          |
-| `--caam-profile <name>`                                                        | Pin `fable-local` to one CAAM Claude subscription profile. Explicit selection fails closed rather than falling back to direct `claude`.                                                                                                                           |
+| `--lane fable-local`                                                           | Run the Fable xHigh local lane. It is local-only, requires a CAAM profile, and refuses remote/browser/API fan-out.                                                                                                                                                |
+| `--caam-profile <name>`                                                        | Required for `fable-local`: select one CAAM Claude subscription profile. `ORACLE_CLAUDE_CODE_CAAM_PROFILE` is the env alternative; the lane never falls back to direct `claude`.                                                                                  |
 | `--caam-base <absolute-path>`                                                  | Override the CAAM shallow-profile base used consistently by `oracle doctor fable` and the launch; normally `$HOME/orch-homes`.                                                                                                                                    |
-| `--followup <sessionId\|responseId>`                                           | Continue a saved ChatGPT browser conversation or an OpenAI/Azure Responses API run from a stored Oracle session or `resp_...` response id.                                                                                                                        |
+| `--followup <sessionId\|responseId>`                                           | Continue a saved ChatGPT browser, same-profile Fable/Claude Code, or OpenAI/Azure Responses API run.                                                                                                                                                              |
 | `--followup-model <model>`                                                     | For multi-model OpenAI/Azure parent sessions, choose which model response to continue from.                                                                                                                                                                       |
 | `--chatgpt-url <url>`                                                          | Target a ChatGPT workspace/folder or Temporary Chat URL (browser).                                                                                                                                                                                                |
 | `--browser-model-strategy <select\|current\|ignore>`                           | Control ChatGPT model selection in browser mode (current keeps the active model; ignore skips the picker).                                                                                                                                                        |

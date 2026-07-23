@@ -3,6 +3,10 @@ import http from "node:http";
 import { spawnSync } from "node:child_process";
 import { createRemoteServer } from "../../src/remote/server.js";
 import type { BrowserRunResult } from "../../src/browserMode.js";
+import {
+  REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
+  REMOTE_BROWSER_RUN_PATH,
+} from "../../src/remote/types.js";
 
 // P1-3 (duplicate-paid-run guard) — PINNED SERVER ORDERING.
 //
@@ -94,9 +98,10 @@ describe("server: /runs header ordering (duplicate-run guard)", () => {
         {
           host: "127.0.0.1",
           port: server.port,
-          path: "/runs",
+          path: REMOTE_BROWSER_RUN_PATH,
           method: "POST",
           headers: {
+            ...REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
             "Content-Type": "application/json",
             "Content-Length": Buffer.byteLength(body),
             // Ensure the socket closes after the stream ends so server.close()

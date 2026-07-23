@@ -4,6 +4,10 @@ import {
   normalizeChatGptConversationId,
 } from "../browser/conversationIdentity.js";
 import {
+  PROMPT_DOM_IDENTITY_ALGORITHM,
+  PROMPT_RECOVERY_PREVIEW_ALGORITHM,
+} from "../browser/promptDomMatch.js";
+import {
   REMOTE_RUN_RECOVERY_STAGES,
   type RemoteRunRecoveryHint,
   type RemoteRunRecoveryStage,
@@ -11,9 +15,10 @@ import {
 
 const RECOVERY_STAGE_SET: ReadonlySet<string> = new Set(REMOTE_RUN_RECOVERY_STAGES);
 const CHATGPT_RECOVERY_HOSTS: ReadonlySet<string> = new Set(["chatgpt.com", "chat.openai.com"]);
-const CAPABILITY_VERSION = "v1";
-const CAPABILITY_PATTERN = /^v1\.[A-Za-z0-9_-]{43}$/;
+const CAPABILITY_VERSION = "v2";
+const CAPABILITY_PATTERN = /^v2\.[A-Za-z0-9_-]{43}$/;
 const IDENTITY_PATTERN = /^[A-Za-z0-9._-]+$/;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
 export const REMOTE_RECOVERY_CAPABILITY_TTL_MS = 12 * 60 * 60 * 1000;
 
@@ -24,6 +29,8 @@ export interface RemoteRecoveryCapabilityAuthority {
   accountId: string;
   authToken: string;
   promptPreview: string;
+  /** Browser-derived digest of the complete normalized committed user turn. */
+  promptDomSha256: string;
   nowMs?: number;
   ttlMs?: number;
 }
@@ -136,10 +143,11 @@ function capabilityClaims(params: {
   stage: RemoteRunRecoveryStage;
   expiresAt: string;
   promptPreview: string;
+  promptDomSha256: string;
 }): string {
-  // A JSON tuple avoids delimiter ambiguity. The prompt itself is not placed
-  // in the claims string; its exact raw first-160-byte-compatible prefix is
-  // represented by a SHA-256 digest.
+  // A JSON tuple avoids delimiter ambiguity. Prompt text is not placed in the
+  // claims: the bounded normalized ownership preview and complete normalized
+  // rendered user-turn DOM are represented only by their SHA-256 digests.
   return JSON.stringify([
     CAPABILITY_VERSION,
     params.originRunId,
@@ -149,7 +157,10 @@ function capabilityClaims(params: {
     "browser-automation",
     true,
     params.expiresAt,
+    PROMPT_RECOVERY_PREVIEW_ALGORITHM,
     promptPreviewSha256(params.promptPreview),
+    PROMPT_DOM_IDENTITY_ALGORITHM,
+    params.promptDomSha256,
   ]);
 }
 
@@ -174,7 +185,10 @@ export function sanitizeRemoteRunRecoveryHint(value: unknown): RemoteRunRecovery
   const originRunId = value.originRunId;
   const expiresAt = parseExpiry(value.expiresAt);
   const capability = value.capability;
+  const promptPreviewAlgorithm = value.promptPreviewAlgorithm;
   const previewHash = value.promptPreviewSha256;
+  const promptDomIdentityAlgorithm = value.promptDomIdentityAlgorithm;
+  const promptDomSha256 = value.promptDomSha256;
   if (
     !coordinate ||
     !isSafeIdentity(originRunId, 128) ||
@@ -182,8 +196,12 @@ export function sanitizeRemoteRunRecoveryHint(value: unknown): RemoteRunRecovery
     expiresAt.value !== value.expiresAt ||
     typeof capability !== "string" ||
     !CAPABILITY_PATTERN.test(capability) ||
+    promptPreviewAlgorithm !== PROMPT_RECOVERY_PREVIEW_ALGORITHM ||
     typeof previewHash !== "string" ||
-    !/^[a-f0-9]{64}$/.test(previewHash)
+    !SHA256_PATTERN.test(previewHash) ||
+    promptDomIdentityAlgorithm !== PROMPT_DOM_IDENTITY_ALGORITHM ||
+    typeof promptDomSha256 !== "string" ||
+    !SHA256_PATTERN.test(promptDomSha256)
   ) {
     return undefined;
   }
@@ -192,7 +210,10 @@ export function sanitizeRemoteRunRecoveryHint(value: unknown): RemoteRunRecovery
     originRunId,
     expiresAt: expiresAt.value,
     capability,
+    promptPreviewAlgorithm: PROMPT_RECOVERY_PREVIEW_ALGORITHM,
     promptPreviewSha256: previewHash,
+    promptDomIdentityAlgorithm: PROMPT_DOM_IDENTITY_ALGORITHM,
+    promptDomSha256,
   };
 }
 
@@ -206,7 +227,8 @@ export function buildRemoteRunRecoveryHint(
     !isSafeIdentity(authority.originRunId, 128) ||
     !isSafeIdentity(authority.accountId, 64) ||
     !authority.authToken ||
-    !authority.promptPreview.trim()
+    !authority.promptPreview.trim() ||
+    !SHA256_PATTERN.test(authority.promptDomSha256)
   ) {
     return undefined;
   }
@@ -235,21 +257,25 @@ export function buildRemoteRunRecoveryHint(
     stage: coordinate.stage,
     expiresAt,
     promptPreview: authority.promptPreview,
+    promptDomSha256: authority.promptDomSha256,
   };
   return {
     ...coordinate,
     originRunId: authority.originRunId,
     expiresAt,
     capability: computeCapability(authority.authToken, claims),
+    promptPreviewAlgorithm: PROMPT_RECOVERY_PREVIEW_ALGORITHM,
     promptPreviewSha256: promptPreviewSha256(authority.promptPreview),
+    promptDomIdentityAlgorithm: PROMPT_DOM_IDENTITY_ALGORITHM,
+    promptDomSha256: authority.promptDomSha256,
   };
 }
 
 /**
  * Authoritative worker-side verification. The HMAC is bound to the original
- * run, this account, the canonical conversation, expiry, and exact saved
- * prompt prefix. Comparison is constant-time for every syntactically valid
- * capability.
+ * run, this account, the canonical conversation, expiry, exact saved prompt
+ * preview, and complete committed user-turn DOM digest. Comparison is
+ * constant-time for every syntactically valid capability.
  */
 export function verifyRemoteRunRecoveryCapability(
   value: unknown,
@@ -278,6 +304,7 @@ export function verifyRemoteRunRecoveryCapability(
     stage: hint.stage,
     expiresAt: hint.expiresAt,
     promptPreview: options.promptPreview,
+    promptDomSha256: hint.promptDomSha256,
   });
   const actualBytes = Buffer.from(hint.capability);
   const expectedBytes = Buffer.from(expected);

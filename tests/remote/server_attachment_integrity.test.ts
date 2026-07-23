@@ -7,6 +7,11 @@ import { readFile } from "node:fs/promises";
 import { createRemoteServer } from "../../src/remote/server.js";
 import type { BrowserRunResult } from "../../src/browserMode.js";
 import type { RemoteUploadIntegrity } from "../../src/remote/types.js";
+import {
+  REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
+  REMOTE_BROWSER_RUN_PATH,
+} from "../../src/remote/types.js";
+import { formatCaptureBindingVerifiedLog } from "../../src/browser/actions/captureBinding.js";
 
 // Attachment-staging integrity contract:
 // - stored names are collision-proof (NNN-<sha256:12>-<sanitized name>), so
@@ -65,6 +70,7 @@ describe("remote server attachment integrity", () => {
               stagedBasenames.push(basename);
               stagedContents[basename] = await readFile(attachment.path, "utf8");
             }
+            options.log?.(formatCaptureBindingVerifiedLog("message-handle", "abc123"));
             return MINIMAL_RESULT;
           },
         },
@@ -197,6 +203,7 @@ describe("remote server attachment integrity", () => {
             for (const attachment of options.fallbackSubmission?.attachments ?? []) {
               fallbackBasenames.push(path.basename(attachment.path));
             }
+            options.log?.(formatCaptureBindingVerifiedLog("message-handle", "abc123"));
             return MINIMAL_RESULT;
           },
         },
@@ -263,10 +270,11 @@ async function sendRun(port: number, token: string, body: string): Promise<RunRe
       {
         hostname: "127.0.0.1",
         port,
-        path: "/runs",
+        path: REMOTE_BROWSER_RUN_PATH,
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
+          ...REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
           "content-type": "application/json",
           "content-length": Buffer.byteLength(body),
         },

@@ -44,6 +44,8 @@ describe("mistyped core flag (agent-ergonomics Axiom 7a)", () => {
       "hi",
       "--lane",
       "fable-local",
+      "--caam-profile",
+      "intent-test-profile",
     ]);
     const output = `${stdout}\n${stderr}`;
 
@@ -70,6 +72,8 @@ describe("mistyped core flag (agent-ergonomics Axiom 7a)", () => {
       "hi",
       "--lane",
       "fable-local",
+      "--caam-profile",
+      "intent-test-profile",
     ]);
     const output = `${stdout}\n${stderr}`;
 
@@ -145,6 +149,8 @@ describe("bare single-token positional is refused fail-closed (agent-ergonomics 
       "json",
       "--lane",
       "fable-local",
+      "--caam-profile",
+      "intent-test-profile",
     ]);
     const output = `${stdout}\n${stderr}`;
 
@@ -159,6 +165,8 @@ describe("bare single-token positional is refused fail-closed (agent-ergonomics 
       "json",
       "--lane",
       "fable-local",
+      "--caam-profile",
+      "intent-test-profile",
     ]);
     const output = `${stdout}\n${stderr}`;
 

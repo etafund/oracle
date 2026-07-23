@@ -167,7 +167,7 @@ For the most reliable shared setup: run one signed-in Chrome with remote debuggi
 - **Cap file size.** `~/.oracle/config.json` → `maxFileSizeBytes`, or `ORACLE_MAX_FILE_SIZE_BYTES`. Default is 1 MB per file.
 - **Excludes are your friend.** `--file "src/**" --file "!**/*.test.ts" --file "!**/*.snap"` cuts most fixtures.
 - **Compatibility API mode can cost real money.** If your agent uses old API/provider paths autonomously, scope it: pin `--model`, set `--timeout`, and review the session log. Prefer the reviewed lane commands when asking agents to use Oracle.
-- **Check capacity before a local Fable run.** `oracle doctor lanes --json` reports the fable-local `single_flight_lock` busy state (only one local Fable run is allowed at a time). It is a read-only peek — it never acquires or clears the lock. If the lane is busy, wait or pass `--wait-for-lock <duration>` instead of racing a second `claude` spawn.
+- **Check selected-profile capacity before a local Fable run.** `oracle doctor fable --caam-profile <name> --json` reports whether that CAAM profile's single-flight lock is busy. Runs sharing one profile serialize; distinct profiles have distinct locks and may run concurrently. `oracle doctor lanes --json` shows only an aggregate informational lock probe. Neither doctor acquires or clears a lock; if the selected profile is busy, wait or pass `--wait-for-lock <duration>`.
 
 ## Patterns that work
 

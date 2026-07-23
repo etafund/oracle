@@ -5,11 +5,13 @@ import {
 } from "../../src/remote/recovery.js";
 
 describe("remote browser failure recovery evidence", () => {
+  const promptDomSha256 = "d".repeat(64);
   const authority = {
     originRunId: "run-original",
     accountId: "acct1",
     authToken: "account-secret",
     promptPreview: "submitted prompt prefix",
+    promptDomSha256,
     nowMs: Date.parse("2026-07-21T00:00:00.000Z"),
   } as const;
 
@@ -43,8 +45,9 @@ describe("remote browser failure recovery evidence", () => {
         promptSubmitted: true,
       },
     });
-    expect(recovery?.capability).toMatch(/^v1\./);
+    expect(recovery?.capability).toMatch(/^v2\./);
     expect(recovery?.promptPreviewSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(recovery?.promptDomSha256).toBe(promptDomSha256);
     const serialized = JSON.stringify(recovery);
     expect(serialized).not.toContain("chromePid");
     expect(serialized).not.toContain("9222");

@@ -9,9 +9,25 @@ import {
   buildCaptureBindingFailureError,
   formatCaptureBindingVerifiedLog,
 } from "../../src/browser/actions/captureBinding.js";
-import { createRemoteBrowserExecutor, RemoteRunFailedError } from "../../src/remote/client.js";
+import {
+  createRemoteBrowserExecutor,
+  getRemoteBrowserRecoveryFromError,
+  RemoteRunFailedError,
+} from "../../src/remote/client.js";
 import { BrowserAutomationError } from "../../src/oracle/errors.js";
 import type { BrowserRunResult } from "../../src/browserMode.js";
+import {
+  PROMPT_DOM_IDENTITY_ALGORITHM,
+  PROMPT_RECOVERY_PREVIEW_ALGORITHM,
+} from "../../src/browser/promptDomMatch.js";
+import {
+  REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
+  REMOTE_BROWSER_RUN_PATH,
+} from "../../src/remote/types.js";
+import {
+  serveCompatibleRecoveryHealth,
+  setCompatibleRecoveryResponseHeaders,
+} from "./_recoveryProtocolFixture.js";
 
 // Terminal done-event contract:
 // - the server emits exactly one terminal `done` event per accepted run and
@@ -61,6 +77,15 @@ const MINIMAL_RESULT: BrowserRunResult = {
   },
 };
 
+const STRONG_SUCCESS_PROVENANCE = {
+  modelVerified: true,
+  modelRequested: "GPT-5.6 Sol",
+  modelResolved: "GPT-5.6 Sol + Pro",
+  captureBindingVerified: true,
+  captureBindingQuality: "message-handle" as const,
+  challengeClean: true,
+};
+
 const savedFleetDir = process.env.ORACLE_FLEET_DIR;
 const tempDirs: string[] = [];
 
@@ -92,7 +117,7 @@ describe("server: terminal done event", () => {
         {
           runBrowser: async (options) => {
             options.log?.("Submitted prompt via Enter key");
-            options.submittedPromptPreviewCb?.("test");
+            options.submittedPromptPreviewCb?.("test", "d".repeat(64));
             options.log?.(formatCaptureBindingVerifiedLog("message-handle", "abc123"));
             return MINIMAL_RESULT;
           },
@@ -134,11 +159,10 @@ describe("server: terminal done event", () => {
     },
   );
 
-  // Regression (oracle-router-8em): a conversation-only degraded binding pass
-  // must not be reported as full structural verification — the provenance
-  // carries the tier so captureBindingVerified:true is never vacuous.
+  // A degraded conversation-only binding is diagnostic evidence, not answer
+  // ownership. The worker must refuse to publish it as a successful result.
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
-    "degraded conversation-only binding is distinguishable in provenance",
+    "degraded conversation-only binding fails closed instead of publishing an answer",
     async () => {
       await isolatedFleetDir();
       const server = await createRemoteServer(
@@ -160,10 +184,51 @@ describe("server: terminal done event", () => {
           .map((line) => JSON.parse(line) as Record<string, unknown>);
         const done = events[events.length - 1]!;
         expect(done.type).toBe("done");
-        expect(done.ok).toBe(true);
+        expect(done.ok).toBe(false);
+        expect(done.errorClass).toBe("integrity_binding_failed");
+        expect(done.retryable).toBe(false);
+        expect(done.result).toBeUndefined();
         const provenance = done.provenance as Record<string, unknown>;
-        expect(provenance.captureBindingVerified).toBe(true);
-        expect(provenance.captureBindingQuality).toBe("conversation-only");
+        expect(provenance.captureBindingVerified).toBe(false);
+        expect(provenance.captureBindingQuality).toBeNull();
+      } finally {
+        await server.close();
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "a later successful turn cannot inherit an earlier turn's binding marker",
+    async () => {
+      await isolatedFleetDir();
+      const server = await createRemoteServer(
+        { host: "127.0.0.1", port: 0, token: "secret", logger: () => {}, attachOnly: false },
+        {
+          runBrowser: async (options) => {
+            await options.submittedPromptPreviewCb?.("initial prompt", "d".repeat(64));
+            options.log?.(formatCaptureBindingVerifiedLog("message-handle", "initial"));
+            // A follow-up was committed, but its result path omitted the
+            // capture assertion/marker. Returning a result must not inherit
+            // the first turn's proof.
+            await options.submittedPromptPreviewCb?.("follow-up prompt", "e".repeat(64));
+            return MINIMAL_RESULT;
+          },
+        },
+      );
+      try {
+        const done = lastEvent((await rawRun(server.port, "secret")).body);
+        expect(done).toMatchObject({
+          type: "done",
+          ok: false,
+          errorClass: "integrity_binding_failed",
+          retryable: false,
+          provenance: {
+            captureBindingVerified: false,
+            captureBindingQuality: null,
+            challengeClean: true,
+          },
+        });
+        expect(done.result).toBeUndefined();
       } finally {
         await server.close();
       }
@@ -188,7 +253,7 @@ describe("server: terminal done event", () => {
             // Turn 1: submit confirmed and capture binding verified at full
             // structural strength.
             options.log?.("Submitted prompt via Enter key");
-            await options.submittedPromptPreviewCb?.("test");
+            await options.submittedPromptPreviewCb?.("test", "d".repeat(64));
             options.log?.(formatCaptureBindingVerifiedLog("message-handle", "abc123"));
             await options.runtimeHintCb?.({
               tabUrl: "https://chatgpt.com/c/recoverable-123?private=1",
@@ -224,8 +289,11 @@ describe("server: terminal done event", () => {
           stage: "capture-binding",
           originRunId: expect.any(String),
           expiresAt: expect.any(String),
-          capability: expect.stringMatching(/^v1\./),
+          capability: expect.stringMatching(/^v2\./),
+          promptPreviewAlgorithm: PROMPT_RECOVERY_PREVIEW_ALGORITHM,
           promptPreviewSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          promptDomIdentityAlgorithm: PROMPT_DOM_IDENTITY_ALGORITHM,
+          promptDomSha256: "d".repeat(64),
           runtime: {
             tabUrl: "https://chatgpt.com/c/recoverable-123",
             conversationId: "recoverable-123",
@@ -237,6 +305,42 @@ describe("server: terminal done event", () => {
         const provenance = done.provenance as Record<string, unknown>;
         expect(provenance.captureBindingVerified).toBe(false);
         expect(provenance.captureBindingQuality).toBeNull();
+      } finally {
+        await server.close();
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "does not mint recovery when a follow-up preview lacks its own fresh DOM digest",
+    async () => {
+      await isolatedFleetDir();
+      const server = await createRemoteServer(
+        { host: "127.0.0.1", port: 0, token: "secret", logger: () => {}, attachOnly: false },
+        {
+          runBrowser: async (options) => {
+            options.log?.("Submitted prompt via Enter key");
+            await options.submittedPromptPreviewCb?.("initial prompt", "d".repeat(64));
+            // The newest submission replaces the whole ownership pair. Its
+            // missing digest must clear, not inherit, the initial proof.
+            await options.submittedPromptPreviewCb?.("follow-up prompt");
+            await options.runtimeHintCb?.({
+              tabUrl: "https://chatgpt.com/c/stale-digest-follow-up",
+              conversationId: "stale-digest-follow-up",
+              promptSubmitted: true,
+            });
+            throw new BrowserAutomationError("Assistant response timed out.", {
+              stage: "assistant-timeout",
+              retryable: false,
+            });
+          },
+        },
+      );
+      try {
+        const done = lastEvent((await rawRun(server.port, "secret")).body);
+        expect(done.type).toBe("done");
+        expect(done.ok).toBe(false);
+        expect(done.recovery).toBeUndefined();
       } finally {
         await server.close();
       }
@@ -367,30 +471,35 @@ describe("server: terminal done event", () => {
 
 describe("client: terminal done enforcement", () => {
   test.skipIf(!CAN_LISTEN_LOCALHOST)("resolves only on done.ok", async () => {
-    const fake = await startFakeRunServer([
-      { type: "log", message: "working" },
-      {
-        type: "done",
-        ok: true,
-        runId: "run-sol-pro-1",
-        result: MINIMAL_RESULT,
-        provenance: {
-          modelVerified: true,
-          modelRequested: "GPT-5.6 Sol",
-          modelResolved: "GPT-5.6 Sol + Pro",
-          requestedModelLabel: "GPT-5.6 Sol",
-          resolvedModelLabel: "GPT-5.6 Sol",
-          modelLabelVerified: true,
-          requestedMode: "Pro",
-          resolvedModeLabel: "Pro",
-          modeVerified: true,
-          verifiedBeforePromptSubmit: true,
-          captureBindingVerified: true,
-          captureBindingQuality: "message-handle",
-          challengeClean: true,
+    const fake = await startFakeRunServer(
+      [
+        { type: "log", message: "working" },
+        {
+          type: "done",
+          ok: true,
+          runId: "run-sol-pro-1",
+          result: MINIMAL_RESULT,
+          provenance: {
+            modelVerified: true,
+            modelRequested: "GPT-5.6 Sol",
+            modelResolved: "GPT-5.6 Sol + Pro",
+            requestedModelLabel: "GPT-5.6 Sol",
+            resolvedModelLabel: "GPT-5.6 Sol",
+            modelLabelVerified: true,
+            requestedMode: "Pro",
+            resolvedModeLabel: "Pro",
+            modeVerified: true,
+            verifiedBeforePromptSubmit: true,
+            captureBindingVerified: true,
+            captureBindingQuality: "message-handle",
+            challengeClean: true,
+          },
         },
+      ],
+      {
+        headers: { "x-oracle-run-id": "run-sol-pro-1" },
       },
-    ]);
+    );
     try {
       const executor = createRemoteBrowserExecutor({
         host: `127.0.0.1:${fake.port}`,
@@ -412,6 +521,118 @@ describe("client: terminal done enforcement", () => {
       await fake.close();
     }
   });
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "rejects events whose run id is missing or differs from the authenticated response",
+    async () => {
+      for (const [label, runId] of [
+        ["missing", undefined],
+        ["mismatched", "another-run"],
+      ] as const) {
+        const fake = await startFakeRunServer([
+          {
+            type: "done",
+            runId,
+            ok: true,
+            result: MINIMAL_RESULT,
+            provenance: STRONG_SUCCESS_PROVENANCE,
+          },
+        ]);
+        try {
+          const executor = createRemoteBrowserExecutor({
+            host: `127.0.0.1:${fake.port}`,
+            token: "secret",
+          });
+          const failure = await executor({ prompt: "x", config: {} }).then(
+            () => null,
+            (error: unknown) => error,
+          );
+          expect(failure, label).toBeInstanceOf(RemoteRunFailedError);
+          expect((failure as RemoteRunFailedError).message, label).toMatch(
+            /event id did not match.*authenticated response route/i,
+          );
+          expect((failure as RemoteRunFailedError).errorClass, label).toBe("integrity_ui_unknown");
+          expect((failure as RemoteRunFailedError).retryable, label).toBe(false);
+        } finally {
+          await fake.close();
+        }
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)("rejects any data after the terminal done event", async () => {
+    const fake = await startFakeRunServer([
+      {
+        type: "done",
+        ok: true,
+        result: MINIMAL_RESULT,
+        provenance: STRONG_SUCCESS_PROVENANCE,
+      },
+      { type: "log", message: "impossible trailing event" },
+    ]);
+    try {
+      const executor = createRemoteBrowserExecutor({
+        host: `127.0.0.1:${fake.port}`,
+        token: "secret",
+      });
+      const failure = await executor({ prompt: "x", config: {} }).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(failure).toBeInstanceOf(RemoteRunFailedError);
+      expect((failure as RemoteRunFailedError).message).toMatch(/data after.*terminal done/i);
+      expect((failure as RemoteRunFailedError).errorClass).toBe("integrity_ui_unknown");
+      expect((failure as RemoteRunFailedError).retryable).toBe(false);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "rejects done.ok without full capture and challenge provenance",
+    async () => {
+      const cases: Array<[string, Record<string, unknown> | undefined]> = [
+        ["missing provenance", undefined],
+        [
+          "degraded capture binding",
+          { ...STRONG_SUCCESS_PROVENANCE, captureBindingQuality: "conversation-only" },
+        ],
+        [
+          "unverified capture binding",
+          { ...STRONG_SUCCESS_PROVENANCE, captureBindingVerified: false },
+        ],
+        ["unclean challenge state", { ...STRONG_SUCCESS_PROVENANCE, challengeClean: false }],
+      ];
+      for (const [label, provenance] of cases) {
+        const fake = await startFakeRunServer([
+          {
+            type: "done",
+            ok: true,
+            result: MINIMAL_RESULT,
+            ...(provenance ? { provenance } : {}),
+          },
+        ]);
+        try {
+          const executor = createRemoteBrowserExecutor({
+            host: `127.0.0.1:${fake.port}`,
+            token: "secret",
+          });
+          const failure = await executor({ prompt: "x", config: {} }).then(
+            () => null,
+            (error: unknown) => error,
+          );
+          expect(failure, label).toBeInstanceOf(RemoteRunFailedError);
+          expect((failure as RemoteRunFailedError).errorClass, label).toBe("integrity_ui_unknown");
+          expect((failure as RemoteRunFailedError).retryable, label).toBe(false);
+          expect((failure as RemoteRunFailedError).message, label).toMatch(
+            /message-handle.*challenge-clean/i,
+          );
+        } finally {
+          await fake.close();
+        }
+      }
+    },
+  );
 
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
     "EOF without done fails, even when a legacy result event was streamed",
@@ -487,7 +708,13 @@ describe("client: terminal done enforcement", () => {
     "a complete done event without a trailing newline still resolves",
     async () => {
       const fake = await startFakeRunServer([{ type: "log", message: "working" }], {
-        rawTail: JSON.stringify({ type: "done", ok: true, result: MINIMAL_RESULT }),
+        rawTail: JSON.stringify({
+          type: "done",
+          runId: "fixture-run",
+          ok: true,
+          result: MINIMAL_RESULT,
+          provenance: STRONG_SUCCESS_PROVENANCE,
+        }),
       });
       try {
         const executor = createRemoteBrowserExecutor({
@@ -508,6 +735,7 @@ describe("client: terminal done enforcement", () => {
       const fake = await startFakeRunServer([], {
         rawTail: JSON.stringify({
           type: "done",
+          runId: "fixture-run",
           ok: false,
           errorClass: "account_quarantine",
           errorMessage: "quarantined",
@@ -580,9 +808,12 @@ describe("client: terminal done enforcement", () => {
               stage: "assistant-timeout",
               originRunId: "run-recovery-1",
               expiresAt: "2099-01-01T00:00:00.000Z",
-              capability: `v1.${"a".repeat(43)}`,
+              capability: `v2.${"a".repeat(43)}`,
+              promptPreviewAlgorithm: PROMPT_RECOVERY_PREVIEW_ALGORITHM,
               promptPreviewSha256:
                 "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+              promptDomIdentityAlgorithm: PROMPT_DOM_IDENTITY_ALGORITHM,
+              promptDomSha256: "d".repeat(64),
               runtime: {
                 tabUrl: "https://chatgpt.com/c/recoverable-123",
                 conversationId: "recoverable-123",
@@ -630,6 +861,15 @@ describe("client: terminal done enforcement", () => {
             laneId: "acct2-9473",
             terminalDoneOk: false,
             provenance: null,
+          },
+        });
+        expect(getRemoteBrowserRecoveryFromError(failure)).toMatchObject({
+          accountId: "acct2",
+          laneId: "acct2-9473",
+          promptPreview: "x",
+          promptDomSha256: "d".repeat(64),
+          recovery: {
+            promptDomSha256: "d".repeat(64),
           },
         });
         expect(JSON.stringify((failure as BrowserAutomationError).details)).not.toContain("9222");
@@ -703,10 +943,11 @@ async function rawRun(port: number, token: string): Promise<{ statusCode: number
       {
         hostname: "127.0.0.1",
         port,
-        path: "/runs",
+        path: REMOTE_BROWSER_RUN_PATH,
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
+          ...REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
           "content-type": "application/json",
           "content-length": Buffer.byteLength(payload),
         },
@@ -734,15 +975,18 @@ async function startFakeRunServer(
   options: { rawTail?: string; headers?: Record<string, string> } = {},
 ): Promise<{ port: number; close: () => Promise<void> }> {
   const server = http.createServer((req, res) => {
-    if (req.method === "POST" && req.url === "/runs") {
+    if (serveCompatibleRecoveryHealth(req, res)) return;
+    if (req.method === "POST" && req.url === REMOTE_BROWSER_RUN_PATH) {
+      setCompatibleRecoveryResponseHeaders(res);
       req.resume();
       req.on("end", () => {
         res.writeHead(200, {
           "Content-Type": "application/x-ndjson",
           ...options.headers,
         });
+        const responseRunId = options.headers?.["x-oracle-run-id"] ?? "fixture-run";
         for (const event of events) {
-          res.write(`${JSON.stringify(event)}\n`);
+          res.write(`${JSON.stringify({ runId: responseRunId, ...event })}\n`);
         }
         if (options.rawTail) {
           res.write(options.rawTail);

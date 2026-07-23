@@ -25,6 +25,31 @@ type FakeClient = {
 };
 
 describe("resumeBrowserSession", () => {
+  test("strict recovery refuses prefix-only evidence before touching Chrome", async () => {
+    const listTargets = vi.fn(async () => []);
+
+    await expect(
+      resumeBrowserSession(
+        {
+          chromePort: 51559,
+          chromeHost: "127.0.0.1",
+          tabUrl: "https://chatgpt.com/c/strict-recovery",
+          conversationId: "strict-recovery",
+          promptSubmitted: true,
+        },
+        { timeoutMs: 2_000 },
+        vi.fn() as BrowserLogger,
+        {
+          promptPreview: "only a short saved prefix",
+          requirePromptPreviewMatch: true,
+          listTargets,
+        },
+      ),
+    ).rejects.toThrow(/no exact rendered user-turn identity digest/i);
+
+    expect(listTargets).not.toHaveBeenCalled();
+  });
+
   test("selects target and captures markdown via stubs", async () => {
     const runtime = {
       chromePort: 51559,
@@ -106,9 +131,14 @@ describe("resumeBrowserSession", () => {
       }
       if (expression === "1+1") return { result: { value: 2 } };
       if (expression.includes("const needles =")) return { result: { value: true } };
-      if (expression.includes("const matched = []")) {
+      if (expression.includes("const candidates = []")) {
         return {
-          result: { value: { matchedIndex: 0, latestUserIndex: 0, matchCount: 1 } },
+          result: {
+            value: {
+              latestUserIndex: 0,
+              candidates: [{ index: 0, domIdentities: ["saved provisional prompt"] }],
+            },
+          },
         };
       }
       return { result: { value: null } };
@@ -279,9 +309,14 @@ describe("resumeBrowserSession", () => {
       if (expression === "1+1") {
         return { result: { value: 2 } };
       }
-      if (expression.includes("const matched = []")) {
+      if (expression.includes("const candidates = []")) {
         return {
-          result: { value: { matchedIndex: 3, latestUserIndex: 3, matchCount: 1 } },
+          result: {
+            value: {
+              latestUserIndex: 3,
+              candidates: [{ index: 3, domIdentities: ["live reattach pro 123"] }],
+            },
+          },
         };
       }
       return { result: { value: null } };
@@ -637,6 +672,7 @@ describe("isolated fleet recovery target ownership", () => {
         chromePort: 9222,
         profileDir: "/profiles/account-one",
         promptPreview: "saved recovery prompt",
+        promptDomSha256: "a".repeat(64),
         accountId: `isolated-recovery-test-${process.pid}`,
         connectWithNewTabFn: vi.fn(async () => ({
           client,
@@ -993,6 +1029,20 @@ describe("reattach helpers", () => {
     const outcome = executeSidebarExpression(await sidebarExpression(), [
       { href: transient, text: "saved prompt" },
       { href: canonical, text: "saved prompt" },
+    ]);
+
+    expect(outcome.clicked).toEqual([false, true]);
+    expect(outcome.href).toBe(canonical);
+  });
+
+  test("sidebar prompt-only recovery normalizes Markdown and requires a durable href", async () => {
+    const markdownPreview =
+      "# Saved ownership heading\n\n- First   detail\n- `second detail` and more context";
+    const renderedTitle = "Saved ownership heading First detail second detail";
+    const canonical = "https://chatgpt.com/c/canonical-markdown";
+    const outcome = executeSidebarExpression(await sidebarExpression(undefined, markdownPreview), [
+      { href: "/", text: renderedTitle },
+      { href: canonical, text: `${renderedTitle}…` },
     ]);
 
     expect(outcome.clicked).toEqual([false, true]);

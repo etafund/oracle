@@ -6,6 +6,10 @@ import { spawnSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRemoteServer } from "../../src/remote/server.js";
 import type { BrowserRunResult } from "../../src/browserMode.js";
+import {
+  REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
+  REMOTE_BROWSER_RUN_PATH,
+} from "../../src/remote/types.js";
 
 // GET /ready: layered, fail-closed per-worker readiness (probed directly,
 // never through the router LB which masks per-worker truth).
@@ -646,10 +650,11 @@ function startRun(
       {
         hostname: "127.0.0.1",
         port,
-        path: "/runs",
+        path: REMOTE_BROWSER_RUN_PATH,
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
+          ...REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
           "content-type": "application/json",
           "content-length": Buffer.byteLength(body),
         },
@@ -691,10 +696,11 @@ function startStalledRun(port: number, token: string): { abort(): void } {
   const req = http.request({
     hostname: "127.0.0.1",
     port,
-    path: "/runs",
+    path: REMOTE_BROWSER_RUN_PATH,
     method: "POST",
     headers: {
       authorization: `Bearer ${token}`,
+      ...REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
       "content-type": "application/json",
       "content-length": Buffer.byteLength(declared),
     },

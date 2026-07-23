@@ -270,7 +270,7 @@ describe("RobotSurfacePayload — schema-pin regression test (agent-ergonomics S
       expect(cmd.paid_calls).toBe(false);
     }
     const fable = payload.lanes.find((lane) => lane.lane === "fable-local");
-    expect(fable?.doctor_command).toBe("oracle doctor fable --json");
+    expect(fable?.doctor_command).toBe("oracle doctor fable --caam-profile <profile> --json");
     expect(fable?.key_flags).toContain("--caam-profile <profile>");
     expect(fable?.key_flags).toContain("--caam-base <absolute-path>");
     expect(fable?.fixed_reasoning_effort).toBe("xhigh");
@@ -319,7 +319,7 @@ describe("buildRobotDocsGuideText — paste-ready agent handbook", () => {
     expect(lanesIndex).toBeGreaterThan(firstTryIndex);
     expect(text).toContain("oracle capabilities --json");
     expect(text).toContain("oracle doctor lanes --json");
-    expect(text).toContain("oracle doctor fable --json");
+    expect(text).toContain("oracle doctor fable --caam-profile <profile> --json");
     expect(text).toContain("--caam-profile <profile>");
     expect(text).toContain("--caam-base <absolute-path>");
     expect(text).toContain("effort=xhigh (fixed default)");

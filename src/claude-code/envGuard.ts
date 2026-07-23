@@ -171,7 +171,7 @@ function formatEnvGuardMessage(sources: readonly string[]): string {
     return [
       "Claude Code subscription mode refused because ANTHROPIC_API_KEY is set.",
       "Claude Code would use API billing instead of subscription usage.",
-      'Fix: unset ANTHROPIC_API_KEY, then retry: oracle -p "<prompt>" --lane fable-local',
+      'Fix: unset ANTHROPIC_API_KEY, then retry: oracle -p "<prompt>" --lane fable-local --caam-profile <name>',
       "(or choose one of the other reviewed lanes: --lane chatgpt-pro / --lane gemini-deep-think, which never read this variable).",
     ].join("\n");
   }
@@ -179,6 +179,6 @@ function formatEnvGuardMessage(sources: readonly string[]): string {
   const listedSources = sources.join(", ");
   return [
     `Claude Code subscription mode refused because ${listedSources} could route this run through API/provider billing.`,
-    `Fix: unset ${sources.join(" ")}, then retry: oracle -p "<prompt>" --lane fable-local`,
+    `Fix: unset ${sources.join(" ")}, then retry: oracle -p "<prompt>" --lane fable-local --caam-profile <name>`,
   ].join("\n");
 }

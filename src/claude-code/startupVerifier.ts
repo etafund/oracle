@@ -16,6 +16,7 @@ export interface ClaudeCodeVerificationFailure {
 
 export interface ClaudeCodeVerificationMetadata {
   modelRequested: string;
+  sessionIdObserved: string | null;
   modelResolvedFromInit: string | null;
   modelObserved: string | null;
   modelUsageKeys: string[];
@@ -34,6 +35,10 @@ export interface ClaudeCodeVerificationResult {
 
 export interface VerifyClaudeCodeRunOptions {
   requestedModel?: string;
+  /** Exact builder-owned UUID expected in Claude's system/init event. */
+  expectedSessionId?: string;
+  /** Persistence is allowed only for reviewed resumable Fable sessions. */
+  allowSessionPersistence?: boolean;
   allowedSubscriptionApiKeySources?: string[];
   allowedBuiltinAgents?: string[];
 }
@@ -63,6 +68,7 @@ export function verifyClaudeCodeRun(
 
   const metadata: ClaudeCodeVerificationMetadata = {
     modelRequested: requestedModel,
+    sessionIdObserved: startup ? stringField(startup, "session_id") : null,
     modelResolvedFromInit: startup ? stringField(startup, "model") : null,
     modelObserved: null,
     modelUsageKeys: [],
@@ -100,6 +106,25 @@ export function verifyClaudeCodeRun(
     );
   }
 
+  if (options.expectedSessionId) {
+    const observedSessionId = stringField(startup, "session_id");
+    if (!observedSessionId) {
+      failure(
+        failures,
+        "missing_session_id",
+        "session_id",
+        "Startup event omitted the builder-owned Claude session id.",
+      );
+    } else if (observedSessionId !== options.expectedSessionId) {
+      failure(
+        failures,
+        "session_id_mismatch",
+        "session_id",
+        `Startup session id ${observedSessionId} did not match the builder-owned session id.`,
+      );
+    }
+  }
+
   const initModel = stringField(startup, "model");
   if (!initModel) {
     failure(failures, "missing_model", "model", "Startup event omitted model.");
@@ -131,8 +156,10 @@ export function verifyClaudeCodeRun(
   rejectNonEmptyOptionalCollection(startup, "chrome_integration", failures);
   rejectPresentTruthy(startup, "fallback_model", failures);
   rejectPresentTruthy(startup, "fallbackModel", failures);
-  rejectPresentTruthy(startup, "session_persistence", failures);
-  rejectPresentTruthy(startup, "sessionPersistence", failures);
+  if (!options.allowSessionPersistence) {
+    rejectPresentTruthy(startup, "session_persistence", failures);
+    rejectPresentTruthy(startup, "sessionPersistence", failures);
+  }
 
   const agents = arrayField(startup, "agents");
   if (agents) {

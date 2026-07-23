@@ -7,12 +7,12 @@ This walks through the minimum to get a useful answer back. If you haven't insta
 
 ## 1. Pick a reviewed route
 
-| Route                     | When to use it                                      | What you need                                      |
-| ------------------------- | --------------------------------------------------- | -------------------------------------------------- |
-| ChatGPT GPT-5.6 Sol + Pro | Long browser reasoning in your ChatGPT Pro account. | Signed-in Chrome or a configured remote browser.   |
-| Fable xHigh               | Local read-only challenge through Claude Code.      | Logged-in local `claude` CLI; no remote transport. |
-| Gemini 3.1 Deep Think     | Browser Deep Think review through Gemini.           | Signed-in Gemini browser session.                  |
-| Render                    | Air-gapped review, paste manually.                  | Just Oracle.                                       |
+| Route                     | When to use it                                      | What you need                                          |
+| ------------------------- | --------------------------------------------------- | ------------------------------------------------------ |
+| ChatGPT GPT-5.6 Sol + Pro | Long browser reasoning in your ChatGPT Pro account. | Signed-in Chrome or a configured remote browser.       |
+| Fable xHigh               | Local read-only challenge through Claude Code.      | CAAM profile plus local `claude`; no remote transport. |
+| Gemini 3.1 Deep Think     | Browser Deep Think review through Gemini.           | Signed-in Gemini browser session.                      |
+| Render                    | Air-gapped review, paste manually.                  | Just Oracle.                                           |
 
 Check the current policy before a long run. `doctor lanes` reports lane-template readiness; use only lanes it reports enabled.
 
@@ -50,12 +50,14 @@ oracle --lane chatgpt-pro \
 ### Fable xHigh local lane
 
 ```bash
+oracle doctor fable --caam-profile my-profile --json
 oracle --lane fable-local \
+  --caam-profile my-profile \
   -p "Challenge the migration plan for hidden correctness issues" \
   --file docs/plan.md
 ```
 
-Fable is local-only. It does not use the companion router (`<router-repo>`), `oracle serve`, browser flags, API keys, or multi-model fan-out.
+Fable is local-only. The reviewed lane requires `--caam-profile` (or `ORACLE_CLAUDE_CODE_CAAM_PROFILE`) and does not use the companion router (`<router-repo>`), `oracle serve`, browser flags, API keys, or multi-model fan-out.
 
 ### Gemini 3.1 Deep Think
 

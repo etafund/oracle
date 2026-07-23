@@ -13,6 +13,11 @@ import {
 } from "../../src/browser/quarantineLatch.js";
 import type { BrowserRunResult } from "../../src/browserMode.js";
 import { BrowserAutomationError } from "../../src/oracle/errors.js";
+import { formatCaptureBindingVerifiedLog } from "../../src/browser/actions/captureBinding.js";
+import {
+  REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
+  REMOTE_BROWSER_RUN_PATH,
+} from "../../src/remote/types.js";
 
 // Serve-side half of the challenge/login account-safety gates.
 // ACCOUNT-SAFETY HARD-HALT DOCTRINE: while the worker-local quarantine latch
@@ -343,8 +348,9 @@ describe("serve quarantine gates", () => {
           accountId: "acct1",
         },
         {
-          runBrowser: async () => {
+          runBrowser: async (options) => {
             runs.count += 1;
+            options.log?.(formatCaptureBindingVerifiedLog("message-handle", "abc123"));
             return MINIMAL_RESULT;
           },
         },
@@ -945,10 +951,11 @@ async function postRun(port: number, token: string): Promise<RunResponse> {
       {
         hostname: "127.0.0.1",
         port,
-        path: "/runs",
+        path: REMOTE_BROWSER_RUN_PATH,
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
+          ...REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
           "content-type": "application/json",
           "content-length": Buffer.byteLength(body),
         },

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import type { BrowserRunResult } from "../../src/browserMode.js";
 import { loadUserConfig } from "../../src/config.js";
 import { setOracleHomeDirOverrideForTest } from "../../src/oracleHome.js";
@@ -18,10 +18,11 @@ import {
 } from "../../src/remote/sessionRecovery.js";
 import {
   readRemoteBrowserRecoverySecret,
+  remoteBrowserRecoverySecretFilename,
   toPublicRemoteRecoveryMetadata,
   writeRemoteBrowserRecoverySecret,
 } from "../../src/remote/sessionRecoveryStore.js";
-import type { SessionMetadata } from "../../src/sessionManager.js";
+import { getSessionPaths, type SessionMetadata } from "../../src/sessionManager.js";
 import { sessionStore } from "../../src/sessionStore.js";
 
 const PROMPT_PREVIEW = "exact worker-submitted prompt prefix";
@@ -101,6 +102,7 @@ async function createStoredFixture(
       accountId: "acct1",
       authToken: "account-secret",
       promptPreview: PROMPT_PREVIEW,
+      promptDomSha256: "d".repeat(64),
       nowMs: options.expired ? nowMs - 120_000 : nowMs,
       ttlMs: options.expired ? 1 : 120_000,
     },
@@ -117,6 +119,7 @@ async function createStoredFixture(
     accountId: "acct1",
     laneId: "acct1-9473",
     promptPreview: PROMPT_PREVIEW,
+    promptDomSha256: executableRecovery.promptDomSha256,
   };
   const metadata = await sessionStore.updateSession(created.id, {
     browser: {
@@ -190,7 +193,7 @@ describe("stored remote recovery dispatcher", () => {
       log,
       signal: controller.signal,
       request: {
-        schema: "remote-browser-recovery.v1",
+        schema: "remote-browser-recovery.v2",
         recovery: carrier.recovery,
         promptPreview: PROMPT_PREVIEW,
         browserConfig: {
@@ -225,6 +228,35 @@ describe("stored remote recovery dispatcher", () => {
     expect(publicSession).not.toContain(carrier.recovery.capability);
     expect(publicSession).not.toContain(PROMPT_PREVIEW);
     expect(publicSession).not.toContain("promptPreviewSha256");
+    expect(publicSession).not.toContain("promptDomSha256");
+  });
+
+  test("treats a legacy v1 sidecar as manual guidance and never dispatches it", async () => {
+    const { metadata, carrier } = await createStoredFixture();
+    const paths = await getSessionPaths(metadata.id);
+    const sidecarPath = path.join(
+      paths.dir,
+      remoteBrowserRecoverySecretFilename(carrier.recovery.originRunId),
+    );
+    const document = JSON.parse(await readFile(sidecarPath, "utf8")) as Record<string, unknown>;
+    document.schema = "remote-browser-recovery-secret.v1";
+    await writeFile(sidecarPath, `${JSON.stringify(document)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    await chmod(sidecarPath, 0o600);
+
+    const loadConfig = currentConfigLoader();
+    const recover = recoveryMock();
+    await expect(
+      recoverStoredRemoteBrowserSession(metadata, {}, { loadConfig, recover }),
+    ).rejects.toMatchObject({
+      name: "RemoteBrowserRecoveryUnavailableError",
+      message: expect.stringMatching(/legacy v1.*guidance-only.*originating ChatGPT account/i),
+    });
+    expect(loadConfig).not.toHaveBeenCalled();
+    expect(recover).not.toHaveBeenCalled();
+    expect((await sessionStore.readSession(metadata.id))?.browser?.remoteRecovery).toBeUndefined();
   });
 
   test.each([

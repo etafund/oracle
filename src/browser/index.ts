@@ -126,6 +126,7 @@ import {
   resolveManualLoginWaitMs,
 } from "./manualLoginProfile.js";
 import { describeBrowserControlPlan, formatBrowserControlPlan } from "./controlPlan.js";
+import { buildPromptRecoveryOwnershipPreview } from "./promptDomMatch.js";
 import {
   createConversationUrlMonitor,
   type ConversationUrlMonitor,
@@ -139,6 +140,7 @@ import {
 import {
   assertCapturedAssistantResponseBound,
   type CapturedAssistantMeta,
+  type SubmittedUserMessageBinding,
 } from "./actions/captureBinding.js";
 
 export type { BrowserAutomationConfig, BrowserRunOptions, BrowserRunResult } from "./types.js";
@@ -1592,23 +1594,59 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     if (conversationIdentityConflict) throw conversationIdentityConflict;
     return canonicalConversationId;
   };
-  const markPromptSubmitted = async (submittedPrompt?: string): Promise<void> => {
+  const markPromptAttemptStarted = async (attemptedPrompt: string): Promise<void> => {
+    try {
+      // Invalidate the prior turn's digest before ANY failure point in a new
+      // multi-turn attempt. Otherwise a pre-dispatch follow-up failure could
+      // mint recovery for the already-finished previous turn and falsely mark
+      // the requested multi-turn run complete.
+      await options.submittedPromptPreviewCb?.(
+        buildPromptRecoveryOwnershipPreview(attemptedPrompt),
+      );
+    } catch (error) {
+      throw new BrowserAutomationError(
+        "Could not invalidate the prior prompt recovery binding before submission; refusing to dispatch a prompt that could be recovered as the wrong turn.",
+        {
+          stage: "submit-prompt",
+          code: "prompt-ownership-invalidation-failed",
+          retryable: true,
+          runtime: { promptSubmitted: false },
+        },
+        error,
+      );
+    }
+  };
+  const markPromptSubmitted = async (): Promise<void> => {
     const firstSubmission = !promptSubmitted;
     promptSubmitted = true;
-    if (typeof submittedPrompt === "string") {
-      try {
-        await options.submittedPromptPreviewCb?.(submittedPrompt.slice(0, 160));
-      } catch (error) {
-        logger(
-          `Failed to retain submitted prompt recovery prefix: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
     if (!firstSubmission) {
       return;
     }
     await emitRuntimeHint();
     void conversationUrlMonitor?.schedule("post-submit", config.timeoutMs ?? 120_000);
+  };
+  const markPromptBound = async (
+    submittedPrompt: string,
+    binding: SubmittedUserMessageBinding,
+  ): Promise<void> => {
+    if (binding.quality !== "message-handle" || !binding.promptDomSha256) return;
+    try {
+      await options.submittedPromptPreviewCb?.(
+        buildPromptRecoveryOwnershipPreview(submittedPrompt),
+        binding.promptDomSha256,
+      );
+    } catch (error) {
+      throw new BrowserAutomationError(
+        "The prompt was submitted, but Oracle could not persist its DOM ownership proof; refusing to continue with ambiguous recovery state.",
+        {
+          stage: "capture-binding",
+          code: "prompt-ownership-binding-persistence-failed",
+          retryable: false,
+          runtime: { promptSubmitted: true },
+        },
+        error,
+      );
+    }
   };
   // Event-emission only: one-shot run_progress.v1 markers at lifecycle
   // boundaries, gated by the same knob as the heartbeat monitor (the
@@ -2307,6 +2345,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       await handle.release().catch(() => undefined);
     };
     const submitOnce = async (prompt: string, submissionAttachments: BrowserAttachment[]) => {
+      await markPromptAttemptStarted(prompt);
       const baselineSnapshot = await readAssistantSnapshot(Runtime).catch(() => null);
       const baselineAssistantText =
         typeof baselineSnapshot?.text === "string" ? baselineSnapshot.text.trim() : "";
@@ -2417,6 +2456,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         requireBoundSendTarget:
           isDesiredGpt56SolModel(config.desiredModel) || submissionAttachments.length > 0,
         onPromptSubmitted: markPromptSubmitted,
+        onPromptBound: markPromptBound,
         // Authoritative account id (server: options.accountId ?? env) so the
         // browser-side quarantine gates trip under the same identity the
         // serve layer's admission checks use (oracle-router-8t1).
@@ -2437,7 +2477,6 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         log: logger,
         state: providerState,
       });
-      await markPromptSubmitted(prompt);
       emitRunProgressMarker("prompt_committed");
       const providerBaselineTurns = providerState.baselineTurns;
       if (typeof providerBaselineTurns === "number" && Number.isFinite(providerBaselineTurns)) {
@@ -2545,6 +2584,20 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
               targetBaselineCaptured: deepResearchTargetBaselineCaptured,
             },
           ),
+          Runtime,
+          logger,
+          { accountId: options.accountId, sessionId: options.sessionId },
+        ),
+      );
+      // Deep Research can return its report from a scoped OOPIF rather than
+      // the ordinary assistant snapshot path. Bind that report to this run's
+      // exact submitted user-message handle before it can become a result (an
+      // OOPIF read without message ids still proves the latest bound user turn
+      // has an assistant response after it, while target scoping proves which
+      // report iframe was read).
+      await raceWithDisconnect(
+        preserveChallengeOverPageFailure(
+          assertCapturedAssistantResponseBound(Runtime, researchResult.meta, logger),
           Runtime,
           logger,
           { accountId: options.accountId, sessionId: options.sessionId },
@@ -3970,23 +4023,59 @@ async function runRemoteBrowserMode(
     if (conversationIdentityConflict) throw conversationIdentityConflict;
     return canonicalConversationId;
   };
-  const markPromptSubmitted = async (submittedPrompt?: string): Promise<void> => {
+  const markPromptAttemptStarted = async (attemptedPrompt: string): Promise<void> => {
+    try {
+      // Invalidate the prior turn's digest before ANY failure point in a new
+      // multi-turn attempt. Otherwise a pre-dispatch follow-up failure could
+      // mint recovery for the already-finished previous turn and falsely mark
+      // the requested multi-turn run complete.
+      await options.submittedPromptPreviewCb?.(
+        buildPromptRecoveryOwnershipPreview(attemptedPrompt),
+      );
+    } catch (error) {
+      throw new BrowserAutomationError(
+        "Could not invalidate the prior prompt recovery binding before submission; refusing to dispatch a prompt that could be recovered as the wrong turn.",
+        {
+          stage: "submit-prompt",
+          code: "prompt-ownership-invalidation-failed",
+          retryable: true,
+          runtime: { promptSubmitted: false },
+        },
+        error,
+      );
+    }
+  };
+  const markPromptSubmitted = async (): Promise<void> => {
     const firstSubmission = !promptSubmitted;
     promptSubmitted = true;
-    if (typeof submittedPrompt === "string") {
-      try {
-        await options.submittedPromptPreviewCb?.(submittedPrompt.slice(0, 160));
-      } catch (error) {
-        logger(
-          `Failed to retain submitted prompt recovery prefix: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
     if (!firstSubmission) {
       return;
     }
     await emitRuntimeHint();
     void conversationUrlMonitor?.schedule("post-submit", config.timeoutMs ?? 120_000);
+  };
+  const markPromptBound = async (
+    submittedPrompt: string,
+    binding: SubmittedUserMessageBinding,
+  ): Promise<void> => {
+    if (binding.quality !== "message-handle" || !binding.promptDomSha256) return;
+    try {
+      await options.submittedPromptPreviewCb?.(
+        buildPromptRecoveryOwnershipPreview(submittedPrompt),
+        binding.promptDomSha256,
+      );
+    } catch (error) {
+      throw new BrowserAutomationError(
+        "The prompt was submitted, but Oracle could not persist its DOM ownership proof; refusing to continue with ambiguous recovery state.",
+        {
+          stage: "capture-binding",
+          code: "prompt-ownership-binding-persistence-failed",
+          retryable: false,
+          runtime: { promptSubmitted: true },
+        },
+        error,
+      );
+    }
   };
   // Event-emission only: one-shot run_progress.v1 markers at lifecycle
   // boundaries, gated by the same knob as the heartbeat monitor (the
@@ -4343,6 +4432,7 @@ async function runRemoteBrowserMode(
       }
     };
     const submitOnce = async (prompt: string, submissionAttachments: BrowserAttachment[]) => {
+      await markPromptAttemptStarted(prompt);
       const baselineSnapshot = await readAssistantSnapshot(Runtime).catch(() => null);
       const baselineAssistantText =
         typeof baselineSnapshot?.text === "string" ? baselineSnapshot.text.trim() : "";
@@ -4440,6 +4530,7 @@ async function runRemoteBrowserMode(
         requireBoundSendTarget:
           isDesiredGpt56SolModel(config.desiredModel) || submissionAttachments.length > 0,
         onPromptSubmitted: markPromptSubmitted,
+        onPromptBound: markPromptBound,
         // Authoritative account id (server: options.accountId ?? env) so the
         // browser-side quarantine gates trip under the same identity the
         // serve layer's admission checks use (oracle-router-8t1).
@@ -4460,7 +4551,6 @@ async function runRemoteBrowserMode(
         log: logger,
         state: providerState,
       });
-      await markPromptSubmitted(prompt);
       emitRunProgressMarker("prompt_committed");
       const providerBaselineTurns = providerState.baselineTurns;
       if (typeof providerBaselineTurns === "number" && Number.isFinite(providerBaselineTurns)) {
@@ -4538,6 +4628,18 @@ async function runRemoteBrowserMode(
               targetBaselineCaptured: deepResearchTargetBaselineCaptured,
             },
           ),
+          Runtime,
+          logger,
+          { accountId: options.accountId, sessionId: options.sessionId },
+        ),
+      );
+      // The remote-Chrome Deep Research path has the same OOPIF ownership
+      // requirement as local Chrome: no report is returnable until the exact
+      // submitted user-message handle is structurally tied to its assistant
+      // response sequence.
+      await raceWithAbort(
+        preserveChallengeOverPageFailure(
+          assertCapturedAssistantResponseBound(Runtime, researchResult.meta, logger),
           Runtime,
           logger,
           { accountId: options.accountId, sessionId: options.sessionId },

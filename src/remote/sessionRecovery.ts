@@ -15,6 +15,7 @@ import {
   InvalidStoredRemoteRecoverySecretError,
   readRemoteBrowserRecoverySecret,
 } from "./sessionRecoveryStore.js";
+import { REMOTE_BROWSER_RECOVERY_PROTOCOL } from "./types.js";
 
 export interface RecoverStoredRemoteBrowserSessionOptions {
   log?: (message?: string) => void;
@@ -280,6 +281,12 @@ export async function recoverStoredRemoteBrowserSession(
         coordinate.originRunId,
         options.completionClaim,
       );
+      if (error.kind === "legacy_protocol") {
+        throw new RemoteBrowserRecoveryUnavailableError(
+          `This session has a legacy v1 remote browser recovery sidecar. It is guidance-only and will never be executed. ${MANUAL_HISTORY_GUIDANCE}`,
+          { cause: error },
+        );
+      }
       throw new RemoteBrowserRecoveryUnavailableError(
         `The private remote browser recovery capability failed its owner-only file checks. ${MANUAL_HISTORY_GUIDANCE}`,
         { cause: error },
@@ -330,7 +337,7 @@ export async function recoverStoredRemoteBrowserSession(
     token: remote.token,
     accountId: secret.accountId,
     request: {
-      schema: "remote-browser-recovery.v1",
+      schema: REMOTE_BROWSER_RECOVERY_PROTOCOL,
       recovery: secret.recovery,
       promptPreview: secret.promptPreview,
       browserConfig: {

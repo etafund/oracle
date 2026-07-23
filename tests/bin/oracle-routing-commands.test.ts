@@ -35,8 +35,10 @@ describe("bin/oracle-cli preview and visibility routing", () => {
     expect(output).toContain(
       `oracle --lane fable-local --caam-profile my-profile --caam-base "$HOME/orch-homes" --prompt "Review this migration plan" --file docs/plan.md`,
     );
-    expect(output).toContain("oracle doctor fable --json");
+    expect(output).toContain("oracle doctor fable --caam-profile <profile> --json");
     expect(output).toContain("Fable runs at fixed xhigh effort");
+    expect(output).toContain("--lane fable-local route requires a Claude subscription");
+    expect(output).toContain("ORACLE_CLAUDE_CODE_CAAM_PROFILE");
     expect(output).toContain("Explicit profile selection fails closed");
     expect(output).toContain(
       `oracle --lane gemini-deep-think --prompt "Review this migration plan" --file docs/plan.md`,
@@ -121,7 +123,7 @@ describe("bin/oracle-cli preview and visibility routing", () => {
     expect(output).toContain("error: option '--lane <lane>' argument 'fable-locl' is invalid");
     expect(output).toContain("Allowed choices are chatgpt-pro, fable-local, gemini-deep-think");
     expect(output).toContain("Did you mean --lane fable-local?");
-    expect(output).toContain('Try: oracle -p "<prompt>" --lane fable-local');
+    expect(output).toContain('Try: oracle -p "<prompt>" --lane fable-local --caam-profile <name>');
   });
 
   test("--lane with no plausible match falls back to the generic choices message (no false 'did you mean')", async () => {
@@ -183,6 +185,45 @@ describe("bin/oracle-cli preview and visibility routing", () => {
     expect(`${result.stdout}\n${result.stderr}`).toMatch(/profile cannot be empty/i);
   });
 
+  test("--lane fable-local refuses an unpinned account before dry-run or spawn", async () => {
+    const result = await runOracleFailure(
+      ["--lane", "fable-local", "--prompt", "Review", "--dry-run", "json", "--json"],
+      { ORACLE_CLAUDE_CODE_CAAM_PROFILE: "" },
+    );
+    const output = `${result.stdout}\n${result.stderr}`;
+    const envelope = parseJsonEnvelope(result.stdout);
+
+    expect(result.code).not.toBe(0);
+    expect(output).toContain("--lane fable-local requires a CAAM subscription profile");
+    expect(output).toContain("--caam-profile <name>");
+    expect(output).toContain("ORACLE_CLAUDE_CODE_CAAM_PROFILE=<name>");
+    expect(output).toContain("oracle doctor fable --caam-profile <name> --json");
+    expect(output).not.toContain("CAAM account plan: disabled");
+    expect(envelope).toMatchObject({
+      ok: false,
+      blocked_reason: "input_invalid",
+      next_command: "oracle doctor fable --caam-profile <name> --json",
+      fix_command: 'oracle --lane fable-local --caam-profile <name> -p "<prompt>"',
+      retry_safe: false,
+      error: {
+        code: "input_invalid",
+        details: { blockedReason: "caam_profile_required" },
+      },
+    });
+  });
+
+  test("compatibility --engine claude-code keeps the historical unpinned dry-run", async () => {
+    const { stdout, stderr } = await runOracle(
+      ["--engine", "claude-code", "--model", "fable", "--prompt", "Review", "--dry-run", "summary"],
+      { ORACLE_CLAUDE_CODE_CAAM_PROFILE: "" },
+    );
+    const output = `${stdout}\n${stderr}`;
+
+    expect(output).toContain("CAAM account plan: disabled");
+    expect(output).toContain("direct Claude account resolution applies");
+    expect(output).not.toContain("requires a CAAM subscription profile");
+  });
+
   test("--caam-base without a profile is rejected instead of silently using direct Claude", async () => {
     const result = await runOracleFailure([
       "--lane",
@@ -197,6 +238,36 @@ describe("bin/oracle-cli preview and visibility routing", () => {
 
     expect(result.code).not.toBe(0);
     expect(`${result.stdout}\n${result.stderr}`).toContain("--caam-base requires a CAAM profile");
+  });
+
+  test("legacy direct-Claude compatibility teaches that --caam-base can be omitted", async () => {
+    const result = await runOracleFailure(
+      [
+        "--engine",
+        "claude-code",
+        "--model",
+        "fable",
+        "--caam-base",
+        "/home/ubuntu/orch-homes",
+        "--prompt",
+        "Review",
+        "--dry-run",
+        "json",
+        "--json",
+      ],
+      { ORACLE_CLAUDE_CODE_CAAM_PROFILE: "" },
+    );
+    const output = `${result.stdout}\n${result.stderr}`;
+    const envelope = parseJsonEnvelope(result.stdout);
+
+    expect(output).toContain("omit --caam-base");
+    expect(output).toContain("legacy direct-Claude compatibility route");
+    expect(envelope).toMatchObject({
+      ok: false,
+      blocked_reason: "input_invalid",
+      fix_command: 'oracle --engine claude-code --model fable -p "<prompt>"',
+      error: { details: { blockedReason: "caam_base_requires_profile" } },
+    });
   });
 
   test.each([
@@ -290,13 +361,17 @@ function extractCommandsSection(output: string): string {
   return match ? match[1] : "";
 }
 
-async function runOracle(args: string[]): Promise<{ stdout: string; stderr: string }> {
+async function runOracle(
+  args: string[],
+  extraEnv: NodeJS.ProcessEnv = {},
+): Promise<{ stdout: string; stderr: string }> {
   return execFileAsync(process.execPath, ["--import", "tsx", CLI_ENTRYPOINT, ...args], {
     env: {
       ...process.env,
       FORCE_COLOR: "0",
       NO_COLOR: "1",
       ORACLE_DISABLE_KEYTAR: "1",
+      ...extraEnv,
     },
     timeout: 30_000,
   });
@@ -310,9 +385,10 @@ interface ExecFailure extends Error {
 
 async function runOracleFailure(
   args: string[],
+  extraEnv: NodeJS.ProcessEnv = {},
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   try {
-    const { stdout, stderr } = await runOracle(args);
+    const { stdout, stderr } = await runOracle(args, extraEnv);
     return { code: 0, stdout, stderr };
   } catch (error) {
     const failure = error as ExecFailure;

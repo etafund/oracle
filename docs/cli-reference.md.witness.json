@@ -1,0 +1,422 @@
+{
+  "schema_version": "2.0",
+  "artifact": "docs/cli-reference.md",
+  "mode": "audit",
+  "rows": [
+    { "unit": "U1", "disposition": "KEPT", "note": "" },
+    { "unit": "U2", "disposition": "KEPT", "note": "" },
+    { "unit": "U3", "disposition": "KEPT", "note": "" },
+    {
+      "unit": "U4",
+      "disposition": "KEPT",
+      "new_start": 10,
+      "new_end": 10,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    {
+      "unit": "U5",
+      "disposition": "DROPPED",
+      "note": "Approved intentional supersession; see docs/cli-reference.md.drops.jsonl (agent:/root#baseline-lossless-approval-2026-07-23)."
+    },
+    {
+      "unit": "U6",
+      "disposition": "KEPT",
+      "new_start": 12,
+      "new_end": 12,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    {
+      "unit": "U7",
+      "disposition": "KEPT",
+      "new_start": 13,
+      "new_end": 13,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    {
+      "unit": "U8",
+      "disposition": "KEPT",
+      "new_start": 14,
+      "new_end": 14,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    {
+      "unit": "U9",
+      "disposition": "KEPT",
+      "new_start": 15,
+      "new_end": 15,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    {
+      "unit": "U10",
+      "disposition": "KEPT",
+      "new_start": 16,
+      "new_end": 16,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    {
+      "unit": "U11",
+      "disposition": "KEPT",
+      "new_start": 17,
+      "new_end": 17,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    {
+      "unit": "U12",
+      "disposition": "DROPPED",
+      "note": "Approved intentional supersession; see docs/cli-reference.md.drops.jsonl (agent:/root#baseline-lossless-approval-2026-07-23)."
+    },
+    {
+      "unit": "U13",
+      "disposition": "KEPT",
+      "new_start": 19,
+      "new_end": 19,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    {
+      "unit": "U14",
+      "disposition": "KEPT",
+      "new_start": 20,
+      "new_end": 20,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    {
+      "unit": "U15",
+      "disposition": "DROPPED",
+      "note": "Approved intentional supersession; see docs/cli-reference.md.drops.jsonl (agent:/root#baseline-lossless-approval-2026-07-23)."
+    },
+    {
+      "unit": "U16",
+      "disposition": "KEPT",
+      "new_start": 22,
+      "new_end": 22,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    {
+      "unit": "U17",
+      "disposition": "KEPT",
+      "new_start": 23,
+      "new_end": 23,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    {
+      "unit": "U18",
+      "disposition": "KEPT",
+      "new_start": 24,
+      "new_end": 24,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    {
+      "unit": "U19",
+      "disposition": "KEPT",
+      "new_start": 25,
+      "new_end": 25,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    {
+      "unit": "U20",
+      "disposition": "KEPT",
+      "new_start": 26,
+      "new_end": 26,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    {
+      "unit": "U21",
+      "disposition": "KEPT",
+      "new_start": 27,
+      "new_end": 27,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    {
+      "unit": "U22",
+      "disposition": "KEPT",
+      "new_start": 28,
+      "new_end": 28,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    {
+      "unit": "U23",
+      "disposition": "KEPT",
+      "new_start": 29,
+      "new_end": 29,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    { "unit": "U24", "disposition": "KEPT", "note": "" },
+    { "unit": "U25", "disposition": "KEPT", "note": "" },
+    { "unit": "U26", "disposition": "KEPT", "note": "" },
+    { "unit": "U27", "disposition": "KEPT", "note": "" },
+    { "unit": "U28", "disposition": "KEPT", "note": "" },
+    {
+      "unit": "U29",
+      "disposition": "DROPPED",
+      "note": "Approved intentional supersession; see docs/cli-reference.md.drops.jsonl (agent:/root#baseline-lossless-approval-2026-07-23)."
+    },
+    { "unit": "U30", "disposition": "KEPT", "note": "" },
+    { "unit": "U31", "disposition": "KEPT", "note": "" },
+    {
+      "unit": "U32",
+      "disposition": "KEPT",
+      "new_start": 43,
+      "new_end": 43,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    {
+      "unit": "U33",
+      "disposition": "REWORDED",
+      "new_start": 44,
+      "new_end": 44,
+      "note": "Meaning preserved in the reviewed replacement at NEW:44-44."
+    },
+    {
+      "unit": "U34",
+      "disposition": "KEPT",
+      "new_start": 45,
+      "new_end": 45,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    {
+      "unit": "U35",
+      "disposition": "KEPT",
+      "new_start": 46,
+      "new_end": 46,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    {
+      "unit": "U36",
+      "disposition": "DROPPED",
+      "note": "Approved intentional supersession; see docs/cli-reference.md.drops.jsonl (agent:/root#baseline-lossless-approval-2026-07-23)."
+    },
+    {
+      "unit": "U37",
+      "disposition": "KEPT",
+      "new_start": 48,
+      "new_end": 48,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    {
+      "unit": "U38",
+      "disposition": "KEPT",
+      "new_start": 49,
+      "new_end": 49,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    {
+      "unit": "U39",
+      "disposition": "DROPPED",
+      "note": "Approved intentional supersession; see docs/cli-reference.md.drops.jsonl (agent:/root#baseline-lossless-approval-2026-07-23)."
+    },
+    {
+      "unit": "U40",
+      "disposition": "KEPT",
+      "new_start": 51,
+      "new_end": 51,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    {
+      "unit": "U41",
+      "disposition": "KEPT",
+      "new_start": 52,
+      "new_end": 52,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    {
+      "unit": "U42",
+      "disposition": "KEPT",
+      "new_start": 53,
+      "new_end": 53,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    {
+      "unit": "U43",
+      "disposition": "KEPT",
+      "new_start": 54,
+      "new_end": 54,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    {
+      "unit": "U44",
+      "disposition": "KEPT",
+      "new_start": 55,
+      "new_end": 55,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    {
+      "unit": "U45",
+      "disposition": "KEPT",
+      "new_start": 56,
+      "new_end": 56,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    {
+      "unit": "U46",
+      "disposition": "KEPT",
+      "new_start": 57,
+      "new_end": 57,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    { "unit": "U47", "disposition": "KEPT", "note": "" },
+    { "unit": "U48", "disposition": "KEPT", "note": "" },
+    {
+      "unit": "U49",
+      "disposition": "REWORDED",
+      "new_start": 63,
+      "new_end": 63,
+      "note": "Meaning preserved in the reviewed replacement at NEW:63-63."
+    },
+    {
+      "unit": "U50",
+      "disposition": "DROPPED",
+      "note": "Approved intentional supersession; see docs/cli-reference.md.drops.jsonl (agent:/root#baseline-lossless-approval-2026-07-23)."
+    },
+    {
+      "unit": "U51",
+      "disposition": "DROPPED",
+      "note": "Approved intentional supersession; see docs/cli-reference.md.drops.jsonl (agent:/root#baseline-lossless-approval-2026-07-23)."
+    },
+    { "unit": "U52", "disposition": "KEPT", "note": "" },
+    {
+      "unit": "U53",
+      "disposition": "DROPPED",
+      "note": "Approved intentional supersession; see docs/cli-reference.md.drops.jsonl (agent:/root#baseline-lossless-approval-2026-07-23)."
+    },
+    { "unit": "U54", "disposition": "KEPT", "note": "" },
+    {
+      "unit": "U55",
+      "disposition": "DROPPED",
+      "note": "Approved intentional supersession; see docs/cli-reference.md.drops.jsonl (agent:/root#baseline-lossless-approval-2026-07-23)."
+    },
+    {
+      "unit": "U56",
+      "disposition": "DROPPED",
+      "note": "Approved intentional supersession; see docs/cli-reference.md.drops.jsonl (agent:/root#baseline-lossless-approval-2026-07-23)."
+    },
+    { "unit": "U57", "disposition": "KEPT", "note": "" },
+    { "unit": "U58", "disposition": "KEPT", "note": "" },
+    {
+      "unit": "U59",
+      "disposition": "KEPT",
+      "new_start": 90,
+      "new_end": 90,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    {
+      "unit": "U60",
+      "disposition": "REWORDED",
+      "new_start": 91,
+      "new_end": 91,
+      "note": "Meaning preserved in the reviewed replacement at NEW:91-91."
+    },
+    {
+      "unit": "U61",
+      "disposition": "REWORDED",
+      "new_start": 92,
+      "new_end": 92,
+      "note": "Meaning preserved in the reviewed replacement at NEW:92-92."
+    },
+    {
+      "unit": "U62",
+      "disposition": "KEPT",
+      "new_start": 93,
+      "new_end": 93,
+      "note": "Reviewed KEPT_REWRAPPED; word stream and meaning are preserved."
+    },
+    { "unit": "U63", "disposition": "KEPT", "note": "" },
+    { "unit": "U64", "disposition": "KEPT", "note": "" },
+    { "unit": "U65", "disposition": "KEPT", "note": "" },
+    { "unit": "U66", "disposition": "KEPT", "note": "" },
+    { "unit": "U67", "disposition": "KEPT", "note": "" },
+    { "unit": "U68", "disposition": "KEPT", "note": "" },
+    { "unit": "U69", "disposition": "KEPT", "note": "" },
+    { "unit": "U70", "disposition": "KEPT", "note": "" },
+    { "unit": "U71", "disposition": "KEPT", "note": "" },
+    { "unit": "U72", "disposition": "KEPT", "note": "" },
+    { "unit": "U73", "disposition": "KEPT", "note": "" },
+    { "unit": "U74", "disposition": "KEPT", "note": "" },
+    { "unit": "U75", "disposition": "KEPT", "note": "" },
+    { "unit": "U76", "disposition": "KEPT", "note": "" },
+    { "unit": "U77", "disposition": "KEPT", "note": "" },
+    { "unit": "U78", "disposition": "KEPT", "note": "" },
+    { "unit": "U79", "disposition": "KEPT", "note": "" },
+    { "unit": "U80", "disposition": "KEPT", "note": "" },
+    { "unit": "U81", "disposition": "KEPT", "note": "" },
+    { "unit": "U82", "disposition": "KEPT", "note": "" },
+    { "unit": "U83", "disposition": "KEPT", "note": "" },
+    { "unit": "U84", "disposition": "KEPT", "note": "" },
+    { "unit": "U85", "disposition": "KEPT", "note": "" },
+    { "unit": "U86", "disposition": "KEPT", "note": "" },
+    { "unit": "U87", "disposition": "KEPT", "note": "" },
+    { "unit": "U88", "disposition": "KEPT", "note": "" },
+    { "unit": "U89", "disposition": "KEPT", "note": "" },
+    { "unit": "U90", "disposition": "KEPT", "note": "" },
+    { "unit": "U91", "disposition": "KEPT", "note": "" },
+    { "unit": "U92", "disposition": "KEPT", "note": "" },
+    { "unit": "U93", "disposition": "KEPT", "note": "" },
+    { "unit": "U94", "disposition": "KEPT", "note": "" },
+    { "unit": "U95", "disposition": "KEPT", "note": "" },
+    { "unit": "U96", "disposition": "KEPT", "note": "" },
+    { "unit": "U97", "disposition": "KEPT", "note": "" },
+    { "unit": "U98", "disposition": "KEPT", "note": "" },
+    { "unit": "U99", "disposition": "KEPT", "note": "" },
+    { "unit": "U100", "disposition": "KEPT", "note": "" },
+    { "unit": "U101", "disposition": "KEPT", "note": "" },
+    { "unit": "U102", "disposition": "KEPT", "note": "" },
+    { "unit": "U103", "disposition": "KEPT", "note": "" },
+    { "unit": "U104", "disposition": "KEPT", "note": "" },
+    { "unit": "U105", "disposition": "KEPT", "note": "" },
+    { "unit": "U106", "disposition": "KEPT", "note": "" },
+    { "unit": "U107", "disposition": "KEPT", "note": "" },
+    { "unit": "U108", "disposition": "KEPT", "note": "" },
+    { "unit": "U109", "disposition": "KEPT", "note": "" },
+    { "unit": "U110", "disposition": "KEPT", "note": "" },
+    { "unit": "U111", "disposition": "KEPT", "note": "" },
+    { "unit": "U112", "disposition": "KEPT", "note": "" },
+    { "unit": "U113", "disposition": "KEPT", "note": "" },
+    { "unit": "U114", "disposition": "KEPT", "note": "" },
+    { "unit": "U115", "disposition": "KEPT", "note": "" },
+    { "unit": "U116", "disposition": "KEPT", "note": "" },
+    { "unit": "U117", "disposition": "KEPT", "note": "" },
+    { "unit": "U118", "disposition": "KEPT", "note": "" },
+    { "unit": "U119", "disposition": "KEPT", "note": "" },
+    { "unit": "U120", "disposition": "KEPT", "note": "" },
+    { "unit": "U121", "disposition": "KEPT", "note": "" },
+    { "unit": "U122", "disposition": "KEPT", "note": "" },
+    { "unit": "U123", "disposition": "KEPT", "note": "" },
+    { "unit": "U124", "disposition": "KEPT", "note": "" },
+    { "unit": "U125", "disposition": "KEPT", "note": "" },
+    { "unit": "U126", "disposition": "KEPT", "note": "" },
+    { "unit": "U127", "disposition": "KEPT", "note": "" },
+    { "unit": "U128", "disposition": "KEPT", "note": "" },
+    { "unit": "U129", "disposition": "KEPT", "note": "" },
+    { "unit": "U130", "disposition": "KEPT", "note": "" },
+    { "unit": "U131", "disposition": "KEPT", "note": "" },
+    { "unit": "U132", "disposition": "KEPT", "note": "" },
+    { "unit": "U133", "disposition": "KEPT", "note": "" },
+    { "unit": "U134", "disposition": "KEPT", "note": "" },
+    { "unit": "U135", "disposition": "KEPT", "note": "" },
+    { "unit": "U136", "disposition": "KEPT", "note": "" },
+    { "unit": "U137", "disposition": "KEPT", "note": "" },
+    { "unit": "U138", "disposition": "KEPT", "note": "" },
+    { "unit": "U139", "disposition": "KEPT", "note": "" },
+    { "unit": "U140", "disposition": "KEPT", "note": "" },
+    { "unit": "U141", "disposition": "KEPT", "note": "" },
+    { "unit": "U142", "disposition": "KEPT", "note": "" },
+    { "unit": "U143", "disposition": "KEPT", "note": "" },
+    { "unit": "U144", "disposition": "KEPT", "note": "" },
+    { "unit": "U145", "disposition": "KEPT", "note": "" },
+    { "unit": "U146", "disposition": "KEPT", "note": "" },
+    { "unit": "U147", "disposition": "KEPT", "note": "" },
+    { "unit": "U148", "disposition": "KEPT", "note": "" },
+    { "unit": "U149", "disposition": "KEPT", "note": "" },
+    { "unit": "U150", "disposition": "KEPT", "note": "" },
+    { "unit": "U151", "disposition": "KEPT", "note": "" },
+    { "unit": "U152", "disposition": "KEPT", "note": "" },
+    { "unit": "U153", "disposition": "KEPT", "note": "" },
+    { "unit": "U154", "disposition": "KEPT", "note": "" },
+    { "unit": "U155", "disposition": "KEPT", "note": "" },
+    { "unit": "U156", "disposition": "KEPT", "note": "" },
+    { "unit": "U157", "disposition": "KEPT", "note": "" },
+    { "unit": "U158", "disposition": "KEPT", "note": "" },
+    { "unit": "U159", "disposition": "KEPT", "note": "" },
+    { "unit": "U160", "disposition": "KEPT", "note": "" },
+    { "unit": "U161", "disposition": "KEPT", "note": "" }
+  ]
+}

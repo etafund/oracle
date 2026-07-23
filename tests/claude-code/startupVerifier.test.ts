@@ -55,6 +55,36 @@ describe("Claude Code startup/result verifier", () => {
     expect(verifyClaudeCodeRun([startup({ model: "fable" }), result()]).ok).toBe(true);
   });
 
+  test("verifies the exact builder-owned session id for resumable runs", () => {
+    const sessionId = "5b1a2c3d-4e5f-6789-abcd-ef0123456789";
+    const verified = verifyClaudeCodeRun(
+      [startup({ session_id: sessionId, sessionPersistence: true }), result()],
+      { expectedSessionId: sessionId, allowSessionPersistence: true },
+    );
+
+    expect(verified.ok).toBe(true);
+    expect(verified.metadata.sessionIdObserved).toBe(sessionId);
+  });
+
+  test("fails closed when Claude reports a different or missing resumable session id", () => {
+    const expectedSessionId = "5b1a2c3d-4e5f-6789-abcd-ef0123456789";
+    const mismatched = verifyClaudeCodeRun(
+      [startup({ session_id: "6c2b3d4e-5f60-4789-abcd-ef0123456789" }), result()],
+      { expectedSessionId, allowSessionPersistence: true },
+    );
+    const missing = verifyClaudeCodeRun([startup(), result()], {
+      expectedSessionId,
+      allowSessionPersistence: true,
+    });
+
+    expect(mismatched.failures).toContainEqual(
+      expect.objectContaining({ code: "session_id_mismatch", field: "session_id" }),
+    );
+    expect(missing.failures).toContainEqual(
+      expect.objectContaining({ code: "missing_session_id", field: "session_id" }),
+    );
+  });
+
   test("rejects startup model names that merely contain the Fable substring", () => {
     const verified = verifyClaudeCodeRun([startup({ model: "fable-mini" }), result()]);
 

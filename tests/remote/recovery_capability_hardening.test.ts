@@ -5,10 +5,15 @@ import {
   verifyRemoteRunRecoveryCapability,
 } from "../../src/remote/recovery.js";
 import type { RemoteRunRecoveryHint } from "../../src/remote/types.js";
+import {
+  PROMPT_DOM_IDENTITY_ALGORITHM,
+  PROMPT_RECOVERY_PREVIEW_ALGORITHM,
+} from "../../src/browser/promptDomMatch.js";
 
 const NOW_MS = Date.parse("2026-07-21T12:00:00.000Z");
 const AUTH_TOKEN = "account-scoped-secret";
 const PROMPT_PREVIEW = "exact submitted composer prefix";
+const PROMPT_DOM_SHA256 = "d".repeat(64);
 
 function mintHint(): RemoteRunRecoveryHint {
   const hint = buildRemoteRunRecoveryHint(
@@ -26,6 +31,7 @@ function mintHint(): RemoteRunRecoveryHint {
       accountId: "acct1",
       authToken: AUTH_TOKEN,
       promptPreview: PROMPT_PREVIEW,
+      promptDomSha256: PROMPT_DOM_SHA256,
       nowMs: NOW_MS,
       ttlMs: 60_000,
     },
@@ -65,6 +71,10 @@ describe("remote recovery capability hardening", () => {
   test("accepts only the exact account, prompt, stage, conversation, expiry, and HMAC", () => {
     const hint = mintHint();
     expect(verify(hint)).toBe(true);
+    expect(hint).toMatchObject({
+      promptPreviewAlgorithm: PROMPT_RECOVERY_PREVIEW_ALGORITHM,
+      promptDomIdentityAlgorithm: PROMPT_DOM_IDENTITY_ALGORITHM,
+    });
 
     const cases: Array<[string, unknown]> = [
       [
@@ -112,6 +122,24 @@ describe("remote recovery capability hardening", () => {
           copy.expiresAt = new Date(NOW_MS + 120_000).toISOString();
         }),
       ],
+      [
+        "preview algorithm",
+        mutate(hint, (copy) => {
+          copy.promptPreviewAlgorithm = "oracle.prompt-recovery-preview.v1";
+        }),
+      ],
+      [
+        "DOM identity algorithm",
+        mutate(hint, (copy) => {
+          copy.promptDomIdentityAlgorithm = "oracle.rendered-prompt-dom-identity.v1";
+        }),
+      ],
+      [
+        "DOM digest",
+        mutate(hint, (copy) => {
+          copy.promptDomSha256 = "e".repeat(64);
+        }),
+      ],
     ];
 
     for (const [label, value] of cases) {
@@ -149,6 +177,21 @@ describe("remote recovery capability hardening", () => {
       }),
       mutate(hint, (copy) => {
         copy.promptPreviewSha256 = "A".repeat(64);
+      }),
+      mutate(hint, (copy) => {
+        delete copy.promptDomSha256;
+      }),
+      mutate(hint, (copy) => {
+        delete copy.promptPreviewAlgorithm;
+      }),
+      mutate(hint, (copy) => {
+        delete copy.promptDomIdentityAlgorithm;
+      }),
+      mutate(hint, (copy) => {
+        copy.promptDomSha256 = "A".repeat(64);
+      }),
+      mutate(hint, (copy) => {
+        copy.capability = `v1.${"a".repeat(43)}`;
       }),
       mutate(hint, (copy) => {
         copy.expiresAt = "2026-07-21T12:01:00Z";
@@ -207,6 +250,7 @@ describe("remote recovery capability hardening", () => {
       accountId: "acct1",
       authToken: AUTH_TOKEN,
       promptPreview: PROMPT_PREVIEW,
+      promptDomSha256: PROMPT_DOM_SHA256,
       nowMs: NOW_MS,
     };
 
@@ -227,6 +271,12 @@ describe("remote recovery capability hardening", () => {
       buildRemoteRunRecoveryHint({ stage: "assistant-timeout", runtime }, undefined, {
         ...authority,
         promptPreview: "   ",
+      }),
+    ).toBeUndefined();
+    expect(
+      buildRemoteRunRecoveryHint({ stage: "assistant-timeout", runtime }, undefined, {
+        ...authority,
+        promptDomSha256: "A".repeat(64),
       }),
     ).toBeUndefined();
 

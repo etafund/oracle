@@ -183,6 +183,11 @@ export async function resolveClaudeCodeFollowupReference(
       `Session ${trimmed} is a Claude Code (Fable) session but has no resumable session id recorded (it may predate --followup support for this lane). Start a new session instead of using --followup.`,
     );
   }
+  if (metadata.claudeCode?.read_only?.sessionPersistenceDisabled !== false) {
+    throw new Error(
+      `Session ${trimmed} is a Claude Code (Fable) session but records session persistence as disabled, so its stored id does not name a resumable transcript. Start a new reviewed Fable session, then use --followup on that new session.`,
+    );
+  }
   const storedModel = metadata.options?.model ?? metadata.model;
   const caamProfile = metadata.claudeCode?.caam_profile ?? undefined;
   return {

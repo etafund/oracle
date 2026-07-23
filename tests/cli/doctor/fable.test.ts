@@ -237,6 +237,12 @@ describe("oracle doctor fable", () => {
     expect(envelope.fix_command).toBe(
       "oracle doctor fable --caam-profile <name> --caam-base /home/ubuntu/orch-homes --json",
     );
+    expect(envelope.commands.doctor).toBe(
+      "oracle doctor fable --caam-profile <name> --caam-base /home/ubuntu/orch-homes --json",
+    );
+    expect(envelope.commands.run).toBe(
+      "oracle --lane fable-local --caam-profile <name> --caam-base /home/ubuntu/orch-homes --prompt <prompt> --file <path>",
+    );
     expect(resolveCaamExecutable).not.toHaveBeenCalled();
   });
 

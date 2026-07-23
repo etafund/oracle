@@ -11,6 +11,10 @@ import {
 } from "../../src/remote/payload_sanitize.js";
 import { buildRemoteRunRecoveryHint } from "../../src/remote/recovery.js";
 import type { RemoteBrowserRecoveryRequest } from "../../src/remote/types.js";
+import {
+  PROMPT_DOM_IDENTITY_ALGORITHM,
+  PROMPT_RECOVERY_PREVIEW_ALGORITHM,
+} from "../../src/browser/promptDomMatch.js";
 
 type ExecutorOptions = Parameters<typeof createRemoteBrowserExecutor>[0];
 type RequestFn = NonNullable<ExecutorOptions["requestFn"]>;
@@ -198,6 +202,10 @@ describe("remote client payload sanitizer", () => {
     expect(raw).not.toContain("remote-client-token");
 
     const wire = JSON.parse(raw ?? "{}") as RemoteBrowserRecoveryRequest;
+    expect(wire.recovery).toMatchObject({
+      promptPreviewAlgorithm: PROMPT_RECOVERY_PREVIEW_ALGORITHM,
+      promptDomIdentityAlgorithm: PROMPT_DOM_IDENTITY_ALGORITHM,
+    });
     expect(wire.browserConfig).toEqual({
       timeoutMs: 2_400_000,
       inputTimeoutMs: 45_000,
@@ -241,6 +249,47 @@ describe("remote client payload sanitizer", () => {
     mutate(value);
     expect(() => sanitizeRemoteBrowserRecoveryRequestForHost(value)).toThrow(/unexpected field/i);
   });
+
+  test.each([
+    [
+      "legacy v1 schema",
+      (value: Record<string, unknown>) => {
+        value.schema = "remote-browser-recovery.v1";
+      },
+    ],
+    [
+      "missing DOM digest",
+      (value: Record<string, unknown>) => {
+        delete (value.recovery as Record<string, unknown>).promptDomSha256;
+      },
+    ],
+    [
+      "missing preview algorithm version",
+      (value: Record<string, unknown>) => {
+        delete (value.recovery as Record<string, unknown>).promptPreviewAlgorithm;
+      },
+    ],
+    [
+      "unknown DOM identity algorithm version",
+      (value: Record<string, unknown>) => {
+        (value.recovery as Record<string, unknown>).promptDomIdentityAlgorithm =
+          "oracle.rendered-prompt-dom-identity.v1";
+      },
+    ],
+    [
+      "malformed DOM digest",
+      (value: Record<string, unknown>) => {
+        (value.recovery as Record<string, unknown>).promptDomSha256 = "A".repeat(64);
+      },
+    ],
+  ])("host rejects a %s recovery request", async (_label, mutate) => {
+    const value = structuredClone(recoveryRequest({ timeoutMs: 120_000 })) as unknown as Record<
+      string,
+      unknown
+    >;
+    mutate(value);
+    expect(() => sanitizeRemoteBrowserRecoveryRequestForHost(value)).toThrow(/invalid/i);
+  });
 });
 
 function recoveryRequest(browserConfig: BrowserSessionConfig): RemoteBrowserRecoveryRequest {
@@ -260,6 +309,7 @@ function recoveryRequest(browserConfig: BrowserSessionConfig): RemoteBrowserReco
       accountId: "acct1",
       authToken: "account-secret",
       promptPreview,
+      promptDomSha256: "d".repeat(64),
       nowMs: Date.now(),
     },
   );
@@ -267,7 +317,7 @@ function recoveryRequest(browserConfig: BrowserSessionConfig): RemoteBrowserReco
     throw new Error("failed to build recovery client fixture");
   }
   return {
-    schema: "remote-browser-recovery.v1",
+    schema: "remote-browser-recovery.v2",
     recovery: { ...recovery, stage: "assistant-recheck" },
     promptPreview,
     browserConfig,

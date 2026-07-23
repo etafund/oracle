@@ -326,6 +326,61 @@ describe("sessionDisplay manual remote recovery ownership", () => {
     expect(state.current?.browser?.remoteRecoveryCompletionClaim).toBeUndefined();
     expect(updateModelRunMock).not.toHaveBeenCalled();
     expect(deleteSecretMock).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+  });
+
+  test("a rejected account-affine recovery exits nonzero and remains retryable", async () => {
+    recoverMock.mockRejectedValue(
+      new Error("The reopened canonical conversation must contain this session's saved user turn"),
+    );
+
+    const { attachSession } = await import("../../src/cli/sessionDisplay.js");
+    await attachSession("remote-session", { suppressMetadata: true, renderMarkdown: true });
+
+    expect(process.exitCode).toBe(1);
+    expect(releaseClaimMock).toHaveBeenCalledTimes(1);
+    expect(state.current).toMatchObject({
+      status: "error",
+      browser: { remoteRecovery: { originRunId: "origin-old" } },
+    });
+    expect(state.current?.browser?.remoteRecoveryCompletionClaim).toBeUndefined();
+    expect(deleteSecretMock).not.toHaveBeenCalled();
+  });
+
+  test("a post-commit display failure preserves the successful exit status", async () => {
+    recoverMock.mockResolvedValue({
+      answerText: "recovered answer",
+      answerMarkdown: "recovered answer",
+      tookMs: 10,
+      answerTokens: 2,
+      answerChars: 16,
+      tabUrl: "https://chatgpt.com/c/origin-old",
+      conversationId: "origin-old",
+      remoteRun: {
+        runId: "origin-old",
+        accountId: "acct1",
+        laneId: "acct1-9473",
+        terminalDoneOk: true,
+        provenance: null,
+      },
+    });
+    sessionStoreMock.readSession
+      .mockImplementationOnce(async () => state.current)
+      .mockRejectedValueOnce(new Error("post-commit metadata refresh failed"));
+
+    const { attachSession } = await import("../../src/cli/sessionDisplay.js");
+    await attachSession("remote-session", { suppressMetadata: true });
+
+    expect(state.current).toMatchObject({
+      status: "completed",
+      browser: { remoteRun: { runId: "origin-old", terminalDoneOk: true } },
+    });
+    expect(process.exitCode).toBeUndefined();
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "Remote recovery was committed, but a post-commit display step failed",
+      ),
+    );
   });
 
   test("an asynchronous log stream error is awaited before completion CAS", async () => {

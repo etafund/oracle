@@ -63,6 +63,11 @@ export interface BrowserSessionRunnerDeps {
     runtime: BrowserRuntimeMetadata,
     modelSelection?: BrowserModelSelectionEvidence,
   ) => Promise<void> | void;
+  /** Persist the latest normalized prompt ownership preview after every actual submission. */
+  persistSubmittedPromptPreview?: (
+    promptPreview: string,
+    promptDomSha256?: string,
+  ) => Promise<void> | void;
 }
 
 const LARGE_PRO_FAST_INPUT_TOKEN_THRESHOLD = 25_000;
@@ -260,6 +265,7 @@ export async function runBrowserSessionExecution(
           await persistRuntimeHint(runtimeWithController);
         }
       },
+      submittedPromptPreviewCb: deps.persistSubmittedPromptPreview,
     });
   } catch (error) {
     if (error instanceof BrowserAutomationError) {

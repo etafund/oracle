@@ -15,6 +15,11 @@ import {
 import { canonicalJSON, sha256OfBytes } from "../../src/oracle/v18/evidence.js";
 import { createRemoteServer } from "../../src/remote/server.js";
 import type { BrowserRunResult } from "../../src/browserMode.js";
+import { formatCaptureBindingVerifiedLog } from "../../src/browser/actions/captureBinding.js";
+import {
+  REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
+  REMOTE_BROWSER_RUN_PATH,
+} from "../../src/remote/types.js";
 
 // oracle.run.v1 sanitized JSONL sink: exactly one hash-chained line per
 // ACCEPTED /runs (success, failure, abort). Field names are normative; a
@@ -176,9 +181,7 @@ describe("oracle.run.v1 sink", () => {
   test("classifyRunErrorClass: heuristic typed classes", () => {
     expect(classifyRunErrorClass(null, true)).toBeNull();
     expect(classifyRunErrorClass("answer binding failed", true)).toBe("integrity_binding_failed");
-    expect(classifyRunErrorClass("challenge interstitial shown", true)).toBe(
-      "account_quarantine",
-    );
+    expect(classifyRunErrorClass("challenge interstitial shown", true)).toBe("account_quarantine");
     expect(classifyRunErrorClass("socket hang up", false)).toBe(
       "transport_interrupted_before_submit",
     );
@@ -218,6 +221,7 @@ describe("serve emits one sink line per accepted run", () => {
             options.log?.(
               "[browser] ChatGPT thinking - 12s elapsed; status=response streaming; source=inline",
             );
+            options.log?.(formatCaptureBindingVerifiedLog("message-handle", "abc123"));
             await new Promise((resolve) => setTimeout(resolve, 35));
             const result: BrowserRunResult = {
               answerText: "ok",
@@ -336,9 +340,11 @@ describe("serve emits one sink line per accepted run", () => {
       const server = await createRemoteServer(
         { host: "127.0.0.1", port: 0, token: "secret", logger: () => {}, attachOnly: false },
         {
-          runBrowser: async () => {
+          runBrowser: async (options) => {
             markStarted();
-            return await finished;
+            const result = await finished;
+            options.log?.(formatCaptureBindingVerifiedLog("message-handle", "abc123"));
+            return result;
           },
         },
       );
@@ -406,10 +412,11 @@ async function postRun(port: number, token: string, body: string): Promise<RunRe
       {
         hostname: "127.0.0.1",
         port,
-        path: "/runs",
+        path: REMOTE_BROWSER_RUN_PATH,
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
+          ...REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
           "content-type": "application/json",
           "content-length": Buffer.byteLength(body),
         },
@@ -443,10 +450,11 @@ function startAbortableRun(
       {
         hostname: "127.0.0.1",
         port,
-        path: "/runs",
+        path: REMOTE_BROWSER_RUN_PATH,
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
+          ...REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
           "content-type": "application/json",
           "content-length": Buffer.byteLength(body),
         },

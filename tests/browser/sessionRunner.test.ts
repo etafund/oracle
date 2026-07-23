@@ -365,6 +365,7 @@ describe("runBrowserSessionExecution", () => {
   });
 
   test("passes browser follow-up prompts into the browser runner", async () => {
+    const persistSubmittedPromptPreview = vi.fn();
     const executeBrowser = vi.fn(async () => ({
       answerText: "ok",
       answerMarkdown: "ok",
@@ -396,14 +397,63 @@ describe("runBrowserSessionExecution", () => {
           fallback: null,
         }),
         executeBrowser,
+        persistSubmittedPromptPreview,
       },
     );
 
     expect(executeBrowser).toHaveBeenCalledWith(
       expect.objectContaining({
         followUpPrompts: ["challenge the recommendation", "summarize the final decision"],
+        submittedPromptPreviewCb: persistSubmittedPromptPreview,
       }),
     );
+  });
+
+  test("forwards every submitted prompt ownership preview to durable session persistence", async () => {
+    const persistSubmittedPromptPreview = vi.fn();
+    const executeBrowser = vi.fn(async (options) => {
+      await options.submittedPromptPreviewCb?.("normalized initial prompt");
+      await options.submittedPromptPreviewCb?.("normalized follow up prompt", "a".repeat(64));
+      return {
+        answerText: "ok",
+        answerMarkdown: "ok",
+        tookMs: 1000,
+        answerTokens: 1,
+        answerChars: 2,
+      };
+    });
+
+    await runBrowserSessionExecution(
+      {
+        runOptions: {
+          ...baseRunOptions,
+          browserFollowUps: ["follow up prompt"],
+        },
+        browserConfig: baseConfig,
+        cwd: "/repo",
+        log: vi.fn(),
+      },
+      {
+        assemblePrompt: async () => ({
+          markdown: "prompt",
+          composerText: "prompt",
+          estimatedInputTokens: 5,
+          attachments: [],
+          inlineFileCount: 0,
+          tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: "auto",
+          attachmentMode: "inline",
+          fallback: null,
+        }),
+        executeBrowser,
+        persistSubmittedPromptPreview,
+      },
+    );
+
+    expect(persistSubmittedPromptPreview.mock.calls).toEqual([
+      ["normalized initial prompt"],
+      ["normalized follow up prompt", "a".repeat(64)],
+    ]);
   });
 
   test("persists attach-mode runtime metadata from the browser runner", async () => {

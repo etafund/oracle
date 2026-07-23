@@ -45,7 +45,7 @@ export const CORE_READ_COMMANDS: readonly CoreReadCommand[] = Object.freeze([
   }),
   coreReadCommand({
     name: "doctor-fable",
-    command: "oracle doctor fable --json",
+    command: "oracle doctor fable --caam-profile <profile> --json",
     purpose:
       "Fable xHigh local readiness, including Claude/CAAM account binding and fail-closed checks.",
   }),

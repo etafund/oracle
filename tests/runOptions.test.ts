@@ -77,8 +77,9 @@ describe("resolveRunOptionsFromConfig", () => {
       disableSlashCommands: true,
       strictMcpConfig: true,
       noChrome: true,
-      noSessionPersistence: true,
+      noSessionPersistence: false,
     });
+    expect(runOptions.laneInferenceSource).toBe("lane");
   });
 
   it("normalizes --lane chatgpt-pro to the browser engine with lane metadata", () => {
@@ -121,6 +122,8 @@ describe("resolveRunOptionsFromConfig", () => {
     expect(runOptions.lane).toBe("fable-local");
     expect(runOptions.model).toBe("fable");
     expect(runOptions.claudeCode?.model).toBe("fable");
+    expect(runOptions.claudeCode?.noSessionPersistence).toBe(true);
+    expect(runOptions.laneInferenceSource).toBe("legacy-engine-model");
   });
 
   it("route-blocks API fable requests before API/OpenRouter model fallback", () => {

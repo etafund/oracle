@@ -246,7 +246,7 @@ export function registerFableDoctorCommand(
     .description("Check the Fable xHigh Claude Code subscription lane without submitting a prompt.")
     .option(
       "--caam-profile <name>",
-      "Select the CAAM shallow profile whose Claude subscription will be verified.",
+      "Required for a ready result (or set ORACLE_CLAUDE_CODE_CAAM_PROFILE): select the CAAM shallow profile whose Claude subscription will be verified.",
     )
     .option(
       "--caam-base <path>",
@@ -383,8 +383,8 @@ export async function runFableDoctor(
         status: "fail",
         code: "claude_executable_path_unavailable",
         message: "Claude executable preflight passed without returning a resolved executable path.",
-        fix_command: "oracle doctor fable --json",
-        next_command: "oracle doctor fable --json",
+        fix_command: buildDoctorCommand(profile, base),
+        next_command: buildDoctorCommand(profile, base),
       });
     }
   } catch {
@@ -393,8 +393,8 @@ export async function runFableDoctor(
       status: "fail",
       code: "claude_code_preflight_failed",
       message: "Claude Code preflight could not be completed.",
-      fix_command: "oracle doctor fable --json",
-      next_command: "oracle doctor fable --json",
+      fix_command: buildDoctorCommand(profile, base),
+      next_command: buildDoctorCommand(profile, base),
     });
   }
 
@@ -712,13 +712,13 @@ function preflightRecovery(
 }
 
 function buildDoctorCommand(profile: string | null, base: string | null): string {
-  const account = profile ? ` --caam-profile ${shellQuote(profile)}` : "";
+  const account = profile ? ` --caam-profile ${shellQuote(profile)}` : " --caam-profile <name>";
   const baseFlag = base ? ` --caam-base ${shellQuote(base)}` : "";
   return `oracle doctor fable${account}${baseFlag} --json`;
 }
 
 function buildRunCommand(profile: string | null, base: string | null): string {
-  const account = profile ? ` --caam-profile ${shellQuote(profile)}` : "";
+  const account = profile ? ` --caam-profile ${shellQuote(profile)}` : " --caam-profile <name>";
   const baseFlag = base ? ` --caam-base ${shellQuote(base)}` : "";
   return `oracle --lane fable-local${account}${baseFlag} --prompt <prompt> --file <path>`;
 }

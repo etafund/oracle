@@ -12,6 +12,10 @@ import {
 import { createRemoteServer } from "../../src/remote/server.js";
 import type { BrowserRunResult } from "../../src/browserMode.js";
 import type { RemoteRunPayload } from "../../src/remote/types.js";
+import {
+  REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
+  REMOTE_BROWSER_RUN_PATH,
+} from "../../src/remote/types.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // F11 server-side browserConfig pinning — per-key audit (hostile-client fleet
@@ -387,10 +391,11 @@ async function sendRun(port: number, token: string, body: string): Promise<RunRe
       {
         hostname: "127.0.0.1",
         port,
-        path: "/runs",
+        path: REMOTE_BROWSER_RUN_PATH,
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
+          ...REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
           "content-type": "application/json",
           "content-length": Buffer.byteLength(body),
         },

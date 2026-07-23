@@ -8,6 +8,7 @@ import {
   CONVERSATION_TURN_CONTAINER_SELECTOR,
   CONVERSATION_TURN_SELECTOR,
 } from "../../src/browser/constants.js";
+import { computeRenderedPromptDomSha256 } from "../../src/browser/promptDomMatch.js";
 
 describe("promptComposer", () => {
   test("fails composer clearing when stale text remains", async () => {
@@ -29,34 +30,120 @@ describe("promptComposer", () => {
     vi.useFakeTimers();
     try {
       const runtime = {
-        evaluate: vi
-          .fn()
-          // Baseline read (turn count)
-          .mockResolvedValueOnce({ result: { value: 10 } })
-          // Polls (repeat)
-          .mockResolvedValue({
-            result: {
-              value: {
-                baseline: 10,
-                turnsCount: 10,
-                userMatched: false,
-                prefixMatched: false,
-                lastMatched: false,
-                hasNewTurn: false,
-                stopVisible: true,
-                assistantVisible: false,
-                composerCleared: true,
-                inConversation: false,
-              },
+        evaluate: vi.fn().mockResolvedValue({
+          result: {
+            value: {
+              baseline: 10,
+              turnsCount: 10,
+              userMatched: false,
+              lastMatched: false,
+              hasNewTurn: false,
+              hasNewUserTurn: false,
+              lastUserTurnIndex: 8,
+              stopVisible: true,
+              assistantVisible: false,
+              composerCleared: true,
+              inConversation: false,
             },
-          }),
+          },
+        }),
       } as unknown as {
         evaluate: (args: { expression: string; returnByValue?: boolean }) => Promise<unknown>;
       };
 
-      const promise = promptComposer.verifyPromptCommitted(runtime as never, "hello", 150);
+      const promise = promptComposer.verifyPromptCommitted(
+        runtime as never,
+        "hello",
+        150,
+        undefined,
+        10,
+      );
       // Attach the rejection handler before timers advance to avoid unhandled-rejection warnings.
       const assertion = expect(promise).rejects.toThrow(/prompt did not appear/i);
+      await vi.advanceTimersByTimeAsync(250);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("does not treat a foreign new user turn as committed from surrounding UI state", async () => {
+    vi.useFakeTimers();
+    try {
+      const runtime = {
+        evaluate: vi.fn().mockResolvedValue({
+          result: {
+            value: {
+              baseline: 10,
+              turnsCount: 11,
+              userMatched: false,
+              lastMatched: false,
+              hasNewTurn: true,
+              hasNewUserTurn: true,
+              lastUserTurnIndex: 10,
+              stopVisible: true,
+              assistantVisible: true,
+              composerCleared: true,
+              inConversation: true,
+            },
+          },
+        }),
+      };
+
+      const promise = promptComposer.verifyPromptCommitted(
+        runtime as never,
+        "expected prompt",
+        150,
+        undefined,
+        10,
+      );
+      const assertion = expect(promise).rejects.toThrow(/prompt did not appear/i);
+      await vi.advanceTimersByTimeAsync(250);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("does not bind a fresh foreign turn that only shares the first 120 normalized characters", async () => {
+    vi.useFakeTimers();
+    try {
+      const sharedPrefix = "common ownership prefix ".repeat(8);
+      const expectedPrompt = `${sharedPrefix}expected ending`;
+      const foreignPrompt = `${sharedPrefix}foreign ending`;
+      const turn = (role: "user" | "assistant", text: string) => ({
+        innerText: text,
+        textContent: text,
+        dataset: { turn: role },
+        getAttribute: (name: string) => (name === "data-turn" ? role : ""),
+        querySelector: () => null,
+      });
+      const turns = [turn("assistant", "Earlier answer"), turn("user", foreignPrompt)];
+      const document = {
+        querySelector: () => null,
+        querySelectorAll: (selector: string) =>
+          selector === CONVERSATION_TURN_CONTAINER_SELECTOR ? turns : [],
+      };
+      class FakeTextArea {}
+      const evaluate = vi.fn(async ({ expression }: { expression: string }) => ({
+        result: {
+          value: Function(
+            "document",
+            "HTMLTextAreaElement",
+            "location",
+            `return ${expression};`,
+          )(document, FakeTextArea, { href: "https://chatgpt.com/c/commit-proof" }),
+        },
+      }));
+
+      const pending = promptComposer.verifyPromptCommitted(
+        { evaluate } as never,
+        expectedPrompt,
+        150,
+        undefined,
+        1,
+      );
+      const assertion = expect(pending).rejects.toThrow(/prompt did not appear/i);
       await vi.advanceTimersByTimeAsync(250);
       await assertion;
     } finally {
@@ -120,9 +207,10 @@ describe("promptComposer", () => {
         baseline: 10,
         turnsCount: 10,
         userMatched: false,
-        prefixMatched: false,
         lastMatched: false,
         hasNewTurn: false,
+        hasNewUserTurn: false,
+        lastUserTurnIndex: 8,
         stopVisible: false,
         assistantVisible: false,
         composerCleared: true,
@@ -131,17 +219,18 @@ describe("promptComposer", () => {
         lastTurn: "previous turn text",
       };
       const runtime = {
-        evaluate: vi
-          .fn()
-          // Baseline read (turn count)
-          .mockResolvedValueOnce({ result: { value: 10 } })
-          // Polls + final diagnostic probe
-          .mockResolvedValue({ result: { value: probe } }),
+        evaluate: vi.fn().mockResolvedValue({ result: { value: probe } }),
       } as unknown as {
         evaluate: (args: { expression: string; returnByValue?: boolean }) => Promise<unknown>;
       };
 
-      const promise = promptComposer.verifyPromptCommitted(runtime as never, "hello", 150);
+      const promise = promptComposer.verifyPromptCommitted(
+        runtime as never,
+        "hello",
+        150,
+        undefined,
+        10,
+      );
       const assertion = promise.then(
         () => {
           throw new Error("expected verifyPromptCommitted to reject");
@@ -180,25 +269,23 @@ describe("promptComposer", () => {
     vi.useFakeTimers();
     try {
       const runtime = {
-        evaluate: vi
-          .fn()
-          .mockResolvedValueOnce({ result: { value: 4 } })
-          .mockResolvedValue({
-            result: {
-              value: {
-                baseline: 4,
-                turnsCount: 4,
-                userMatched: false,
-                prefixMatched: false,
-                lastMatched: false,
-                hasNewTurn: false,
-                stopVisible: false,
-                assistantVisible: false,
-                composerCleared: true,
-                inConversation: true,
-              },
+        evaluate: vi.fn().mockResolvedValue({
+          result: {
+            value: {
+              baseline: 4,
+              turnsCount: 4,
+              userMatched: false,
+              lastMatched: false,
+              hasNewTurn: false,
+              hasNewUserTurn: false,
+              lastUserTurnIndex: 2,
+              stopVisible: false,
+              assistantVisible: false,
+              composerCleared: true,
+              inConversation: true,
             },
-          }),
+          },
+        }),
       } as unknown as {
         evaluate: (args: { expression: string; returnByValue?: boolean }) => Promise<unknown>;
       };
@@ -207,6 +294,8 @@ describe("promptComposer", () => {
         runtime as never,
         "x".repeat(50_000),
         150,
+        undefined,
+        4,
       );
       const assertion = promise.then(
         () => {
@@ -229,36 +318,197 @@ describe("promptComposer", () => {
     }
   });
 
-  test("allows prompt match even if baseline turn count cannot be read", async () => {
-    const runtime = {
-      evaluate: vi
-        .fn()
-        // Baseline read fails
-        .mockRejectedValueOnce(new Error("turn read failed"))
-        // First poll shows prompt match (baseline unknown)
-        .mockResolvedValueOnce({
+  test("baseline-unknown commit proof refuses a pre-existing identical latest turn", async () => {
+    vi.useFakeTimers();
+    try {
+      const runtime = {
+        evaluate: vi.fn().mockResolvedValue({
           result: {
             value: {
               baseline: -1,
               turnsCount: 1,
               userMatched: true,
-              prefixMatched: false,
               lastMatched: true,
               hasNewTurn: false,
+              hasNewUserTurn: false,
+              lastUserTurnIndex: 0,
               stopVisible: false,
               assistantVisible: false,
-              composerCleared: false,
+              composerCleared: true,
               inConversation: true,
             },
           },
         }),
-    } as unknown as {
-      evaluate: (args: { expression: string; returnByValue?: boolean }) => Promise<unknown>;
+      };
+
+      const pending = promptComposer.verifyPromptCommitted(runtime as never, "hello", 150);
+      const assertion = expect(pending).rejects.toThrow(/prompt did not appear/i);
+      await vi.advanceTimersByTimeAsync(250);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("known-baseline commit proof normalizes a heading-leading Markdown prompt", async () => {
+    const markdownPrompt = "# Commit ownership\n\n- `first value`\n- second   value";
+    const renderedPrompt = "Commit ownership\nfirst value\nsecond value";
+    const turn = (role: "user" | "assistant", text: string) => ({
+      innerText: text,
+      textContent: text,
+      dataset: { turn: role },
+      getAttribute: (name: string) => (name === "data-turn" ? role : ""),
+      querySelector: () => null,
+    });
+    const turns = [turn("user", renderedPrompt), turn("assistant", "Thinking…")];
+    const document = {
+      querySelector: () => null,
+      querySelectorAll: (selector: string) =>
+        selector === CONVERSATION_TURN_CONTAINER_SELECTOR ? turns : [],
     };
+    class FakeTextArea {}
+    const evaluate = vi.fn(async ({ expression }: { expression: string }) => ({
+      result: {
+        value: Function(
+          "document",
+          "HTMLTextAreaElement",
+          "location",
+          `return ${expression};`,
+        )(document, FakeTextArea, { href: "https://chatgpt.com/c/commit-proof" }),
+      },
+    }));
 
     await expect(
-      promptComposer.verifyPromptCommitted(runtime as never, "hello", 150),
+      promptComposer.verifyPromptCommitted(
+        { evaluate } as never,
+        markdownPrompt,
+        150,
+        undefined,
+        0,
+      ),
+    ).resolves.toBe(2);
+  });
+
+  test("known-baseline commit proof allows only explicitly supplied attachment suffixes", async () => {
+    const prompt = "review this implementation";
+    const rendered = `${prompt}\nimplementation.ts`;
+    const turn = {
+      innerText: rendered,
+      textContent: rendered,
+      dataset: { turn: "user" },
+      getAttribute: (name: string) => (name === "data-turn" ? "user" : ""),
+      querySelector: () => null,
+    };
+    const document = {
+      querySelector: () => null,
+      querySelectorAll: (selector: string) =>
+        selector === CONVERSATION_TURN_CONTAINER_SELECTOR ? [turn] : [],
+    };
+    class FakeTextArea {}
+    const evaluate = vi.fn(async ({ expression }: { expression: string }) => ({
+      result: {
+        value: Function(
+          "document",
+          "HTMLTextAreaElement",
+          "location",
+          `return ${expression};`,
+        )(document, FakeTextArea, { href: "https://chatgpt.com/c/commit-proof" }),
+      },
+    }));
+
+    await expect(
+      promptComposer.verifyPromptCommitted({ evaluate } as never, prompt, 150, undefined, 0, [
+        "implementation.ts",
+      ]),
     ).resolves.toBe(1);
+  });
+
+  test("known-baseline commit proof rejects a fresh turn that wraps the prompt", async () => {
+    vi.useFakeTimers();
+    try {
+      const prompt = "explain the exact ownership invariant";
+      const rendered = `Quoted request: ${prompt}`;
+      const turn = {
+        innerText: rendered,
+        textContent: rendered,
+        dataset: { turn: "user" },
+        getAttribute: (name: string) => (name === "data-turn" ? "user" : ""),
+        querySelector: () => null,
+      };
+      const document = {
+        querySelector: () => null,
+        querySelectorAll: (selector: string) =>
+          selector === CONVERSATION_TURN_CONTAINER_SELECTOR ? [turn] : [],
+      };
+      class FakeTextArea {}
+      const evaluate = vi.fn(async ({ expression }: { expression: string }) => ({
+        result: {
+          value: Function(
+            "document",
+            "HTMLTextAreaElement",
+            "location",
+            `return ${expression};`,
+          )(document, FakeTextArea, { href: "https://chatgpt.com/c/commit-proof" }),
+        },
+      }));
+
+      const pending = promptComposer.verifyPromptCommitted(
+        { evaluate } as never,
+        prompt,
+        150,
+        undefined,
+        0,
+      );
+      const assertion = expect(pending).rejects.toThrow(/prompt did not appear/i);
+      await vi.advanceTimersByTimeAsync(250);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("baseline-unknown commit proof refuses an older matching prompt", async () => {
+    vi.useFakeTimers();
+    try {
+      const markdownPrompt = "# Commit ownership\n\n`first value`";
+      const turn = (text: string) => ({
+        innerText: text,
+        textContent: text,
+        dataset: { turn: "user" },
+        getAttribute: (name: string) => (name === "data-turn" ? "user" : ""),
+        querySelector: () => null,
+      });
+      const turns = [turn("Commit ownership first value"), turn("newer foreign prompt")];
+      const document = {
+        querySelector: () => null,
+        querySelectorAll: (selector: string) =>
+          selector === CONVERSATION_TURN_CONTAINER_SELECTOR ? turns : [],
+      };
+      class FakeTextArea {}
+      const evaluate = vi.fn(async ({ expression }: { expression: string }) => {
+        return {
+          result: {
+            value: Function(
+              "document",
+              "HTMLTextAreaElement",
+              "location",
+              `return ${expression};`,
+            )(document, FakeTextArea, { href: "https://chatgpt.com/c/commit-proof" }),
+          },
+        };
+      });
+
+      const pending = promptComposer.verifyPromptCommitted(
+        { evaluate } as never,
+        markdownPrompt,
+        150,
+      );
+      const assertion = expect(pending).rejects.toThrow(/prompt did not appear/i);
+      await vi.advanceTimersByTimeAsync(250);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("attachment sends time out instead of allowing Enter fallback", async () => {
@@ -392,8 +642,55 @@ describe("promptComposer", () => {
     expect(promptComposer.sendButtonTimeoutMs(["oracle-attach-verify.txt"], 120_000)).toBe(120_000);
   });
 
+  test("baseline acquisition failure aborts before typing, dispatch, or submission callback", async () => {
+    const onPromptSubmitted = vi.fn();
+    const beforePromptSubmit = vi.fn();
+    const runtime = {
+      evaluate: vi.fn(async ({ expression }: { expression: string }) => {
+        if (expression.includes("document.readyState")) {
+          return { result: { value: { ready: true, composer: true, fileInput: false } } };
+        }
+        throw new Error("turn count read failed");
+      }),
+    };
+    const input = {
+      insertText: vi.fn(),
+      dispatchKeyEvent: vi.fn(),
+      dispatchMouseEvent: vi.fn(),
+    };
+    const logger = Object.assign(vi.fn(), { verbose: false });
+
+    await expect(
+      submitPrompt(
+        {
+          runtime: runtime as never,
+          input: input as never,
+          beforePromptSubmit,
+          onPromptSubmitted,
+        },
+        "must not be sent",
+        logger as never,
+      ),
+    ).rejects.toMatchObject({
+      name: "BrowserAutomationError",
+      details: {
+        stage: "submit-prompt",
+        code: "prompt-baseline-unavailable",
+        retryable: true,
+      },
+    });
+
+    expect(runtime.evaluate).toHaveBeenCalledTimes(2);
+    expect(input.insertText).not.toHaveBeenCalled();
+    expect(input.dispatchKeyEvent).not.toHaveBeenCalled();
+    expect(input.dispatchMouseEvent).not.toHaveBeenCalled();
+    expect(beforePromptSubmit).not.toHaveBeenCalled();
+    expect(onPromptSubmitted).not.toHaveBeenCalled();
+  });
+
   test("marks prompt submitted before commit verification finishes", async () => {
     const onPromptSubmitted = vi.fn();
+    const onPromptBound = vi.fn();
     const runtime = {
       evaluate: vi.fn(async ({ expression }: { expression: string }) => {
         if (expression.includes("document.readyState")) {
@@ -410,6 +707,21 @@ describe("promptComposer", () => {
         if (expression.includes("button.scrollIntoView")) {
           return { result: { value: { status: "clicked" } } };
         }
+        if (expression.includes("EXPECTED_PROMPT_DOM_SHA256")) {
+          return {
+            result: {
+              value: {
+                found: true,
+                matchedPrompt: true,
+                isLatestUserTurn: true,
+                promptDomIdentity: "hello",
+                conversationId: "bound-conversation",
+                userMessageId: "bound-user-message",
+                userTurnTestId: "conversation-turn-0",
+              },
+            },
+          };
+        }
         return {
           result: {
             value: {
@@ -419,6 +731,8 @@ describe("promptComposer", () => {
               prefixMatched: false,
               lastMatched: true,
               hasNewTurn: true,
+              hasNewUserTurn: true,
+              lastUserTurnIndex: 0,
               stopVisible: true,
               assistantVisible: false,
               composerCleared: true,
@@ -437,11 +751,19 @@ describe("promptComposer", () => {
         input: input as never,
         baselineTurns: 0,
         onPromptSubmitted,
+        onPromptBound,
       },
       "hello",
       logger as never,
     );
 
     expect(onPromptSubmitted).toHaveBeenCalledTimes(1);
+    expect(onPromptBound).toHaveBeenCalledWith(
+      "hello",
+      expect.objectContaining({
+        quality: "message-handle",
+        promptDomSha256: computeRenderedPromptDomSha256("hello"),
+      }),
+    );
   });
 });

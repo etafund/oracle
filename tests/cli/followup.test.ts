@@ -302,7 +302,7 @@ describe("Claude Code (Fable lane) follow-up resolution — claude-provider-map.
         slashCommandsDisabled: true,
         safeMode: true,
         chromeDisabled: true,
-        sessionPersistenceDisabled: true,
+        sessionPersistenceDisabled: false,
       },
       transcript_fidelity: "visible_cli_stream",
       hidden_reasoning_captured: false,
@@ -312,7 +312,7 @@ describe("Claude Code (Fable lane) follow-up resolution — claude-provider-map.
     },
   });
 
-  test("resolves a resumable claude-code session to its stored --session-id and CAAM identity", async () => {
+  test("resolves a resumable claude-code session to its stored session id and CAAM identity", async () => {
     const metadata = claudeCodeMetadata({
       caam_profile: "beta",
       caam_base: "/home/user/orch-homes/",
@@ -364,6 +364,20 @@ describe("Claude Code (Fable lane) follow-up resolution — claude-provider-map.
 
     await expect(resolveClaudeCodeFollowupReference("fable-parent", store)).rejects.toThrow(
       /no resumable session id recorded/,
+    );
+  });
+
+  test("refuses legacy metadata whose invented id was never persisted by Claude", async () => {
+    const metadata = claudeCodeMetadata({
+      read_only: {
+        ...claudeCodeMetadata().claudeCode!.read_only,
+        sessionPersistenceDisabled: true,
+      },
+    });
+    const store = { readSession: vi.fn(async () => metadata) };
+
+    await expect(resolveClaudeCodeFollowupReference("fable-parent", store)).rejects.toThrow(
+      /session persistence as disabled.*does not name a resumable transcript/i,
     );
   });
 

@@ -36,6 +36,12 @@ export interface RemoteEndpointProbe {
     build?: OracleBuildInfo;
     busy?: boolean;
     activeRun?: RemoteActiveRunInfo;
+    browserRecoveryCompatibility?: {
+      compatible: boolean;
+      protocol: string | null;
+      promptPreviewAlgorithm: string | null;
+      promptDomIdentityAlgorithm: string | null;
+    };
   };
 }
 
@@ -110,6 +116,7 @@ export async function buildRemoteEndpointReport(
     version: null,
     build: null,
     uptimeSeconds: null,
+    browser_recovery: null,
   };
 
   if (!resolved.host) {
@@ -141,6 +148,15 @@ export async function buildRemoteEndpointReport(
     timeoutMs: input.healthTimeoutMs ?? 5000,
   });
   probe.health = health;
+  if (health.browserRecoveryCompatibility?.compatible === false) {
+    report.status = "incompatible";
+    applyHealthMetadata(report, health);
+    report.error =
+      "Remote browser recovery protocol is incompatible; upgrade this client and the worker before starting a run.";
+    report.recover_command =
+      "Upgrade oracle on both the client and remote browser worker, then rerun oracle remote doctor --json";
+    return { report, probe };
+  }
   if (health.ok) {
     report.status = "healthy";
     applyHealthMetadata(report, health);
@@ -186,6 +202,15 @@ function applyHealthMetadata(
   report.uptimeSeconds = health.uptimeSeconds ?? null;
   report.auth_profile_id_hash = health.authProfileIdHash ?? null;
   report.provider_locks = health.providerLocks ?? [];
+  const recovery = health.browserRecoveryCompatibility;
+  report.browser_recovery = recovery
+    ? {
+        compatible: recovery.compatible,
+        protocol: recovery.protocol,
+        prompt_preview_algorithm: recovery.promptPreviewAlgorithm,
+        prompt_dom_identity_algorithm: recovery.promptDomIdentityAlgorithm,
+      }
+    : null;
 }
 
 /**

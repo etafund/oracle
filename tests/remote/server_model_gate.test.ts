@@ -8,6 +8,10 @@ import {
   resolveServeAllowedModelLabels,
 } from "../../src/remote/server.js";
 import type { BrowserRunResult } from "../../src/browserMode.js";
+import {
+  REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
+  REMOTE_BROWSER_RUN_PATH,
+} from "../../src/remote/types.js";
 
 // FLEET TRUST BOUNDARY: the serve /runs handler validates the effective desired
 // model label BEFORE staging attachments or flipping `busy`, so a disallowed
@@ -451,10 +455,11 @@ async function sendRun(port: number, token: string, payload: unknown): Promise<R
       {
         hostname: "127.0.0.1",
         port,
-        path: "/runs",
+        path: REMOTE_BROWSER_RUN_PATH,
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
+          ...REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
           "content-type": "application/json",
           "content-length": Buffer.byteLength(body),
         },

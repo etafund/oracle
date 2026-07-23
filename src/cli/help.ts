@@ -72,7 +72,7 @@ function renderHelpFooter(program: Command, colors: HelpColors): string {
   const tips = [
     `${colors.bullet("•")} Required: always pass a prompt AND ${colors.accent("--file …")} (directories/globs are fine); Oracle cannot see your project otherwise.`,
     `${colors.bullet("•")} Core lanes: ChatGPT GPT-5.6 Sol + Pro via ${colors.accent("--lane chatgpt-pro")}, Fable xHigh via ${colors.accent("--lane fable-local")}, and Gemini 3.1 Deep Think via ${colors.accent("--lane gemini-deep-think")}.`,
-    `${colors.bullet("•")} Fable runs at fixed ${colors.accent("xhigh")} effort. Pin a Claude subscription with ${colors.accent("--caam-profile <profile>")} and, when needed, ${colors.accent("--caam-base <absolute-path>")}; verify it first with ${colors.accent("oracle doctor fable --json")}. Explicit profile selection fails closed instead of falling back to another account.`,
+    `${colors.bullet("•")} Fable runs at fixed ${colors.accent("xhigh")} effort. The reviewed ${colors.accent("--lane fable-local")} route requires a Claude subscription selected with ${colors.accent("--caam-profile <profile>")} (or ${colors.accent("ORACLE_CLAUDE_CODE_CAAM_PROFILE")}) and, when needed, ${colors.accent("--caam-base <absolute-path>")}; verify it first with ${colors.accent("oracle doctor fable --caam-profile <profile> --json")}. Explicit profile selection fails closed instead of falling back to another account.`,
     `${colors.bullet("•")} Check the current lane/router contract first with ${colors.accent("oracle doctor lanes --json")} and ${colors.accent("oracle remote doctor --json")}.`,
     `${colors.bullet("•")} Attach lots of source (whole directories beat single files) and keep total input under ~196k tokens.`,
     `${colors.bullet("•")} Oracle starts empty—open with a short project briefing (stack, services, build steps), spell out the question and prior attempts, and why it matters; the more explanation and context you provide, the better the response will be.`,
@@ -98,7 +98,7 @@ function renderHelpFooter(program: Command, colors: HelpColors): string {
       "Use the ChatGPT GPT-5.6 Sol + Pro browser lane.",
     ),
     formatExample(
-      `${program.name()} doctor fable --json`,
+      `${program.name()} doctor fable --caam-profile my-profile --json`,
       "Check local Claude/CAAM ownership, profile, base, auth, and fail-closed readiness without a paid prompt.",
     ),
     formatExample(

@@ -44,6 +44,12 @@ interface MockHealth {
     built_at: string | null;
     source: string;
   };
+  browserRecoveryCompatibility?: {
+    compatible: boolean;
+    protocol: string | null;
+    promptPreviewAlgorithm: string | null;
+    promptDomIdentityAlgorithm: string | null;
+  };
 }
 
 const { checkTcpConnection, checkRemoteHealth } = vi.hoisted(() => ({
@@ -208,6 +214,32 @@ describe("buildRemoteEndpointReport — status precedence", () => {
       "browser:shared-profile:gemini",
     ]);
     expect(isHealthyReport(report)).toBe(true);
+  });
+
+  test("marks a mixed-version worker incompatible and exposes the observed recovery IDs", async () => {
+    checkRemoteHealth.mockResolvedValueOnce({
+      ok: true,
+      version: "0.14.0",
+      browserRecoveryCompatibility: {
+        compatible: false,
+        protocol: "remote-browser-recovery.v1",
+        promptPreviewAlgorithm: "oracle.prompt-recovery-preview.v1",
+        promptDomIdentityAlgorithm: null,
+      },
+    });
+    const { report } = await buildRemoteEndpointReport({
+      resolved: resolvedConfig(),
+      env: { ORACLE_REMOTE_HOST: "h", ORACLE_REMOTE_TOKEN: "t" },
+    });
+    expect(report.status).toBe("incompatible");
+    expect(report.browser_recovery).toEqual({
+      compatible: false,
+      protocol: "remote-browser-recovery.v1",
+      prompt_preview_algorithm: "oracle.prompt-recovery-preview.v1",
+      prompt_dom_identity_algorithm: null,
+    });
+    expect(report.error).toMatch(/upgrade.*client.*worker/i);
+    expect(isHealthyReport(report)).toBe(false);
   });
 
   test("probe=false emits a config-only snapshot with status=unknown", async () => {

@@ -18,6 +18,10 @@ import {
 } from "../browser/artifacts.js";
 import {
   MAX_REMOTE_ARTIFACT_BYTES,
+  REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
+  REMOTE_BROWSER_RECOVERY_PATH,
+  REMOTE_BROWSER_RECOVERY_PROTOCOL,
+  REMOTE_BROWSER_RUN_PATH,
   REMOTE_SESSION_RECOVERY_STAGES,
   type RemoteBrowserRecoveryRequest,
   type RemoteArtifactDescriptor,
@@ -27,6 +31,11 @@ import {
 } from "./types.js";
 import { parseHostPort } from "../bridge/connection.js";
 import { computePromptSha256 } from "../browser/actions/captureBinding.js";
+import {
+  buildPromptRecoveryOwnershipPreview,
+  PROMPT_DOM_IDENTITY_ALGORITHM,
+  PROMPT_RECOVERY_PREVIEW_ALGORITHM,
+} from "../browser/promptDomMatch.js";
 import { isGpt56SolModelLabel } from "../browser/actions/thinkingTime.js";
 import {
   serializeRemoteBrowserRecoveryRequestForWire,
@@ -36,6 +45,7 @@ import { sanitizeRemoteRunRecoveryHint } from "./recovery.js";
 import { BrowserAutomationError } from "../oracle/errors.js";
 import { extractConversationIdFromUrl } from "../browser/conversationIdentity.js";
 import type { BrowserRemoteRunProvenance } from "../sessionManager.js";
+import { checkRemoteHealth } from "./health.js";
 
 const EXECUTABLE_RECOVERY_STAGE_SET: ReadonlySet<string> = new Set(REMOTE_SESSION_RECOVERY_STAGES);
 
@@ -165,6 +175,8 @@ export interface RemoteBrowserRecoveryCarrier {
   laneId: string | null;
   /** Exact capability-bound submitted composer prefix; never render/log. */
   promptPreview: string;
+  /** Opaque browser-derived full committed-turn digest; never derive from raw Markdown. */
+  promptDomSha256: string;
 }
 
 /** Nonsecret proof that a remote account accepted a run which did not finish. */
@@ -222,12 +234,13 @@ function failedRouteFromIdentity(
   };
 }
 
-function sanitizeRecoveryProvenance(value: unknown): BrowserRemoteRunProvenance | null {
+function sanitizeStrongRemoteSuccessProvenance(value: unknown): BrowserRemoteRunProvenance | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const raw = value as Record<string, unknown>;
-  // Capture-only recovery is accepted only with the strongest structural
-  // proof: the captured assistant turn was paired to the exact submitted
-  // user-message handle on the exact target Runtime.
+  // Both ordinary completion and capture-only recovery are accepted only with
+  // the strongest structural proof: the captured assistant turn was paired to
+  // the exact submitted user-message handle on the exact target Runtime, and
+  // the account quarantine latch was authoritatively clean at finalization.
   if (
     raw.captureBindingVerified !== true ||
     raw.captureBindingQuality !== "message-handle" ||
@@ -275,20 +288,72 @@ function readRemoteRouteIdentity(headers: http.IncomingHttpHeaders): RemoteRoute
   };
 }
 
-function resolveRecoveryPromptPreview(
+function hasCompatibleRemoteRecoveryResponseHeaders(headers: http.IncomingHttpHeaders): boolean {
+  return Object.entries(REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES).every(
+    ([name, expected]) => headers[name] === expected,
+  );
+}
+
+function resolveRecoveryPromptOwnership(
   options: BrowserRunOptions,
   recovery: RemoteBrowserRecoveryRequest["recovery"],
-): string | null {
+): { promptPreview: string; promptDomSha256: string } | null {
+  // The DOM digest is an opaque browser-worker proof. Raw Markdown cannot
+  // reproduce rendered user-turn text reliably, so the client only requires
+  // the signed v2 digest to be present and well formed; the destination
+  // worker uses it for exact DOM ownership during capture-only reattach.
+  if (!/^[a-f0-9]{64}$/.test(recovery.promptDomSha256)) return null;
   const candidates = [
     options.prompt,
     options.fallbackSubmission?.prompt,
     ...(options.followUpPrompts ?? []),
   ].filter((value): value is string => typeof value === "string");
   for (const candidate of candidates) {
-    const preview = candidate.slice(0, 160);
-    if (computePromptSha256(preview) === recovery.promptPreviewSha256) return preview;
+    const preview = buildPromptRecoveryOwnershipPreview(candidate);
+    if (computePromptSha256(preview) === recovery.promptPreviewSha256) {
+      return { promptPreview: preview, promptDomSha256: recovery.promptDomSha256 };
+    }
   }
   return null;
+}
+
+async function assertRemoteWorkerRecoveryCompatibility(params: {
+  host: string;
+  token?: string;
+  requestFn: typeof http.request;
+}): Promise<void> {
+  const health = await checkRemoteHealth({
+    host: params.host,
+    token: params.token,
+    timeoutMs: 5_000,
+    requestFn: params.requestFn,
+    probeRunAvailability: false,
+  });
+  const authenticated = health.ok || health.busy === true;
+  if (!authenticated) {
+    const authFailure = health.statusCode === 401 || health.statusCode === 403;
+    throw new RemoteRunFailedError(
+      `Remote browser protocol preflight failed before run admission: ${health.error ?? `HTTP ${health.statusCode ?? "unknown"}`}.`,
+      {
+        errorClass: authFailure ? "integrity_ui_unknown" : "transport_interrupted_before_submit",
+        retryable: !authFailure,
+      },
+    );
+  }
+  const compatibility = health.browserRecoveryCompatibility;
+  if (!compatibility?.compatible) {
+    const observed = [
+      compatibility?.protocol ?? "missing protocol",
+      compatibility?.promptPreviewAlgorithm ?? "missing prompt-preview algorithm",
+      compatibility?.promptDomIdentityAlgorithm ?? "missing DOM-identity algorithm",
+    ].join(", ");
+    throw new RemoteRunFailedError(
+      `Remote browser worker recovery protocol is incompatible (${observed}). Expected ` +
+        `${REMOTE_BROWSER_RECOVERY_PROTOCOL}, ${PROMPT_RECOVERY_PREVIEW_ALGORITHM}, and ` +
+        `${PROMPT_DOM_IDENTITY_ALGORITHM}; upgrade the client and worker before starting a run.`,
+      { errorClass: "integrity_ui_unknown", retryable: false },
+    );
+  }
 }
 
 export function createRemoteBrowserExecutor({
@@ -298,6 +363,27 @@ export function createRemoteBrowserExecutor({
   streamIdleTimeoutMs = resolveDefaultStreamIdleTimeoutMs(),
   maxLineBytes = MAX_NDJSON_LINE_BYTES,
 }: RemoteExecutorOptions) {
+  // A successful capability probe is reusable for this executor. Every POST
+  // still carries the exact contract headers, so a worker restarted or
+  // downgraded after the probe remains authoritatively fail-closed.
+  let compatibilityPreflight: Promise<void> | null = null;
+  const ensureCompatibleWorker = (): Promise<void> => {
+    // `requestFn` is an internal transport-injection seam used by unit tests
+    // that capture serialization without implementing an HTTP service. Real
+    // CLI/MCP execution always uses `http.request` and therefore always runs
+    // the authenticated /health preflight. The POST headers below remain
+    // unconditional for both paths.
+    if (requestFn !== http.request) return Promise.resolve();
+    if (compatibilityPreflight) return compatibilityPreflight;
+    const pending = assertRemoteWorkerRecoveryCompatibility({ host, token, requestFn }).catch(
+      (error) => {
+        if (compatibilityPreflight === pending) compatibilityPreflight = null;
+        throw error;
+      },
+    );
+    compatibilityPreflight = pending;
+    return pending;
+  };
   // Return a drop-in replacement for runBrowserMode so the browser session runner can stay unchanged.
   return async function remoteBrowserExecutor(
     options: BrowserRunOptions,
@@ -367,6 +453,7 @@ export function createRemoteBrowserExecutor({
 
     const body = Buffer.from(serializeRemoteRunPayloadForWire(payload));
     const { hostname, port } = parseHost(host);
+    await ensureCompatibleWorker();
 
     return new Promise<BrowserRunResult>((resolve, reject) => {
       const transferredFiles: SavedBrowserFile[] = [];
@@ -440,11 +527,12 @@ export function createRemoteBrowserExecutor({
         {
           hostname,
           port,
-          path: "/runs",
+          path: REMOTE_BROWSER_RUN_PATH,
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             "Content-Length": body.length,
+            ...REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
             ...(token ? { authorization: `Bearer ${token}` } : {}),
           },
         },
@@ -472,6 +560,28 @@ export function createRemoteBrowserExecutor({
           }
           const routeIdentity = readRemoteRouteIdentity(res.headers);
           acceptedRouteIdentity = routeIdentity;
+          if (!hasCompatibleRemoteRecoveryResponseHeaders(res.headers)) {
+            fail(
+              new RemoteRunFailedError(
+                "Remote worker accepted the run without echoing the exact browser recovery protocol contract; refusing a mixed-version route before waiting for browser execution.",
+                { errorClass: "integrity_ui_unknown", retryable: false },
+              ),
+            );
+            req.destroy();
+            res.destroy();
+            return;
+          }
+          if (!routeIdentity.runId || !routeIdentity.accountId || !routeIdentity.laneId) {
+            fail(
+              new RemoteRunFailedError(
+                "Versioned remote run response omitted a valid run/account/lane identity; refusing an unowned route.",
+                { errorClass: "integrity_ui_unknown", retryable: false },
+              ),
+            );
+            req.destroy();
+            res.destroy();
+            return;
+          }
           if (routeIdentity.runId || routeIdentity.accountId || routeIdentity.laneId) {
             log(
               `[remote] Accepted run route: run=${routeIdentity.runId ?? "unknown"} ` +
@@ -509,6 +619,17 @@ export function createRemoteBrowserExecutor({
           };
           armIdleTimer();
           const processLine = (line: string) => {
+            if (doneObserved) {
+              fail(
+                new RemoteRunFailedError("Remote run emitted data after its terminal done event.", {
+                  errorClass: "integrity_ui_unknown",
+                  retryable: false,
+                }),
+              );
+              req.destroy();
+              res.destroy();
+              return;
+            }
             const transferPromise = handleEvent({
               line,
               options,
@@ -781,7 +902,7 @@ export interface RecoverRemoteBrowserSessionOptions extends RemoteExecutorOption
  * This parser deliberately accepts only log + one terminal done event: a
  * recovery cannot submit, stage attachments, or transfer artifacts.
  */
-export function recoverRemoteBrowserSession({
+export async function recoverRemoteBrowserSession({
   host,
   token,
   accountId,
@@ -796,8 +917,11 @@ export function recoverRemoteBrowserSession({
     return Promise.reject(new Error("Invalid remote recovery account id."));
   }
   const body = Buffer.from(serializeRemoteBrowserRecoveryRequestForWire(request));
+  if (requestFn === http.request) {
+    await assertRemoteWorkerRecoveryCompatibility({ host, token, requestFn });
+  }
   const { hostname, port } = parseHost(host);
-  return new Promise<BrowserRunResult>((resolve, reject) => {
+  return await new Promise<BrowserRunResult>((resolve, reject) => {
     let settled = false;
     let doneResult: BrowserRunResult | null = null;
     let doneObserved = false;
@@ -840,12 +964,13 @@ export function recoverRemoteBrowserSession({
       {
         hostname,
         port,
-        path: "/recover",
+        path: REMOTE_BROWSER_RECOVERY_PATH,
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "Content-Length": body.length,
           "X-Oracle-Recovery-Account-Id": accountId,
+          ...REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
           ...(token ? { authorization: `Bearer ${token}` } : {}),
         },
       },
@@ -880,6 +1005,16 @@ export function recoverRemoteBrowserSession({
           return;
         }
         routeIdentity = readRemoteRouteIdentity(res.headers);
+        if (!hasCompatibleRemoteRecoveryResponseHeaders(res.headers)) {
+          fail(
+            new RemoteRunFailedError(
+              "Remote worker accepted recovery without echoing the exact browser recovery protocol contract; refusing a mixed-version route.",
+              { errorClass: "integrity_ui_unknown", retryable: false },
+            ),
+          );
+          res.destroy();
+          return;
+        }
         if (
           !routeIdentity.runId ||
           !routeIdentity.accountId ||
@@ -995,7 +1130,7 @@ export function recoverRemoteBrowserSession({
             );
             return;
           }
-          const recoveryProvenance = sanitizeRecoveryProvenance(event.provenance);
+          const recoveryProvenance = sanitizeStrongRemoteSuccessProvenance(event.provenance);
           if (!recoveryProvenance) {
             fail(
               new RemoteRunFailedError(
@@ -1192,6 +1327,19 @@ function handleEvent(params: {
     );
     return null;
   }
+  if (
+    !params.routeIdentity.runId ||
+    typeof event.runId !== "string" ||
+    event.runId !== params.routeIdentity.runId
+  ) {
+    params.onError(
+      new RemoteRunFailedError(
+        "Versioned remote run event id did not match its authenticated response route.",
+        { errorClass: "integrity_ui_unknown", retryable: false },
+      ),
+    );
+    return null;
+  }
   if (event.type === "log") {
     if (SUBMIT_CONFIRMATION_LOG_PATTERN.test(event.message)) {
       params.onSubmitObserved();
@@ -1216,6 +1364,15 @@ function handleEvent(params: {
     return null;
   }
   if (event.type === "artifact-ready") {
+    if (event.artifact?.runId !== params.routeIdentity.runId) {
+      params.onError(
+        new RemoteRunFailedError(
+          "Remote artifact descriptor did not match its authenticated run route.",
+          { errorClass: "integrity_ui_unknown", retryable: false },
+        ),
+      );
+      return null;
+    }
     const displayFilename = sanitizeArtifactFilename(
       String(event.artifact?.filename ?? ""),
       "artifact.bin",
@@ -1262,26 +1419,33 @@ function handleEvent(params: {
   }
   if (event.type === "done") {
     if (event.ok && event.result) {
+      const successProvenance = sanitizeStrongRemoteSuccessProvenance(event.provenance);
+      if (!successProvenance) {
+        params.onError(
+          new RemoteRunFailedError(
+            "Remote success lacked full message-handle capture-binding and challenge-clean provenance; refusing the unproven answer.",
+            { errorClass: "integrity_ui_unknown", retryable: false },
+          ),
+        );
+        return null;
+      }
       // §14.16 provenance distinction: what the worker verified is plumbing
       // evidence (model, capture binding, challenge-clean) — it does not
       // certify the answer's correctness.
-      if (event.provenance) {
-        const p = event.provenance;
-        params.options.log?.(
-          `[remote] Terminal done.ok observed. Provenance: model=${String(p.modelVerified)} ` +
-            `binding=${String(p.captureBindingVerified)} bindingQuality=${String(p.captureBindingQuality ?? null)} ` +
-            `challengeClean=${String(p.challengeClean)} ` +
-            "(provenance verified means the plumbing was right, not that the answer is correct).",
-        );
-      }
+      params.options.log?.(
+        `[remote] Terminal done.ok observed. Provenance: model=${String(successProvenance.modelVerified)} ` +
+          `binding=${String(successProvenance.captureBindingVerified)} bindingQuality=${String(successProvenance.captureBindingQuality)} ` +
+          `challengeClean=${String(successProvenance.challengeClean)} ` +
+          "(provenance verified means the plumbing was right, not that the answer is correct).",
+      );
       params.onResult({
         ...event.result,
         remoteRun: {
-          runId: event.runId ?? params.routeIdentity.runId,
+          runId: params.routeIdentity.runId,
           accountId: params.routeIdentity.accountId,
           laneId: params.routeIdentity.laneId,
           terminalDoneOk: true,
-          provenance: event.provenance ?? null,
+          provenance: successProvenance,
         },
       });
       params.onDone();
@@ -1346,13 +1510,13 @@ function handleEvent(params: {
       const failedRoute = failedRouteFromIdentity(params.routeIdentity);
       if (failedRoute) remoteFailedRouteByError.set(recoveryError, failedRoute);
       const executableRecovery = recovery as RemoteBrowserRecoveryRequest["recovery"];
-      const promptPreview = resolveRecoveryPromptPreview(params.options, executableRecovery);
-      if (promptPreview) {
+      const ownership = resolveRecoveryPromptOwnership(params.options, executableRecovery);
+      if (ownership) {
         remoteRecoveryByError.set(recoveryError, {
           recovery: executableRecovery,
           accountId: params.routeIdentity.accountId,
           laneId: params.routeIdentity.laneId,
-          promptPreview,
+          ...ownership,
         });
       }
       params.onError(recoveryError);

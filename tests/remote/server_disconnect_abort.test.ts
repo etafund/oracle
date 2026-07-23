@@ -7,6 +7,10 @@ import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { createRemoteServer } from "../../src/remote/server.js";
 import { runBrowserMode } from "../../src/browser/index.js";
 import type { BrowserRunResult } from "../../src/browserMode.js";
+import {
+  REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
+  REMOTE_BROWSER_RUN_PATH,
+} from "../../src/remote/types.js";
 
 // Caller-gone abort contract: a dropped caller must not pin a lane for the
 // remainder of the run. On client disconnect the server aborts the run's
@@ -263,10 +267,11 @@ describe("client-disconnect abort", () => {
           {
             hostname: "127.0.0.1",
             port: server.port,
-            path: "/runs",
+            path: REMOTE_BROWSER_RUN_PATH,
             method: "POST",
             headers: {
               authorization: "Bearer secret",
+              ...REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
               "content-type": "application/json",
               "content-length": Buffer.byteLength(body),
             },
@@ -402,10 +407,11 @@ function startAbortableRun(
       {
         hostname: "127.0.0.1",
         port,
-        path: "/runs",
+        path: REMOTE_BROWSER_RUN_PATH,
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
+          ...REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
           "content-type": "application/json",
           "content-length": Buffer.byteLength(body),
         },

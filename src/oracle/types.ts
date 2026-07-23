@@ -244,16 +244,24 @@ export interface RunOracleOptions {
   /** Skip preamble tips (no-files / short prompt) when a higher-level runner already printed them. */
   suppressTips?: boolean;
   lane?: string;
+  /**
+   * How a reviewed lane was selected before its engine/model options were
+   * normalized. The Fable runner uses this provenance to preserve only the
+   * historical `--engine claude-code --model fable` unpinned-account path;
+   * missing or other provenance fails closed for `fable-local`.
+   */
+  laneInferenceSource?: "lane" | "legacy-engine-model" | "mcp-lane" | "mcp-engine-model";
   claudeCode?: {
     executable?: string;
     /**
      * Opt-in `caam shallow-spawn` profile name (caam-map.md §4). Mirrors
      * `executable`'s override pattern: this programmatic ("config key")
      * form takes precedence over the `ORACLE_CLAUDE_CODE_CAAM_PROFILE` env
-     * var. Unset by default — the claude-code lane only activates caam when
-     * a profile is explicitly configured. Once configured, selection is
-     * fail-closed: a CAAM/preflight failure aborts instead of falling back
-     * to an unpinned direct-`claude` account.
+     * var. The reviewed `--lane fable-local` route requires this selection;
+     * only the compatibility `--engine claude-code --model fable` form may
+     * retain the historical unpinned direct-`claude` behavior. Once a profile
+     * is configured, selection is fail-closed: a CAAM/preflight failure aborts
+     * instead of falling back to another account.
      */
     caamProfile?: string;
     /**
@@ -274,19 +282,17 @@ export interface RunOracleOptions {
     strictMcpConfig: true;
     noChrome: true;
     /**
-     * `true` for a one-shot run (default — matches today's exact behavior:
-     * `--no-session-persistence`, nothing left to resume). Set to `false`
-     * only when `resumeSessionId` is populated for a `--followup` resume,
-     * so the underlying `claude` process is allowed to persist under that
-     * session id (claude-provider-map.md finding #2).
+     * Actual session-persistence policy. Reviewed Fable runs set this false,
+     * mint/pass `--session-id <uuid>`, and retain the transcript for
+     * `--followup`; resumed runs also keep it false. The historical direct
+     * engine/model compatibility one-shot keeps this true.
      */
     noSessionPersistence: boolean;
     /**
-     * Multi-turn resume primitive: a stable per-oracle-session UUID passed
-     * to the real CLI as `--session-id <uuid>` instead of
-     * `--no-session-persistence`. Populated only by oracle's own
-     * `--followup <sessionId>` resolution (never a raw `--resume`/
-     * `--continue`/`--fork-session` passthrough).
+     * Multi-turn resume primitive: the prior Claude conversation's stable
+     * UUID, passed to the real CLI as `--resume <uuid>`. Populated only by
+     * Oracle's own `--followup <sessionId>` resolution; raw resume/continue/
+     * fork passthrough remains refused.
      */
     resumeSessionId?: string;
     waitForLockMs?: number;

@@ -16,13 +16,20 @@ const MAX_RECOVERY_SECRET_BYTES = 64 * 1024;
 const EXECUTABLE_STAGE_SET: ReadonlySet<string> = new Set(REMOTE_SESSION_RECOVERY_STAGES);
 
 export interface StoredRemoteBrowserRecoverySecret extends RemoteBrowserRecoveryCarrier {
-  schema: "remote-browser-recovery-secret.v1";
+  schema: "remote-browser-recovery-secret.v2";
 }
 
 export class InvalidStoredRemoteRecoverySecretError extends Error {
-  constructor(message = "Stored remote browser recovery secret is invalid.", cause?: unknown) {
+  readonly kind: "invalid" | "legacy_protocol";
+
+  constructor(
+    message = "Stored remote browser recovery secret is invalid.",
+    cause?: unknown,
+    kind: "invalid" | "legacy_protocol" = "invalid",
+  ) {
     super(message, cause === undefined ? undefined : { cause });
     this.name = "InvalidStoredRemoteRecoverySecretError";
+    this.kind = kind;
   }
 }
 
@@ -100,12 +107,28 @@ export async function writeRemoteBrowserRecoverySecret(
   sessionId: string,
   carrier: RemoteBrowserRecoveryCarrier,
 ): Promise<void> {
+  const recovery = sanitizeRemoteRunRecoveryHint(carrier.recovery);
+  if (
+    !recovery ||
+    !EXECUTABLE_STAGE_SET.has(recovery.stage) ||
+    !/^[A-Za-z0-9._-]{1,64}$/.test(carrier.accountId) ||
+    !(carrier.laneId === null || /^[A-Za-z0-9._-]{1,64}$/.test(carrier.laneId)) ||
+    !carrier.promptPreview.trim() ||
+    carrier.promptPreview.length > 160 ||
+    computePromptSha256(carrier.promptPreview) !== recovery.promptPreviewSha256 ||
+    !/^[a-f0-9]{64}$/.test(carrier.promptDomSha256) ||
+    carrier.promptDomSha256 !== recovery.promptDomSha256
+  ) {
+    throw new InvalidStoredRemoteRecoverySecretError(
+      "Refusing to persist an invalid remote browser recovery secret.",
+    );
+  }
   const paths = await getSessionPaths(sessionId);
   const originRunId = carrier.recovery.originRunId;
   const destination = secretPath(paths.dir, originRunId);
   const temporary = `${destination}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
   const payload: StoredRemoteBrowserRecoverySecret = {
-    schema: "remote-browser-recovery-secret.v1",
+    schema: "remote-browser-recovery-secret.v2",
     ...carrier,
   };
   await withRecoverySecretLock(paths.dir, originRunId, async () => {
@@ -196,12 +219,20 @@ async function readRemoteBrowserRecoverySecretFile(
       error,
     );
   }
+  if (value.schema === "remote-browser-recovery-secret.v1") {
+    throw new InvalidStoredRemoteRecoverySecretError(
+      "Legacy remote browser recovery v1 sidecars are guidance-only and cannot be executed.",
+      undefined,
+      "legacy_protocol",
+    );
+  }
   const recovery = sanitizeRemoteRunRecoveryHint(value.recovery);
   const accountId = value.accountId;
   const laneId = value.laneId;
   const promptPreview = value.promptPreview;
+  const promptDomSha256 = value.promptDomSha256;
   if (
-    value.schema !== "remote-browser-recovery-secret.v1" ||
+    value.schema !== "remote-browser-recovery-secret.v2" ||
     !recovery ||
     !EXECUTABLE_STAGE_SET.has(recovery.stage) ||
     typeof accountId !== "string" ||
@@ -210,16 +241,20 @@ async function readRemoteBrowserRecoverySecretFile(
     typeof promptPreview !== "string" ||
     promptPreview.length > 160 ||
     !promptPreview.trim() ||
-    computePromptSha256(promptPreview) !== recovery.promptPreviewSha256
+    computePromptSha256(promptPreview) !== recovery.promptPreviewSha256 ||
+    typeof promptDomSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(promptDomSha256) ||
+    promptDomSha256 !== recovery.promptDomSha256
   ) {
     throw new InvalidStoredRemoteRecoverySecretError();
   }
   return {
-    schema: "remote-browser-recovery-secret.v1",
+    schema: "remote-browser-recovery-secret.v2",
     recovery: recovery as StoredRemoteBrowserRecoverySecret["recovery"],
     accountId,
     laneId,
     promptPreview,
+    promptDomSha256,
   };
 }
 

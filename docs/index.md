@@ -14,7 +14,8 @@ oracle --lane chatgpt-pro \
   -p "Review the storage layer for schema drift" --file "src/**/*.ts"
 
 # Fable xHigh local lane.
-oracle --lane fable-local -p "Challenge this migration plan" --file docs/plan.md
+oracle --lane fable-local --caam-profile my-profile \
+  -p "Challenge this migration plan" --file docs/plan.md
 
 # Gemini 3.1 Deep Think browser lane.
 oracle --engine browser --provider gemini --gemini-deep-think \

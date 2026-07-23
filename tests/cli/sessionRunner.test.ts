@@ -76,7 +76,12 @@ import {
 } from "../../src/browser/sessionRunner.ts";
 import { sendSessionNotification } from "../../src/cli/notifier.ts";
 import { getCliVersion } from "../../src/version.ts";
+import { RemoteRunFailedError } from "../../src/remote/client.ts";
 import { deriveModelOutputPath } from "../../src/cli/sessionRunner.ts";
+import {
+  PROMPT_DOM_IDENTITY_ALGORITHM,
+  PROMPT_RECOVERY_PREVIEW_ALGORITHM,
+} from "../../src/browser/promptDomMatch.ts";
 import { peekClaudeCodeSingleFlightLocks } from "../../src/cli/sessionRunner.ts";
 import { resumeBrowserSession } from "../../src/browser/reattach.ts";
 import { setOracleHomeDirOverrideForTest } from "../../src/oracleHome.ts";
@@ -212,15 +217,19 @@ function createFakeClaudeExecutable({
     `const markerPath = ${JSON.stringify(markerPath)};`,
     `const stdoutEvents = ${JSON.stringify(events)};`,
     `const lingerMs = ${JSON.stringify(lingerMs)};`,
+    "const argv = process.argv.slice(2);",
+    "const sessionFlagIndex = Math.max(argv.indexOf('--session-id'), argv.indexOf('--resume'));",
+    "const sessionId = sessionFlagIndex >= 0 ? argv[sessionFlagIndex + 1] : undefined;",
     "let input = '';",
     "process.stdin.setEncoding('utf8');",
     "process.stdin.on('data', (chunk) => { input += chunk; });",
     "process.stdin.on('end', () => {",
     "  fs.writeFileSync(markerPath, 'spawned\\n');",
-    "  fs.writeFileSync(argvPath, JSON.stringify(process.argv.slice(2), null, 2));",
+    "  fs.writeFileSync(argvPath, JSON.stringify(argv, null, 2));",
     "  fs.writeFileSync(stdinPath, input);",
     "  for (const event of stdoutEvents) {",
-    "    process.stdout.write(`${JSON.stringify(event)}\\n`);",
+    "    const emitted = sessionId && event.type === 'system' && event.subtype === 'init' ? { ...event, session_id: sessionId } : event;",
+    "    process.stdout.write(`${JSON.stringify(emitted)}\\n`);",
     "  }",
     "  process.stderr.write('fake stderr\\n');",
     "  if (lingerMs > 0) {",
@@ -277,6 +286,8 @@ function createFakeCaamExecutable({
     `const doctorHealthy = ${JSON.stringify(doctorHealthy)};`,
     `const stdoutEvents = ${JSON.stringify(events)};`,
     "const argv = process.argv.slice(2);",
+    "const sessionFlagIndex = Math.max(argv.indexOf('--session-id'), argv.indexOf('--resume'));",
+    "const sessionId = sessionFlagIndex >= 0 ? argv[sessionFlagIndex + 1] : undefined;",
     "if (argv[0] === 'shallow-spawn' && argv.includes('--print-env')) {",
     "  fs.writeFileSync(doctorInvocationArgvPath, JSON.stringify(argv, null, 2));",
     "  const verdict = doctorHealthy",
@@ -294,7 +305,8 @@ function createFakeCaamExecutable({
     "    fs.writeFileSync(markerPath, 'spawned\\n');",
     "    fs.writeFileSync(stdinPath, input);",
     "    for (const event of stdoutEvents) {",
-    "      process.stdout.write(`${JSON.stringify(event)}\\n`);",
+    "      const emitted = sessionId && event.type === 'system' && event.subtype === 'init' ? { ...event, session_id: sessionId } : event;",
+    "      process.stdout.write(`${JSON.stringify(emitted)}\\n`);",
     "    }",
     "    process.stderr.write('fake stderr\\n');",
     "  });",
@@ -362,6 +374,8 @@ function createFakeCaamExecutableWithRotation({
     "  return fs.readFileSync(p, 'utf8').split('\\n').filter(Boolean).length;",
     "}",
     "const argv = process.argv.slice(2);",
+    "const sessionFlagIndex = Math.max(argv.indexOf('--session-id'), argv.indexOf('--resume'));",
+    "const sessionId = sessionFlagIndex >= 0 ? argv[sessionFlagIndex + 1] : undefined;",
     "if (argv[0] === 'shallow-spawn' && argv.includes('--print-env') && argv.includes('--json')) {",
     "  const profile = argv[1];",
     "  appendLog('doctor-calls.jsonl', argv);",
@@ -382,7 +396,8 @@ function createFakeCaamExecutableWithRotation({
     "    fs.writeFileSync(path.join(logsDir, 'markers', profile + '.marker'), input);",
     "    const events = profileStdoutEvents[profile] || defaultStdoutEvents;",
     "    for (const event of events) {",
-    "      process.stdout.write(JSON.stringify(event) + '\\n');",
+    "      const emitted = sessionId && event.type === 'system' && event.subtype === 'init' ? { ...event, session_id: sessionId } : event;",
+    "      process.stdout.write(JSON.stringify(emitted) + '\\n');",
     "    }",
     "    process.stderr.write('fake stderr\\n');",
     "  });",
@@ -535,13 +550,17 @@ describe("performSessionRun", () => {
       accountId: "acct1",
       laneId: "acct1-9473",
       promptPreview: "original prompt",
+      promptDomSha256: "d".repeat(64),
       recovery: {
         category: "browser-automation",
         stage: "capture-binding",
         originRunId: "remote-run-1",
         expiresAt: "2026-07-23T00:00:00.000Z",
-        capability: `v1.${"a".repeat(43)}`,
-        promptPreviewSha256: "deadbeef",
+        capability: `v2.${"a".repeat(43)}`,
+        promptPreviewAlgorithm: PROMPT_RECOVERY_PREVIEW_ALGORITHM,
+        promptPreviewSha256: "a".repeat(64),
+        promptDomIdentityAlgorithm: PROMPT_DOM_IDENTITY_ALGORITHM,
+        promptDomSha256: "d".repeat(64),
         runtime: {
           tabUrl: "https://chatgpt.com/c/remote-conversation",
           conversationId: "remote-conversation",
@@ -625,13 +644,17 @@ describe("performSessionRun", () => {
       accountId: "acct1",
       laneId: "acct1-9473",
       promptPreview: "original prompt",
+      promptDomSha256: "d".repeat(64),
       recovery: {
         category: "browser-automation",
         stage: "capture-binding",
         originRunId: "remote-run-1",
         expiresAt: "2026-07-23T00:00:00.000Z",
-        capability: `v1.${"a".repeat(43)}`,
-        promptPreviewSha256: "deadbeef",
+        capability: `v2.${"a".repeat(43)}`,
+        promptPreviewAlgorithm: PROMPT_RECOVERY_PREVIEW_ALGORITHM,
+        promptPreviewSha256: "a".repeat(64),
+        promptDomIdentityAlgorithm: PROMPT_DOM_IDENTITY_ALGORITHM,
+        promptDomSha256: "d".repeat(64),
         runtime: {
           tabUrl: "https://chatgpt.com/c/remote-conversation",
           conversationId: "remote-conversation",
@@ -952,13 +975,17 @@ describe("performSessionRun", () => {
       accountId: "acct1",
       laneId: "acct1-9473",
       promptPreview: "original prompt",
+      promptDomSha256: "d".repeat(64),
       recovery: {
         category: "browser-automation",
         stage: "capture-binding",
         originRunId: "remote-run-1",
         expiresAt: "2026-07-23T00:00:00.000Z",
-        capability: `v1.${"a".repeat(43)}`,
-        promptPreviewSha256: "deadbeef",
+        capability: `v2.${"a".repeat(43)}`,
+        promptPreviewAlgorithm: PROMPT_RECOVERY_PREVIEW_ALGORITHM,
+        promptPreviewSha256: "a".repeat(64),
+        promptDomIdentityAlgorithm: PROMPT_DOM_IDENTITY_ALGORITHM,
+        promptDomSha256: "d".repeat(64),
         runtime: {
           tabUrl: "https://chatgpt.com/c/remote-run-1",
           conversationId: "remote-run-1",
@@ -1113,7 +1140,205 @@ describe("performSessionRun", () => {
     },
   );
 
-  test("default claude-code runner spawns a guarded local claude process with stdin prompt and raw artifacts", async () => {
+  test("persists remote retryability taxonomy for restart policy", async () => {
+    let current: SessionMetadata = {
+      ...baseSessionMeta,
+      status: "pending",
+      mode: "browser",
+      model: "gpt-5.6-sol",
+      browser: { config: { chromePath: null } },
+    };
+    sessionStoreMock.updateSession.mockImplementation(
+      async (
+        _sessionId: string,
+        updates:
+          | Partial<SessionMetadata>
+          | ((metadata: SessionMetadata) => Partial<SessionMetadata>),
+      ) => {
+        const patch = typeof updates === "function" ? updates(current) : updates;
+        current = { ...current, ...patch };
+        return current;
+      },
+    );
+    sessionStoreMock.updateModelRun.mockResolvedValue({});
+    vi.mocked(runBrowserSessionExecution).mockRejectedValueOnce(
+      new RemoteRunFailedError("worker disconnected before submit", {
+        errorClass: "transport_interrupted_before_submit",
+        retryable: true,
+      }),
+    );
+
+    await expect(
+      performSessionRun({
+        sessionMeta: current,
+        runOptions: { ...baseRunOptions, model: "gpt-5.6-sol" },
+        mode: "browser",
+        browserConfig: { chromePath: null },
+        cwd: "/tmp",
+        log,
+        write,
+        version: cliVersion,
+      }),
+    ).rejects.toBeInstanceOf(RemoteRunFailedError);
+
+    expect(current.error).toEqual({
+      category: "browser-automation",
+      message: "worker disconnected before submit",
+      details: {
+        stage: "remote-run",
+        errorClass: "transport_interrupted_before_submit",
+        retryable: true,
+      },
+    });
+  });
+
+  test("does not publish a single-turn recovery capability for a failed multi-turn remote run", async () => {
+    let current: SessionMetadata = {
+      ...baseSessionMeta,
+      options: { browserFollowUps: ["challenge the first answer"] },
+      status: "pending",
+      mode: "browser",
+      model: "gpt-5.6-sol",
+      browser: { config: { chromePath: null } },
+    };
+    sessionStoreMock.updateSession.mockImplementation(
+      async (
+        _sessionId: string,
+        updates:
+          | Partial<SessionMetadata>
+          | ((metadata: SessionMetadata) => Partial<SessionMetadata>),
+      ) => {
+        const patch = typeof updates === "function" ? updates(current) : updates;
+        current = { ...current, ...patch };
+        return current;
+      },
+    );
+    const failedRoute = {
+      runId: "multi-turn-origin",
+      accountId: "acct2",
+      laneId: "acct2-9474",
+      terminalDoneOk: false as const,
+      provenance: null,
+    };
+    const recoveryCarrier: RemoteBrowserRecoveryCarrier = {
+      accountId: "acct2",
+      laneId: "acct2-9474",
+      promptPreview: "challenge the first answer",
+      promptDomSha256: "d".repeat(64),
+      recovery: {
+        category: "browser-automation",
+        stage: "capture-binding",
+        originRunId: "multi-turn-origin",
+        expiresAt: "2026-07-23T00:00:00.000Z",
+        capability: `v2.${"a".repeat(43)}`,
+        promptPreviewAlgorithm: PROMPT_RECOVERY_PREVIEW_ALGORITHM,
+        promptPreviewSha256: "a".repeat(64),
+        promptDomIdentityAlgorithm: PROMPT_DOM_IDENTITY_ALGORITHM,
+        promptDomSha256: "d".repeat(64),
+        runtime: {
+          tabUrl: "https://chatgpt.com/c/multi-turn-origin",
+          conversationId: "multi-turn-origin",
+          promptSubmitted: true,
+        },
+      },
+    };
+    vi.mocked(runBrowserSessionExecution).mockRejectedValueOnce(
+      new Error("remote multi-turn transport failed"),
+    );
+    const persistState = vi.fn(async ({ browser, failedRoute: route }) => {
+      const persistedBrowser = { ...browser, remoteRun: route };
+      current = { ...current, browser: persistedBrowser };
+      return persistedBrowser;
+    });
+
+    await expect(
+      performSessionRun({
+        sessionMeta: current,
+        runOptions: {
+          ...baseRunOptions,
+          model: "gpt-5.6-sol",
+          browserFollowUps: ["challenge the first answer"],
+        },
+        mode: "browser",
+        browserConfig: { chromePath: null },
+        cwd: "/tmp",
+        log,
+        write,
+        version: cliVersion,
+        remoteFailureDeps: {
+          getFailedRoute: () => failedRoute,
+          getRecovery: () => recoveryCarrier,
+          persistState,
+        },
+      }),
+    ).rejects.toThrow("remote multi-turn transport failed");
+
+    expect(persistState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        failedRoute,
+        recoveryCarrier: null,
+      }),
+    );
+    expect(current.browser?.remoteRun).toMatchObject(failedRoute);
+    expect(current.browser?.remoteRecovery).toBeUndefined();
+  });
+
+  test("default reviewed Fable runner refuses an absent CAAM profile before executable resolution", async () => {
+    let current: SessionMetadata = {
+      ...baseSessionMeta,
+      mode: "claude-code",
+      model: "fable",
+    };
+    sessionStoreMock.updateSession.mockImplementation(
+      async (
+        _sessionId: string,
+        updates:
+          | Partial<SessionMetadata>
+          | ((metadata: SessionMetadata) => Partial<SessionMetadata>),
+      ) => {
+        const patch = typeof updates === "function" ? updates(current) : updates;
+        current = { ...current, ...patch };
+        return current;
+      },
+    );
+    sessionStoreMock.updateModelRun.mockResolvedValue({});
+
+    await expect(
+      withExactEnv(
+        {
+          ...blockedClaudeCodeEnvDefaults,
+          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: undefined,
+          ORACLE_CLAUDE_CODE_EXECUTABLE: "/definitely/not/a/claude/executable",
+        },
+        () =>
+          performSessionRun({
+            sessionMeta: current,
+            runOptions: {
+              prompt: "Review this change",
+              model: "fable",
+              lane: "fable-local",
+              laneInferenceSource: "lane",
+              claudeCode: fableClaudeCodePolicy,
+            },
+            mode: "claude-code",
+            cwd: "/tmp",
+            log,
+            write,
+            version: cliVersion,
+          }),
+      ),
+    ).rejects.toThrow(/requires a CAAM subscription profile/i);
+
+    expect(current).toMatchObject({
+      status: "error",
+      error: {
+        category: "prompt-validation",
+        details: { blockedReason: "caam_profile_required" },
+      },
+    });
+  });
+
+  test("legacy normalized fable-local route still spawns an unpinned guarded Claude process", async () => {
     vi.mocked(fsPromises.mkdir).mockRestore();
     vi.mocked(fsPromises.writeFile).mockRestore();
 
@@ -1201,6 +1426,8 @@ describe("performSessionRun", () => {
             runOptions: {
               prompt: "Review via fake executable",
               model: "fable",
+              lane: "fable-local",
+              laneInferenceSource: "legacy-engine-model",
               file: [contextPath],
             },
             mode: "claude-code",
@@ -3244,6 +3471,8 @@ describe("performSessionRun", () => {
       promptPreview: "Expensive submitted prompt",
       browser: {
         config: { manualLogin: true },
+        submittedPromptPreview: "latest normalized submitted follow-up",
+        submittedPromptDomSha256: "a".repeat(64),
         runtime: {
           chromePort: 9222,
           chromeHost: "127.0.0.1",
@@ -3282,6 +3511,11 @@ describe("performSessionRun", () => {
       promptSubmitted: true,
     });
     expect(recoveryRuntime?.chromeTargetId).toBeUndefined();
+    expect(vi.mocked(resumeBrowserSession).mock.calls[0]?.[3]).toEqual({
+      promptPreview: "latest normalized submitted follow-up",
+      promptDomSha256: "a".repeat(64),
+      requirePromptPreviewMatch: true,
+    });
     expect(vi.mocked(ensureSessionArtifacts)).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: submittedSessionMeta.id,
@@ -4103,6 +4337,207 @@ describe("performSessionRun", () => {
     expect(vi.mocked(sendSessionNotification)).toHaveBeenCalled();
   });
 
+  test("persists the latest follow-up ownership but refuses single-answer recovery for a timed-out multi-turn run", async () => {
+    let stored: SessionMetadata = {
+      ...baseSessionMeta,
+      options: {
+        ...baseSessionMeta.options,
+        prompt: "Initial markdown prompt",
+        browserFollowUps: ["Follow-up with **different** ownership text"],
+      },
+    };
+    sessionStoreMock.updateSession.mockImplementation(
+      async (
+        _sessionId: string,
+        updates:
+          | Partial<SessionMetadata>
+          | ((metadata: SessionMetadata) => Partial<SessionMetadata>),
+      ) => {
+        const patch = typeof updates === "function" ? await updates(stored) : updates;
+        stored = { ...stored, ...patch };
+        return stored;
+      },
+    );
+    const automationError = new BrowserAutomationError("follow-up assistant timed out", {
+      stage: "assistant-timeout",
+      runtime: {
+        chromePort: 9222,
+        chromeHost: "127.0.0.1",
+        tabUrl: "https://chatgpt.com/c/follow-up-demo",
+        promptSubmitted: true,
+      },
+    });
+    vi.mocked(runBrowserSessionExecution).mockImplementationOnce(async (_args, deps) => {
+      await deps?.persistSubmittedPromptPreview?.("normalized initial markdown prompt");
+      await deps?.persistSubmittedPromptPreview?.(
+        "normalized initial markdown prompt",
+        "a".repeat(64),
+      );
+      await deps?.persistRuntimeHint?.({
+        chromePort: 9222,
+        chromeHost: "127.0.0.1",
+        tabUrl: "https://chatgpt.com/c/follow-up-demo",
+        promptSubmitted: true,
+      });
+      // A new attempt invalidates the previous bound digest before dispatch,
+      // then the committed follow-up installs its own identity pair.
+      await deps?.persistSubmittedPromptPreview?.(
+        "normalized follow-up with different ownership text",
+      );
+      await deps?.persistSubmittedPromptPreview?.(
+        "normalized follow-up with different ownership text",
+        "b".repeat(64),
+      );
+      throw automationError;
+    });
+    vi.mocked(resumeBrowserSession).mockResolvedValue({
+      answerText: "follow-up answer",
+      answerMarkdown: "follow-up answer",
+    });
+
+    await performSessionRun({
+      sessionMeta: stored,
+      runOptions: {
+        ...baseRunOptions,
+        prompt: "Initial markdown prompt",
+        browserFollowUps: ["Follow-up with **different** ownership text"],
+      },
+      mode: "browser",
+      browserConfig: {
+        chromePath: null,
+        autoReattachDelayMs: 0,
+        autoReattachIntervalMs: 1000,
+        autoReattachTimeoutMs: 1000,
+      },
+      cwd: "/tmp",
+      log,
+      write,
+      version: cliVersion,
+    });
+
+    expect(stored.browser?.submittedPromptPreview).toBe(
+      "normalized follow-up with different ownership text",
+    );
+    expect(stored.browser?.submittedPromptDomSha256).toBe("b".repeat(64));
+    expect(vi.mocked(resumeBrowserSession)).not.toHaveBeenCalled();
+    expect(stored).toMatchObject({
+      status: "error",
+      response: { status: "incomplete", incompleteReason: "incomplete-capture" },
+    });
+    expect(log.mock.calls.map((call) => String(call[0])).join("\n")).toContain(
+      "multi-turn browser run cannot be completed from one recovered answer",
+    );
+  });
+
+  test("refuses dispatch when the prior prompt ownership cannot be durably invalidated", async () => {
+    let stored: SessionMetadata = {
+      ...baseSessionMeta,
+      browser: {
+        config: { chromePath: null },
+        submittedPromptPreview: "older completed prompt",
+        submittedPromptDomSha256: "a".repeat(64),
+      },
+    };
+    let updateCount = 0;
+    sessionStoreMock.updateSession.mockImplementation(
+      async (
+        _sessionId: string,
+        updates:
+          | Partial<SessionMetadata>
+          | ((metadata: SessionMetadata) => Partial<SessionMetadata>),
+      ) => {
+        updateCount += 1;
+        if (updateCount === 2) {
+          throw new Error("metadata write unavailable");
+        }
+        const patch = typeof updates === "function" ? await updates(stored) : updates;
+        stored = { ...stored, ...patch };
+        return stored;
+      },
+    );
+    let dispatched = false;
+    vi.mocked(runBrowserSessionExecution).mockImplementationOnce(async (_args, deps) => {
+      await deps?.persistSubmittedPromptPreview?.("new prompt");
+      dispatched = true;
+      throw new Error("unreachable");
+    });
+
+    await expect(
+      performSessionRun({
+        sessionMeta: stored,
+        runOptions: baseRunOptions,
+        mode: "browser",
+        browserConfig: { chromePath: null },
+        cwd: "/tmp",
+        log,
+        write,
+        version: cliVersion,
+      }),
+    ).rejects.toThrow("metadata write unavailable");
+
+    expect(dispatched).toBe(false);
+    expect(stored.browser?.submittedPromptPreview).toBe("new prompt");
+    expect(stored.browser?.submittedPromptDomSha256).toBeUndefined();
+  });
+
+  test("continues live capture but leaves recovery disabled when the bound digest write fails", async () => {
+    let stored: SessionMetadata = {
+      ...baseSessionMeta,
+      browser: {
+        config: { chromePath: null },
+        submittedPromptPreview: "older completed prompt",
+        submittedPromptDomSha256: "a".repeat(64),
+      },
+    };
+    let updateCount = 0;
+    sessionStoreMock.updateSession.mockImplementation(
+      async (
+        _sessionId: string,
+        updates:
+          | Partial<SessionMetadata>
+          | ((metadata: SessionMetadata) => Partial<SessionMetadata>),
+      ) => {
+        updateCount += 1;
+        if (updateCount === 3) {
+          throw new Error("bound digest write unavailable");
+        }
+        const patch = typeof updates === "function" ? await updates(stored) : updates;
+        stored = { ...stored, ...patch };
+        return stored;
+      },
+    );
+    vi.mocked(runBrowserSessionExecution).mockImplementationOnce(async (_args, deps) => {
+      await deps?.persistSubmittedPromptPreview?.("new prompt");
+      await deps?.persistSubmittedPromptPreview?.("new prompt", "b".repeat(64));
+      return {
+        usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0, totalTokens: 5 },
+        elapsedMs: 50,
+        runtime: { chromePid: 1, chromePort: 9222, userDataDir: "/tmp/chrome" },
+        answerText: "captured successfully",
+      };
+    });
+
+    await expect(
+      performSessionRun({
+        sessionMeta: stored,
+        runOptions: baseRunOptions,
+        mode: "browser",
+        browserConfig: { chromePath: null },
+        cwd: "/tmp",
+        log,
+        write,
+        version: cliVersion,
+      }),
+    ).resolves.not.toThrow();
+
+    expect(stored.status).toBe("completed");
+    expect(stored.browser?.submittedPromptPreview).toBe("new prompt");
+    expect(stored.browser?.submittedPromptDomSha256).toBeUndefined();
+    expect(log.mock.calls.map((call) => String(call[0])).join("\n")).toContain(
+      "continuing live capture with reattach disabled for this turn",
+    );
+  });
+
   test("auto-reattach stops after a hard cap when it cannot capture an answer", async () => {
     vi.useFakeTimers();
     try {
@@ -4361,8 +4796,11 @@ describe("claude-code caam shallow-spawn integration (caam-map.md §4)", () => {
             runOptions: {
               prompt: "Review via caam",
               model: "fable",
+              lane: "fable-local",
+              laneInferenceSource: "lane",
               claudeCode: {
                 ...fableClaudeCodePolicy,
+                noSessionPersistence: false,
                 caamProfile: "beta",
                 caamBase,
               },
@@ -4395,7 +4833,19 @@ describe("claude-code caam shallow-spawn integration (caam-map.md §4)", () => {
       const shallowSpawnArgv = JSON.parse(
         fs.readFileSync(shallowSpawnArgvPath, "utf8"),
       ) as string[];
-      const expectedInner = buildClaudeCodeCommand({ executable: claudePath, model: "fable" });
+      const sessionIdIndex = shallowSpawnArgv.indexOf("--session-id");
+      expect(sessionIdIndex).toBeGreaterThan(-1);
+      const persistedSessionId = shallowSpawnArgv[sessionIdIndex + 1];
+      expect(persistedSessionId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+      );
+      expect(shallowSpawnArgv).not.toContain("--no-session-persistence");
+      expect(shallowSpawnArgv).not.toContain("--resume");
+      const expectedInner = buildClaudeCodeCommand({
+        executable: claudePath,
+        model: "fable",
+        sessionId: persistedSessionId,
+      });
       expect(shallowSpawnArgv).toEqual([
         "shallow-spawn",
         "beta",
@@ -4417,8 +4867,68 @@ describe("claude-code caam shallow-spawn integration (caam-map.md §4)", () => {
         status: "completed",
         mode: "claude-code",
         claudeCode: {
+          claude_session_id: persistedSessionId,
           caam_profile: "beta",
           caam_base: caamBase,
+          read_only: { sessionPersistenceDisabled: false },
+        },
+      });
+
+      // A later Oracle follow-up must use Claude's real resume primitive with
+      // the exact persisted UUID, never try to start a second --session-id.
+      const followupSessionDir = path.join(fixture.sessionsDir, "sess-followup");
+      fs.mkdirSync(followupSessionDir, { recursive: true, mode: 0o700 });
+      sessionStoreMock.getPaths.mockResolvedValue({
+        dir: followupSessionDir,
+        metadata: path.join(followupSessionDir, "meta.json"),
+        request: path.join(followupSessionDir, "request.json"),
+        log: path.join(followupSessionDir, "output.log"),
+      });
+      await withExactEnv(
+        {
+          ...blockedClaudeCodeEnvDefaults,
+          PATH: `${fixture.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+          [ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR]: "beta",
+        },
+        async () => {
+          await performSessionRun({
+            sessionMeta: {
+              ...baseSessionMeta,
+              id: "sess-followup",
+              mode: "claude-code",
+              model: "fable",
+            },
+            runOptions: {
+              prompt: "Continue via caam",
+              model: "fable",
+              lane: "fable-local",
+              laneInferenceSource: "lane",
+              claudeCode: {
+                ...fableClaudeCodePolicy,
+                noSessionPersistence: false,
+                resumeSessionId: persistedSessionId,
+                caamProfile: "beta",
+                caamBase,
+              },
+            },
+            mode: "claude-code",
+            cwd: fixture.repoDir,
+            log,
+            write,
+            version: cliVersion,
+            muteStdout: true,
+          });
+        },
+      );
+      const followupArgv = JSON.parse(fs.readFileSync(shallowSpawnArgvPath, "utf8")) as string[];
+      expect(followupArgv[followupArgv.indexOf("--resume") + 1]).toBe(persistedSessionId);
+      expect(followupArgv).not.toContain("--session-id");
+      expect(followupArgv).not.toContain("--no-session-persistence");
+      expect(sessionStoreMock.updateSession.mock.calls.at(-1)?.[1]).toMatchObject({
+        status: "completed",
+        claudeCode: {
+          claude_session_id: persistedSessionId,
+          read_only: { sessionPersistenceDisabled: false },
         },
       });
     } finally {

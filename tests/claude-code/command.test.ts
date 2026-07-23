@@ -70,21 +70,31 @@ describe("Claude Code command builder", () => {
     ).toThrow(/raw pass-through/);
   });
 
-  test("one-shot (no resumeSessionId) still has no persistence — unchanged default behavior", () => {
+  test("compatibility one-shot (no session id) retains no persistence", () => {
     const { args } = buildClaudeCodeCommand();
 
     expect(args).toContain("--no-session-persistence");
     expect(args).not.toContain("--session-id");
   });
 
-  test("a followup builds the correct --session-id argv instead of --no-session-persistence", () => {
+  test("a reviewed one-shot persists under the exact builder-owned --session-id", () => {
+    const sessionId = "6c2b3d4e-5f60-4789-abcd-ef0123456789";
+    const { args } = buildClaudeCodeCommand({ sessionId });
+
+    expect(args).not.toContain("--no-session-persistence");
+    expect(args).not.toContain("--resume");
+    expect(args[args.indexOf("--session-id") + 1]).toBe(sessionId);
+  });
+
+  test("a followup builds the real --resume argv instead of starting a new session", () => {
     const resumeSessionId = "5b1a2c3d-4e5f-6789-abcd-ef0123456789";
     const { args } = buildClaudeCodeCommand({ resumeSessionId });
 
     expect(args).not.toContain("--no-session-persistence");
-    const sessionIdIndex = args.indexOf("--session-id");
-    expect(sessionIdIndex).toBeGreaterThan(-1);
-    expect(args[sessionIdIndex + 1]).toBe(resumeSessionId);
+    expect(args).not.toContain("--session-id");
+    const resumeIndex = args.indexOf("--resume");
+    expect(resumeIndex).toBeGreaterThan(-1);
+    expect(args[resumeIndex + 1]).toBe(resumeSessionId);
     // Placed exactly where `--no-session-persistence` used to sit, tools
     // untouched either side, so the rest of the argv shape is unaffected.
     expect(args).toEqual([
@@ -110,7 +120,7 @@ describe("Claude Code command builder", () => {
       "--disallowedTools",
       "mcp__*",
       "--no-chrome",
-      "--session-id",
+      "--resume",
       resumeSessionId,
       "--tools",
       "",
@@ -126,16 +136,24 @@ describe("Claude Code command builder", () => {
     );
   });
 
-  test("resumeSessionId never smuggles a raw --resume/--continue/--fork-session passthrough", () => {
-    // The dangerous-flag blocklist stays intact regardless of the new
-    // resume option: it is impossible to make buildClaudeCodeCommand emit
-    // any of these, whether or not a followup is in play.
+  test("rejects invalid/conflicting new-session ids", () => {
+    expect(() => buildClaudeCodeCommand({ sessionId: "not-a-uuid" })).toThrow(/not a valid UUID/);
+    expect(() =>
+      buildClaudeCodeCommand({
+        sessionId: "6c2b3d4e-5f60-4789-abcd-ef0123456789",
+        resumeSessionId: "5b1a2c3d-4e5f-6789-abcd-ef0123456789",
+      }),
+    ).toThrow(/cannot start a new --session-id and --resume/i);
+  });
+
+  test("only the validated builder-owned --resume path bypasses the dangerous-flag guard", () => {
     const oneShot = buildClaudeCodeCommand();
     const resumed = buildClaudeCodeCommand({
       resumeSessionId: "5b1a2c3d-4e5f-6789-abcd-ef0123456789",
     });
+    expect(oneShot.args).not.toContain("--resume");
+    expect(resumed.args).toContain("--resume");
     for (const { args } of [oneShot, resumed]) {
-      expect(args).not.toContain("--resume");
       expect(args).not.toContain("--continue");
       expect(args).not.toContain("--fork-session");
     }
@@ -154,7 +172,7 @@ describe("Claude Code command builder", () => {
       buildClaudeCodeCommand({ extraArgs: ["--bare"] } as unknown as Parameters<
         typeof buildClaudeCodeCommand
       >[0]),
-    ).toThrow(/oracle -p "<prompt>" --lane fable-local/);
+    ).toThrow(/oracle -p "<prompt>" --lane fable-local --caam-profile <name>/);
   });
 
   describe("stream-json input transport flag (bead oracle-router-8fa)", () => {

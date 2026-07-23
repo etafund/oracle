@@ -55,6 +55,7 @@ async function createFixture(): Promise<{
       accountId: "acct2",
       authToken: "account-secret",
       promptPreview: PROMPT_PREVIEW,
+      promptDomSha256: "d".repeat(64),
       nowMs: Date.now(),
       ttlMs: 60_000,
     },
@@ -71,6 +72,7 @@ async function createFixture(): Promise<{
     accountId: "acct2",
     laneId: "acct2-9474",
     promptPreview: PROMPT_PREVIEW,
+    promptDomSha256: executableRecovery.promptDomSha256,
   };
   const sessionDir = (await sessionStore.getPaths(metadata.id)).dir;
   return {
@@ -100,7 +102,7 @@ describe("private remote recovery sidecar", () => {
 
       const stored = await readRemoteBrowserRecoverySecret(fixture.sessionId);
       expect(stored).toEqual({
-        schema: "remote-browser-recovery-secret.v1",
+        schema: "remote-browser-recovery-secret.v2",
         ...fixture.carrier,
       });
 
@@ -115,6 +117,7 @@ describe("private remote recovery sidecar", () => {
       expect(serializedPublic).not.toContain(fixture.carrier.recovery.capability);
       expect(serializedPublic).not.toContain(PROMPT_PREVIEW);
       expect(serializedPublic).not.toContain("promptPreviewSha256");
+      expect(serializedPublic).not.toContain("promptDomSha256");
     },
   );
 
@@ -139,6 +142,19 @@ describe("private remote recovery sidecar", () => {
     await expect(readRemoteBrowserRecoverySecret(fixture.sessionId)).rejects.toBeInstanceOf(
       InvalidStoredRemoteRecoverySecretError,
     );
+  });
+
+  test("refuses to persist a carrier whose duplicated DOM digest does not match", async () => {
+    const fixture = await createFixture();
+    const mismatched = {
+      ...fixture.carrier,
+      promptDomSha256: "e".repeat(64),
+    };
+
+    await expect(
+      writeRemoteBrowserRecoverySecret(fixture.sessionId, mismatched),
+    ).rejects.toBeInstanceOf(InvalidStoredRemoteRecoverySecretError);
+    await expect(stat(fixture.sidecarPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   test.skipIf(process.platform === "win32")("refuses to follow a sidecar symlink", async () => {
@@ -184,6 +200,45 @@ describe("private remote recovery sidecar", () => {
     );
   });
 
+  test.each([
+    [
+      "legacy v1 schema",
+      (document: Record<string, unknown>) => {
+        document.schema = "remote-browser-recovery-secret.v1";
+      },
+    ],
+    [
+      "missing DOM digest",
+      (document: Record<string, unknown>) => {
+        delete document.promptDomSha256;
+      },
+    ],
+    [
+      "tampered DOM digest",
+      (document: Record<string, unknown>) => {
+        const recovery = document.recovery as Record<string, unknown>;
+        recovery.promptDomSha256 = "e".repeat(64);
+      },
+    ],
+  ])("rejects a %s in the private v2 sidecar", async (_label, mutate) => {
+    const fixture = await createFixture();
+    await writeRemoteBrowserRecoverySecret(fixture.sessionId, fixture.carrier);
+    const document = JSON.parse(await readFile(fixture.sidecarPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    mutate(document);
+    await writeFile(fixture.sidecarPath, `${JSON.stringify(document)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    await chmod(fixture.sidecarPath, 0o600);
+
+    await expect(readRemoteBrowserRecoverySecret(fixture.sessionId)).rejects.toBeInstanceOf(
+      InvalidStoredRemoteRecoverySecretError,
+    );
+  });
+
   test("delete is idempotent and read returns null after deletion", async () => {
     const fixture = await createFixture();
     await writeRemoteBrowserRecoverySecret(fixture.sessionId, fixture.carrier);
@@ -213,6 +268,7 @@ describe("private remote recovery sidecar", () => {
         accountId: "acct2",
         authToken: "account-secret",
         promptPreview: PROMPT_PREVIEW,
+        promptDomSha256: "e".repeat(64),
         nowMs: Date.now(),
         ttlMs: 60_000,
       },
@@ -225,6 +281,7 @@ describe("private remote recovery sidecar", () => {
       accountId: "acct2",
       laneId: "acct2-9474",
       promptPreview: PROMPT_PREVIEW,
+      promptDomSha256: secondRecovery.promptDomSha256,
     };
 
     await writeRemoteBrowserRecoverySecret(fixture.sessionId, fixture.carrier);

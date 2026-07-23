@@ -34,7 +34,7 @@ describe("LaneRouteBlockError", () => {
       },
       {
         lane: "fable-local",
-        command: 'oracle --lane fable-local --prompt "..." --file path',
+        command: 'oracle --lane fable-local --caam-profile <profile> --prompt "..." --file path',
       },
     ]);
     expect(error.details?.deferredLanes).toEqual([]);
@@ -55,9 +55,11 @@ describe("error-teaches: lane route blocks name the exact corrected command", ()
     expect(decision.blockedReason).toBe("unknown_lane");
 
     const error = new LaneRouteBlockError(decision);
-    expect(error.message).toContain('Blocked reason: unknown_lane');
+    expect(error.message).toContain("Blocked reason: unknown_lane");
     expect(error.message).toContain('Fix: oracle -p "<prompt>" --lane chatgpt-pro');
-    expect(error.details?.fixCommand).toBe('oracle -p "<prompt>" --lane chatgpt-pro   # closest match to --lane chatgpt-pr');
+    expect(error.details?.fixCommand).toBe(
+      'oracle -p "<prompt>" --lane chatgpt-pro   # closest match to --lane chatgpt-pr',
+    );
   });
 
   it("unknown_lane falls back to the generic fix for an unrecognizable value", () => {
@@ -66,9 +68,9 @@ describe("error-teaches: lane route blocks name the exact corrected command", ()
     if (decision.ok) throw new Error("expected route block");
 
     const guidance = describeLaneBlockReason(decision);
-    expect(guidance.fixCommand).toContain('--lane fable-local');
-    expect(guidance.fixCommand).toContain('--lane chatgpt-pro');
-    expect(guidance.fixCommand).toContain('--lane gemini-deep-think');
+    expect(guidance.fixCommand).toContain("--lane fable-local");
+    expect(guidance.fixCommand).toContain("--lane chatgpt-pro");
+    expect(guidance.fixCommand).toContain("--lane gemini-deep-think");
   });
 
   it("missing_reviewed_lane names the exact fix for a bare prompt with no lane", () => {
@@ -79,7 +81,7 @@ describe("error-teaches: lane route blocks name the exact corrected command", ()
 
     const error = new LaneRouteBlockError(decision);
     expect(error.message).toContain('Fix: oracle -p "<prompt>" --lane fable-local');
-    expect(error.details?.fixCommand).toContain('--lane fable-local');
+    expect(error.details?.fixCommand).toContain("--lane fable-local");
   });
 
   it("fable_local_conflicts_with_model names the drop-the-flag fix", () => {
@@ -90,7 +92,9 @@ describe("error-teaches: lane route blocks name the exact corrected command", ()
 
     const error = new LaneRouteBlockError(decision);
     expect(error.message).toContain("conflicts with --model gpt-5.5-pro");
-    expect(error.message).toContain('Fix: oracle -p "<prompt>" --lane fable-local   # drop --model');
+    expect(error.message).toContain(
+      'Fix: oracle -p "<prompt>" --lane fable-local --caam-profile <name>   # drop --model',
+    );
   });
 
   it("gemini_deep_think_conflicts_with_model names the drop-the-flag fix", () => {

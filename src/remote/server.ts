@@ -24,7 +24,13 @@ import type {
   RemoteRunReadinessState,
   RemoteUploadIntegrity,
 } from "./types.js";
-import { MAX_REMOTE_ARTIFACT_BYTES } from "./types.js";
+import {
+  MAX_REMOTE_ARTIFACT_BYTES,
+  REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
+  REMOTE_BROWSER_RECOVERY_PATH,
+  REMOTE_BROWSER_RECOVERY_PROTOCOL,
+  REMOTE_BROWSER_RUN_PATH,
+} from "./types.js";
 import {
   ACCOUNT_QUARANTINE_ERROR_CLASS,
   getQuarantineLatchState,
@@ -47,6 +53,10 @@ import { estimateTokenCount } from "../browser/utils.js";
 import { resolveBrowserConfig } from "../browser/config.js";
 import { getBrowserCleanupTaint, type BrowserCleanupTaint } from "../browser/index.js";
 import { isGpt56SolModelLabel } from "../browser/actions/thinkingTime.js";
+import {
+  PROMPT_DOM_IDENTITY_ALGORITHM,
+  PROMPT_RECOVERY_PREVIEW_ALGORITHM,
+} from "../browser/promptDomMatch.js";
 import type { SubmittedMessageBindingQuality } from "../browser/actions/captureBinding.js";
 import { countActiveBrowserTabLeases } from "../browser/tabLeaseRegistry.js";
 import {
@@ -231,6 +241,11 @@ const ARTIFACT_CAPABILITIES: RemoteArtifactCapabilities = {
   artifactTransfer: true,
   artifactProtocolVersion: ARTIFACT_PROTOCOL_VERSION,
   maxArtifactBytes: MAX_REMOTE_ARTIFACT_BYTES,
+  browserRecovery: {
+    protocol: REMOTE_BROWSER_RECOVERY_PROTOCOL,
+    promptPreviewAlgorithm: PROMPT_RECOVERY_PREVIEW_ALGORITHM,
+    promptDomIdentityAlgorithm: PROMPT_DOM_IDENTITY_ALGORITHM,
+  },
 };
 
 export interface AttachTargetProbe {
@@ -777,6 +792,7 @@ export async function createRemoteServer(
     "X-Oracle-Run-Id": runId,
     "X-Oracle-Lane-Id": laneId,
     "X-Oracle-Account-Id": accountId,
+    ...REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
   });
 
   /**
@@ -957,8 +973,8 @@ export async function createRemoteServer(
         return;
       }
 
-      const isRecoveryRequest = req.method === "POST" && req.url === "/recover";
-      if (!isRecoveryRequest && (req.method !== "POST" || req.url !== "/runs")) {
+      const isRecoveryRequest = req.method === "POST" && req.url === REMOTE_BROWSER_RECOVERY_PATH;
+      if (!isRecoveryRequest && (req.method !== "POST" || req.url !== REMOTE_BROWSER_RUN_PATH)) {
         res.statusCode = 404;
         res.end();
         return;
@@ -1020,6 +1036,20 @@ export async function createRemoteServer(
         return;
       }
       requestAuthorized = true;
+      if (!hasCompatibleRemoteRecoveryAdmissionHeaders(req.headers)) {
+        // Recovery is part of the safety contract of every browser run: once
+        // a prompt is submitted, the only executable salvage path is the
+        // exact account-bound v2 capture protocol. Refuse mixed-version peers
+        // before quarantine checks, body reads, leases, or any CDP action.
+        refuseRun(426, "remote_recovery_protocol_incompatible", {
+          errorClass: "integrity_ui_unknown",
+          retryable: false,
+          expected: ARTIFACT_CAPABILITIES.browserRecovery,
+          message:
+            "client and browser worker do not agree on the executable remote recovery protocol; upgrade both before starting a run",
+        });
+        return;
+      }
       const requestedRecoveryAccount = readSingleHeader(
         req.headers["x-oracle-recovery-account-id"],
       );
@@ -1112,7 +1142,12 @@ export async function createRemoteServer(
       // run, emitted from the finally below on success, failure, and abort).
       let acceptedAt: string | null = null;
       let submittedAt: string | null = null;
-      let submittedPromptPreview: string | null = null;
+      const submittedPromptOwnership: {
+        current: {
+          promptPreview: string;
+          promptDomSha256: string;
+        } | null;
+      } = { current: null };
       let firstTokenAt: string | null = null;
       let activeTabLeasesAtSubmit: number | null = null;
       let attachments: BrowserAttachment[] = [];
@@ -1470,7 +1505,7 @@ export async function createRemoteServer(
                 );
               }
               const startedAt = Date.now();
-              const recovered = await recoverBrowser({
+              const recoveryOptions: IsolatedFleetRecoveryOptions = {
                 runtime: recoveryRequest.recovery.runtime,
                 config: payload.browserConfig,
                 logger: automationLogger,
@@ -1478,12 +1513,14 @@ export async function createRemoteServer(
                 chromePort: port,
                 profileDir: attachProfileDir,
                 promptPreview: recoveryRequest.promptPreview,
+                promptDomSha256: recoveryRequest.recovery.promptDomSha256,
                 sessionId: payload.options.sessionId,
                 maxConcurrentTabs: effectiveRunConfig.maxConcurrentTabs ?? undefined,
                 leaseTimeoutMs: effectiveRunConfig.profileLockTimeoutMs ?? undefined,
                 signal: runAbort.signal,
                 accountId,
-              });
+              };
+              const recovered = await recoverBrowser(recoveryOptions);
               const answerMarkdown = recovered.answerMarkdown || recovered.answerText;
               bindingVerified = true;
               bindingQuality = recovered.bindingQuality;
@@ -1515,8 +1552,20 @@ export async function createRemoteServer(
                 // profile field and carries only a durable ChatGPT URL + id.
                 latestRuntimeHint = runtime;
               },
-              submittedPromptPreviewCb: (promptPreview) => {
-                submittedPromptPreview = promptPreview;
+              submittedPromptPreviewCb: (promptPreview, promptDomSha256) => {
+                // Replace the pair atomically for every submitted turn. A
+                // follow-up callback without a fresh DOM digest invalidates
+                // the prior turn's proof instead of accidentally reusing it.
+                // The same callback is also the per-turn provenance boundary:
+                // a verification marker from an earlier answer must never
+                // certify a later follow-up that returned without validating
+                // its own capture.
+                bindingVerified = null;
+                bindingQuality = null;
+                submittedPromptOwnership.current =
+                  typeof promptDomSha256 === "string" && /^[a-f0-9]{64}$/.test(promptDomSha256)
+                    ? { promptPreview, promptDomSha256 }
+                    : null;
               },
               signal: runAbort.signal,
               // Same resolved identity /ready and /runs admission use (options.accountId ?? env
@@ -1559,6 +1608,21 @@ export async function createRemoteServer(
               oracleErrorClass: ACCOUNT_QUARANTINE_ERROR_CLASS,
               retryable: false,
               state: successProvenance.challengeClean === false ? "latched" : "unverifiable",
+            },
+          );
+        }
+        if (
+          successProvenance.captureBindingVerified !== true ||
+          successProvenance.captureBindingQuality !== "message-handle"
+        ) {
+          throw new BrowserAutomationError(
+            "Remote result lacked full message-handle capture provenance; refusing to publish an answer whose ownership is unproven.",
+            {
+              stage: "capture-binding",
+              code: "remote-success-capture-provenance-unproven",
+              oracleErrorClass: "integrity_binding_failed",
+              retryable: false,
+              bindingQuality: successProvenance.captureBindingQuality,
             },
           );
         }
@@ -1672,14 +1736,17 @@ export async function createRemoteServer(
               ? declaredRetryable
               : runErrorClass === "capacity_busy" ||
                 runErrorClass === "transport_interrupted_before_submit";
-        const recovery = recoveryRequest
-          ? undefined
-          : buildRemoteRunRecoveryHint(details, latestRuntimeHint, {
-              originRunId: runId,
-              accountId,
-              authToken,
-              promptPreview: submittedPromptPreview ?? "",
-            });
+        const latestPromptOwnership = submittedPromptOwnership.current;
+        const recovery =
+          recoveryRequest || !latestPromptOwnership
+            ? undefined
+            : buildRemoteRunRecoveryHint(details, latestRuntimeHint, {
+                originRunId: runId,
+                accountId,
+                authToken,
+                promptPreview: latestPromptOwnership.promptPreview,
+                promptDomSha256: latestPromptOwnership.promptDomSha256,
+              });
         sendEvent({
           type: "done",
           ok: false,
@@ -2658,6 +2725,12 @@ function sanitizeIdentityLabel(value: string | undefined): string | undefined {
 function readSingleHeader(value: string | string[] | undefined): string | null {
   if (typeof value !== "string" || value.length > 64) return null;
   return /^[A-Za-z0-9._-]+$/.test(value) ? value : null;
+}
+
+function hasCompatibleRemoteRecoveryAdmissionHeaders(headers: http.IncomingHttpHeaders): boolean {
+  return Object.entries(REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES).every(
+    ([name, expected]) => headers[name] === expected,
+  );
 }
 
 function isAuthorizedBearer(authHeader: string | undefined, authToken: string): boolean {

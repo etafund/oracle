@@ -9,7 +9,16 @@ import { createRemoteServer } from "../../src/remote/server.js";
 import { createRemoteBrowserExecutor } from "../../src/remote/client.js";
 import type { BrowserRunResult } from "../../src/browserMode.js";
 import type { RemoteArtifactDescriptor } from "../../src/remote/types.js";
+import {
+  REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
+  REMOTE_BROWSER_RUN_PATH,
+} from "../../src/remote/types.js";
 import { setOracleHomeDirOverrideForTest } from "../../src/oracleHome.js";
+import { formatCaptureBindingVerifiedLog } from "../../src/browser/actions/captureBinding.js";
+import {
+  serveCompatibleRecoveryHealth,
+  setCompatibleRecoveryResponseHeaders,
+} from "./_recoveryProtocolFixture.js";
 
 const CAN_LISTEN_LOCALHOST =
   spawnSync(
@@ -68,6 +77,7 @@ describe("remote browser service", () => {
             const fallbackStored = await readFile(fallbackAttachment.path, "utf8");
             expect(fallbackStored).toBe("fallback world");
             options.log?.("uploading attachment");
+            options.log?.(formatCaptureBindingVerifiedLog("message-handle", "abc123"));
             const result: BrowserRunResult = {
               answerText: "hi",
               answerMarkdown: "hi",
@@ -390,7 +400,8 @@ describe("remote browser service", () => {
       const server = await createRemoteServer(
         { host: "127.0.0.1", port: 0, token: "secret", logger: () => {} },
         {
-          runBrowser: async () => {
+          runBrowser: async (options) => {
+            options.log?.(formatCaptureBindingVerifiedLog("message-handle", "abc123"));
             const result: BrowserRunResult = {
               answerText: "done",
               answerMarkdown: "done",
@@ -649,7 +660,10 @@ async function createFakeArtifactBridge({
 }> {
   let artifactRequestCount = 0;
   const server = http.createServer((req, res) => {
-    if (req.method === "POST" && req.url === "/runs") {
+    if (serveCompatibleRecoveryHealth(req, res)) return;
+    if (req.method === "POST" && req.url === REMOTE_BROWSER_RUN_PATH) {
+      res.setHeader("x-oracle-run-id", descriptor.runId);
+      setCompatibleRecoveryResponseHeaders(res);
       req.resume();
       res.writeHead(200, { "Content-Type": "application/x-ndjson" });
       res.write(
@@ -658,6 +672,7 @@ async function createFakeArtifactBridge({
       res.end(
         `${JSON.stringify({
           type: "done",
+          runId: descriptor.runId,
           ok: true,
           result: {
             answerText: "done",
@@ -665,6 +680,14 @@ async function createFakeArtifactBridge({
             tookMs: 1,
             answerTokens: 1,
             answerChars: 4,
+          },
+          provenance: {
+            modelVerified: null,
+            modelRequested: null,
+            modelResolved: null,
+            captureBindingVerified: true,
+            captureBindingQuality: "message-handle",
+            challengeClean: true,
           },
         })}\n`,
       );
@@ -763,10 +786,11 @@ function postRunStream(
       {
         hostname: "127.0.0.1",
         port,
-        path: "/runs",
+        path: REMOTE_BROWSER_RUN_PATH,
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
+          ...REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
           "content-type": "application/json",
           "content-length": Buffer.byteLength(body),
         },

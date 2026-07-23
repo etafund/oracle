@@ -87,6 +87,7 @@ export function resolveRunOptionsFromConfig({
         model: laneModel as ModelName,
         file: files ?? [],
         lane: laneDecision.resolvedLane.lane,
+        laneInferenceSource: laneDecision.resolvedLane.inferredFrom,
         claudeCode: {
           model: laneModel,
           readOnly: true,
@@ -98,7 +99,11 @@ export function resolveRunOptionsFromConfig({
           disableSlashCommands: true,
           strictMcpConfig: true,
           noChrome: true,
-          noSessionPersistence: true,
+          // Reviewed Fable runs are persisted under a builder-owned UUID so
+          // `--followup` can use Claude's real `--resume` primitive. Preserve
+          // the historical non-persistent shape only for the explicit legacy
+          // engine/model compatibility route.
+          noSessionPersistence: laneDecision.resolvedLane.inferredFrom === "legacy-engine-model",
         },
         maxFileSizeBytes,
         search,

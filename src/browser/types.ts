@@ -164,8 +164,15 @@ export interface BrowserRunOptions {
     hint: BrowserRuntimeMetadata,
     modelSelection?: BrowserModelSelectionEvidence,
   ) => void | Promise<void>;
-  /** Worker-internal hook carrying only the exact submitted prompt prefix. */
-  submittedPromptPreviewCb?: (promptPreview: string) => void | Promise<void>;
+  /**
+   * Recovery hook called at dispatch with the normalized ownership preview and
+   * no digest (so callers clear stale prior-turn identity), then again after a
+   * full message-handle binding with its rendered DOM-identity SHA-256.
+   */
+  submittedPromptPreviewCb?: (
+    promptPreview: string,
+    promptDomSha256?: string,
+  ) => void | Promise<void>;
   /**
    * Caller-gone abort. When the signal fires, the run stops waiting at the
    * next raced wait point and unwinds through the normal cleanup path

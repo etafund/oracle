@@ -2,6 +2,11 @@ import { describe, expect, test } from "vitest";
 import http from "node:http";
 import { spawnSync } from "node:child_process";
 import { createRemoteBrowserExecutor, RemoteRunFailedError } from "../../src/remote/client.js";
+import { REMOTE_BROWSER_RUN_PATH } from "../../src/remote/types.js";
+import {
+  serveCompatibleRecoveryHealth,
+  setCompatibleRecoveryResponseHeaders,
+} from "./_recoveryProtocolFixture.js";
 
 // Caller-gone abort contract for the remote HTTP executor: BrowserRunOptions
 // documents `signal` as "Caller-gone abort. When the signal fires, the run
@@ -78,7 +83,13 @@ describe("client: caller-gone abort via options.signal", () => {
         res.writeHead(200, { "Content-Type": "application/x-ndjson" });
         res.on("error", () => {});
         // No submit-confirmation line yet: the worker is still staging.
-        res.write(`${JSON.stringify({ type: "log", message: "staging attachments" })}\n`);
+        res.write(
+          `${JSON.stringify({
+            type: "log",
+            runId: "fixture-run",
+            message: "staging attachments",
+          })}\n`,
+        );
         // Deliberately never end: only the caller's abort can stop this run.
         void clientGone;
       });
@@ -125,7 +136,11 @@ describe("client: caller-gone abort via options.signal", () => {
         // The same send-confirmation line the worker's own accounting keys
         // off (src/remote/server.ts): the Send boundary has been crossed.
         res.write(
-          `${JSON.stringify({ type: "log", message: "[browser] Submitted prompt via send button" })}\n`,
+          `${JSON.stringify({
+            type: "log",
+            runId: "fixture-run",
+            message: "[browser] Submitted prompt via send button",
+          })}\n`,
         );
         // Never end: generation is "in flight" until the caller aborts.
       });
@@ -174,6 +189,7 @@ describe("client: caller-gone abort via options.signal", () => {
         res.write(
           `${JSON.stringify({
             type: "done",
+            runId: "fixture-run",
             ok: true,
             result: {
               answerText: "the answer",
@@ -181,6 +197,14 @@ describe("client: caller-gone abort via options.signal", () => {
               tookMs: 5,
               answerTokens: 2,
               answerChars: 10,
+            },
+            provenance: {
+              modelVerified: null,
+              modelRequested: null,
+              modelResolved: null,
+              captureBindingVerified: true,
+              captureBindingQuality: "message-handle",
+              challengeClean: true,
             },
           })}\n`,
         );
@@ -233,7 +257,9 @@ async function startFakeRunServer(
     signalClientGone = resolve;
   });
   const server = http.createServer((req, res) => {
-    if (req.method === "POST" && req.url === "/runs") {
+    if (serveCompatibleRecoveryHealth(req, res)) return;
+    if (req.method === "POST" && req.url === REMOTE_BROWSER_RUN_PATH) {
+      setCompatibleRecoveryResponseHeaders(res);
       requests += 1;
       res.once("close", () => {
         signalClientGone?.();

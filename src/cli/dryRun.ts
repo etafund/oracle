@@ -427,14 +427,25 @@ async function logClaudeCodeDryRunPlan({
         { lane: "fable-local" },
       )}`
     : "disabled (no profile selected; direct Claude account resolution applies)";
+  const resumeSessionId = runOptions.claudeCode?.resumeSessionId;
+  const sessionPersistenceDisabled =
+    !resumeSessionId && runOptions.claudeCode?.noSessionPersistence !== false;
+  const sessionPersistencePlan = sessionPersistenceDisabled
+    ? "disabled (--no-session-persistence; this compatibility one-shot cannot be resumed)"
+    : resumeSessionId
+      ? "enabled (existing transcript resumed with --resume <session-uuid>)"
+      : "enabled (new transcript pinned with --session-id <session-uuid> for follow-up)";
   const lines = [
     `[dry-run] Generated at: ${DRY_RUN_TIMESTAMP}.`,
     `[dry-run] Route: claude-code/local; model=${runOptions.model ?? "fable"}; access_path=claude_code_subscription_cli.`,
     "[dry-run] Live Claude Code action: disabled; no claude subprocess, API request, browser prompt submission, or browser mutation will run.",
     `[dry-run] Env block status: ${envStatus}.`,
-    `[dry-run] Command shape: ${formatClaudeCodeCommandShape(runOptions.model ?? "fable")}.`,
+    `[dry-run] Command shape: ${formatClaudeCodeCommandShape(runOptions.model ?? "fable", {
+      persistSession: !sessionPersistenceDisabled,
+      resumeSession: Boolean(resumeSessionId),
+    })}.`,
     `[dry-run] CAAM account plan: ${caamPlan}.`,
-    '[dry-run] Read-only policy: permissionMode=plan; toolMode=none; --tools ""; MCP blocked; slash commands disabled; Chrome disabled; session persistence disabled.',
+    `[dry-run] Read-only policy: permissionMode=plan; toolMode=none; --tools ""; MCP blocked; slash commands disabled; Chrome disabled; session persistence ${sessionPersistencePlan}.`,
     `[dry-run] Claude executable/local-owner preflight: ${preflight.ok ? "pass" : "fail"}.`,
     ...preflight.checks.map(
       (check) => `[dry-run]   ${check.code}: ${check.status} — ${check.message}`,
@@ -487,14 +498,24 @@ function describeRoute(engine: "api" | "browser", browserConfig?: BrowserSession
   return "browser/local-launch";
 }
 
-function formatClaudeCodeCommandShape(model: string): string {
-  const command = buildClaudeCodeCommand({ model });
+function formatClaudeCodeCommandShape(
+  model: string,
+  options: { persistSession: boolean; resumeSession: boolean },
+): string {
+  const placeholderSessionId = "00000000-0000-4000-8000-000000000000";
+  const command = buildClaudeCodeCommand({
+    model,
+    sessionId: options.persistSession && !options.resumeSession ? placeholderSessionId : undefined,
+    resumeSessionId: options.resumeSession ? placeholderSessionId : undefined,
+  });
   const args = redactedClaudeCodeCommand(command).map((part) =>
     part === DEFAULT_CLAUDE_CODE_SYSTEM_PROMPT
       ? "<tiny Oracle-owned supplied-context reviewer prompt>"
-      : part === ""
-        ? '""'
-        : part,
+      : part === placeholderSessionId
+        ? "<session-uuid>"
+        : part === ""
+          ? '""'
+          : part,
   );
   return args.map((part) => (/\s/.test(part) ? JSON.stringify(part) : part)).join(" ");
 }

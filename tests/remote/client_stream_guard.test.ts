@@ -7,8 +7,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { createRemoteBrowserExecutor, RemoteRunFailedError } from "../../src/remote/client.js";
 import { setOracleHomeDirOverrideForTest } from "../../src/oracleHome.js";
-import type { RemoteArtifactDescriptor } from "../../src/remote/types.js";
+import { REMOTE_BROWSER_RUN_PATH, type RemoteArtifactDescriptor } from "../../src/remote/types.js";
 import type { BrowserRunResult } from "../../src/browserMode.js";
+import {
+  serveCompatibleRecoveryHealth,
+  setCompatibleRecoveryResponseHeaders,
+} from "./_recoveryProtocolFixture.js";
 
 // Stream-inactivity deadline + NDJSON line-buffer cap contract (bead
 // oracle-router-xfd): the `/runs` response is a long-lived NDJSON stream
@@ -48,6 +52,15 @@ const MINIMAL_RESULT: BrowserRunResult = {
   answerChars: 10,
 };
 
+const STRONG_SUCCESS_PROVENANCE = {
+  modelVerified: null,
+  modelRequested: null,
+  modelResolved: null,
+  captureBindingVerified: true,
+  captureBindingQuality: "message-handle" as const,
+  challengeClean: true,
+};
+
 describe("client: accepted route attribution", () => {
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
     "logs and persists the worker account and lane from accepted-run headers",
@@ -59,7 +72,15 @@ describe("client: accepted route attribution", () => {
           "X-Oracle-Account-Id": "acct2",
           "X-Oracle-Lane-Id": "acct2-9474",
         });
-        res.end(`${JSON.stringify({ type: "done", ok: true, result: MINIMAL_RESULT })}\n`);
+        res.end(
+          `${JSON.stringify({
+            type: "done",
+            runId: "run-header-1",
+            ok: true,
+            result: MINIMAL_RESULT,
+            provenance: STRONG_SUCCESS_PROVENANCE,
+          })}\n`,
+        );
       });
       try {
         const logs: string[] = [];
@@ -83,7 +104,7 @@ describe("client: accepted route attribution", () => {
     },
   );
 
-  test.skipIf(!CAN_LISTEN_LOCALHOST)("ignores malformed route labels", async () => {
+  test.skipIf(!CAN_LISTEN_LOCALHOST)("refuses malformed route labels", async () => {
     const fake = await startFakeRunServer((res) => {
       res.writeHead(200, {
         "Content-Type": "application/x-ndjson",
@@ -92,7 +113,13 @@ describe("client: accepted route attribution", () => {
         "X-Oracle-Lane-Id": "acct2/9474",
       });
       res.end(
-        `${JSON.stringify({ type: "done", ok: true, runId: "run-event-2", result: MINIMAL_RESULT })}\n`,
+        `${JSON.stringify({
+          type: "done",
+          ok: true,
+          runId: "run-event-2",
+          result: MINIMAL_RESULT,
+          provenance: STRONG_SUCCESS_PROVENANCE,
+        })}\n`,
       );
     });
     try {
@@ -100,12 +127,9 @@ describe("client: accepted route attribution", () => {
         host: `127.0.0.1:${fake.port}`,
         token: "secret",
       });
-      const result = await executor({ prompt: "x", config: {} });
-      expect(result.remoteRun).toMatchObject({
-        runId: "run-event-2",
-        accountId: null,
-        laneId: null,
-      });
+      await expect(executor({ prompt: "x", config: {} })).rejects.toThrow(
+        /valid run\/account\/lane identity/i,
+      );
     } finally {
       await fake.close();
     }
@@ -202,10 +226,20 @@ describe("client: stream-inactivity deadline and line-buffer cap", () => {
         let ticks = 0;
         const interval = setInterval(() => {
           ticks += 1;
-          res.write(`${JSON.stringify({ type: "log", message: `tick ${ticks}` })}\n`);
+          res.write(
+            `${JSON.stringify({ type: "log", runId: "fixture-run", message: `tick ${ticks}` })}\n`,
+          );
           if (ticks >= 6) {
             clearInterval(interval);
-            res.write(`${JSON.stringify({ type: "done", ok: true, result: MINIMAL_RESULT })}\n`);
+            res.write(
+              `${JSON.stringify({
+                type: "done",
+                runId: "fixture-run",
+                ok: true,
+                result: MINIMAL_RESULT,
+                provenance: STRONG_SUCCESS_PROVENANCE,
+              })}\n`,
+            );
             res.end();
           }
         }, 40);
@@ -400,17 +434,28 @@ async function startStallingArtifactServer(
     descriptor.artifactId,
   )}`;
   const server = http.createServer((req, res) => {
-    if (req.method === "POST" && req.url === "/runs") {
+    if (serveCompatibleRecoveryHealth(req, res)) return;
+    if (req.method === "POST" && req.url === REMOTE_BROWSER_RUN_PATH) {
+      setCompatibleRecoveryResponseHeaders(res);
+      res.setHeader("x-oracle-run-id", descriptor.runId);
       req.resume();
       req.on("end", () => {
         res.writeHead(200, { "Content-Type": "application/x-ndjson" });
         res.write(
-          `${JSON.stringify({ type: "log", message: "Submitted prompt via Enter key" })}\n`,
+          `${JSON.stringify({ type: "log", runId: descriptor.runId, message: "Submitted prompt via Enter key" })}\n`,
         );
         res.write(
           `${JSON.stringify({ type: "artifact-ready", runId: descriptor.runId, artifact: descriptor })}\n`,
         );
-        res.end(`${JSON.stringify({ type: "done", ok: true, result: MINIMAL_RESULT })}\n`);
+        res.end(
+          `${JSON.stringify({
+            type: "done",
+            runId: descriptor.runId,
+            ok: true,
+            result: MINIMAL_RESULT,
+            provenance: STRONG_SUCCESS_PROVENANCE,
+          })}\n`,
+        );
       });
       return;
     }
@@ -467,17 +512,28 @@ async function startSlowProgressingArtifactServer(params: {
   )}`;
   const chunkSize = Math.ceil(content.length / chunkCount);
   const server = http.createServer((req, res) => {
-    if (req.method === "POST" && req.url === "/runs") {
+    if (serveCompatibleRecoveryHealth(req, res)) return;
+    if (req.method === "POST" && req.url === REMOTE_BROWSER_RUN_PATH) {
+      setCompatibleRecoveryResponseHeaders(res);
+      res.setHeader("x-oracle-run-id", descriptor.runId);
       req.resume();
       req.on("end", () => {
         res.writeHead(200, { "Content-Type": "application/x-ndjson" });
         res.write(
-          `${JSON.stringify({ type: "log", message: "Submitted prompt via Enter key" })}\n`,
+          `${JSON.stringify({ type: "log", runId: descriptor.runId, message: "Submitted prompt via Enter key" })}\n`,
         );
         res.write(
           `${JSON.stringify({ type: "artifact-ready", runId: descriptor.runId, artifact: descriptor })}\n`,
         );
-        res.end(`${JSON.stringify({ type: "done", ok: true, result: MINIMAL_RESULT })}\n`);
+        res.end(
+          `${JSON.stringify({
+            type: "done",
+            runId: descriptor.runId,
+            ok: true,
+            result: MINIMAL_RESULT,
+            provenance: STRONG_SUCCESS_PROVENANCE,
+          })}\n`,
+        );
       });
       return;
     }
@@ -531,7 +587,9 @@ async function startFakeRunServer(
   respond: (res: http.ServerResponse) => void,
 ): Promise<{ port: number; close: () => Promise<void> }> {
   const server = http.createServer((req, res) => {
-    if (req.method === "POST" && req.url === "/runs") {
+    if (serveCompatibleRecoveryHealth(req, res)) return;
+    if (req.method === "POST" && req.url === REMOTE_BROWSER_RUN_PATH) {
+      setCompatibleRecoveryResponseHeaders(res);
       req.resume();
       req.on("end", () => {
         respond(res);

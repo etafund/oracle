@@ -43,7 +43,18 @@ function makeCapturingRequest(): {
   return { fn: spy as unknown as RequestFn, spy, capture: () => inspected };
 }
 
-const REJECTED_LABELS = ["GPT-5.5 Pro", "GPT-5.5", "GPT-5.4 Pro", "gpt-5.5-pro", "totally-made-up"];
+const REJECTED_LABELS = [
+  "GPT-5.5 Pro",
+  "GPT-5.5",
+  "GPT-5.4 Pro",
+  "gpt-5.5-pro",
+  // The current remote executor/serve protocol is the ChatGPT fleet path.
+  // Gemini uses its provider-specific executor unless a separately reviewed
+  // remote worker is introduced; it must not reach ChatGPT done/recovery
+  // provenance gates by accident.
+  "gemini-3.1-pro-deep-think",
+  "totally-made-up",
+];
 
 describe("remote client fleet model gate", () => {
   for (const label of REJECTED_LABELS) {

@@ -54,6 +54,12 @@ interface MockHealth {
     built_at: string | null;
     source: string;
   };
+  browserRecoveryCompatibility?: {
+    compatible: boolean;
+    protocol: string | null;
+    promptPreviewAlgorithm: string | null;
+    promptDomIdentityAlgorithm: string | null;
+  };
 }
 
 const { checkTcpConnection, checkRemoteHealth } = vi.hoisted(() => ({
@@ -214,6 +220,28 @@ describe("runRemoteDoctor --json", () => {
       desiredModel: "gpt-5.5-pro",
     });
     expect(out.error).toBe("HTTP 409 (busy)");
+    expect(process.exitCode).toBe(1);
+  });
+
+  test("mixed recovery protocols are diagnosed and exit non-zero", async () => {
+    checkRemoteHealth.mockResolvedValueOnce({
+      ok: true,
+      version: "1.2.3",
+      browserRecoveryCompatibility: {
+        compatible: false,
+        protocol: "remote-browser-recovery.v1",
+        promptPreviewAlgorithm: null,
+        promptDomIdentityAlgorithm: null,
+      },
+    });
+    await runRemoteDoctor({ json: true });
+    const out = JSON.parse(logSpy.mock.calls[0][0] as string);
+    expect(out.status).toBe("incompatible");
+    expect(out.browser_recovery).toMatchObject({
+      compatible: false,
+      protocol: "remote-browser-recovery.v1",
+    });
+    expect(out.error).toMatch(/upgrade.*client.*worker/i);
     expect(process.exitCode).toBe(1);
   });
 

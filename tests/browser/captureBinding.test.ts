@@ -6,6 +6,8 @@
 // structurally below.
 
 import { describe, expect, test, vi } from "vitest";
+import { webcrypto } from "node:crypto";
+import { TextEncoder } from "node:util";
 
 import {
   assertCapturedAssistantResponseBound,
@@ -23,6 +25,7 @@ import {
   type SubmittedUserMessageBinding,
 } from "../../src/browser/actions/captureBinding.js";
 import type { ChromeClient } from "../../src/browser/types.js";
+import { computeRenderedPromptDomSha256 } from "../../src/browser/promptDomMatch.js";
 
 vi.mock("../../src/browser/actions/assistantResponse.js", async (importOriginal) => {
   const actual =
@@ -57,6 +60,8 @@ function runtimeWithValues(values: unknown[]): ChromeClient["Runtime"] & {
 const HANDLE_PROBE_RESULT = {
   found: true,
   matchedPrompt: true,
+  isLatestUserTurn: true,
+  promptDomIdentity: "What is the answer?",
   conversationId: "run-conv-1",
   userMessageId: "user-msg-1",
   userTurnTestId: "conversation-turn-2",
@@ -67,6 +72,7 @@ const GOOD_FACTS: CaptureBindingFacts = {
   userTurnFound: true,
   userTurnIsLatestUserTurn: true,
   capturedNodeFound: true,
+  capturedNodeIsAssistantTurn: true,
   capturedFollowsUserMessage: true,
   interveningAssistantTurns: 0,
   assistantTurnAfterUserMessage: true,
@@ -96,6 +102,7 @@ describe("registerSubmittedUserMessage", () => {
     expect(binding.userTurnTestId).toBe("conversation-turn-2");
     expect(binding.conversationId).toBe("run-conv-1");
     expect(binding.promptSha256).toBe(computePromptSha256("What is the answer?"));
+    expect(binding.promptDomSha256).toBe(computeRenderedPromptDomSha256("What is the answer?"));
     expect(getSubmittedUserMessageBinding(runtime)).toEqual(binding);
     expect(logs.join("\n")).toContain(`sha256 ${binding.promptSha256}`);
   });
@@ -111,7 +118,7 @@ describe("registerSubmittedUserMessage", () => {
 
     expect(binding.quality).toBe("conversation-only");
     expect(binding.conversationId).toBe("run-conv-2");
-    expect(logs.join("\n")).toContain("conversation-level binding");
+    expect(logs.join("\n")).toContain("refuse an unowned response");
   });
 
   test("downgrades to guessed when the fallback bound a user turn without matching the prompt", async () => {
@@ -136,7 +143,7 @@ describe("registerSubmittedUserMessage", () => {
     // Handles are kept for diagnostics only.
     expect(binding.userMessageId).toBe("user-msg-guess");
     expect(binding.userTurnTestId).toBe("conversation-turn-9");
-    expect(logs.join("\n")).toContain("as a guess");
+    expect(logs.join("\n")).toContain("diagnostic only");
   });
 
   test("never throws when the DOM probe fails", async () => {
@@ -148,6 +155,93 @@ describe("registerSubmittedUserMessage", () => {
     const binding = await registerSubmittedUserMessage(runtime, "prompt", () => {});
     expect(binding.quality).toBe("conversation-only");
     expect(getSubmittedUserMessageBinding(runtime)).toEqual(binding);
+    expect(runtime.evaluate).toHaveBeenCalledTimes(3);
+  });
+
+  test("retries transient probe errors and misses before binding the exact latest turn", async () => {
+    const exact = {
+      ...HANDLE_PROBE_RESULT,
+      promptDomIdentity: "prompt",
+    };
+    const evaluate = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("execution context destroyed"))
+      .mockResolvedValueOnce({
+        result: { value: { found: false, matchedPrompt: false, conversationId: "run-conv-1" } },
+      })
+      .mockResolvedValueOnce({ result: { value: exact } });
+    const runtime = { evaluate } as unknown as ChromeClient["Runtime"];
+
+    await expect(registerSubmittedUserMessage(runtime, "prompt", () => {})).resolves.toMatchObject({
+      quality: "message-handle",
+      userMessageId: "user-msg-1",
+    });
+    expect(evaluate).toHaveBeenCalledTimes(3);
+  });
+
+  test("does not elevate a matching turn unless the probe proves it is latest", async () => {
+    const runtime = runtimeWithValues([
+      {
+        ...HANDLE_PROBE_RESULT,
+        isLatestUserTurn: false,
+      },
+    ]);
+
+    await expect(
+      registerSubmittedUserMessage(runtime, "What is the answer?", () => {}),
+    ).resolves.toMatchObject({ quality: "guessed", promptDomSha256: null });
+    expect(runtime.evaluate).toHaveBeenCalledTimes(3);
+  });
+
+  test("can register a recovery turn only through its full rendered DOM hash", async () => {
+    const expectedPromptDomSha256 = computeRenderedPromptDomSha256("full recovered user turn");
+    const runtime = runtimeWithValues([
+      {
+        found: true,
+        matchedPrompt: true,
+        isLatestUserTurn: true,
+        promptDomIdentity: "full recovered user turn",
+        conversationId: "run-conv-recovery",
+        userMessageId: "user-msg-recovery",
+        userTurnTestId: "conversation-turn-recovery",
+      },
+    ]);
+
+    await expect(
+      registerSubmittedUserMessage(runtime, "shared short preview", () => {}, {
+        expectedPromptDomSha256,
+      }),
+    ).resolves.toMatchObject({
+      quality: "message-handle",
+      promptDomSha256: expectedPromptDomSha256,
+      userMessageId: "user-msg-recovery",
+    });
+    expect(runtime.evaluate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expression: expect.stringContaining(expectedPromptDomSha256),
+        awaitPromise: true,
+      }),
+    );
+  });
+
+  test("does not elevate a hash-probed turn when its returned DOM identity disagrees", async () => {
+    const expectedPromptDomSha256 = computeRenderedPromptDomSha256("owned turn");
+    const runtime = runtimeWithValues([
+      {
+        found: true,
+        matchedPrompt: true,
+        isLatestUserTurn: true,
+        promptDomIdentity: "foreign turn",
+        conversationId: "run-conv-recovery",
+        userMessageId: "user-msg-foreign",
+      },
+    ]);
+
+    await expect(
+      registerSubmittedUserMessage(runtime, "shared short preview", () => {}, {
+        expectedPromptDomSha256,
+      }),
+    ).resolves.toMatchObject({ quality: "guessed", promptDomSha256: null });
   });
 });
 
@@ -282,6 +376,7 @@ describe("evaluateCaptureBindingFacts", () => {
     promptSha256: computePromptSha256("prompt"),
     promptLength: 6,
     promptPrefix: "prompt prefix long enough to matter",
+    promptDomSha256: "1".repeat(64),
     registeredAtMs: 0,
     quality: "message-handle",
     conversationId: "run-conv-1",
@@ -299,17 +394,17 @@ describe("evaluateCaptureBindingFacts", () => {
     expect(verdict.code).toBe("capture-binding-conversation-changed");
   });
 
-  test("conversation-only bindings fail when the captured node vanished", () => {
+  test("conversation-only bindings fail before any captured-node evidence is trusted", () => {
     const verdict = evaluateCaptureBindingFacts(
       { ...binding, quality: "conversation-only" },
       CAPTURED_META,
       { ...GOOD_FACTS, capturedNodeFound: false },
     );
     expect(verdict.ok).toBe(false);
-    expect(verdict.code).toBe("capture-binding-captured-node-missing");
+    expect(verdict.code).toBe("capture-binding-ownership-unproven");
   });
 
-  test("guessed bindings are not validated at message-handle strength", () => {
+  test("guessed bindings cannot certify a capture", () => {
     // The guessed handle may point at another run's user turn: facts derived
     // from it (missing / superseded / ordering) must not be treated as a
     // cross-talk proof either way.
@@ -318,7 +413,8 @@ describe("evaluateCaptureBindingFacts", () => {
       userTurnFound: false,
       userTurnIsLatestUserTurn: false,
     });
-    expect(verdict.ok).toBe(true);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.code).toBe("capture-binding-ownership-unproven");
   });
 
   test("guessed bindings still fail loud on conversation change", () => {
@@ -367,13 +463,22 @@ describe("evaluateCaptureBindingFacts", () => {
     expect(verdict.code).toBe("capture-binding-ownership-unproven");
   });
 
-  test("guessed bindings fail when the captured node vanished", () => {
+  test("guessed bindings fail before any captured-node evidence is trusted", () => {
     const verdict = evaluateCaptureBindingFacts({ ...binding, quality: "guessed" }, CAPTURED_META, {
       ...GOOD_FACTS,
       capturedNodeFound: false,
     });
     expect(verdict.ok).toBe(false);
-    expect(verdict.code).toBe("capture-binding-captured-node-missing");
+    expect(verdict.code).toBe("capture-binding-ownership-unproven");
+  });
+
+  test("rejects a captured id that resolves to a user turn", () => {
+    const verdict = evaluateCaptureBindingFacts(binding, CAPTURED_META, {
+      ...GOOD_FACTS,
+      capturedNodeIsAssistantTurn: false,
+    });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.code).toBe("capture-binding-captured-node-not-assistant");
   });
 
   test("losing the bound conversation entirely is a failure", () => {
@@ -418,6 +523,7 @@ describe("generated DOM expressions", () => {
       promptSha256: "0".repeat(64),
       promptLength: 10,
       promptPrefix: "a prefix that is definitely longer than thirty chars",
+      promptDomSha256: "1".repeat(64),
       registeredAtMs: 0,
       quality: "message-handle",
       conversationId: "conv",
@@ -430,7 +536,86 @@ describe("generated DOM expressions", () => {
     expect(expression).toContain('"user-msg-1"');
     expect(expression).toContain('"assistant-msg-1"');
     expect(expression).toContain("interveningAssistantTurns");
+    expect(expression).toContain("USER_PROMPT_DOM_SHA256");
+    expect(expression).not.toContain("USER_PROMPT_PREFIX");
     expect(expression).not.toContain("document.body.innerText");
+  });
+
+  test("digest fallback refuses duplicate identical user turns when stable ids vanished", async () => {
+    class FakeHTMLElement {}
+    class FakeTurn extends FakeHTMLElement {
+      readonly parentElement = null;
+      readonly dataset: { turn: "user" | "assistant" };
+
+      constructor(
+        readonly role: "user" | "assistant",
+        readonly innerText: string,
+      ) {
+        super();
+        this.dataset = { turn: role };
+      }
+
+      get textContent(): string {
+        return this.innerText;
+      }
+
+      getAttribute(name: string): string {
+        if (name === "data-turn" || name === "data-message-author-role") return this.role;
+        return "";
+      }
+
+      matches(): boolean {
+        return false;
+      }
+
+      querySelector(): null {
+        return null;
+      }
+    }
+
+    const duplicatePrompt = "identical rendered prompt";
+    const turns = [
+      new FakeTurn("user", duplicatePrompt),
+      new FakeTurn("assistant", "first answer"),
+      new FakeTurn("user", duplicatePrompt),
+      new FakeTurn("assistant", "second answer"),
+    ];
+    const document = {
+      querySelector: () => null,
+      querySelectorAll: () => turns,
+    };
+    const binding: SubmittedUserMessageBinding = {
+      promptSha256: computePromptSha256(duplicatePrompt),
+      promptLength: duplicatePrompt.length,
+      promptPrefix: duplicatePrompt,
+      promptDomSha256: computeRenderedPromptDomSha256(duplicatePrompt),
+      registeredAtMs: 0,
+      quality: "message-handle",
+      conversationId: "duplicate-conversation",
+      userMessageId: null,
+      userTurnTestId: null,
+    };
+    const expression = buildCaptureBindingFactsExpressionForTest(binding, {});
+    const value = await Function(
+      "document",
+      "location",
+      "HTMLElement",
+      "Node",
+      "CSS",
+      "crypto",
+      "TextEncoder",
+      `return ${expression};`,
+    )(
+      document,
+      { href: "https://chatgpt.com/c/duplicate-conversation" },
+      FakeHTMLElement,
+      { DOCUMENT_POSITION_FOLLOWING: 4 },
+      { escape: (value: string) => value },
+      webcrypto,
+      TextEncoder,
+    );
+
+    expect(value.userTurnFound).toBe(false);
   });
 
   test("fresh-target probe reports conversation id and assistant turn count", () => {

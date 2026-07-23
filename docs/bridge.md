@@ -2,7 +2,7 @@
 
 Oracle’s bridge workflow lets you keep an authenticated ChatGPT session on a Windows machine while running Oracle (CLI + `oracle-mcp`) from Linux boxes (often over SSH), without exporting browser cookies off Windows.
 
-Bridge and remote browser routing are transport for ChatGPT GPT-5.6 Sol + Pro and Gemini 3.1 Deep Think browser lanes. They are not valid transport for Fable xHigh; use `oracle --lane fable-local` only on the local machine that owns the logged-in Claude Code subscription CLI.
+Bridge and remote browser routing are transport for ChatGPT GPT-5.6 Sol + Pro and Gemini 3.1 Deep Think browser lanes. They are not valid transport for Fable xHigh; use `oracle --lane fable-local --caam-profile <name>` only on the local machine that owns the logged-in Claude Code subscription CLI.
 
 ## Concepts
 

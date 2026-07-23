@@ -48,7 +48,8 @@ export interface LaneBlockGuidance {
 // branch below.
 export const VALID_LANES = ["chatgpt-pro", "fable-local", "gemini-deep-think"] as const;
 const GENERIC_FIX_COMMAND =
-  'oracle -p "<prompt>" --lane fable-local   # or --lane chatgpt-pro / --lane gemini-deep-think';
+  'oracle -p "<prompt>" --lane fable-local --caam-profile <name>   # or --lane chatgpt-pro / --lane gemini-deep-think';
+const FABLE_FIX_COMMAND = 'oracle -p "<prompt>" --lane fable-local --caam-profile <name>';
 
 /**
  * Maps every `blockedReason` code `resolveLanePolicy` can produce
@@ -85,45 +86,47 @@ export function describeLaneBlockReason(routeBlock: LaneRouteBlock): LaneBlockGu
     case "config_engine_claude_code_requires_explicit_lane":
       return {
         explanation: "Claude Code (fable) runs require the explicit reviewed lane flag.",
-        fixCommand: 'oracle -p "<prompt>" --lane fable-local',
+        fixCommand: FABLE_FIX_COMMAND,
       };
     case "fable_local_lane_missing":
       return {
-        explanation: "The fable-local lane template is unexpectedly missing from the lane registry.",
+        explanation:
+          "The fable-local lane template is unexpectedly missing from the lane registry.",
         fixCommand: "oracle doctor lanes --json",
       };
     case "fable_local_conflicts_with_engine":
       return {
         explanation: `--lane fable-local conflicts with --engine ${attemptedEngine ?? "?"}; fable-local always runs the claude-code engine.`,
-        fixCommand: 'oracle -p "<prompt>" --lane fable-local   # drop --engine',
+        fixCommand: `${FABLE_FIX_COMMAND}   # drop --engine`,
       };
     case "fable_local_conflicts_with_model":
       return {
         explanation: `--lane fable-local conflicts with --model ${attemptedModel ?? "?"}; fable-local always uses the "fable" model.`,
-        fixCommand: 'oracle -p "<prompt>" --lane fable-local   # drop --model',
+        fixCommand: `${FABLE_FIX_COMMAND}   # drop --model`,
       };
     case "fable_local_requires_local_cli":
       return {
         explanation:
           "--lane fable-local only runs the local `claude` CLI; it cannot be combined with --remote-host/--remote-chrome/--remote-browser.",
-        fixCommand: 'oracle -p "<prompt>" --lane fable-local   # drop --remote-*',
+        fixCommand: `${FABLE_FIX_COMMAND}   # drop --remote-*`,
       };
     case "fable_local_conflicts_with_browser_flags":
       return {
         explanation:
           "--lane fable-local conflicts with browser-only flags (--browser-*); fable-local never launches a browser.",
-        fixCommand: 'oracle -p "<prompt>" --lane fable-local   # drop --browser-*',
+        fixCommand: `${FABLE_FIX_COMMAND}   # drop --browser-*`,
       };
     case "fable_local_conflicts_with_api_provider":
       return {
         explanation:
           "--lane fable-local conflicts with API-provider flags (--provider/--base-url/--azure-*); fable-local never calls a hosted API.",
-        fixCommand: 'oracle -p "<prompt>" --lane fable-local   # drop --provider/--base-url/--azure-*',
+        fixCommand: `${FABLE_FIX_COMMAND}   # drop --provider/--base-url/--azure-*`,
       };
     case "fable_multi_model_fanout_blocked":
     case "multi_model_fanout_blocked":
       return {
-        explanation: "--models multi-model fan-out is not supported on reviewed lanes; pick exactly one lane.",
+        explanation:
+          "--models multi-model fan-out is not supported on reviewed lanes; pick exactly one lane.",
         fixCommand: GENERIC_FIX_COMMAND,
       };
     case "chatgpt_pro_conflicts_with_model":
@@ -144,7 +147,8 @@ export function describeLaneBlockReason(routeBlock: LaneRouteBlock): LaneBlockGu
       };
     case "selector_state_unknown":
       return {
-        explanation: "gpt-5.5-pro's browser selector state can't be verified on a legacy (non-lane) route.",
+        explanation:
+          "gpt-5.5-pro's browser selector state can't be verified on a legacy (non-lane) route.",
         fixCommand: 'oracle -p "<prompt>" --lane chatgpt-pro',
       };
     case "unsupported_browser_route":
@@ -154,7 +158,8 @@ export function describeLaneBlockReason(routeBlock: LaneRouteBlock): LaneBlockGu
       };
     case "unsupported_api_route":
       return {
-        explanation: "The compatibility API / --provider route is not part of the reviewed-lane surface.",
+        explanation:
+          "The compatibility API / --provider route is not part of the reviewed-lane surface.",
         fixCommand: GENERIC_FIX_COMMAND,
       };
     case "no_active_gemini_lane_or_subscription":

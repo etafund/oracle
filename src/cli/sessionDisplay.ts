@@ -307,7 +307,22 @@ export async function attachSession(
       completedDeepResearchPlaceholder ||
       (runtime?.controllerPid && !controllerAlive));
 
-  const canRecoverRemote = metadata.mode === "browser" && isFailedRemoteBrowserOrigin(metadata);
+  const incompleteMultiTurnBrowserRun =
+    metadata.mode === "browser" &&
+    (metadata.options.browserFollowUps?.length ?? 0) > 0 &&
+    (canReattach || isFailedRemoteBrowserOrigin(metadata));
+  if (incompleteMultiTurnBrowserRun) {
+    console.error(
+      chalk.red(
+        "Capture-only recovery is disabled for this incomplete multi-turn browser run because one recovered answer cannot prove or reconstruct the full requested turn sequence. Inspect the originating ChatGPT account's history; do not replay the session.",
+      ),
+    );
+    process.exitCode = 1;
+  }
+  const canRecoverRemote =
+    !incompleteMultiTurnBrowserRun &&
+    metadata.mode === "browser" &&
+    isFailedRemoteBrowserOrigin(metadata);
   let attemptedRemoteRecovery = false;
   if (canRecoverRemote) {
     attemptedRemoteRecovery = true;
@@ -433,10 +448,13 @@ export async function attachSession(
         const message = error instanceof Error ? error.message : String(error);
         console.log(chalk.red(`Remote recovery failed: ${message}`));
       }
+      if (!recoveryCommitted) {
+        process.exitCode = 1;
+      }
     }
   }
 
-  if (canReattach && !attemptedRemoteRecovery) {
+  if (canReattach && !attemptedRemoteRecovery && !incompleteMultiTurnBrowserRun) {
     const portInfo = runtime?.chromePort ? `port ${runtime.chromePort}` : "unknown port";
     const urlInfo = runtime?.tabUrl ? `url=${runtime.tabUrl}` : "url=unknown";
     console.log(
@@ -456,7 +474,14 @@ export async function attachSession(
           }) as unknown as BrowserLogger,
           { verbose: true },
         ),
-        { promptPreview: metadata.promptPreview },
+        {
+          promptPreview:
+            metadata.browser?.submittedPromptPreview ??
+            metadata.options?.prompt ??
+            metadata.promptPreview,
+          promptDomSha256: metadata.browser?.submittedPromptDomSha256,
+          requirePromptPreviewMatch: runtime?.promptSubmitted === true,
+        },
       );
       const outputTokens = estimateTokenCount(result.answerMarkdown);
       const artifacts = await saveReattachBrowserArtifacts(sessionId, metadata, result);

@@ -230,7 +230,7 @@ function fableCapability(): CapabilityEntry {
     status: "available",
     description:
       "Core lane: Fable xHigh through the local Claude Code subscription CLI, isolated from browser/router transports.",
-    next_command: "oracle doctor fable --json",
+    next_command: "oracle doctor fable --caam-profile <profile> --json",
     fix_command: null,
     notes: {
       lane: "fable-local",
@@ -240,15 +240,16 @@ function fableCapability(): CapabilityEntry {
       local_only: true,
       remote_browser_allowed: false,
       api_substitution_guard: true,
-      doctor_command: "oracle doctor fable --json",
+      doctor_command: "oracle doctor fable --caam-profile <profile> --json",
       caam_profile_flag: "--caam-profile <profile>",
       caam_base_flag: "--caam-base <absolute-path>",
       caam_profile_env: ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR,
       caam_base_env: ORACLE_CLAUDE_CODE_CAAM_BASE_ENV_VAR,
       caam_native_base_env: CAAM_SHALLOW_HOMES_DIR_ENV_VAR,
       caam_executable_env: ORACLE_CAAM_EXECUTABLE_ENV_VAR,
+      caam_profile_required_for_reviewed_lane: true,
       explicit_profile_selection_fail_closed: true,
-      direct_claude_fallback_only_when_profile_omitted: true,
+      direct_claude_fallback_compatibility_engine_only: true,
     },
   };
 }

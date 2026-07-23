@@ -64,7 +64,7 @@ export async function assertClaudeCodeLocalOwner(
     const viaSudo = Boolean(env.SUDO_USER);
     throw new ClaudeCodeLocalOwnerError(
       viaSudo ? "sudo_root_context" : "running_as_root",
-      `Claude Code lane refuses to run as root${viaSudo ? " (invoked via sudo)" : ""} — spawning \`claude\` as root would give the model root-owned file access. Re-run as a normal user, e.g.: su - ${env.SUDO_USER ?? "<user>"} -c 'oracle -p "<prompt>" --lane fable-local'`,
+      `Claude Code lane refuses to run as root${viaSudo ? " (invoked via sudo)" : ""} — spawning \`claude\` as root would give the model root-owned file access. Re-run as a normal user, e.g.: su - ${env.SUDO_USER ?? "<user>"} -c 'oracle -p "<prompt>" --lane fable-local --caam-profile <name>'`,
     );
   }
 

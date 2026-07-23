@@ -11,14 +11,23 @@ export interface BuildClaudeCodeCommandOptions {
   effort?: ClaudeCodeEffort;
   systemPrompt?: string;
   /**
+   * Stable UUID for a new, persisted Claude Code conversation. The reviewed
+   * Fable lane mints this before spawn, passes it through the real CLI's
+   * `--session-id <uuid>` flag, and records that exact same value in Oracle
+   * metadata so a later follow-up has a real transcript to resume.
+   *
+   * Leave unset for compatibility one-shots that deliberately retain
+   * `--no-session-persistence`. Mutually exclusive with `resumeSessionId`.
+   */
+  sessionId?: string;
+  /**
    * Multi-turn resume primitive (claude-provider-map.md finding #2). When
-   * set, oracle's own `--followup <sessionId>` surface attaches this run to
-   * a prior Claude Code conversation via the real CLI's own
-   * `--session-id <uuid>` flag INSTEAD of `--no-session-persistence` — this
-   * is the only sanctioned resume path. Raw `--resume`/`--continue`/
-   * `--fork-session` stay on `DANGEROUS_OR_OUT_OF_SCOPE_FLAGS` below and are
-   * never emitted, no matter what this option is set to. Must be a bare
-   * UUID (validated below) since it is embedded directly into argv.
+   * set, Oracle's own `--followup <sessionId>` surface attaches this run to
+   * a prior Claude Code conversation via the real CLI's `--resume <uuid>`
+   * flag. This is the only sanctioned resume path: the UUID is loaded from
+   * trusted Oracle metadata and validated below, while raw pass-through
+   * arguments remain rejected. `--continue` and `--fork-session` are never
+   * emitted.
    */
   resumeSessionId?: string;
   /**
@@ -87,12 +96,15 @@ export function buildClaudeCodeCommand(
   const model = options.model?.trim() || "fable";
   const effort = options.effort ?? "xhigh";
   const systemPrompt = options.systemPrompt ?? DEFAULT_CLAUDE_CODE_SYSTEM_PROMPT;
+  const sessionId = options.sessionId?.trim();
   const resumeSessionId = options.resumeSessionId?.trim();
   const streamJsonInput = options.streamJsonInput === true;
-  if (resumeSessionId && !UUID_PATTERN.test(resumeSessionId)) {
+  validateSessionId("session", sessionId);
+  validateSessionId("resume session", resumeSessionId);
+  if (sessionId && resumeSessionId) {
     throw new ClaudeCodeCommandError(
-      "invalid_resume_session_id",
-      `Claude Code resume session id ${JSON.stringify(resumeSessionId)} is not a valid UUID.`,
+      "conflicting_session_mode",
+      "Claude Code command cannot start a new --session-id and --resume an existing session at the same time.",
     );
   }
 
@@ -125,25 +137,35 @@ export function buildClaudeCodeCommand(
     "--disallowedTools",
     "mcp__*",
     "--no-chrome",
-    // One-shot runs (no resume requested) keep today's exact behavior: no
-    // persistence, nothing on disk to resume later. A resumed run instead
-    // attaches to the prior conversation via `--session-id <uuid>` and
-    // deliberately leaves persistence enabled so a further `--followup` can
-    // keep the chain going. `--resume`/`--continue`/`--fork-session` are
-    // never emitted here — see DANGEROUS_OR_OUT_OF_SCOPE_FLAGS.
-    ...(resumeSessionId ? ["--session-id", resumeSessionId] : ["--no-session-persistence"]),
+    // Reviewed one-shots persist under the exact UUID Oracle records; later
+    // follow-ups use Claude's actual resume primitive. Compatibility callers
+    // that provide neither value retain the historical non-persistent shape.
+    ...(resumeSessionId
+      ? ["--resume", resumeSessionId]
+      : sessionId
+        ? ["--session-id", sessionId]
+        : ["--no-session-persistence"]),
     "--tools",
     "",
   ];
 
   assertInputFormatOnlyFromFlag(args, streamJsonInput);
-  assertNoDangerousFlags(args);
+  assertNoDangerousFlags(args, resumeSessionId);
 
   return {
     file,
     args,
     spawnOptions: { shell: false },
   };
+}
+
+function validateSessionId(label: string, value: string | undefined): void {
+  if (value && !UUID_PATTERN.test(value)) {
+    throw new ClaudeCodeCommandError(
+      `invalid_${label.replaceAll(" ", "_")}_id`,
+      `Claude Code ${label} id ${JSON.stringify(value)} is not a valid UUID.`,
+    );
+  }
 }
 
 export function redactedClaudeCodeCommand(command: ClaudeCodeCommand): string[] {
@@ -156,7 +178,7 @@ function rejectRawPassThroughOptions(options: BuildClaudeCodeCommandOptions): vo
     if (Object.prototype.hasOwnProperty.call(optionRecord, key)) {
       throw new ClaudeCodeCommandError(
         "raw_claude_code_args_rejected",
-        `Claude Code local mode owns the full argv; raw pass-through option "${key}" is not allowed. Use the reviewed lane's own flags instead: oracle -p "<prompt>" --lane fable-local (run \`oracle doctor lanes --json\` to see exactly which argv it builds).`,
+        `Claude Code local mode owns the full argv; raw pass-through option "${key}" is not allowed. Use the reviewed lane's own flags instead: oracle -p "<prompt>" --lane fable-local --caam-profile <name> (run \`oracle doctor lanes --json\` to see exactly which argv it builds).`,
       );
     }
   }
@@ -180,9 +202,21 @@ function assertInputFormatOnlyFromFlag(args: string[], streamJsonInput: boolean)
   }
 }
 
-function assertNoDangerousFlags(args: string[]): void {
-  for (const arg of args) {
+function assertNoDangerousFlags(args: string[], resumeSessionId: string | undefined): void {
+  const resumeIndexes = args.flatMap((arg, index) => (arg === "--resume" ? [index] : []));
+  for (const [index, arg] of args.entries()) {
     if (DANGEROUS_OR_OUT_OF_SCOPE_FLAGS.has(arg)) {
+      // `--resume` is allowed only in the one exact builder-owned shape. The
+      // value came from trusted Oracle metadata, was UUID-validated above,
+      // and raw argument passthrough is rejected before argv construction.
+      if (
+        arg === "--resume" &&
+        resumeSessionId !== undefined &&
+        resumeIndexes.length === 1 &&
+        args[index + 1] === resumeSessionId
+      ) {
+        continue;
+      }
       throw new ClaudeCodeCommandError(
         "dangerous_claude_code_flag",
         `Claude Code command builder emitted blocked flag "${arg}" (internal invariant violation, not a user-fixable input). Please report this as an Oracle bug; do not retry with --dangerously-skip-permissions or similar bypass flags — those stay refused.`,

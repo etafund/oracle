@@ -4,10 +4,24 @@ import { parseHostPort } from "../bridge/connection.js";
 import { parseOracleBuildInfo, type OracleBuildInfo } from "../version.js";
 import {
   MAX_REMOTE_ARTIFACT_BYTES,
+  REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
+  REMOTE_BROWSER_RECOVERY_PROTOCOL,
+  REMOTE_BROWSER_RUN_PATH,
   type RemoteActiveRunInfo,
   type RemoteArtifactCapabilities,
   type RemoteRunReadinessState,
 } from "./types.js";
+import {
+  PROMPT_DOM_IDENTITY_ALGORITHM,
+  PROMPT_RECOVERY_PREVIEW_ALGORITHM,
+} from "../browser/promptDomMatch.js";
+
+export interface RemoteBrowserRecoveryCompatibility {
+  compatible: boolean;
+  protocol: string | null;
+  promptPreviewAlgorithm: string | null;
+  promptDomIdentityAlgorithm: string | null;
+}
 
 export interface RemoteHealthResult {
   ok: boolean;
@@ -22,6 +36,7 @@ export interface RemoteHealthResult {
   authProfileIdHash?: string;
   providerLocks?: string[];
   capabilities?: RemoteArtifactCapabilities;
+  browserRecoveryCompatibility?: RemoteBrowserRecoveryCompatibility;
 }
 
 export interface RemoteRunAvailabilityResult {
@@ -75,10 +90,15 @@ export async function checkRemoteHealth({
   host,
   token,
   timeoutMs = 5000,
+  requestFn = http.request,
+  probeRunAvailability = true,
 }: {
   host: string;
   token?: string;
   timeoutMs?: number;
+  requestFn?: typeof http.request;
+  /** Client admission preflight needs /health only; doctor also probes /runs. */
+  probeRunAvailability?: boolean;
 }): Promise<RemoteHealthResult> {
   const headers: Record<string, string> = { accept: "application/json" };
   if (token) {
@@ -92,6 +112,7 @@ export async function checkRemoteHealth({
       path: "/health",
       headers,
       timeoutMs,
+      requestFn,
     });
     if (response.statusCode === 200 && typeof response.json === "object" && response.json) {
       const ok = (response.json as { ok?: unknown }).ok === true;
@@ -110,6 +131,9 @@ export async function checkRemoteHealth({
       const capabilities = parseCapabilities(
         (response.json as { capabilities?: unknown }).capabilities,
       );
+      const browserRecoveryCompatibility = inspectRemoteBrowserRecoveryCompatibility(
+        (response.json as { capabilities?: unknown }).capabilities,
+      );
       const healthResult: RemoteHealthResult = {
         ok: ok && !busy,
         statusCode: response.statusCode,
@@ -122,6 +146,7 @@ export async function checkRemoteHealth({
         authProfileIdHash: typeof authProfileIdHash === "string" ? authProfileIdHash : undefined,
         providerLocks: Array.isArray(providerLocks) ? providerLocks : undefined,
         capabilities,
+        browserRecoveryCompatibility,
       };
 
       if (busy) {
@@ -142,11 +167,16 @@ export async function checkRemoteHealth({
         };
       }
 
+      if (!probeRunAvailability) {
+        return healthResult;
+      }
+
       const runAvailability = await probeRemoteRunAvailability({
         hostname,
         port,
         headers,
         timeoutMs,
+        requestFn,
       });
       if (!runAvailability.ok) {
         return {
@@ -164,6 +194,9 @@ export async function checkRemoteHealth({
     }
     if (response.statusCode === 409 && typeof response.json === "object" && response.json) {
       const capabilities = parseCapabilities(
+        (response.json as { capabilities?: unknown }).capabilities,
+      );
+      const browserRecoveryCompatibility = inspectRemoteBrowserRecoveryCompatibility(
         (response.json as { capabilities?: unknown }).capabilities,
       );
       const version = (response.json as { version?: unknown }).version;
@@ -187,6 +220,7 @@ export async function checkRemoteHealth({
           extractErrorMessage(response.json, response.bodyText) ??
           "remote host is busy; /health reports an active run",
         capabilities,
+        browserRecoveryCompatibility,
       };
     }
     if (response.statusCode === 404) {
@@ -219,7 +253,13 @@ export async function checkRemoteRunAvailability({
   }
   try {
     const { hostname, port } = parseHostPort(host);
-    return await probeRemoteRunAvailability({ hostname, port, headers, timeoutMs });
+    return await probeRemoteRunAvailability({
+      hostname,
+      port,
+      headers,
+      timeoutMs,
+      requestFn: http.request,
+    });
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
@@ -230,25 +270,29 @@ async function probeRemoteRunAvailability({
   port,
   headers,
   timeoutMs,
+  requestFn,
 }: {
   hostname: string;
   port: number;
   headers: Record<string, string>;
   timeoutMs: number;
+  requestFn: typeof http.request;
 }): Promise<RemoteRunAvailabilityResult> {
   const body = "{";
   const response = await requestJson({
     hostname,
     port,
-    path: "/runs",
+    path: REMOTE_BROWSER_RUN_PATH,
     method: "POST",
     headers: {
       ...headers,
+      ...REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
       "content-type": "application/json",
       "content-length": String(Buffer.byteLength(body)),
     },
     body,
     timeoutMs,
+    requestFn,
   });
   const error = extractErrorMessage(response.json, response.bodyText);
 
@@ -362,6 +406,43 @@ function parseCapabilities(value: unknown): RemoteArtifactCapabilities | undefin
     artifactTransfer: true,
     artifactProtocolVersion,
     maxArtifactBytes: Math.min(maxArtifactBytes, MAX_REMOTE_ARTIFACT_BYTES),
+    ...(inspectRemoteBrowserRecoveryCompatibility(value).compatible
+      ? {
+          browserRecovery: {
+            protocol: REMOTE_BROWSER_RECOVERY_PROTOCOL,
+            promptPreviewAlgorithm: PROMPT_RECOVERY_PREVIEW_ALGORITHM,
+            promptDomIdentityAlgorithm: PROMPT_DOM_IDENTITY_ALGORITHM,
+          },
+        }
+      : {}),
+  };
+}
+
+/** Parse even incompatible values so doctor can explain mixed-version drift. */
+export function inspectRemoteBrowserRecoveryCompatibility(
+  value: unknown,
+): RemoteBrowserRecoveryCompatibility {
+  const recovery =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as { browserRecovery?: unknown }).browserRecovery
+      : undefined;
+  const raw =
+    recovery && typeof recovery === "object" && !Array.isArray(recovery)
+      ? (recovery as Record<string, unknown>)
+      : {};
+  const protocol = typeof raw.protocol === "string" ? raw.protocol : null;
+  const promptPreviewAlgorithm =
+    typeof raw.promptPreviewAlgorithm === "string" ? raw.promptPreviewAlgorithm : null;
+  const promptDomIdentityAlgorithm =
+    typeof raw.promptDomIdentityAlgorithm === "string" ? raw.promptDomIdentityAlgorithm : null;
+  return {
+    compatible:
+      protocol === REMOTE_BROWSER_RECOVERY_PROTOCOL &&
+      promptPreviewAlgorithm === PROMPT_RECOVERY_PREVIEW_ALGORITHM &&
+      promptDomIdentityAlgorithm === PROMPT_DOM_IDENTITY_ALGORITHM,
+    protocol,
+    promptPreviewAlgorithm,
+    promptDomIdentityAlgorithm,
   };
 }
 
@@ -384,6 +465,7 @@ async function requestJson({
   headers,
   body,
   timeoutMs,
+  requestFn,
 }: {
   hostname: string;
   port: number;
@@ -392,9 +474,10 @@ async function requestJson({
   headers: Record<string, string>;
   body?: string;
   timeoutMs: number;
+  requestFn: typeof http.request;
 }): Promise<{ statusCode: number; json: unknown; bodyText: string }> {
   return await new Promise((resolve, reject) => {
-    const req = http.request(
+    const req = requestFn(
       {
         hostname,
         port,

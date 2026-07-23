@@ -10,7 +10,11 @@ import type { BrowserRunResult } from "../../../src/browserMode.js";
 import { runBridgeDoctor } from "../../../src/cli/bridge/doctor.js";
 import { setOracleHomeDirOverrideForTest } from "../../../src/oracleHome.js";
 import { createRemoteServer } from "../../../src/remote/server.js";
-import type { RemoteRunPayload } from "../../../src/remote/types.js";
+import {
+  REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
+  REMOTE_BROWSER_RUN_PATH,
+  type RemoteRunPayload,
+} from "../../../src/remote/types.js";
 
 const CAN_LISTEN_LOCALHOST =
   spawnSync(
@@ -138,10 +142,11 @@ async function postRun(
       {
         hostname: "127.0.0.1",
         port,
-        path: "/runs",
+        path: REMOTE_BROWSER_RUN_PATH,
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
+          ...REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
           "content-type": "application/json",
           "content-length": Buffer.byteLength(body),
         },

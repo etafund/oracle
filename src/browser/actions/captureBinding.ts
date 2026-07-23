@@ -34,6 +34,16 @@ import {
   isConversationUrl as isStableConversationUrl,
   normalizeChatGptConversationId,
 } from "../conversationIdentity.js";
+import {
+  computeRenderedPromptDomSha256,
+  normalizePromptForDomMatch,
+  PROMPT_DOM_EXACT_MATCH_DECLARATION,
+  PROMPT_DOM_IDENTITY_NORMALIZER_DECLARATION,
+  PROMPT_DOM_IDENTITY_SHA256_DECLARATION,
+  PROMPT_DOM_NORMALIZER_DECLARATION,
+} from "../promptDomMatch.js";
+
+export { normalizePromptForDomMatch } from "../promptDomMatch.js";
 
 export type SubmittedMessageBindingQuality = "message-handle" | "guessed" | "conversation-only";
 
@@ -41,18 +51,19 @@ export interface SubmittedUserMessageBinding {
   /** sha256 (hex) of the exact prompt text handed to the composer. */
   promptSha256: string;
   promptLength: number;
-  /** Normalized prompt prefix used to re-identify the user turn in the DOM. */
+  /** Diagnostic/navigation prefix only; never sufficient for capture ownership. */
   promptPrefix: string;
+  /** SHA-256 of the complete rendered user-message DOM identity. */
+  promptDomSha256: string | null;
   registeredAtMs: number;
   /**
    * "message-handle" when the submitted user turn was structurally located by
    * matching the submitted prompt text; "guessed" when a user turn was found
    * but did NOT match the submitted prompt (the probe fell back to the latest
    * user turn — the handle may belong to another message, so capture
-   * validation treats it at conversation-only strength); "conversation-only"
-   * when only conversation-level binding is available. Non-"message-handle"
-   * bindings are correspondingly weaker but still fail loud on
-   * conversation/target changes.
+   * validation refuses it); "conversation-only" when only conversation-level
+   * evidence is available. Non-"message-handle" bindings are diagnostic only
+   * and can never certify a captured answer.
    */
   quality: SubmittedMessageBindingQuality;
   conversationId: string | null;
@@ -65,12 +76,24 @@ export interface CapturedAssistantMeta {
   turnId?: string | null;
 }
 
+export interface RegisterSubmittedUserMessageOptions {
+  /**
+   * Recovery-only full rendered-DOM digest. When supplied, the probe ignores
+   * the short prompt preview for ownership and elevates only the latest user
+   * turn whose complete rendered identity hashes to this value.
+   */
+  expectedPromptDomSha256?: string;
+  /** Attachment labels that may appear after the prompt in the user turn. */
+  attachmentNames?: string[];
+}
+
 /** Raw facts probed from the live DOM immediately after a capture. */
 export interface CaptureBindingFacts {
   conversationId: string | null;
   userTurnFound: boolean;
   userTurnIsLatestUserTurn: boolean;
   capturedNodeFound: boolean;
+  capturedNodeIsAssistantTurn: boolean;
   capturedFollowsUserMessage: boolean;
   interveningAssistantTurns: number;
   assistantTurnAfterUserMessage: boolean;
@@ -92,30 +115,9 @@ export function computePromptSha256(prompt: string): string {
   return createHash("sha256").update(prompt, "utf8").digest("hex");
 }
 
-/**
- * Mirrors the DOM-side normalization used by the submit-commit check: ChatGPT
- * re-renders markdown, so fence markers are stripped (content kept) before
- * whitespace collapsing.
- */
-export function normalizePromptForDomMatch(value: string): string {
-  let text = value.toLowerCase();
-  text = text.replace(/```[^\n]*\n([\s\S]*?)```/g, " $1 ");
-  text = text.replace(/```/g, " ");
-  text = text.replace(/`([^`]*)`/g, "$1");
-  return text.replace(/\s+/g, " ").trim();
-}
-
 export function isConversationUrl(url: string): boolean {
   return isStableConversationUrl(url);
 }
-
-const NORMALIZE_JS = `const normalize = (value) => {
-      let text = String(value || '').toLowerCase();
-      text = text.replace(/\`\`\`[^\\n]*\\n([\\s\\S]*?)\`\`\`/g, ' $1 ');
-      text = text.replace(/\`\`\`/g, ' ');
-      text = text.replace(/\`([^\`]*)\`/g, '$1');
-      return text.replace(/\\s+/g, ' ').trim();
-    };`;
 
 const TURN_HELPERS_JS = `const isUserTurn = (node) => {
       if (!(node instanceof HTMLElement)) return false;
@@ -136,43 +138,55 @@ const TURN_HELPERS_JS = `const isUserTurn = (node) => {
       return Boolean(node.querySelector('[data-message-author-role="assistant"], [data-turn="assistant"], [data-testid*="assistant"]'));
     };`;
 
-function buildSubmittedUserMessageProbeExpression(prompt: string): string {
+function buildSubmittedUserMessageProbeExpression(
+  prompt: string,
+  expectedPromptDomSha256?: string,
+  attachmentNames: string[] = [],
+): string {
   const conversationLiteral = JSON.stringify(CONVERSATION_TURN_SELECTOR);
   const promptLiteral = JSON.stringify(prompt);
+  const expectedPromptDomSha256Literal = JSON.stringify(expectedPromptDomSha256 ?? null);
+  const attachmentNamesLiteral = JSON.stringify(attachmentNames);
   const conversationIdExpression = buildConversationIdFromHrefExpression("href");
-  return `(() => {
+  return `(async () => {
     const CONVERSATION_SELECTOR = ${conversationLiteral};
-    ${NORMALIZE_JS}
+    const EXPECTED_PROMPT_DOM_SHA256 = ${expectedPromptDomSha256Literal};
+    const EXPECTED_ATTACHMENT_NAMES = ${attachmentNamesLiteral};
+    ${PROMPT_DOM_NORMALIZER_DECLARATION}
+    ${PROMPT_DOM_IDENTITY_NORMALIZER_DECLARATION}
+    ${PROMPT_DOM_EXACT_MATCH_DECLARATION}
+    ${PROMPT_DOM_IDENTITY_SHA256_DECLARATION}
     ${TURN_HELPERS_JS}
     const href = typeof location === 'object' && location.href ? location.href : '';
     const conversationId = ${conversationIdExpression};
-    const normalizedPrompt = normalize(${promptLiteral});
-    const promptPrefix = normalizedPrompt.slice(0, 120);
+    const submittedPrompt = ${promptLiteral};
     const turns = Array.from(document.querySelectorAll(CONVERSATION_SELECTOR));
     // Nested turn wrappers duplicate matches; bind against outermost turns.
     const topLevelTurns = turns.filter(
       (turn) => !(turn.parentElement && turn.parentElement.closest(CONVERSATION_SELECTOR)),
     );
     const userTurns = topLevelTurns.filter(isUserTurn);
-    let target = null;
+    const target = userTurns.length > 0 ? userTurns[userTurns.length - 1] : null;
     let matchedPrompt = false;
-    for (let index = userTurns.length - 1; index >= 0; index -= 1) {
-      const turn = userTurns[index];
-      const text = normalize(turn.innerText || turn.textContent || '');
-      const matches =
-        normalizedPrompt.length > 0 &&
-        (text.includes(normalizedPrompt) || (promptPrefix.length > 30 && text.includes(promptPrefix)));
-      if (matches) {
-        target = turn;
+    let matchedPromptDomIdentity = null;
+    if (target) {
+      const candidates = readRenderedPromptDomContentCandidates(target);
+      for (const candidate of candidates) {
+        const matches = EXPECTED_PROMPT_DOM_SHA256
+          ? await computeRenderedPromptDomSha256InBrowser(candidate.identity) === EXPECTED_PROMPT_DOM_SHA256
+          : renderedPromptCandidateMatchesSubmission(
+              candidate.text,
+              submittedPrompt,
+              EXPECTED_ATTACHMENT_NAMES,
+            );
+        if (!matches) continue;
         matchedPrompt = true;
+        matchedPromptDomIdentity = candidate.identity;
         break;
       }
     }
-    if (!target && userTurns.length > 0) {
-      target = userTurns[userTurns.length - 1];
-    }
     if (!target) {
-      return { found: false, matchedPrompt: false, conversationId, userMessageId: null, userTurnTestId: null };
+      return { found: false, matchedPrompt: false, isLatestUserTurn: false, promptDomIdentity: null, conversationId, userMessageId: null, userTurnTestId: null };
     }
     const messageNode = target.matches('[data-message-id]')
       ? target
@@ -180,6 +194,8 @@ function buildSubmittedUserMessageProbeExpression(prompt: string): string {
     return {
       found: true,
       matchedPrompt,
+      isLatestUserTurn: true,
+      promptDomIdentity: matchedPromptDomIdentity,
       conversationId,
       userMessageId: messageNode ? messageNode.getAttribute('data-message-id') : null,
       userTurnTestId: target.getAttribute('data-testid'),
@@ -194,20 +210,20 @@ function buildCaptureBindingFactsExpression(
   const conversationLiteral = JSON.stringify(CONVERSATION_TURN_SELECTOR);
   const userMessageIdLiteral = JSON.stringify(binding.userMessageId ?? null);
   const userTurnTestIdLiteral = JSON.stringify(binding.userTurnTestId ?? null);
-  const promptPrefixLiteral = JSON.stringify(
-    binding.promptPrefix.length > 30 ? binding.promptPrefix : null,
-  );
+  const promptDomSha256Literal = JSON.stringify(binding.promptDomSha256);
   const capturedMessageIdLiteral = JSON.stringify(meta.messageId ?? null);
   const capturedTurnIdLiteral = JSON.stringify(meta.turnId ?? null);
   const conversationIdExpression = buildConversationIdFromHrefExpression("href");
-  return `(() => {
+  return `(async () => {
     const CONVERSATION_SELECTOR = ${conversationLiteral};
     const USER_MESSAGE_ID = ${userMessageIdLiteral};
     const USER_TURN_TESTID = ${userTurnTestIdLiteral};
-    const USER_PROMPT_PREFIX = ${promptPrefixLiteral};
+    const USER_PROMPT_DOM_SHA256 = ${promptDomSha256Literal};
     const CAPTURED_MESSAGE_ID = ${capturedMessageIdLiteral};
     const CAPTURED_TURN_ID = ${capturedTurnIdLiteral};
-    ${NORMALIZE_JS}
+    ${PROMPT_DOM_NORMALIZER_DECLARATION}
+    ${PROMPT_DOM_IDENTITY_NORMALIZER_DECLARATION}
+    ${PROMPT_DOM_IDENTITY_SHA256_DECLARATION}
     ${TURN_HELPERS_JS}
     const esc = (value) =>
       typeof CSS !== 'undefined' && CSS && typeof CSS.escape === 'function'
@@ -250,15 +266,44 @@ function buildCaptureBindingFactsExpression(
       const byTestId = document.querySelector('[data-testid="' + esc(USER_TURN_TESTID) + '"]');
       if (byTestId && isUserTurn(byTestId)) userTurn = toTopLevelTurn(byTestId);
     }
-    if (!userTurn && USER_PROMPT_PREFIX) {
-      for (let index = topLevelTurns.length - 1; index >= 0; index -= 1) {
-        const turn = topLevelTurns[index];
-        if (!isUserTurn(turn)) continue;
-        if (normalize(turn.innerText || turn.textContent || '').includes(USER_PROMPT_PREFIX)) {
-          userTurn = turn;
+    if (userTurn && USER_PROMPT_DOM_SHA256) {
+      const identities = readRenderedPromptDomContentCandidates(userTurn).map(
+        (candidate) => candidate.identity,
+      );
+      let identityMatched = false;
+      for (const identity of identities) {
+        if (await computeRenderedPromptDomSha256InBrowser(identity) === USER_PROMPT_DOM_SHA256) {
+          identityMatched = true;
           break;
         }
       }
+      if (!identityMatched) {
+        userTurn = null;
+      }
+    }
+    if (!userTurn && USER_PROMPT_DOM_SHA256) {
+      const digestMatches = [];
+      for (let index = topLevelTurns.length - 1; index >= 0; index -= 1) {
+        const turn = topLevelTurns[index];
+        if (!isUserTurn(turn)) continue;
+        const identities = readRenderedPromptDomContentCandidates(turn).map(
+          (candidate) => candidate.identity,
+        );
+        let identityMatched = false;
+        for (const identity of identities) {
+          if (await computeRenderedPromptDomSha256InBrowser(identity) === USER_PROMPT_DOM_SHA256) {
+            identityMatched = true;
+            break;
+          }
+        }
+        if (identityMatched) {
+          digestMatches.push(turn);
+        }
+      }
+      // A digest is a content identity, not a unique structural handle. If the
+      // same prompt appears twice, falling back to either occurrence would
+      // manufacture ownership after the stable ids vanished.
+      if (digestMatches.length === 1) userTurn = digestMatches[0];
     }
     const userTurnFound = Boolean(userTurn);
     const userTurns = topLevelTurns.filter(isUserTurn);
@@ -275,6 +320,7 @@ function buildCaptureBindingFactsExpression(
     }
     const capturedTurn = capturedNode ? toTopLevelTurn(capturedNode) : null;
     const capturedNodeFound = Boolean(capturedNode);
+    const capturedNodeIsAssistantTurn = Boolean(capturedTurn && isAssistantTurn(capturedTurn));
     const capturedFollowsUserMessage = Boolean(
       userTurn && capturedTurn && (related(userTurn, capturedTurn) ? false : follows(userTurn, capturedTurn)),
     );
@@ -293,7 +339,7 @@ function buildCaptureBindingFactsExpression(
             isAssistantTurn(turn) &&
             !related(turn, userTurn) &&
             follows(userTurn, turn) &&
-            normalize(turn.innerText || turn.textContent || '').length > 0,
+            normalizePromptForDomMatch(turn.innerText || turn.textContent || '').length > 0,
         ),
     );
     return {
@@ -301,6 +347,7 @@ function buildCaptureBindingFactsExpression(
       userTurnFound,
       userTurnIsLatestUserTurn,
       capturedNodeFound,
+      capturedNodeIsAssistantTurn,
       capturedFollowsUserMessage,
       interveningAssistantTurns,
       assistantTurnAfterUserMessage,
@@ -308,8 +355,12 @@ function buildCaptureBindingFactsExpression(
   })()`;
 }
 
-export function buildSubmittedUserMessageProbeExpressionForTest(prompt: string): string {
-  return buildSubmittedUserMessageProbeExpression(prompt);
+export function buildSubmittedUserMessageProbeExpressionForTest(
+  prompt: string,
+  expectedPromptDomSha256?: string,
+  attachmentNames: string[] = [],
+): string {
+  return buildSubmittedUserMessageProbeExpression(prompt, expectedPromptDomSha256, attachmentNames);
 }
 
 export function buildCaptureBindingFactsExpressionForTest(
@@ -324,21 +375,31 @@ export function buildCaptureBindingFactsExpressionForTest(
  *
  * Called from `submitPrompt` immediately after the prompt is verified
  * committed. Never throws: the submission itself already succeeded, so a
- * probe failure degrades the binding to conversation-only (logged) rather
- * than failing the run — capture validation stays fail-loud on everything the
- * degraded binding can still prove.
+ * probe failure records a diagnostic-only binding (logged) rather than
+ * failing the already-dispatched run. Capture validation later refuses to
+ * certify any response without an exact message handle.
  */
 export async function registerSubmittedUserMessage(
   runtime: ChromeClient["Runtime"],
   prompt: string,
   logger: BrowserLogger,
+  options: RegisterSubmittedUserMessageOptions = {},
 ): Promise<SubmittedUserMessageBinding> {
   const promptSha256 = computePromptSha256(prompt);
   const normalizedPrompt = normalizePromptForDomMatch(prompt);
+  const expectedPromptDomSha256 = options.expectedPromptDomSha256;
+  const attachmentNames = Array.isArray(options.attachmentNames)
+    ? options.attachmentNames.filter(
+        (name): name is string => typeof name === "string" && name.length > 0,
+      )
+    : [];
+  const expectedPromptDomSha256Valid =
+    expectedPromptDomSha256 === undefined || /^[a-f0-9]{64}$/.test(expectedPromptDomSha256);
   const base: SubmittedUserMessageBinding = {
     promptSha256,
     promptLength: prompt.length,
     promptPrefix: normalizedPrompt.slice(0, 120),
+    promptDomSha256: null,
     registeredAtMs: Date.now(),
     quality: "conversation-only",
     conversationId: null,
@@ -346,55 +407,83 @@ export async function registerSubmittedUserMessage(
     userTurnTestId: null,
   };
   let binding = base;
-  try {
-    const { result } = await runtime.evaluate({
-      expression: buildSubmittedUserMessageProbeExpression(prompt),
-      returnByValue: true,
-    });
-    const value = result?.value as
-      | {
-          found?: boolean;
-          matchedPrompt?: boolean;
-          conversationId?: string | null;
-          userMessageId?: string | null;
-          userTurnTestId?: string | null;
+  const attempts = 3;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (attempt > 0) await delay(100);
+    try {
+      const { result } = await runtime.evaluate({
+        expression: buildSubmittedUserMessageProbeExpression(
+          prompt,
+          expectedPromptDomSha256Valid ? expectedPromptDomSha256 : "invalid",
+          attachmentNames,
+        ),
+        returnByValue: true,
+        awaitPromise: true,
+      });
+      const value = result?.value as
+        | {
+            found?: boolean;
+            matchedPrompt?: boolean;
+            isLatestUserTurn?: boolean;
+            promptDomIdentity?: string | null;
+            conversationId?: string | null;
+            userMessageId?: string | null;
+            userTurnTestId?: string | null;
+          }
+        | undefined;
+      if (value && typeof value === "object") {
+        const conversationId = normalizeChatGptConversationId(value.conversationId) ?? null;
+        if (value.found === true) {
+          const promptDomSha256 =
+            value.matchedPrompt === true &&
+            value.isLatestUserTurn === true &&
+            typeof value.promptDomIdentity === "string" &&
+            value.promptDomIdentity.length > 0
+              ? computeRenderedPromptDomSha256(value.promptDomIdentity)
+              : null;
+          const expectedDigestMatches =
+            expectedPromptDomSha256 === undefined || promptDomSha256 === expectedPromptDomSha256;
+          const exactLatestOwnership = Boolean(
+            value.matchedPrompt === true &&
+            value.isLatestUserTurn === true &&
+            promptDomSha256 &&
+            expectedDigestMatches,
+          );
+          binding = {
+            ...base,
+            // Only an exact match on the latest user turn is a proven handle.
+            // Keep non-matching ids for diagnostics, but never elevate them.
+            quality: exactLatestOwnership ? "message-handle" : "guessed",
+            promptDomSha256: exactLatestOwnership ? promptDomSha256 : null,
+            conversationId,
+            userMessageId: typeof value.userMessageId === "string" ? value.userMessageId : null,
+            userTurnTestId: typeof value.userTurnTestId === "string" ? value.userTurnTestId : null,
+          };
+          if (exactLatestOwnership) break;
+        } else {
+          binding = { ...base, conversationId };
         }
-      | undefined;
-    if (value && typeof value === "object") {
-      const conversationId = normalizeChatGptConversationId(value.conversationId) ?? null;
-      if (value.found === true) {
-        binding = {
-          ...base,
-          // A turn located by matching the submitted prompt text is a proven
-          // handle. A fallback guess (latest user turn, matchedPrompt:false)
-          // must NOT be recorded at full message-handle strength: the guessed
-          // handle may belong to another run's message, and validating
-          // against it would manufacture a cross-talk proof that was never
-          // established. Keep the ids for diagnostics, downgrade the quality.
-          quality: value.matchedPrompt === true ? "message-handle" : "guessed",
-          conversationId,
-          userMessageId: typeof value.userMessageId === "string" ? value.userMessageId : null,
-          userTurnTestId: typeof value.userTurnTestId === "string" ? value.userTurnTestId : null,
-        };
-      } else {
-        binding = { ...base, conversationId };
       }
+    } catch {
+      // A committed turn can appear a beat after the send acknowledgement, and
+      // transient CDP evaluation failures are common during that rerender.
+      // Retry within this small fixed window; capture remains fail-closed if
+      // exact latest-turn ownership cannot be established.
     }
-  } catch {
-    // Probe unavailable; keep the conversation-only binding.
   }
   bindingsByRuntime.set(runtime as object, binding);
   logger(
     `[browser] Structural capture binding registered (${binding.quality}); submitted prompt sha256 ${promptSha256} (${prompt.length} chars)` +
+      (binding.promptDomSha256 ? `; rendered DOM sha256 ${binding.promptDomSha256}` : "") +
       (binding.conversationId ? `; conversation ${binding.conversationId}` : ""),
   );
   if (binding.quality === "conversation-only") {
     logger(
-      "[browser] Submitted user message could not be structurally located; capture validation degrades to conversation-level binding.",
+      "[browser] Submitted user message could not be structurally located; capture validation will refuse an unowned response.",
     );
   } else if (binding.quality === "guessed") {
     logger(
-      "[browser] Submitted user message did not match any user turn; bound to the latest user turn as a guess. Capture validation degrades to conversation-level binding.",
+      "[browser] Latest user turn did not provide exact submission ownership; its ids are diagnostic only and capture validation will refuse it.",
     );
   }
   return binding;
@@ -440,6 +529,12 @@ export function evaluateCaptureBindingFacts(
       "the provisional submit had neither a durable conversation identity nor a structurally matched user message",
     );
   }
+  if (binding.quality !== "message-handle") {
+    return fail(
+      "capture-binding-ownership-unproven",
+      `submitted user-message ownership was only ${binding.quality}; refusing conversation-level capture certification`,
+    );
+  }
   const warnings: string[] = [];
   const hasCapturedIds = Boolean(meta.messageId || meta.turnId);
   if (binding.quality === "message-handle") {
@@ -460,6 +555,12 @@ export function evaluateCaptureBindingFacts(
         return fail(
           "capture-binding-captured-node-missing",
           "the captured assistant message can no longer be located in the conversation DOM",
+        );
+      }
+      if (!facts.capturedNodeIsAssistantTurn) {
+        return fail(
+          "capture-binding-captured-node-not-assistant",
+          "the captured message identity resolves to a non-assistant conversation turn",
         );
       }
       if (!facts.capturedFollowsUserMessage) {
@@ -483,11 +584,6 @@ export function evaluateCaptureBindingFacts(
         "no assistant message follows this run's own user message; the captured text came from stale prior content",
       );
     }
-  } else if (hasCapturedIds && !facts.capturedNodeFound) {
-    return fail(
-      "capture-binding-captured-node-missing",
-      "the captured assistant message can no longer be located in the conversation DOM",
-    );
   }
   return { ok: true, warnings };
 }
@@ -500,6 +596,7 @@ function coerceFacts(value: unknown): CaptureBindingFacts | null {
     userTurnFound: raw.userTurnFound === true,
     userTurnIsLatestUserTurn: raw.userTurnIsLatestUserTurn === true,
     capturedNodeFound: raw.capturedNodeFound === true,
+    capturedNodeIsAssistantTurn: raw.capturedNodeIsAssistantTurn === true,
     capturedFollowsUserMessage: raw.capturedFollowsUserMessage === true,
     interveningAssistantTurns:
       typeof raw.interveningAssistantTurns === "number" &&
@@ -515,11 +612,10 @@ const CAPTURE_BINDING_RETRY_DELAY_MS = 250;
 
 /**
  * Verified-marker log line for a passed capture-binding validation. Full
- * message-handle bindings and the weaker fallback tiers deliberately produce
- * DIFFERENT wording so downstream log matchers (remote server provenance)
- * can distinguish full structural verification from degraded
- * conversation-level verification. Both variants keep the literal
- * "capture binding verified" so older matchers stay compatible.
+ * The non-message-handle wording remains for backward-compatible formatting,
+ * although fail-closed verdicts no longer allow those tiers to reach this log.
+ * Both variants keep the literal "capture binding verified" so older matchers
+ * stay compatible.
  */
 export function formatCaptureBindingVerifiedLog(
   quality: SubmittedMessageBindingQuality,
@@ -562,6 +658,7 @@ export async function assertCapturedAssistantResponseBound(
       const { result } = await runtime.evaluate({
         expression: buildCaptureBindingFactsExpression(binding, meta),
         returnByValue: true,
+        awaitPromise: true,
       });
       facts = coerceFacts(result?.value);
     } catch {

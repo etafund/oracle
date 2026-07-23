@@ -5,6 +5,25 @@ import {
   recoverPromptEcho,
 } from "../../src/browser/reattachHelpers.ts";
 
+describe("buildPromptEchoMatcher", () => {
+  test("recognizes a multiline Markdown prompt rendered as DOM text", () => {
+    const matcher = buildPromptEchoMatcher("# Recovery heading\n\n- First   item\n- `second item`");
+
+    expect(matcher?.isEcho("Recovery heading\nFirst item\nsecond item")).toBe(true);
+  });
+
+  test("recognizes an echo when the saved 160-character preview cuts inline code", () => {
+    const markdown = `# Recovery heading\n${"p".repeat(130)}\`inline ownership token ${"q".repeat(50)}\` trailing`;
+    const savedPreview = markdown.slice(0, 160);
+    const rendered = `Recovery heading\n${"p".repeat(130)}inline ownership token ${"q".repeat(50)} trailing`;
+    expect(savedPreview.match(/`/g)).toHaveLength(1);
+
+    const matcher = buildPromptEchoMatcher(savedPreview);
+    expect(matcher?.isEcho(rendered)).toBe(true);
+    expect(matcher?.isEcho("recovery")).toBe(false);
+  });
+});
+
 describe("alignPromptEchoPair", () => {
   test("aligns answer text when text is a prompt echo", () => {
     const matcher = buildPromptEchoMatcher("Echo prompt");

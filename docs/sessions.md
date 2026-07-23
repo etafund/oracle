@@ -117,21 +117,21 @@ oracle cancel <id> --json      # same, but emit the resulting oracle_session.v1 
 ## Restart
 
 ```bash
-oracle restart <id>            # re-run with the same prompt + files
+oracle restart <id>            # API, or typed retryable pre-submit browser failure only
 ```
 
-Useful when a transient browser/API error truncated the answer. Restart copies the bundle, opens a new session, and links lineage back.
+Restart copies the bundle, opens a new session, and links lineage back. For API sessions, it remains useful after a transient provider or transport failure. It refuses Claude Code/Fable sessions and any browser session whose prompt was submitted or whose pre-submit state is unknown. For one-shot browser sessions, use `oracle session <id> --render`; capture-only recovery requires the exact full rendered-turn digest, so prefix-only legacy sessions or unbound submissions fall back to the originating ChatGPT account's history instead of risking a duplicate submission or wrong-turn capture. Incomplete same-run multi-turn sessions cannot be completed from one recovered answer until per-turn results are durably checkpointed; inspect the originating account's history and do not replay them.
 
 ## Follow up
 
-Continue a saved ChatGPT browser conversation or an OpenAI / Azure Responses API session with new context:
+Continue a saved ChatGPT browser conversation, a same-profile Fable/Claude Code session, or an OpenAI / Azure Responses API session with new context:
 
 ```bash
 oracle --followup <id> -p "Re-evaluate with these files" \
   --file "src/migrations/**"
 ```
 
-Browser followup reopens the exact saved conversation and inherits its browser configuration and model. For multi-model API parents, pick the lineage with `--followup-model`. See [Followup](followup.md) for the full flow and the formats `--followup` accepts (session ids, slugs, or `resp_…` response ids).
+Browser followup reopens the exact saved conversation and inherits its browser configuration and model. Fable followup requires the exact parent CAAM profile/base. For multi-model API parents, pick the lineage with `--followup-model`. See [Followup](followup.md) for the full flow and the identifiers `--followup` accepts: session ids, slugs, or `resp_…` response ids.
 
 ## Background mode
 

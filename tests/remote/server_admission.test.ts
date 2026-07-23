@@ -2,6 +2,10 @@ import { afterEach, describe, expect, test } from "vitest";
 import http from "node:http";
 import { spawnSync } from "node:child_process";
 import { createRemoteServer, MAX_RUN_REQUEST_BODY_BYTES } from "../../src/remote/server.js";
+import {
+  REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
+  REMOTE_BROWSER_RUN_PATH,
+} from "../../src/remote/types.js";
 import type { BrowserRunResult } from "../../src/browserMode.js";
 
 // Admission-control contract for the remote serve endpoint (fault isolation
@@ -162,9 +166,7 @@ describe("remote server admission limits", () => {
         const refused = await slow.response;
         expect(refused.statusCode).toBe(408);
         expect(refused.headers["x-oracle-run-id"]).toBeTruthy();
-        expect((JSON.parse(refused.body) as Record<string, unknown>).error).toBe(
-          "request_timeout",
-        );
+        expect((JSON.parse(refused.body) as Record<string, unknown>).error).toBe("request_timeout");
         slow.req.destroy();
         expect(runs).toBe(0);
 
@@ -396,10 +398,11 @@ function openRunRequest(
       {
         hostname: "127.0.0.1",
         port,
-        path: "/runs",
+        path: REMOTE_BROWSER_RUN_PATH,
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
+          ...REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
           "content-type": "application/json",
           "content-length": contentLength,
         },

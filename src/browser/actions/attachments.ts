@@ -8,6 +8,11 @@ import {
   buildConversationIdFromHrefExpression,
   normalizeChatGptConversationId,
 } from "../conversationIdentity.js";
+import {
+  normalizePromptForDomMatch,
+  PROMPT_DOM_NORMALIZER_DECLARATION,
+  PROMPT_DOM_RECIPROCAL_PREFIX_MIN_LENGTH,
+} from "../promptDomMatch.js";
 import { transferAttachmentViaDataTransfer } from "./attachmentDataTransfer.js";
 
 export async function uploadAttachmentFile(
@@ -1732,7 +1737,7 @@ export async function waitForUserTurnAttachments(
       ? Math.max(0, Math.floor(options.minTurnIndex))
       : null;
   const expectedPromptPrefix = options?.expectedPrompt
-    ? options.expectedPrompt.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 80)
+    ? normalizePromptForDomMatch(options.expectedPrompt).slice(0, 80)
     : "";
   const expectedConversationId =
     typeof options?.expectedConversationId === "string" &&
@@ -1821,6 +1826,8 @@ function buildUserTurnAttachmentExpression(options: {
     const MIN_TURN_INDEX = ${minTurnLiteral};
     const EXPECTED_PROMPT_PREFIX = ${expectedPromptLiteral};
     const EXPECTED_CONVERSATION_ID = ${expectedConversationLiteral};
+    const RECIPROCAL_PREFIX_MIN_LENGTH = ${PROMPT_DOM_RECIPROCAL_PREFIX_MIN_LENGTH};
+    ${PROMPT_DOM_NORMALIZER_DECLARATION}
     const currentHref = typeof location === 'object' && location.href ? location.href : '';
     const currentConversationId = ${currentConversationIdExpression};
     if (
@@ -1839,13 +1846,16 @@ function buildUserTurnAttachmentExpression(options: {
       MIN_TURN_INDEX === null ? userTurns : userTurns.filter(({ index }) => index >= MIN_TURN_INDEX);
     const lastUser = eligibleTurns[eligibleTurns.length - 1];
     if (!lastUser) return { ok: false };
-    const text = (lastUser.node.innerText || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+    const text = normalizePromptForDomMatch(
+      lastUser.node.innerText || lastUser.node.textContent || '',
+    );
     const textPrefix = text.slice(0, Math.min(text.length, EXPECTED_PROMPT_PREFIX.length));
     const promptMatches =
       !EXPECTED_PROMPT_PREFIX ||
       (text.length > 0 &&
         (text.includes(EXPECTED_PROMPT_PREFIX) ||
-          (textPrefix.length > 0 && EXPECTED_PROMPT_PREFIX.includes(textPrefix))));
+          (textPrefix.length >= RECIPROCAL_PREFIX_MIN_LENGTH &&
+            EXPECTED_PROMPT_PREFIX.startsWith(textPrefix))));
     const attrs = Array.from(lastUser.node.querySelectorAll('[aria-label],[title]')).map((el) => {
       const aria = el.getAttribute('aria-label') || '';
       const title = el.getAttribute('title') || '';
@@ -1920,7 +1930,10 @@ export function buildUserTurnAttachmentExpressionForTest(options?: {
       typeof options?.minTurnIndex === "number" && Number.isFinite(options.minTurnIndex)
         ? Math.max(0, Math.floor(options.minTurnIndex))
         : null,
-    expectedPromptPrefix: options?.expectedPromptPrefix ?? "",
+    expectedPromptPrefix: normalizePromptForDomMatch(options?.expectedPromptPrefix ?? "").slice(
+      0,
+      80,
+    ),
     expectedConversationId:
       typeof options?.expectedConversationId === "string" &&
       options.expectedConversationId.trim().length > 0

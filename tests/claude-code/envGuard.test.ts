@@ -115,13 +115,13 @@ describe("Claude Code env guard", () => {
 
   test("error-teaches: ANTHROPIC_API_KEY refusal names the exact unset-and-retry fix", () => {
     expect(() => prepareClaudeCodeEnvironment({ ANTHROPIC_API_KEY: "sk-ant-secret" })).toThrow(
-      /Fix: unset ANTHROPIC_API_KEY, then retry: oracle -p "<prompt>" --lane fable-local/,
+      /Fix: unset ANTHROPIC_API_KEY, then retry: oracle -p "<prompt>" --lane fable-local --caam-profile <name>/,
     );
   });
 
   test("error-teaches: other blocked provider vars name an exact unset-and-retry fix", () => {
     expect(() => prepareClaudeCodeEnvironment({ ANTHROPIC_BASE_URL: "https://gateway" })).toThrow(
-      /Fix: unset ANTHROPIC_BASE_URL, then retry: oracle -p "<prompt>" --lane fable-local/,
+      /Fix: unset ANTHROPIC_BASE_URL, then retry: oracle -p "<prompt>" --lane fable-local --caam-profile <name>/,
     );
   });
 });

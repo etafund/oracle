@@ -2,11 +2,47 @@ import type { BrowserSessionConfig } from "../sessionStore.js";
 import type { BrowserRunResult } from "../browserMode.js";
 import type { BrowserAttachment } from "../browser/types.js";
 import type { SubmittedMessageBindingQuality } from "../browser/actions/captureBinding.js";
+import {
+  PROMPT_DOM_IDENTITY_ALGORITHM,
+  PROMPT_RECOVERY_PREVIEW_ALGORITHM,
+} from "../browser/promptDomMatch.js";
 import type { SessionArtifactValidation } from "../sessionManager.js";
 import type { OracleBuildInfo } from "../version.js";
 import type { RunErrorClass } from "./run_event_sink.js";
 
 export const MAX_REMOTE_ARTIFACT_BYTES = 512 * 1024 * 1024;
+
+/**
+ * Exact mixed-version contract for executable remote browser recovery.
+ *
+ * Ordinary remote runs advertise this contract at admission because a run
+ * can cross the submit boundary and need capture-only recovery later. A
+ * client/worker pair that disagrees must refuse the run before touching the
+ * browser; silently degrading to a legacy sidecar would make the resulting
+ * failed session unrecoverable.
+ */
+export const REMOTE_BROWSER_RECOVERY_PROTOCOL = "remote-browser-recovery.v2" as const;
+// Keep the deployed router's exact `/runs` and `/recover` locations while
+// versioning the upstream request target. nginx location matching excludes
+// the query string, but Node workers compare `req.url` including it: current
+// routers forward these targets, while legacy workers return 404 before body
+// parsing/browser execution instead of ignoring a new header and submitting.
+export const REMOTE_BROWSER_RUN_PATH = "/runs?protocol=remote-browser-recovery.v2" as const;
+export const REMOTE_BROWSER_RECOVERY_PATH = "/recover?protocol=remote-browser-recovery.v2" as const;
+
+export const REMOTE_BROWSER_RECOVERY_ADMISSION_HEADERS = {
+  protocol: "x-oracle-browser-recovery-protocol",
+  promptPreviewAlgorithm: "x-oracle-prompt-preview-algorithm",
+  promptDomIdentityAlgorithm: "x-oracle-prompt-dom-identity-algorithm",
+} as const;
+
+export const REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES = {
+  [REMOTE_BROWSER_RECOVERY_ADMISSION_HEADERS.protocol]: REMOTE_BROWSER_RECOVERY_PROTOCOL,
+  [REMOTE_BROWSER_RECOVERY_ADMISSION_HEADERS.promptPreviewAlgorithm]:
+    PROMPT_RECOVERY_PREVIEW_ALGORITHM,
+  [REMOTE_BROWSER_RECOVERY_ADMISSION_HEADERS.promptDomIdentityAlgorithm]:
+    PROMPT_DOM_IDENTITY_ALGORITHM,
+} as const;
 
 export type RemoteActiveRunPhase = "running" | "completed";
 
@@ -58,6 +94,13 @@ export interface RemoteArtifactCapabilities {
   artifactTransfer: boolean;
   artifactProtocolVersion: number;
   maxArtifactBytes: number;
+  browserRecovery?: RemoteBrowserRecoveryCapabilities;
+}
+
+export interface RemoteBrowserRecoveryCapabilities {
+  protocol: typeof REMOTE_BROWSER_RECOVERY_PROTOCOL;
+  promptPreviewAlgorithm: typeof PROMPT_RECOVERY_PREVIEW_ALGORITHM;
+  promptDomIdentityAlgorithm: typeof PROMPT_DOM_IDENTITY_ALGORITHM;
 }
 
 export interface RemoteArtifactDescriptor {
@@ -166,8 +209,14 @@ export interface RemoteRunRecoveryHint {
   expiresAt: string;
   /** Opaque HMAC capability; persist for reattach but never print or log it. */
   capability: string;
-  /** Hash of the exact submitted composer prefix; lets the client select it from known candidates. */
+  /** Canonicalizer used before hashing the bounded prompt discovery preview. */
+  promptPreviewAlgorithm: typeof PROMPT_RECOVERY_PREVIEW_ALGORITHM;
+  /** Hash of the canonical bounded prompt preview; lets the client select it from known candidates. */
   promptPreviewSha256: string;
+  /** Canonical rendered-DOM identity algorithm used before hashing the complete committed turn. */
+  promptDomIdentityAlgorithm: typeof PROMPT_DOM_IDENTITY_ALGORITHM;
+  /** Hash of the full normalized committed user-turn DOM text; opaque outside the browser worker. */
+  promptDomSha256: string;
   runtime: {
     tabUrl: string;
     conversationId: string;
@@ -183,9 +232,9 @@ export interface RemoteRunRecoveryHint {
  * the destination worker before any Chrome/CDP operation.
  */
 export interface RemoteBrowserRecoveryRequest {
-  schema: "remote-browser-recovery.v1";
+  schema: typeof REMOTE_BROWSER_RECOVERY_PROTOCOL;
   recovery: RemoteRunRecoveryHint & { stage: RemoteSessionRecoveryStage };
-  /** Bounded saved prompt prefix used to prove ownership before capture. */
+  /** Bounded saved prompt preview used only to discover candidates; the signed DOM digest proves ownership. */
   promptPreview: string;
   browserConfig: BrowserSessionConfig;
   options: {
@@ -273,6 +322,7 @@ export interface RemoteBrowserEndpointV1 {
     | "auth_failed"
     | "missing_token"
     | "not_configured"
+    | "incompatible"
     | "unknown";
   host_env: string | null;
   token_env: string | null;
@@ -286,6 +336,12 @@ export interface RemoteBrowserEndpointV1 {
   version: string | null;
   build?: OracleBuildInfo | null;
   uptimeSeconds: number | null;
+  browser_recovery?: {
+    compatible: boolean;
+    protocol: string | null;
+    prompt_preview_algorithm: string | null;
+    prompt_dom_identity_algorithm: string | null;
+  } | null;
   busy?: boolean;
   activeRun?: RemoteActiveRunInfo | null;
   error?: string;

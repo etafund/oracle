@@ -94,15 +94,16 @@ describe("core lane capability commands", () => {
     const report = buildCapabilityReport({ env: EMPTY_ENV, now: FROZEN_TIME });
     const fable = capabilityById(report, "fable_xhigh_cli");
     expect(fable?.supported).toBe(true);
-    expect(fable?.next_command).toBe("oracle doctor fable --json");
+    expect(fable?.next_command).toBe("oracle doctor fable --caam-profile <profile> --json");
     expect(fable?.notes.lane).toBe("fable-local");
     expect(fable?.notes.effort).toBe("xhigh");
     expect(fable?.notes.effort_adjustable).toBe(false);
     expect(fable?.notes.remote_browser_allowed).toBe(false);
     expect(fable?.notes.caam_profile_flag).toBe("--caam-profile <profile>");
     expect(fable?.notes.caam_base_flag).toBe("--caam-base <absolute-path>");
+    expect(fable?.notes.caam_profile_required_for_reviewed_lane).toBe(true);
     expect(fable?.notes.explicit_profile_selection_fail_closed).toBe(true);
-    expect(fable?.notes.direct_claude_fallback_only_when_profile_omitted).toBe(true);
+    expect(fable?.notes.direct_claude_fallback_compatibility_engine_only).toBe(true);
   });
 
   test("capabilities names the Fable CAAM environment alternatives without exposing values", () => {
@@ -408,7 +409,7 @@ describe("CapabilityReport — schema-pin regression test (agent-ergonomics Stag
     expect(gemini?.key_flags).toContain("--gemini-deep-think");
     expect(fable?.key_flags).toContain("--caam-profile <profile>");
     expect(fable?.key_flags).toContain("--caam-base <absolute-path>");
-    expect(fable?.doctor_command).toBe("oracle doctor fable --json");
+    expect(fable?.doctor_command).toBe("oracle doctor fable --caam-profile <profile> --json");
   });
 
   test("attachments/continuability/reasoning_depth_adjustable are sourced from laneRegistry.ts per lane", () => {
@@ -447,7 +448,7 @@ describe("CapabilityReport — schema-pin regression test (agent-ergonomics Stag
     expect(gemini?.reasoning_depth_adjustable).toBe(false);
 
     // Fable (claude-code): text-only inline attachments, real cross-invocation
-    // resume via --session-id, no same-invocation multi-turn (not a browser
+    // resume via Claude's --resume primitive, no same-invocation multi-turn (not a browser
     // engine), and a fixed --effort xhigh with no adjustable depth knob.
     expect(fable?.attachments).toEqual({
       supported: true,

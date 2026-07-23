@@ -25,6 +25,7 @@ import {
   extractTextOutput,
   classifyProviderFailure,
   BrowserAutomationError,
+  PromptValidationError,
 } from "../oracle.js";
 import {
   ensureSessionArtifacts,
@@ -486,6 +487,11 @@ export async function performSessionRun({
   let currentBrowser: SessionMetadata["browser"] = browserConfig
     ? { ...sessionMeta.browser, config: browserConfig }
     : sessionMeta.browser;
+  // A bound digest may be written only after this process has durably cleared
+  // the previous turn's digest for the current attempt. This makes a failed
+  // follow-up submission incapable of inheriting recovery ownership from the
+  // already-finished turn before it.
+  let submittedPromptOwnershipInvalidated = false;
   const notificationSettings =
     notifications ?? deriveNotificationSettingsFromMetadata(sessionMeta, process.env);
   const modelForStatus = runOptions.model ?? sessionMeta.model;
@@ -676,13 +682,85 @@ export async function performSessionRun({
             runtime,
             ...(modelSelection ? { modelSelection } : {}),
           };
-          await sessionStore.updateSession(sessionMeta.id, {
+          const persisted = await sessionStore.updateSession(sessionMeta.id, (current) => ({
             status: "running",
-            browser,
-          });
+            browser: {
+              ...currentBrowser,
+              ...current.browser,
+              config: browserConfig,
+              runtime,
+              ...(modelSelection ? { modelSelection } : {}),
+            },
+          }));
           // Keep this attempt's copy fresh so error paths fall back to the
           // latest persisted browser evidence instead of stale session input.
-          currentBrowser = browser;
+          currentBrowser = persisted?.browser ?? browser;
+        },
+        persistSubmittedPromptPreview: async (
+          submittedPromptPreview: string,
+          submittedPromptDomSha256?: string,
+        ) => {
+          const browserWithoutDigest = {
+            ...currentBrowser,
+            config: browserConfig,
+            submittedPromptPreview,
+            submittedPromptDomSha256: undefined,
+          };
+          // Update the in-process error path before awaiting I/O. Even if the
+          // metadata write itself fails, a later failure handler must never
+          // fall back to the previous turn's digest.
+          currentBrowser = browserWithoutDigest;
+
+          if (!submittedPromptDomSha256) {
+            const persisted = await sessionStore.updateSession(sessionMeta.id, (current) => ({
+              browser: {
+                ...currentBrowser,
+                ...current.browser,
+                config: browserConfig,
+                submittedPromptPreview,
+                // Explicitly clear an older prompt's digest before dispatch.
+                submittedPromptDomSha256: undefined,
+              },
+            }));
+            currentBrowser = persisted?.browser ?? browserWithoutDigest;
+            submittedPromptOwnershipInvalidated = true;
+            return;
+          }
+
+          if (!submittedPromptOwnershipInvalidated) {
+            throw new Error(
+              "Refusing to persist a prompt DOM binding without a durable pre-dispatch invalidation.",
+            );
+          }
+
+          const browserWithDigest = {
+            ...browserWithoutDigest,
+            submittedPromptDomSha256,
+          };
+          try {
+            const persisted = await sessionStore.updateSession(sessionMeta.id, (current) => ({
+              browser: {
+                ...currentBrowser,
+                ...current.browser,
+                config: browserConfig,
+                submittedPromptPreview,
+                submittedPromptDomSha256,
+              },
+            }));
+            currentBrowser = persisted?.browser ?? browserWithDigest;
+            submittedPromptOwnershipInvalidated = false;
+          } catch (error) {
+            // The pre-dispatch invalidation is already durable, so continuing
+            // the live capture is safe. Keep recovery disabled for this turn
+            // instead of converting a successful ChatGPT submission into an
+            // immediately abandoned, unrecoverable run.
+            currentBrowser = browserWithoutDigest;
+            log(
+              dim(
+                `Could not persist submitted prompt ownership (${formatError(error)}); continuing live capture with reattach disabled for this turn.`,
+              ),
+            );
+          }
         },
       };
       const result = await runBrowserSessionExecution(
@@ -708,6 +786,7 @@ export async function performSessionRun({
         elapsedMs: result.elapsedMs,
         errorMessage: undefined,
         browser: {
+          ...currentBrowser,
           config: browserConfig,
           runtime: result.runtime,
           archive: result.archive,
@@ -1070,16 +1149,23 @@ export async function performSessionRun({
       throw error;
     }
     const userError = asOracleUserError(error);
-    const remoteRecoveryCarrier = (
+    const hasBrowserFollowUps =
+      mode === "browser" && (runOptions.browserFollowUps?.length ?? 0) > 0;
+    const rawRemoteRecoveryCarrier = (
       remoteFailureDeps?.getRecovery ?? getRemoteBrowserRecoveryFromError
     )(error);
+    // A single recovered answer cannot truthfully complete a multi-turn run:
+    // prior captured turns are not yet durably checkpointed, and later
+    // requested follow-ups may never have been submitted. Preserve only the
+    // failed route and direct the operator to account history.
+    const remoteRecoveryCarrier = hasBrowserFollowUps ? null : rawRemoteRecoveryCarrier;
     const failedRemoteRoute =
       (remoteFailureDeps?.getFailedRoute ?? getRemoteBrowserFailedRouteFromError)(error) ??
-      (remoteRecoveryCarrier
+      (rawRemoteRecoveryCarrier
         ? {
-            runId: remoteRecoveryCarrier.recovery.originRunId,
-            accountId: remoteRecoveryCarrier.accountId,
-            laneId: remoteRecoveryCarrier.laneId,
+            runId: rawRemoteRecoveryCarrier.recovery.originRunId,
+            accountId: rawRemoteRecoveryCarrier.accountId,
+            laneId: rawRemoteRecoveryCarrier.laneId,
             terminalDoneOk: false as const,
             provenance: null,
           }
@@ -1192,7 +1278,18 @@ export async function performSessionRun({
         return;
       }
       reattachGuidanceLogged = true;
-      failureLog(formatBrowserReattachGuidance(sessionMeta.id));
+      if (hasBrowserFollowUps) {
+        failureLog(
+          "This multi-turn browser run cannot be completed from one recovered answer because earlier and remaining turns are not durably checkpointed. Inspect the originating ChatGPT account's history; do not replay the session.",
+        );
+        return;
+      }
+      failureLog(
+        formatBrowserReattachGuidance(sessionMeta.id, {
+          remoteOrigin: Boolean(failedRemoteRoute),
+          remoteRecoveryAvailable: Boolean(currentBrowser?.remoteRecovery),
+        }),
+      );
     };
     if (connectionLost && mode === "browser" && browserCanReattach) {
       const runtime = (userError.details as { runtime?: BrowserRuntimeMetadata } | undefined)
@@ -1301,7 +1398,9 @@ export async function performSessionRun({
       });
       if (!failureApplied) return;
       flushFailureLogs();
-      const autoReattachIntervalMs = browserConfig?.autoReattachIntervalMs ?? 0;
+      const autoReattachIntervalMs = hasBrowserFollowUps
+        ? 0
+        : (browserConfig?.autoReattachIntervalMs ?? 0);
       if (autoReattachIntervalMs > 0) {
         const autoRuntime = runtime ?? currentBrowser?.runtime;
         const success = await autoReattachUntilComplete({
@@ -1355,6 +1454,23 @@ export async function performSessionRun({
     if (!cloudflareChallenge && browserCanReattach) {
       logBrowserReattachGuidance(browserRuntime ?? currentBrowser?.runtime);
     }
+    const persistedUserError = userError
+      ? {
+          category: userError.category,
+          message: userError.message,
+          details: userError.details,
+        }
+      : error instanceof RemoteRunFailedError
+        ? {
+            category: "browser-automation",
+            message,
+            details: {
+              stage: "remote-run",
+              errorClass: error.errorClass,
+              retryable: error.retryable,
+            },
+          }
+        : undefined;
     const failureApplied = await persistFailureSession({
       status: "error",
       completedAt: new Date().toISOString(),
@@ -1376,13 +1492,7 @@ export async function performSessionRun({
         : undefined,
       response: responseMetadata,
       transport: transportMetadata,
-      error: userError
-        ? {
-            category: userError.category,
-            message: userError.message,
-            details: userError.details,
-          }
-        : undefined,
+      error: persistedUserError,
     });
     if (!failureApplied) return;
     flushFailureLogs();
@@ -1446,6 +1556,16 @@ async function recoverSubmittedBrowserSessionBeforeFreshRun({
       : null);
   if (!runtime && !remoteOrigin) {
     return false;
+  }
+  if ((sessionMeta.options.browserFollowUps?.length ?? 0) > 0) {
+    throw new BrowserAutomationError(
+      `Stored multi-turn browser session ${sessionMeta.id} cannot be completed from a single recovered answer because per-turn results are not durably checkpointed. Inspect the originating ChatGPT account's history; do not replay the session.`,
+      {
+        stage: "multi-turn-recovery-unsupported",
+        retryable: false,
+        nextAction: "open-originating-account-history",
+      },
+    );
   }
 
   const nextAction = `oracle session ${sessionMeta.id} --render`;
@@ -1522,7 +1642,12 @@ async function recoverSubmittedBrowserSessionBeforeFreshRun({
           completionClaim: completionClaim!,
         })
       : await resumeBrowserSession(runtime, browserConfig, logger, {
-          promptPreview: sessionMeta.promptPreview,
+          promptPreview:
+            sessionMeta.browser?.submittedPromptPreview ??
+            sessionMeta.options?.prompt ??
+            sessionMeta.promptPreview,
+          promptDomSha256: sessionMeta.browser?.submittedPromptDomSha256,
+          requirePromptPreviewMatch: true,
         });
     const remoteResult = hasRemoteRecovery ? (result as BrowserRunResult) : undefined;
     const recoveredTabUrl = remoteResult?.tabUrl;
@@ -1735,6 +1860,25 @@ async function runLocalClaudeCodeSession(
   input: ClaudeCodeRunnerInput,
 ): Promise<ClaudeCodeRunnerResult> {
   const startedAt = Date.now();
+  const caamProfileRequested = resolveClaudeCodeCaamProfile(
+    input.runOptions.claudeCode?.caamProfile,
+    process.env,
+  );
+  if (
+    input.runOptions.lane === "fable-local" &&
+    input.runOptions.laneInferenceSource !== "legacy-engine-model" &&
+    !caamProfileRequested
+  ) {
+    throw new PromptValidationError(
+      "--lane fable-local requires a CAAM subscription profile and refuses to spawn an unpinned `claude` process. Add --caam-profile <name> or set ORACLE_CLAUDE_CODE_CAAM_PROFILE=<name>.",
+      {
+        stage: "input_invalid",
+        blockedReason: "caam_profile_required",
+        fixCommand: 'oracle --lane fable-local --caam-profile <name> -p "<prompt>"',
+        nextCommand: "oracle doctor fable --caam-profile <name> --json",
+      },
+    );
+  }
   const sessionDir = path.dirname(path.dirname(input.artifactPaths.rawStdoutPath));
   const preparedEnv = prepareClaudeCodeEnvironment(process.env);
   const ownerResult = await assertClaudeCodeLocalOwner({
@@ -1753,19 +1897,26 @@ async function runLocalClaudeCodeSession(
     env: process.env,
   });
   // Multi-turn resume primitive (claude-provider-map.md finding #2): set
-  // only when oracle's own `--followup <sessionId>` resolution populated
-  // it (bin/oracle-cli.ts) — never from a raw `--resume`/`--continue`
-  // passthrough, which stay blocked in `command.ts`. One-shot runs (the
-  // default) leave this undefined and keep today's exact
-  // `--no-session-persistence` behavior.
+  // only when Oracle's own `--followup <sessionId>` resolution populated it
+  // (bin/oracle-cli.ts), never from raw pass-through args.
   const resumeSessionId = input.runOptions.claudeCode?.resumeSessionId?.trim() || undefined;
-  // Stored on EVERY run (one-shot included) so a *later* `--followup`
-  // targeting this session always has a session id to resume from, even
-  // though a one-shot run never passes it to `claude` itself.
-  const claudeSessionId = resumeSessionId ?? randomUUID();
+  const reviewedFableLane =
+    input.runOptions.lane === "fable-local" &&
+    input.runOptions.laneInferenceSource !== "legacy-engine-model";
+  // A reviewed Fable one-shot must create a real persisted Claude session so
+  // its advertised `--followup` path has a transcript to resume. Compatibility
+  // one-shots retain `--no-session-persistence` unless their stored policy
+  // explicitly opted into persistence. A follow-up is necessarily persistent.
+  const sessionPersistenceDisabled =
+    !resumeSessionId &&
+    !reviewedFableLane &&
+    input.runOptions.claudeCode?.noSessionPersistence !== false;
+  const claudeSessionId =
+    resumeSessionId ?? (sessionPersistenceDisabled ? undefined : randomUUID());
   const command = buildClaudeCodeCommand({
     executable: executable.path,
     model: input.model,
+    sessionId: resumeSessionId ? undefined : claudeSessionId,
     resumeSessionId,
     // Emit `--input-format stream-json` exactly when this run will write an
     // NDJSON user message on stdin (bead oracle-router-8fa). Coupling the
@@ -1779,10 +1930,6 @@ async function runLocalClaudeCodeSession(
   // when a profile is configured. Account identity is a billing boundary, so
   // an explicit profile is fail-closed: CAAM resolution or preflight failure
   // aborts instead of falling back to an unpinned direct `claude` process.
-  const caamProfileRequested = resolveClaudeCodeCaamProfile(
-    input.runOptions.claudeCode?.caamProfile,
-    process.env,
-  );
   const caamBaseResolution = caamProfileRequested
     ? resolveClaudeCodeCaamBase(input.runOptions.claudeCode?.caamBase, process.env)
     : undefined;
@@ -1856,7 +2003,7 @@ async function runLocalClaudeCodeSession(
         activeCaam,
         spawnCommand,
         claudeSessionId,
-        resumeSessionId,
+        sessionPersistenceDisabled,
         preparedEnv,
         ownerResult,
         singleFlightLock,
@@ -2033,8 +2180,8 @@ interface ClaudeCodeChildAttemptParams {
   executable: ResolvedClaudeExecutable;
   activeCaam: ClaudeCodeCaamActivation | undefined;
   spawnCommand: ClaudeCodeCommand;
-  claudeSessionId: string;
-  resumeSessionId: string | undefined;
+  claudeSessionId: string | undefined;
+  sessionPersistenceDisabled: boolean;
   preparedEnv: ReturnType<typeof prepareClaudeCodeEnvironment>;
   ownerResult: Awaited<ReturnType<typeof assertClaudeCodeLocalOwner>>;
   singleFlightLock: ClaudeCodeSingleFlightLock;
@@ -2056,7 +2203,7 @@ async function runClaudeCodeChildAttempt({
   activeCaam,
   spawnCommand,
   claudeSessionId,
-  resumeSessionId,
+  sessionPersistenceDisabled,
   preparedEnv,
   ownerResult,
   singleFlightLock,
@@ -2217,7 +2364,11 @@ async function runClaudeCodeChildAttempt({
     stopForRateLimitOrChallenge(finalEvents);
   }
 
-  const verification = verifyClaudeCodeRun(events, { requestedModel: input.model });
+  const verification = verifyClaudeCodeRun(events, {
+    requestedModel: input.model,
+    expectedSessionId: claudeSessionId,
+    allowSessionPersistence: !sessionPersistenceDisabled,
+  });
   const verificationError = verification.ok
     ? undefined
     : `Claude Code local mode stopped because startup verification failed: ${verification.failures
@@ -2299,7 +2450,7 @@ async function runClaudeCodeChildAttempt({
     claudeSessionId,
     caamProfileUsed: activeCaam?.profile,
     caamBaseUsed: activeCaam?.base,
-    sessionPersistenceDisabled: !resumeSessionId,
+    sessionPersistenceDisabled,
     challengeDetected:
       rateLimitOrChallenge && activeCaam && rateLimitOrChallenge.kind === "challenge"
         ? { profile: activeCaam.profile, reason: rateLimitOrChallenge.reason }
@@ -3719,6 +3870,14 @@ async function autoReattachUntilComplete({
   notificationSettings: NotificationSettings;
   log: (message?: string) => void;
 }): Promise<boolean> {
+  if ((runOptions.browserFollowUps?.length ?? 0) > 0) {
+    log(
+      dim(
+        "Auto-reattach disabled for an incomplete multi-turn browser run: one recovered answer cannot truthfully complete the full turn sequence. Inspect the originating ChatGPT account's history; do not replay the session.",
+      ),
+    );
+    return false;
+  }
   const remoteMetadata = { ...sessionMeta, browser: browserMetadata };
   const remoteOrigin = isFailedRemoteBrowserOrigin(remoteMetadata);
   const hasRemoteRecovery = Boolean(browserMetadata?.remoteRecovery);
@@ -3806,7 +3965,12 @@ async function autoReattachUntilComplete({
               completionClaim: completionClaim!,
             })
           : await resumeBrowserSession(runtime!, reattachConfig, logger, {
-              promptPreview: sessionMeta.promptPreview,
+              promptPreview:
+                browserMetadata?.submittedPromptPreview ??
+                sessionMeta.options?.prompt ??
+                sessionMeta.promptPreview,
+              promptDomSha256: browserMetadata?.submittedPromptDomSha256,
+              requirePromptPreviewMatch: true,
             });
       } finally {
         if (attemptTimer) clearTimeout(attemptTimer);

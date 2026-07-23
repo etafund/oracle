@@ -30,6 +30,18 @@ beforeEach(async () => {
         claude_session_id: "5b1a2c3d-4e5f-6789-abcd-ef0123456789",
         caam_profile: "cc-arthur",
         caam_base: "/home/ubuntu/orch-homes",
+        read_only: {
+          readOnly: true,
+          permissionMode: "plan",
+          toolMode: "none",
+          allowedTools: [],
+          blockedTools: ["*"],
+          mcpToolsBlocked: true,
+          slashCommandsDisabled: true,
+          safeMode: true,
+          chromeDisabled: true,
+          sessionPersistenceDisabled: false,
+        },
       },
     })}\n`,
     { mode: 0o600 },
@@ -41,6 +53,30 @@ afterEach(async () => {
 });
 
 describe("Fable follow-up CAAM affinity (full CLI parse)", () => {
+  test("accepts the exact parent identity and plans Claude's real --resume primitive", async () => {
+    const result = await runOracleFailure([
+      "--dry-run",
+      "json",
+      "--lane",
+      "fable-local",
+      "--followup",
+      "fable-parent",
+      "--prompt",
+      "Continue the review",
+      "--caam-profile",
+      "cc-arthur",
+      "--caam-base",
+      "/home/ubuntu/orch-homes",
+    ]);
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.code).toBe(0);
+    expect(output).toContain("--resume <session-uuid>");
+    expect(output).not.toContain("--session-id <session-uuid>");
+    expect(output).toContain("existing transcript resumed");
+    expect(await readdir(path.join(oracleHome, "sessions"))).toEqual(["fable-parent"]);
+  });
+
   test.each([
     {
       name: "profile",

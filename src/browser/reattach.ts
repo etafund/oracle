@@ -65,6 +65,15 @@ import {
   assertCapturedAssistantResponseBound,
   registerSubmittedUserMessage,
 } from "./actions/captureBinding.js";
+import {
+  buildPromptRecoveryOwnershipPreview,
+  computeRenderedPromptDomSha256,
+  normalizePromptForDomMatch,
+  PROMPT_DOM_IDENTITY_NORMALIZER_DECLARATION,
+  PROMPT_DOM_NORMALIZER_DECLARATION,
+} from "./promptDomMatch.js";
+
+const PROMPT_DOM_SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
 export interface ReattachDeps {
   listTargets?: () => Promise<TargetInfoLite[]>;
@@ -77,9 +86,11 @@ export interface ReattachDeps {
     config: BrowserSessionConfig | undefined,
   ) => Promise<ReattachResult>;
   promptPreview?: string;
+  /** SHA-256 of the exact rendered user-turn DOM identity captured after commit. */
+  promptDomSha256?: string;
   /** Refuse target fallback; attach only to runtime.chromeTargetId. */
   requireExactTarget?: boolean;
-  /** Require the saved user-turn prefix to exist before any answer capture. */
+  /** Require the saved full rendered-turn digest (the preview is discovery-only). */
   requirePromptPreviewMatch?: boolean;
   /** Fleet recovery must never launch/reopen a separate browser profile. */
   allowNewChromeFallback?: boolean;
@@ -206,10 +217,23 @@ export async function resumeBrowserSession(
   logger: BrowserLogger,
   deps: ReattachDeps = {},
 ): Promise<ReattachResult> {
+  const promptPreview = buildPromptRecoveryOwnershipPreview(deps.promptPreview);
+  const promptDomSha256 = PROMPT_DOM_SHA256_PATTERN.test(deps.promptDomSha256 ?? "")
+    ? deps.promptDomSha256
+    : undefined;
+  if (deps.requirePromptPreviewMatch && !promptDomSha256) {
+    throw new ConversationRecoveryProofError(
+      "The submitted session has no exact rendered user-turn identity digest; refusing prefix-only recovery. Open the originating ChatGPT account history instead.",
+    );
+  }
   const recoverSession =
     deps.recoverSession ??
     (async (runtimeMeta, configMeta) =>
-      resumeBrowserSessionViaNewChrome(runtimeMeta, configMeta, logger, deps));
+      resumeBrowserSessionViaNewChrome(runtimeMeta, configMeta, logger, {
+        ...deps,
+        promptPreview,
+        promptDomSha256,
+      }));
   let closeAttachedConnection: (() => Promise<void>) | null = null;
   let provenConversation: ProvenConversationIdentity | null = null;
   let attachedRuntime: ChromeClient["Runtime"] | null = null;
@@ -318,7 +342,6 @@ export async function resumeBrowserSession(
         liveRuntime.chromeTargetId && attachedTargetId === liveRuntime.chromeTargetId,
       );
       const requirePromptOwnershipProof = async (reason: string) => {
-        const promptPreview = deps.promptPreview?.trim();
         if (!promptPreview) {
           throw new ConversationRecoveryProofError(
             `${reason}; the saved session has no prompt preview to prove conversation ownership.`,
@@ -387,7 +410,7 @@ export async function resumeBrowserSession(
         {
           conversationId: expectedConversationId,
           preferProjects: true,
-          promptPreview: deps.promptPreview,
+          promptPreview,
         },
         15_000,
       );
@@ -418,7 +441,11 @@ export async function resumeBrowserSession(
       "Reattach target did not respond",
     );
     provenConversation = await ensureConversationOpen();
-    const promptTurnBinding = await readPromptPreviewTurnBinding(Runtime, deps.promptPreview);
+    const promptTurnBinding = await readPromptPreviewTurnBinding(
+      Runtime,
+      promptPreview,
+      promptDomSha256,
+    );
     const promptTurnIndex = promptTurnBinding?.matchedIndex ?? null;
     if (deps.requirePromptPreviewMatch) {
       if (!promptTurnBinding || promptTurnIndex === null) {
@@ -436,10 +463,11 @@ export async function resumeBrowserSession(
       }
     }
     const minTurnIndex =
-      promptTurnIndex ??
-      (deps.promptPreview ? null : await readConversationTurnIndex(Runtime, logger));
+      promptTurnIndex ?? (promptPreview ? null : await readConversationTurnIndex(Runtime, logger));
     if (deps.requirePromptPreviewMatch) {
-      const binding = await registerSubmittedUserMessage(Runtime, deps.promptPreview ?? "", logger);
+      const binding = await registerSubmittedUserMessage(Runtime, promptPreview, logger, {
+        expectedPromptDomSha256: promptDomSha256,
+      });
       if (binding.quality !== "message-handle") {
         throw new ConversationRecoveryProofError(
           "The saved user turn could not be registered as an exact structural message handle; refusing recovery capture.",
@@ -481,7 +509,7 @@ export async function resumeBrowserSession(
         answerMarkdown: researchResult.text,
       };
     }
-    const promptEcho = buildPromptEchoMatcher(deps.promptPreview);
+    const promptEcho = buildPromptEchoMatcher(promptPreview);
     const answer = await withTimeout(
       waitForResponse(
         Runtime,
@@ -600,6 +628,8 @@ export interface IsolatedFleetRecoveryOptions {
   chromePort: number;
   profileDir: string;
   promptPreview: string;
+  /** Capability-bound SHA-256 of the exact rendered user-turn DOM identity. */
+  promptDomSha256: string;
   sessionId?: string;
   maxConcurrentTabs?: number;
   leaseTimeoutMs?: number;
@@ -698,6 +728,7 @@ export async function resumeBrowserSessionInIsolatedFleetTab(
     chromePort,
     profileDir,
     promptPreview,
+    promptDomSha256,
     sessionId,
     maxConcurrentTabs,
     leaseTimeoutMs,
@@ -916,6 +947,7 @@ export async function resumeBrowserSessionInIsolatedFleetTab(
       logger,
       {
         promptPreview,
+        promptDomSha256,
         requireExactTarget: true,
         requirePromptPreviewMatch: true,
         allowNewChromeFallback: false,
@@ -1063,6 +1095,7 @@ async function resumeBrowserSessionViaNewChrome(
   logger: BrowserLogger,
   deps: ReattachDeps,
 ): Promise<ReattachResult> {
+  const promptPreview = buildPromptRecoveryOwnershipPreview(deps.promptPreview);
   if (hasOnlyProvisionalConversationIdentity(runtime)) {
     throw new ProvisionalConversationTargetMissingError(
       "Saved session only has a provisional ChatGPT conversation identity; refusing to recover an arbitrary conversation from history.",
@@ -1076,215 +1109,297 @@ async function resumeBrowserSessionViaNewChrome(
   if (manualLogin) {
     await mkdir(userDataDir, { recursive: true });
   }
-  const chrome = await launchChrome(resolved, userDataDir, logger);
-  const chromeHost = (chrome as unknown as { host?: string }).host ?? "127.0.0.1";
-  const client = await connectToChrome(chrome.port, logger, chromeHost);
-  const { Network, Page, Runtime, DOM, Target } = client;
-
-  if (Runtime?.enable) {
-    await Runtime.enable();
-  }
-  if (DOM && typeof DOM.enable === "function") {
-    await DOM.enable();
-  }
-  if (!resolved.headless && resolved.hideWindow) {
-    await hideChromeWindow(chrome, logger);
-  }
-
-  let appliedCookies = 0;
-  if (!manualLogin && resolved.cookieSync) {
-    appliedCookies = await syncCookies(Network, resolved.url, resolved.chromeProfile, logger, {
-      allowErrors: resolved.allowCookieErrors,
-      filterNames: resolved.cookieNames ?? undefined,
-      inlineCookies: resolved.inlineCookies ?? undefined,
-      cookiePath: resolved.chromeCookiePath ?? undefined,
-      waitMs: resolved.cookieSyncWaitMs ?? 0,
-    });
-  }
-
-  await clearStaleChatGptConversationCookies(Network, Target, logger, {
-    preserveConversationIds: [
-      runtime.conversationId,
-      extractConversationIdFromUrl(runtime.tabUrl ?? ""),
-      extractConversationIdFromUrl(resolved.url),
-    ],
-  });
-
-  await navigateToChatGPT(Page, Runtime, CHATGPT_URL, logger);
-  await ensureNotBlocked(Runtime, resolved.headless, logger, {
-    quarantine: { accountId: deps.accountId },
-  });
-  await ensureLoggedIn(Runtime, logger, { appliedCookies });
-  if (resolved.url !== CHATGPT_URL) {
-    await navigateToChatGPT(Page, Runtime, resolved.url, logger);
-    await ensureNotBlocked(Runtime, resolved.headless, logger, {
-      quarantine: { accountId: deps.accountId },
-    });
-  }
-  await ensurePromptReady(Runtime, resolved.inputTimeoutMs, logger);
-
-  const savedConversationId =
-    normalizeChatGptConversationId(runtime.conversationId) ??
-    extractConversationIdFromUrl(runtime.tabUrl ?? "");
-
-  const conversationUrl = buildConversationUrl(runtime, resolved.url);
-  if (conversationUrl) {
-    logger(`Reopening conversation at ${conversationUrl}`);
-    await navigateToChatGPT(Page, Runtime, conversationUrl, logger);
-    await ensureNotBlocked(Runtime, resolved.headless, logger, {
-      quarantine: { accountId: deps.accountId },
-    });
-    await ensurePromptReady(Runtime, resolved.inputTimeoutMs, logger);
-  } else {
-    const conversationId =
-      normalizeChatGptConversationId(runtime.conversationId) ??
-      extractConversationIdFromUrl(runtime.tabUrl ?? "");
-    const opened = await openConversationFromSidebarWithRetry(
-      Runtime,
-      {
-        conversationId,
-        preferProjects:
-          resolved.url !== CHATGPT_URL ||
-          Boolean(
-            runtime.tabUrl && (/\/g\//.test(runtime.tabUrl) || runtime.tabUrl.includes("/project")),
-          ),
-        promptPreview: deps.promptPreview,
-      },
-      15_000,
-    );
-    if (!opened) {
-      throw new Error("Unable to locate prior ChatGPT conversation in sidebar.");
-    }
-  }
-
-  const provenConversation = await waitForCanonicalConversationIdentity(
-    Runtime,
-    savedConversationId,
-    2_000,
-    "The reopened browser did not preserve the saved conversation",
-  );
-
-  const waitForResponse = deps.waitForAssistantResponse ?? waitForAssistantResponse;
-  const captureMarkdown = deps.captureAssistantMarkdown ?? captureAssistantMarkdown;
-  const timeoutMs = resolved.timeoutMs ?? 120_000;
-  const cleanup = async () => {
+  let chrome: Awaited<ReturnType<typeof launchChrome>> | null = null;
+  let client: ChromeClient | null = null;
+  let completed = false;
+  let preserveManualChallenge = false;
+  const cleanup = async (): Promise<void> => {
     if (client && typeof client.close === "function") {
-      try {
-        await client.close();
-      } catch {
-        // ignore
-      }
-    }
-    if (!resolved.keepBrowser) {
-      try {
-        await chrome.kill();
-      } catch {
-        // ignore
-      }
-      if (manualLogin) {
-        await cleanupStaleProfileState(userDataDir, logger, { lockRemovalMode: "never" }).catch(
-          () => undefined,
+      await withTimeout(
+        Promise.resolve().then(() => client?.close()),
+        5_000,
+        "Chrome detach timed out",
+      ).catch((error) => {
+        logger(
+          `Failed to detach fallback recovery Chrome: ${error instanceof Error ? error.message : String(error)}`,
         );
-      } else {
-        await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined);
-      }
+      });
+    }
+    const terminateChrome = (!completed && !preserveManualChallenge) || !resolved.keepBrowser;
+    if (!terminateChrome) return;
+    if (chrome) {
+      await withTimeout(
+        Promise.resolve().then(() => chrome?.kill()),
+        5_000,
+        "Chrome kill timed out",
+      ).catch((error) => {
+        logger(
+          `Failed to terminate fallback recovery Chrome: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+    }
+    if (manualLogin) {
+      await cleanupStaleProfileState(userDataDir, logger, { lockRemovalMode: "never" }).catch(
+        (error) => {
+          logger(
+            `Failed to clean fallback recovery profile state: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        },
+      );
+    } else {
+      await rm(userDataDir, { recursive: true, force: true }).catch((error) => {
+        logger(
+          `Failed to remove fallback recovery profile: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
     }
   };
-  const minTurnIndex =
-    (await readPromptPreviewTurnIndex(Runtime, deps.promptPreview)) ??
-    (deps.promptPreview ? null : await readConversationTurnIndex(Runtime, logger));
-  if (resolved.researchMode === "deep") {
-    const waitForDeepResearch = deps.waitForDeepResearchCompletion ?? waitForDeepResearchCompletion;
-    const researchResult = await preserveChallengeOverReattachWait(
-      waitForDeepResearch(Runtime, logger, timeoutMs, minTurnIndex ?? undefined, Page, client, {
-        requireScopedTargetOwner: true,
-      }),
-      Runtime,
-      logger,
-      deps.accountId,
-    );
-    await assertCapturedAnswerNotAccessArtifact(Runtime, { text: researchResult.text }, logger, {
+
+  try {
+    chrome = await launchChrome(resolved, userDataDir, logger);
+    const chromeHost = (chrome as unknown as { host?: string }).host ?? "127.0.0.1";
+    client = await connectToChrome(chrome.port, logger, chromeHost);
+    const { Network, Page, Runtime, DOM, Target } = client;
+
+    if (Runtime?.enable) {
+      await Runtime.enable();
+    }
+    if (DOM && typeof DOM.enable === "function") {
+      await DOM.enable();
+    }
+    if (!resolved.headless && resolved.hideWindow) {
+      await hideChromeWindow(chrome, logger);
+    }
+
+    let appliedCookies = 0;
+    if (!manualLogin && resolved.cookieSync) {
+      appliedCookies = await syncCookies(Network, resolved.url, resolved.chromeProfile, logger, {
+        allowErrors: resolved.allowCookieErrors,
+        filterNames: resolved.cookieNames ?? undefined,
+        inlineCookies: resolved.inlineCookies ?? undefined,
+        cookiePath: resolved.chromeCookiePath ?? undefined,
+        waitMs: resolved.cookieSyncWaitMs ?? 0,
+      });
+    }
+
+    await clearStaleChatGptConversationCookies(Network, Target, logger, {
+      preserveConversationIds: [
+        runtime.conversationId,
+        extractConversationIdFromUrl(runtime.tabUrl ?? ""),
+        extractConversationIdFromUrl(resolved.url),
+      ],
+    });
+
+    await navigateToChatGPT(Page, Runtime, CHATGPT_URL, logger);
+    await ensureNotBlocked(Runtime, resolved.headless, logger, {
       quarantine: { accountId: deps.accountId },
     });
+    await ensureLoggedIn(Runtime, logger, { appliedCookies });
+    if (resolved.url !== CHATGPT_URL) {
+      await navigateToChatGPT(Page, Runtime, resolved.url, logger);
+      await ensureNotBlocked(Runtime, resolved.headless, logger, {
+        quarantine: { accountId: deps.accountId },
+      });
+    }
+    await ensurePromptReady(Runtime, resolved.inputTimeoutMs, logger);
+
+    const savedConversationId =
+      normalizeChatGptConversationId(runtime.conversationId) ??
+      extractConversationIdFromUrl(runtime.tabUrl ?? "");
+
+    const conversationUrl = buildConversationUrl(runtime, resolved.url);
+    if (conversationUrl) {
+      logger(`Reopening conversation at ${conversationUrl}`);
+      await navigateToChatGPT(Page, Runtime, conversationUrl, logger);
+      await ensureNotBlocked(Runtime, resolved.headless, logger, {
+        quarantine: { accountId: deps.accountId },
+      });
+      await ensurePromptReady(Runtime, resolved.inputTimeoutMs, logger);
+    } else {
+      const conversationId =
+        normalizeChatGptConversationId(runtime.conversationId) ??
+        extractConversationIdFromUrl(runtime.tabUrl ?? "");
+      const opened = await openConversationFromSidebarWithRetry(
+        Runtime,
+        {
+          conversationId,
+          preferProjects:
+            resolved.url !== CHATGPT_URL ||
+            Boolean(
+              runtime.tabUrl &&
+              (/\/g\//.test(runtime.tabUrl) || runtime.tabUrl.includes("/project")),
+            ),
+          promptPreview,
+        },
+        15_000,
+      );
+      if (!opened) {
+        throw new Error("Unable to locate prior ChatGPT conversation in sidebar.");
+      }
+    }
+
+    const provenConversation = await waitForCanonicalConversationIdentity(
+      Runtime,
+      savedConversationId,
+      2_000,
+      "The reopened browser did not preserve the saved conversation",
+    );
+
+    const waitForResponse = deps.waitForAssistantResponse ?? waitForAssistantResponse;
+    const captureMarkdown = deps.captureAssistantMarkdown ?? captureAssistantMarkdown;
+    const timeoutMs = resolved.timeoutMs ?? 120_000;
+    const promptTurnBinding = await readPromptPreviewTurnBinding(
+      Runtime,
+      promptPreview,
+      deps.promptDomSha256,
+    );
+    const promptTurnIndex = promptTurnBinding?.matchedIndex ?? null;
+    if (deps.requirePromptPreviewMatch) {
+      if (!promptTurnBinding || promptTurnIndex === null) {
+        throw new ConversationRecoveryProofError(
+          "The exact saved user-turn identity was not found in the reopened conversation; refusing an unscoped assistant capture.",
+        );
+      }
+      if (
+        promptTurnBinding.matchCount !== 1 ||
+        promptTurnBinding.latestUserIndex !== promptTurnIndex
+      ) {
+        throw new ConversationRecoveryProofError(
+          "The exact saved user turn is duplicated or is not the conversation's latest user turn; refusing to capture a different turn's assistant response.",
+        );
+      }
+      const binding = await registerSubmittedUserMessage(Runtime, promptPreview, logger, {
+        expectedPromptDomSha256: deps.promptDomSha256,
+      });
+      if (binding.quality !== "message-handle") {
+        throw new ConversationRecoveryProofError(
+          "The exact saved user turn could not be registered as a structural message handle; refusing recovery capture.",
+        );
+      }
+    }
+    const minTurnIndex =
+      promptTurnIndex ?? (promptPreview ? null : await readConversationTurnIndex(Runtime, logger));
+    if (resolved.researchMode === "deep") {
+      const waitForDeepResearch =
+        deps.waitForDeepResearchCompletion ?? waitForDeepResearchCompletion;
+      const researchResult = await preserveChallengeOverReattachWait(
+        waitForDeepResearch(Runtime, logger, timeoutMs, minTurnIndex ?? undefined, Page, client, {
+          requireScopedTargetOwner: true,
+        }),
+        Runtime,
+        logger,
+        deps.accountId,
+      );
+      if (deps.requirePromptPreviewMatch) {
+        await assertCapturedAssistantResponseBound(Runtime, {}, logger);
+      }
+      await assertCapturedAnswerNotAccessArtifact(Runtime, { text: researchResult.text }, logger, {
+        quarantine: { accountId: deps.accountId },
+      });
+      await assertConversationIdentityStillOpen(
+        Runtime,
+        provenConversation,
+        "Deep Research recovery completed on a different route",
+      );
+      await assertCapturedAnswerNotAccessArtifact(Runtime, { text: researchResult.text }, logger, {
+        quarantine: { accountId: deps.accountId },
+      });
+      completed = true;
+      return {
+        answerText: researchResult.text,
+        answerMarkdown: researchResult.text,
+      };
+    }
+    const promptEcho = buildPromptEchoMatcher(promptPreview);
+    const answer = await waitForResponse(
+      Runtime,
+      timeoutMs,
+      logger,
+      minTurnIndex ?? undefined,
+      provenConversation.conversationId,
+      deps.accountId,
+    );
     await assertConversationIdentityStillOpen(
       Runtime,
       provenConversation,
-      "Deep Research recovery completed on a different route",
+      "Recovered response capture drifted to a different route",
     );
-    await assertCapturedAnswerNotAccessArtifact(Runtime, { text: researchResult.text }, logger, {
-      quarantine: { accountId: deps.accountId },
-    });
-    await cleanup();
-    return {
-      answerText: researchResult.text,
-      answerMarkdown: researchResult.text,
-    };
-  }
-  const promptEcho = buildPromptEchoMatcher(deps.promptPreview);
-  const answer = await waitForResponse(
-    Runtime,
-    timeoutMs,
-    logger,
-    minTurnIndex ?? undefined,
-    provenConversation.conversationId,
-    deps.accountId,
-  );
-  await assertConversationIdentityStillOpen(
-    Runtime,
-    provenConversation,
-    "Recovered response capture drifted to a different route",
-  );
-  const recovered = await preserveChallengeOverReattachWait(
-    recoverPromptEcho(
-      Runtime,
-      answer,
-      promptEcho,
-      logger,
-      minTurnIndex,
-      timeoutMs,
-      provenConversation.conversationId,
-    ),
-    Runtime,
-    logger,
-    deps.accountId,
-  );
-  await assertConversationIdentityStillOpen(
-    Runtime,
-    provenConversation,
-    "Recovered prompt-echo capture drifted to a different route",
-  );
-  const markdown =
-    (await preserveChallengeOverReattachWait(
-      captureMarkdown(Runtime, recovered.meta, logger, {
-        requireSourceIdentity: true,
-      }),
+    const recovered = await preserveChallengeOverReattachWait(
+      recoverPromptEcho(
+        Runtime,
+        answer,
+        promptEcho,
+        logger,
+        minTurnIndex,
+        timeoutMs,
+        provenConversation.conversationId,
+      ),
       Runtime,
       logger,
       deps.accountId,
-    )) ?? recovered.text;
-  await assertConversationIdentityStillOpen(
-    Runtime,
-    provenConversation,
-    "Recovered markdown capture drifted to a different route",
-  );
-  const aligned = alignPromptEchoMarkdown(recovered.text, markdown, promptEcho, logger);
-  await assertCapturedAnswerNotAccessArtifact(
-    Runtime,
-    { text: aligned.answerText, html: aligned.answerMarkdown },
-    logger,
-    { quarantine: { accountId: deps.accountId } },
-  );
+    );
+    if (deps.requirePromptPreviewMatch) {
+      await assertCapturedAssistantResponseBound(Runtime, recovered.meta, logger);
+    }
+    await assertConversationIdentityStillOpen(
+      Runtime,
+      provenConversation,
+      "Recovered prompt-echo capture drifted to a different route",
+    );
+    const markdown =
+      (await preserveChallengeOverReattachWait(
+        captureMarkdown(Runtime, recovered.meta, logger, {
+          requireSourceIdentity: true,
+        }),
+        Runtime,
+        logger,
+        deps.accountId,
+      )) ?? recovered.text;
+    if (deps.requirePromptPreviewMatch) {
+      await assertCapturedAssistantResponseBound(Runtime, recovered.meta, logger);
+    }
+    await assertConversationIdentityStillOpen(
+      Runtime,
+      provenConversation,
+      "Recovered markdown capture drifted to a different route",
+    );
+    const aligned = alignPromptEchoMarkdown(recovered.text, markdown, promptEcho, logger);
+    await assertCapturedAnswerNotAccessArtifact(
+      Runtime,
+      { text: aligned.answerText, html: aligned.answerMarkdown },
+      logger,
+      { quarantine: { accountId: deps.accountId } },
+    );
 
-  await cleanup();
-
-  return { answerText: aligned.answerText, answerMarkdown: aligned.answerMarkdown };
+    completed = true;
+    return { answerText: aligned.answerText, answerMarkdown: aligned.answerMarkdown };
+  } catch (error) {
+    // `keepBrowser` is not a blanket failure escape hatch. Preserve only a
+    // positively classified, human-actionable challenge in a visible browser;
+    // every other failure must unwind the Chrome/profile this function owns.
+    preserveManualChallenge = Boolean(
+      resolved.keepBrowser && !resolved.headless && isCanonicalRecoveryChallenge(error),
+    );
+    if (preserveManualChallenge) {
+      logger(
+        `[browser] Preserving the headful fallback recovery Chrome and profile ${userDataDir} for manual challenge resolution.`,
+      );
+    }
+    throw error;
+  } finally {
+    await cleanup();
+  }
 }
 
 async function readPromptPreviewTurnIndex(
   Runtime: ChromeClient["Runtime"],
   promptPreview?: string | null,
+  promptDomSha256?: string | null,
 ): Promise<number | null> {
-  return (await readPromptPreviewTurnBinding(Runtime, promptPreview))?.matchedIndex ?? null;
+  return (
+    (await readPromptPreviewTurnBinding(Runtime, promptPreview, promptDomSha256))?.matchedIndex ??
+    null
+  );
 }
 
 type PromptPreviewTurnBinding = {
@@ -1296,49 +1411,85 @@ type PromptPreviewTurnBinding = {
 async function readPromptPreviewTurnBinding(
   Runtime: ChromeClient["Runtime"],
   promptPreview?: string | null,
+  promptDomSha256?: string | null,
 ): Promise<PromptPreviewTurnBinding | null> {
   const preview = promptPreview?.trim();
   if (!preview) {
     return null;
   }
+  const expectedDomSha256 = PROMPT_DOM_SHA256_PATTERN.test(promptDomSha256 ?? "")
+    ? promptDomSha256
+    : null;
+  const normalizedPreview = normalizePromptForDomMatch(preview);
+  const promptNeedle = normalizedPreview.slice(0, 120);
+  if (!promptNeedle) {
+    return null;
+  }
   const { result } = await Runtime.evaluate({
     expression: `(() => {
-      const needle = ${JSON.stringify(preview.toLowerCase().replace(/\s+/g, " ").slice(0, 120))};
-      if (!needle) return null;
-      const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+      const needle = ${JSON.stringify(promptNeedle)};
+      ${PROMPT_DOM_NORMALIZER_DECLARATION}
+      ${PROMPT_DOM_IDENTITY_NORMALIZER_DECLARATION}
       const turns = ${buildConversationTurnListExpression()};
-      const matched = [];
+      const candidates = [];
       let latestUserIndex = null;
       for (const [index, node] of turns.entries()) {
         const attr = (node.getAttribute('data-message-author-role') || node.getAttribute('data-turn') || node.dataset?.turn || '').toLowerCase();
         const isUser = attr === 'user' || Boolean(node.querySelector('[data-message-author-role="user"]'));
         if (!isUser) continue;
         latestUserIndex = index;
-        const text = normalize(node.innerText || node.textContent || '');
-        if (text.length > 0 && (text.includes(needle) || needle.includes(text.slice(0, needle.length)))) {
-          matched.push(index);
+        const promptContentCandidates = readRenderedPromptDomContentCandidates(node);
+        const wrapperText = normalizePromptForDomMatch(node.innerText || node.textContent || '');
+        const previewMatches =
+          wrapperText.includes(needle) ||
+          promptContentCandidates.some((candidate) =>
+            normalizePromptForDomMatch(candidate.text).includes(needle),
+          );
+        if (previewMatches) {
+          candidates.push({
+            index,
+            domIdentities: promptContentCandidates.map((candidate) => candidate.identity),
+          });
         }
       }
-      if (!matched.length || latestUserIndex === null) return null;
-      return {
-        matchedIndex: matched[matched.length - 1],
-        latestUserIndex,
-        matchCount: matched.length,
-      };
+      return latestUserIndex === null ? null : { latestUserIndex, candidates };
     })()`,
     returnByValue: true,
   });
-  const value = result?.value as Partial<PromptPreviewTurnBinding> | null | undefined;
-  return value &&
-    typeof value.matchedIndex === "number" &&
-    typeof value.latestUserIndex === "number" &&
-    typeof value.matchCount === "number"
-    ? {
-        matchedIndex: value.matchedIndex,
-        latestUserIndex: value.latestUserIndex,
-        matchCount: value.matchCount,
+  const value = result?.value as
+    | {
+        latestUserIndex?: unknown;
+        candidates?: Array<{ index?: unknown; domIdentities?: unknown }>;
       }
-    : null;
+    | null
+    | undefined;
+  if (!value || typeof value.latestUserIndex !== "number" || !Array.isArray(value.candidates)) {
+    return null;
+  }
+  const matchedTurnIndices: number[] = [];
+  const seenTurnIndices = new Set<number>();
+  for (const candidate of value.candidates) {
+    if (typeof candidate.index !== "number" || !Number.isInteger(candidate.index)) continue;
+    const domIdentities = Array.isArray(candidate.domIdentities)
+      ? candidate.domIdentities.filter(
+          (identity): identity is string => typeof identity === "string" && identity.length > 0,
+        )
+      : [];
+    const digestMatches = expectedDomSha256
+      ? domIdentities.some(
+          (identity) => computeRenderedPromptDomSha256(identity) === expectedDomSha256,
+        )
+      : domIdentities.length > 0;
+    if (!digestMatches || seenTurnIndices.has(candidate.index)) continue;
+    seenTurnIndices.add(candidate.index);
+    matchedTurnIndices.push(candidate.index);
+  }
+  if (matchedTurnIndices.length === 0) return null;
+  return {
+    matchedIndex: matchedTurnIndices[matchedTurnIndices.length - 1]!,
+    latestUserIndex: value.latestUserIndex,
+    matchCount: matchedTurnIndices.length,
+  };
 }
 
 // biome-ignore lint/style/useNamingConvention: test-only export used in vitest suite

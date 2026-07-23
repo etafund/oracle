@@ -157,7 +157,7 @@ export const ROBOT_COMMANDS: readonly RobotCommandEntry[] = Object.freeze([
   }),
   entry({
     name: "doctor-fable",
-    command: "oracle doctor fable --json",
+    command: "oracle doctor fable --caam-profile <profile> --json",
     purpose:
       "Fable-specific local doctor: Claude/CAAM profile, base, auth, owner, and fail-closed readiness.",
     paid_calls: false,
@@ -379,7 +379,7 @@ export const ROBOT_ACTION_COMMANDS: readonly RobotCommandEntry[] = Object.freeze
     name: "restart",
     command: "oracle restart <sessionId> --json",
     purpose:
-      "Re-run a stored session as a new session (paid live run); --json emits one oracle_session_action.v1 launch receipt on stdout.",
+      "Re-run a stored browser/API session as a new session (paid live run); Claude Code/Fable sessions are refused and must start fresh. --json emits one oracle_session_action.v1 launch receipt on stdout.",
     paid_calls: true,
     dry_run: false,
     required_env: ORACLE_REMOTE_ENVS,
@@ -393,7 +393,7 @@ export const ROBOT_ACTION_COMMANDS: readonly RobotCommandEntry[] = Object.freeze
     name: "follow-up",
     command: "oracle follow-up <parentSessionId> --prompt <text> --json",
     purpose:
-      "Continue a stored browser session as a new child session (paid live run); --json emits one oracle_session_action.v1 launch receipt on stdout.",
+      "Continue a stored ChatGPT browser, Fable/Claude Code, or OpenAI/Azure session as a new child session (paid live run); --json emits one oracle_session_action.v1 launch receipt on stdout.",
     paid_calls: true,
     dry_run: false,
     required_env: [],

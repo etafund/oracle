@@ -1552,18 +1552,21 @@ describe("pollConversationUrlForTest", () => {
 });
 
 describe("post-capture structural binding", () => {
-  const bindingProbe = {
+  const bindingProbe = (promptDomIdentity: string) => ({
     found: true,
     matchedPrompt: true,
+    isLatestUserTurn: true,
+    promptDomIdentity,
     conversationId: "run-conversation",
     userMessageId: "user-message",
     userTurnTestId: "conversation-turn-1",
-  };
+  });
   const goodFacts = {
     conversationId: "run-conversation",
     userTurnFound: true,
     userTurnIsLatestUserTurn: true,
     capturedNodeFound: true,
+    capturedNodeIsAssistantTurn: true,
     capturedFollowsUserMessage: true,
     interveningAssistantTurns: 0,
     assistantTurnAfterUserMessage: true,
@@ -1591,7 +1594,7 @@ describe("post-capture structural binding", () => {
       afterLatestUser: true,
     };
     const runtime = runtimeWithValues([
-      bindingProbe,
+      bindingProbe("draw a diagram"),
       generatedImage,
       { ...goodFacts, conversationId: "foreign-conversation" },
     ]);
@@ -1630,7 +1633,7 @@ describe("post-capture structural binding", () => {
       afterLatestUser: true,
     };
     const runtime = runtimeWithValues([
-      bindingProbe,
+      bindingProbe("review this plan"),
       replacement,
       replacement,
       { ...goodFacts, conversationId: "foreign-conversation" },
@@ -1668,7 +1671,12 @@ describe("post-capture structural binding", () => {
       turnIndex: 2,
       afterLatestUser: true,
     };
-    const runtime = runtimeWithValues([bindingProbe, replacement, replacement, goodFacts]);
+    const runtime = runtimeWithValues([
+      bindingProbe("review this plan"),
+      replacement,
+      replacement,
+      goodFacts,
+    ]);
     await registerSubmittedUserMessage(runtime, "review this plan", () => {});
     const logs: string[] = [];
 
@@ -1692,7 +1700,7 @@ describe("post-capture structural binding", () => {
 
   test("alternate snapshot replacements never mutate the answer when binding fails", async () => {
     const runtime = runtimeWithValues([
-      bindingProbe,
+      bindingProbe("review this plan"),
       { ...goodFacts, userTurnIsLatestUserTurn: false },
     ]);
     await registerSubmittedUserMessage(runtime, "review this plan", () => {});
@@ -1713,7 +1721,7 @@ describe("post-capture structural binding", () => {
   });
 
   test("alternate snapshot replacements apply only after binding verification", async () => {
-    const runtime = runtimeWithValues([bindingProbe, goodFacts]);
+    const runtime = runtimeWithValues([bindingProbe("review this plan"), goodFacts]);
     await registerSubmittedUserMessage(runtime, "review this plan", () => {});
     const replace = vi.fn(() => "owned answer");
 

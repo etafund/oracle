@@ -1183,6 +1183,92 @@ module.exports = () => ({
   );
 
   test(
+    "rehydrates reviewed Fable lane provenance before a detached runner can spawn",
+    async () => {
+      const oracleHome = await mkdtemp(path.join(os.tmpdir(), "oracle-fable-rehydrate-"));
+      const sessionId = "fable-rehydrate";
+      const sessionDir = path.join(oracleHome, "sessions", sessionId);
+      const modelsDir = path.join(sessionDir, "models");
+      await mkdir(modelsDir, { recursive: true });
+      const createdAt = new Date().toISOString();
+      const claudeCode = {
+        model: "fable",
+        readOnly: true,
+        inlineEvents: true,
+        outputFormat: "stream-json",
+        permissionMode: "plan",
+        toolMode: "none",
+        safeMode: true,
+        disableSlashCommands: true,
+        strictMcpConfig: true,
+        noChrome: true,
+        noSessionPersistence: false,
+      };
+      await writeFile(
+        path.join(sessionDir, "meta.json"),
+        JSON.stringify({
+          id: sessionId,
+          createdAt,
+          status: "pending",
+          promptPreview: "Review this detached session",
+          model: "fable",
+          models: [{ model: "fable", status: "pending" }],
+          cwd: process.cwd(),
+          mode: "claude-code",
+          lane: "fable-local",
+          options: {
+            prompt: "Review this detached session",
+            file: [],
+            model: "fable",
+            models: ["fable"],
+            mode: "claude-code",
+            lane: "fable-local",
+            laneInferenceSource: "lane",
+            claudeCode,
+          },
+        }),
+      );
+      await writeFile(
+        path.join(modelsDir, "fable.json"),
+        JSON.stringify({ model: "fable", status: "pending" }),
+      );
+      await writeFile(path.join(modelsDir, "fable.log"), "");
+      await writeFile(path.join(sessionDir, "output.log"), "");
+
+      const env = productionCliEnv({
+        ORACLE_HOME_DIR: oracleHome,
+        ORACLE_CLAUDE_CODE_EXECUTABLE: "/definitely/not/a/claude/executable",
+      });
+      delete env.ORACLE_CLAUDE_CODE_CAAM_PROFILE;
+      const result = await execCli(["--exec-session", sessionId], { env });
+      expect(result.code).toBe(0);
+
+      const metadata = JSON.parse(await readFile(path.join(sessionDir, "meta.json"), "utf8"));
+      expect(metadata).toMatchObject({
+        status: "error",
+        lane: "fable-local",
+        error: {
+          category: "prompt-validation",
+          details: { blockedReason: "caam_profile_required" },
+        },
+      });
+      expect(metadata.errorMessage).not.toMatch(/definitely\/not\/a\/claude\/executable/);
+
+      const restart = await execCli(["restart", sessionId, "--json"], { env });
+      expect(restart.code).not.toBe(0);
+      expect(`${restart.stdout}\n${restart.stderr}`).toContain(
+        "restart does not replay Claude Code/Fable sessions",
+      );
+      expect(`${restart.stdout}\n${restart.stderr}`).toContain(
+        "--lane fable-local --caam-profile <name>",
+      );
+
+      await rm(oracleHome, { recursive: true, force: true });
+    },
+    INTEGRATION_TIMEOUT,
+  );
+
+  test(
     "accepts direct response ids in --followup and persists chain metadata",
     async () => {
       const oracleHome = await mkdtemp(path.join(os.tmpdir(), "oracle-followup-resp-"));
@@ -2046,6 +2132,8 @@ module.exports = () => ({
           [
             "--lane",
             "fable-local",
+            "--caam-profile",
+            "integration-test-profile",
             "--prompt",
             "Remote config should not reroute local Fable",
             "--file",
