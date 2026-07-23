@@ -187,8 +187,10 @@ export interface RemoteServerOptions {
   recoveryCheckpointGraceMs?: number;
 }
 
-interface RemoteServerDeps {
+export interface RemoteServerDeps {
   runBrowser?: typeof runBrowserMode;
+  /** Test seam for the kernel-backed attach-target executable lookup. */
+  readAttachTargetExecutable?: (pid: number) => Promise<string | null>;
   /** Test seam for exercising the process-local fail-closed fallback. */
   tripQuarantine?: typeof tripQuarantineLatch;
   /** Capture-only recovery seam; never submits a prompt. */
@@ -336,6 +338,8 @@ export async function probeAttachTarget(params: {
   /** Test seam: override the ps-based process-identity fallback used on the
    * attach path instead of shelling out. */
   findRunningTarget?: typeof findRunningChromeDebugTargetForProfile;
+  /** Test seam: override the kernel-backed executable identity check. */
+  readExecutable?: (pid: number) => Promise<string | null>;
 }): Promise<AttachTargetProbe> {
   const probedAt = new Date().toISOString();
   const probe = params.probe ?? verifyDevToolsReachable;
@@ -374,6 +378,7 @@ export async function probeAttachTarget(params: {
     const owner = await verifyChromeDebugTargetOwner(params.profileDir, port, {
       allowProcessDiscovery: true,
       findRunningTarget: params.findRunningTarget,
+      readExecutable: params.readExecutable,
     }).catch(() => null);
     // A structured rejection is authoritative and fail-closed. In
     // particular, a listener is not an attachable target merely because it
@@ -574,6 +579,7 @@ export async function createRemoteServer(
     lastAttachProbe = await probeAttachTarget({
       profileDir: attachProfileDir,
       fixedPort: attachDevtoolsPort,
+      readExecutable: deps.readAttachTargetExecutable,
     });
     lastAttachProbeAtMs = Date.now();
     // Surface owner-identity state on transitions rather than staying
@@ -2688,7 +2694,10 @@ function classifyActiveRunReadinessState(run: ActiveRunState | null): RemoteRunR
   return run?.clientConnected ? "active-run-client-connected" : "active-run-client-disconnected";
 }
 
-export async function serveRemote(options: RemoteServerOptions = {}): Promise<void> {
+export async function serveRemote(
+  options: RemoteServerOptions = {},
+  deps: RemoteServerDeps = {},
+): Promise<void> {
   // Resolve the access token before any interactive warm-up (cookie probing,
   // login prompts): a worker with a misconfigured credential path must refuse
   // to start immediately, not after minutes of browser setup. The resolved
@@ -2740,6 +2749,7 @@ export async function serveRemote(options: RemoteServerOptions = {}): Promise<vo
         profileDir: manualProfileDir,
         fixedPort:
           options.devtoolsPort ?? parsePositiveIntEnv(process.env.ORACLE_SERVE_DEVTOOLS_PORT),
+        readExecutable: deps.readAttachTargetExecutable,
       });
       if (probe.ok) {
         console.log(
@@ -2773,11 +2783,14 @@ export async function serveRemote(options: RemoteServerOptions = {}): Promise<vo
     );
   }
 
-  const server = await createRemoteServer({
-    ...options,
-    manualLoginDefault: preferManualLogin,
-    manualLoginProfileDir: manualProfileDir,
-  });
+  const server = await createRemoteServer(
+    {
+      ...options,
+      manualLoginDefault: preferManualLogin,
+      manualLoginProfileDir: manualProfileDir,
+    },
+    deps,
+  );
   await new Promise<void>((resolve) => {
     const shutdown = () => {
       console.log("Shutting down remote service...");

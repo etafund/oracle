@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { probeAttachTarget } from "../../src/remote/server.js";
 
 // Attach-only topology may not have a persisted owner record, so the server
@@ -30,14 +30,27 @@ describe("probeAttachTarget owner-identity fallback (attach-only, no chrome.pid)
       await withProfileDir(async (dir) => {
         profileDir = dir;
         const chromeScript = path.join(dir, "google-chrome");
-        await writeFile(chromeScript, "setInterval(() => {}, 1_000);\n", "utf8");
+        await writeFile(
+          chromeScript,
+          [
+            'process.title = process.argv.slice(1).join(" ");',
+            'process.send?.("title-ready");',
+            "setInterval(() => {}, 1_000);",
+            "",
+          ].join("\n"),
+          "utf8",
+        );
         const chrome = spawn(
           process.execPath,
           [chromeScript, "--remote-debugging-port=54321", `--user-data-dir=${profileDir}`],
-          { stdio: "ignore" },
+          { stdio: ["ignore", "ignore", "ignore", "ipc"] },
         );
+        const titleReady = once(chrome, "message");
         try {
           await once(chrome, "spawn");
+          await titleReady;
+          const command = await readFile(`/proc/${chrome.pid}/cmdline`, "utf8");
+          expect(command.split("\0").filter(Boolean)).toHaveLength(1);
           const probe = await probeAttachTarget({
             profileDir,
             fixedPort: 54321,
@@ -46,6 +59,7 @@ describe("probeAttachTarget owner-identity fallback (attach-only, no chrome.pid)
               expect(userDataDir).toBe(profileDir);
               return { pid: chrome.pid!, port: 54321 };
             },
+            readExecutable: async () => "/usr/bin/google-chrome",
           });
           expect(probe.ok).toBe(true);
           expect(probe.ownerOk).toBe(true);

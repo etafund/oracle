@@ -89,14 +89,17 @@ async function startServe(profileDir: string): Promise<ServeHandle> {
     logs.push(args.map(String).join(" "));
   });
 
-  const servePromise = serveRemote({
-    host: "127.0.0.1",
-    port: 0,
-    token: "secret",
-    manualLoginDefault: true,
-    manualLoginProfileDir: profileDir,
-    logger: (message: string) => logs.push(message),
-  });
+  const servePromise = serveRemote(
+    {
+      host: "127.0.0.1",
+      port: 0,
+      token: "secret",
+      manualLoginDefault: true,
+      manualLoginProfileDir: profileDir,
+      logger: (message: string) => logs.push(message),
+    },
+    { readAttachTargetExecutable: async () => "/usr/bin/google-chrome" },
+  );
   servePromise.catch(() => undefined);
 
   const stop = async (): Promise<void> => {

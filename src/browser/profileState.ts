@@ -1,6 +1,6 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readlink, rename, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import http from "node:http";
 import { promisify } from "node:util";
@@ -190,7 +190,7 @@ function findChromeDebugTargetForProfileFromProcessList(
     const pid = Number.parseInt(match[1] ?? "", 10);
     const command = match[2] ?? "";
     if (!Number.isFinite(pid) || pid <= 0) continue;
-    if (!isChromeCommandForUserDataDir(command, userDataDir)) continue;
+    if (!isChromeRootCommandForUserDataDir(command, userDataDir)) continue;
     const port = parsePositiveInteger(readCommandFlag(command, "--remote-debugging-port"));
     if (port === null || port > 65_535) continue;
     return { pid, port };
@@ -221,6 +221,8 @@ export type ChromeOwnerVerification =
         | "owner-record-port-mismatch"
         | "owner-process-not-found"
         | "owner-process-dead"
+        | "owner-process-executable-unavailable"
+        | "owner-process-executable-mismatch"
         | "owner-process-command-mismatch"
         | "owner-process-generation-unavailable"
         | "owner-process-generation-mismatch";
@@ -230,6 +232,7 @@ export interface ChromeOwnerVerificationOptions {
   allowProcessDiscovery?: boolean;
   findRunningTarget?: typeof findRunningChromeDebugTargetForProfile;
   readCommand?: (pid: number) => Promise<string | null>;
+  readExecutable?: (pid: number) => Promise<string | null>;
   readStartToken?: (pid: number) => Promise<string | null>;
   processAlive?: (pid: number) => boolean;
 }
@@ -254,21 +257,36 @@ export async function verifyChromeDebugTargetOwner(
     if (!(options.processAlive ?? isProcessAlive)(pid)) {
       return { ok: false, reason: "owner-process-dead" };
     }
+    const readStartToken = options.readStartToken ?? readProcessStartToken;
+    const startTokenBefore = await readStartToken(pid);
+    if (!startTokenBefore) {
+      return { ok: false, reason: "owner-process-generation-unavailable" };
+    }
+    const executable = await (options.readExecutable ?? readProcessExecutable)(pid);
+    if (!executable) {
+      return { ok: false, reason: "owner-process-executable-unavailable" };
+    }
     const command = await (options.readCommand ?? readProcessCommand)(pid);
+    if (!isProcessCommandForExecutable(command, executable)) {
+      return { ok: false, reason: "owner-process-executable-mismatch" };
+    }
     if (
-      !isChromeCommandForUserDataDir(command, userDataDir) ||
+      !isChromeRootCommandForUserDataDir(command, userDataDir) ||
       parsePositiveInteger(readCommandFlag(command ?? "", "--remote-debugging-port")) !== port
     ) {
       return { ok: false, reason: "owner-process-command-mismatch" };
     }
-    const actualStartToken = await (options.readStartToken ?? readProcessStartToken)(pid);
-    if (!actualStartToken) {
+    const startTokenAfter = await readStartToken(pid);
+    if (!startTokenAfter) {
       return { ok: false, reason: "owner-process-generation-unavailable" };
     }
-    if (expectedStartToken !== null && actualStartToken !== expectedStartToken) {
+    if (
+      startTokenBefore !== startTokenAfter ||
+      (expectedStartToken !== null && startTokenAfter !== expectedStartToken)
+    ) {
       return { ok: false, reason: "owner-process-generation-mismatch" };
     }
-    return { ok: true, pid, port, processStartToken: actualStartToken, source };
+    return { ok: true, pid, port, processStartToken: startTokenAfter, source };
   };
   const verifyDiscoveredOwner = async (): Promise<ChromeOwnerVerification> => {
     const discovered = await (options.findRunningTarget ?? findRunningChromeDebugTargetForProfile)(
@@ -355,17 +373,70 @@ export async function terminateRecordedChromeForProfile(
 
 function isChromeCommandForUserDataDir(command: string | null, userDataDir: string): boolean {
   if (!command) return false;
-  const executablePortion = command.split("--", 1)[0]?.toLowerCase() ?? "";
-  const looksLikeChrome =
-    /(?:^|[\\/\s\0])(?:google[ -]?chrome|chrome|chromium)(?:\.app|\.exe)?(?:[\\/\s\0]|$)/u.test(
-      executablePortion,
-    );
+  const executablePortion = command.split("--", 1)[0] ?? "";
+  const looksLikeBrowser = browserExecutableFamily(executableBasename(executablePortion)) !== null;
   const commandProfile = readCommandFlag(command, "--user-data-dir");
   return (
-    looksLikeChrome &&
+    looksLikeBrowser &&
     commandProfile !== null &&
     normalizeProfilePath(commandProfile) === normalizeProfilePath(userDataDir)
   );
+}
+
+function isChromeRootCommandForUserDataDir(command: string | null, userDataDir: string): boolean {
+  return isChromeCommandForUserDataDir(command, userDataDir) && !hasCommandFlag(command, "--type");
+}
+
+function executableBasename(executable: string): string {
+  const normalized = executable
+    .replace(/ \(deleted\)$/u, "")
+    .replace(/\0+$/gu, "")
+    .trim()
+    .replace(/^["']|["']$/gu, "");
+  return (normalized.split(/[\\/]/u).at(-1) ?? "").toLowerCase();
+}
+
+function browserExecutableFamily(basename: string): string | null {
+  if (
+    /^(?:google chrome(?: (?:beta|canary|dev|for testing))?|google-chrome(?:-(?:beta|stable|unstable))?|chrome(?:-headless-shell)?)(?:\.exe)?$/u.test(
+      basename,
+    )
+  ) {
+    return "chrome";
+  }
+  if (/^chromium(?:-browser)?(?:\.exe)?$/u.test(basename)) return "chromium";
+  if (/^brave(?: browser|-browser(?:-(?:beta|nightly|stable))?)?(?:\.exe)?$/u.test(basename)) {
+    return "brave";
+  }
+  if (
+    /^(?:microsoft edge(?: (?:beta|canary|dev))?|microsoft-edge(?:-(?:beta|dev|stable))?|msedge)(?:\.exe)?$/u.test(
+      basename,
+    )
+  ) {
+    return "edge";
+  }
+  if (/^vivaldi(?:-bin|-(?:snapshot|stable))?(?:\.exe)?$/u.test(basename)) return "vivaldi";
+  if (/^opera(?:-(?:beta|developer|stable))?(?:\.exe)?$/u.test(basename)) return "opera";
+  if (/^(?:arc|comet|dia|thorium)(?:\.exe)?$/u.test(basename))
+    return basename.replace(/\.exe$/u, "");
+  if (/^ungoogled-chromium(?:\.exe)?$/u.test(basename)) return "chromium";
+  return null;
+}
+
+function isProcessCommandForExecutable(command: string | null, executable: string): boolean {
+  if (!command) return false;
+  const commandBasename = executableBasename(command.split("--", 1)[0] ?? "");
+  const kernelBasename = executableBasename(executable);
+  if (!commandBasename || !kernelBasename) return false;
+  const commandFamily = browserExecutableFamily(commandBasename);
+  return commandFamily !== null && commandFamily === browserExecutableFamily(kernelBasename);
+}
+
+export function isProcessCommandForExecutableForTest(
+  command: string | null,
+  executable: string,
+): boolean {
+  return isProcessCommandForExecutable(command, executable);
 }
 
 export function isChromeCommandForUserDataDirForTest(
@@ -702,19 +773,70 @@ async function isChromeUsingUserDataDir(userDataDir: string): Promise<boolean> {
 function readCommandFlag(command: string, flag: string): string | null {
   if (command.includes("\0")) {
     const args = command.split("\0").filter(Boolean);
-    for (let index = 0; index < args.length; index += 1) {
-      const argument = args[index] ?? "";
-      if (argument === flag) return args[index + 1] ?? null;
-      if (argument.startsWith(`${flag}=`)) return argument.slice(flag.length + 1);
+    if (args.length > 1) {
+      return readCommandFlagFromArgs(args, flag);
     }
-    return null;
+
+    // Chromium can rewrite its Linux process title into one flattened
+    // command line followed by a single trailing NUL. Treat that shape as a
+    // shell-style command instead of mistaking the entire title for argv[0].
+    command = args[0] ?? "";
   }
 
-  const escapedFlag = flag.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-  const match = command.match(
-    new RegExp(`(?:^|\\s)${escapedFlag}(?:=|\\s+)(?:"([^"]*)"|'([^']*)'|([^\\s]+))`, "u"),
-  );
-  return match?.[1] ?? match?.[2] ?? match?.[3] ?? null;
+  const args = tokenizeFlattenedCommand(command);
+  return args ? readCommandFlagFromArgs(args, flag) : null;
+}
+
+function readCommandFlagFromArgs(args: string[], flag: string): string | null {
+  const values: string[] = [];
+  let occurrences = 0;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index] ?? "";
+    if (argument === flag) {
+      occurrences += 1;
+      const value = args[index + 1];
+      if (value === undefined || value.startsWith("--")) return null;
+      values.push(value);
+    } else if (argument.startsWith(`${flag}=`)) {
+      occurrences += 1;
+      values.push(argument.slice(flag.length + 1));
+    }
+  }
+  return occurrences === 1 && values.length === 1 ? values[0] : null;
+}
+
+function hasCommandFlag(command: string | null, flag: string): boolean {
+  if (!command) return false;
+  const nulArgs = command.includes("\0") ? command.split("\0").filter(Boolean) : null;
+  const args =
+    nulArgs && nulArgs.length > 1 ? nulArgs : tokenizeFlattenedCommand(nulArgs?.[0] ?? command);
+  return Boolean(args?.some((argument) => argument === flag || argument.startsWith(`${flag}=`)));
+}
+
+function tokenizeFlattenedCommand(command: string): string[] | null {
+  const args: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  for (const character of command) {
+    if (quote) {
+      if (character === quote) quote = null;
+      else current += character;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+    } else if (/\s/u.test(character)) {
+      if (current) {
+        args.push(current);
+        current = "";
+      }
+    } else {
+      current += character;
+    }
+  }
+  if (quote) return null;
+  if (current) args.push(current);
+  return args;
 }
 
 async function readProcessStartToken(pid: number): Promise<string | null> {
@@ -722,16 +844,7 @@ async function readProcessStartToken(pid: number): Promise<string | null> {
   if (process.platform === "linux") {
     try {
       const stat = await readFile(`/proc/${pid}/stat`, "utf8");
-      const commandEnd = stat.lastIndexOf(")");
-      if (commandEnd < 0) return null;
-      // Fields after the closing command parenthesis begin at stat field 3.
-      // Process start time is field 22, hence offset 19 in this suffix.
-      const suffixFields = stat
-        .slice(commandEnd + 1)
-        .trim()
-        .split(/\s+/u);
-      const startTicks = suffixFields[19];
-      return startTicks ? `linux:${startTicks}` : null;
+      return parseLinuxProcessStartToken(stat);
     } catch {
       return null;
     }
@@ -759,6 +872,25 @@ async function readProcessStartToken(pid: number): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+function parseLinuxProcessStartToken(stat: string): string | null {
+  const commandEnd = stat.lastIndexOf(")");
+  if (commandEnd < 0) return null;
+  // Fields after the closing command parenthesis begin at stat field 3.
+  // Process start time is field 22, hence offset 19 in this suffix. Using the
+  // last parenthesis keeps spaces and closing parens inside comm from shifting
+  // the generation token.
+  const suffixFields = stat
+    .slice(commandEnd + 1)
+    .trim()
+    .split(/\s+/u);
+  const startTicks = suffixFields[19];
+  return startTicks ? `linux:${startTicks}` : null;
+}
+
+export function parseLinuxProcessStartTokenForTest(stat: string): string | null {
+  return parseLinuxProcessStartToken(stat);
 }
 
 async function readProcessCommand(pid: number): Promise<string | null> {
@@ -794,6 +926,38 @@ async function readProcessCommand(pid: number): Promise<string | null> {
     );
     const command = String(stdout ?? "").trim();
     return command || null;
+  } catch {
+    return null;
+  }
+}
+
+async function readProcessExecutable(pid: number): Promise<string | null> {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+  if (process.platform === "linux") {
+    try {
+      return await readlink(`/proc/${pid}/exe`);
+    } catch {
+      return null;
+    }
+  }
+  if (process.platform === "win32") {
+    try {
+      const { stdout } = await execFileAsync("powershell.exe", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `(Get-CimInstance Win32_Process -Filter "ProcessId = ${Math.trunc(pid)}" -ErrorAction Stop).ExecutablePath`,
+      ]);
+      const executable = String(stdout ?? "").trim();
+      return executable || null;
+    } catch {
+      return null;
+    }
+  }
+  try {
+    const { stdout } = await execFileAsync("ps", ["-p", String(Math.trunc(pid)), "-o", "comm="]);
+    const executable = String(stdout ?? "").trim();
+    return executable || null;
   } catch {
     return null;
   }

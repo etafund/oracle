@@ -394,6 +394,18 @@ describe("profileState", () => {
         dir,
       ),
     ).toBe(true);
+    for (const executable of [
+      "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+      "/usr/bin/brave-browser",
+      "/usr/bin/vivaldi-stable",
+    ]) {
+      expect(
+        profileState.isChromeCommandForUserDataDirForTest(
+          `${executable} --user-data-dir=${dir}`,
+          dir,
+        ),
+      ).toBe(true);
+    }
     expect(
       profileState.isChromeCommandForUserDataDirForTest(
         "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=/tmp/other",
@@ -412,13 +424,89 @@ describe("profileState", () => {
         dir,
       ),
     ).toBe(true);
+    expect(
+      profileState.isChromeCommandForUserDataDirForTest(
+        `/usr/bin/google-chrome --user-data-dir=${dir} --user-data-dir=${dir}\0`,
+        dir,
+      ),
+    ).toBe(false);
+    expect(
+      profileState.isChromeCommandForUserDataDirForTest(
+        `/usr/bin/google-chrome --user-data-dir=${dir} --user-data-dir=/tmp/other\0`,
+        dir,
+      ),
+    ).toBe(false);
+    expect(
+      profileState.isChromeCommandForUserDataDirForTest(
+        `/usr/bin/google-chrome\0--user-data-dir=${dir}\0--user-data-dir=/tmp/other\0`,
+        dir,
+      ),
+    ).toBe(false);
+    expect(
+      profileState.isChromeCommandForUserDataDirForTest(
+        `/usr/bin/google-chrome --user-data-dir-backup=${dir}`,
+        dir,
+      ),
+    ).toBe(false);
+    expect(
+      profileState.isChromeCommandForUserDataDirForTest(
+        `/usr/bin/google-chrome --foo="x --user-data-dir='${dir}'"`,
+        dir,
+      ),
+    ).toBe(false);
     expect(profileState.isChromeCommandForUserDataDirForTest("node worker.js", dir)).toBe(false);
+    expect(
+      profileState.isChromeCommandForUserDataDirForTest(
+        `node --remote-debugging-port=9222 --user-data-dir=${dir}`,
+        dir,
+      ),
+    ).toBe(false);
+  });
+
+  test("reads Linux process generation after a hostile comm field", () => {
+    const fields3Through22 = ["S", ...Array.from({ length: 18 }, () => "0"), "12345"];
+    const stat = `99 (a name with ) parens)) ${fields3Through22.join(" ")}`;
+    expect(profileState.parseLinuxProcessStartTokenForTest(stat)).toBe("linux:12345");
+  });
+
+  test("binds a reported browser command to its kernel executable", () => {
+    for (const [command, executable] of [
+      ["/opt/google/chrome/chrome --flag", "/opt/google/chrome/chrome"],
+      ["/usr/bin/google-chrome-stable --flag", "/opt/google/chrome/chrome"],
+      ["/usr/bin/chromium-browser --flag", "/usr/lib/chromium/chromium"],
+      ["/usr/bin/microsoft-edge-stable --flag", "/opt/microsoft/msedge/msedge"],
+      ["/usr/bin/vivaldi-stable --flag", "/opt/vivaldi/vivaldi-bin"],
+      [
+        "/Applications/Comet.app/Contents/MacOS/Comet --flag",
+        "/Applications/Comet.app/Contents/MacOS/Comet",
+      ],
+      [
+        String.raw`"C:\Program Files\Microsoft\Edge\Application\msedge.exe" --flag`,
+        String.raw`C:\Program Files\Microsoft\Edge\Application\msedge.exe`,
+      ],
+      ["/opt/google/chrome/chrome --flag", "/opt/google/chrome/chrome (deleted)"],
+    ]) {
+      expect(profileState.isProcessCommandForExecutableForTest(command, executable)).toBe(true);
+    }
+    expect(
+      profileState.isProcessCommandForExecutableForTest(
+        "/usr/bin/google-chrome --flag",
+        process.execPath,
+      ),
+    ).toBe(false);
+    expect(
+      profileState.isProcessCommandForExecutableForTest(
+        `${process.execPath} --remote-debugging-port=9222 --user-data-dir=/tmp/profile`,
+        process.execPath,
+      ),
+    ).toBe(false);
   });
 
   test("discovers running Chrome DevTools port from process list", () => {
     const dir = "/Users/example/.oracle/browser-profile";
     const processList = `
       123 node worker.js
+      124 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --type=renderer --remote-debugging-port=64305 --user-data-dir=${dir}
       456 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=64305 --user-data-dir=${dir} about:blank
       789 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=9222 --user-data-dir=/tmp/other
     `;
@@ -451,10 +539,12 @@ describe("profileState", () => {
         schema: string;
         processStartToken: string;
       };
+      const chromeExecutable = async () => "/usr/bin/google-chrome";
       expect(record.schema).toBe("oracle.chrome-owner.v1");
 
       const verified = await profileState.verifyChromeDebugTargetOwner(dir, 9222, {
         processAlive: () => true,
+        readExecutable: chromeExecutable,
         readCommand: async () =>
           `/usr/bin/google-chrome --remote-debugging-port=9222 --user-data-dir=${dir}`,
         readStartToken: async () => record.processStartToken,
@@ -464,6 +554,7 @@ describe("profileState", () => {
       await expect(
         profileState.verifyChromeDebugTargetOwner(dir, 9222, {
           processAlive: () => true,
+          readExecutable: chromeExecutable,
           readCommand: async () =>
             `/usr/bin/google-chrome\0--remote-debugging-port=9222\0--user-data-dir=${dir}\0`,
           readStartToken: async () => record.processStartToken,
@@ -471,8 +562,59 @@ describe("profileState", () => {
       ).resolves.toMatchObject({ ok: true, pid: process.pid, source: "record" });
 
       await expect(
+        profileState.verifyChromeDebugTargetOwner(dir, 9222, {
+          processAlive: () => true,
+          readExecutable: chromeExecutable,
+          readCommand: async () =>
+            `/usr/bin/google-chrome --remote-debugging-port=9222 --user-data-dir=${dir}\0`,
+          readStartToken: async () => record.processStartToken,
+        }),
+      ).resolves.toMatchObject({ ok: true, pid: process.pid, source: "record" });
+
+      await expect(
+        profileState.verifyChromeDebugTargetOwner(dir, 9222, {
+          processAlive: () => true,
+          readExecutable: chromeExecutable,
+          readCommand: async () =>
+            `/usr/bin/google-chrome --remote-debugging-port=9222 --remote-debugging-port=9222 --user-data-dir=${dir}\0`,
+          readStartToken: async () => record.processStartToken,
+        }),
+      ).resolves.toEqual({ ok: false, reason: "owner-process-command-mismatch" });
+
+      await expect(
+        profileState.verifyChromeDebugTargetOwner(dir, 9222, {
+          processAlive: () => true,
+          readExecutable: chromeExecutable,
+          readCommand: async () =>
+            `/usr/bin/google-chrome --type=renderer --remote-debugging-port=9222 --user-data-dir=${dir}\0`,
+          readStartToken: async () => record.processStartToken,
+        }),
+      ).resolves.toEqual({ ok: false, reason: "owner-process-command-mismatch" });
+
+      await expect(
+        profileState.verifyChromeDebugTargetOwner(dir, 9222, {
+          processAlive: () => true,
+          readExecutable: chromeExecutable,
+          readCommand: async () =>
+            `/usr/bin/google-chrome --remote-debugging-port=9222 --user-data-dir=${dir} --user-data-dir\0`,
+          readStartToken: async () => record.processStartToken,
+        }),
+      ).resolves.toEqual({ ok: false, reason: "owner-process-command-mismatch" });
+
+      await expect(
+        profileState.verifyChromeDebugTargetOwner(dir, 9222, {
+          processAlive: () => true,
+          readExecutable: chromeExecutable,
+          readCommand: async () =>
+            `/usr/bin/google-chrome --remote-debugging-port=9222 --user-data-dir=${dir} --remote-debugging-port\0`,
+          readStartToken: async () => record.processStartToken,
+        }),
+      ).resolves.toEqual({ ok: false, reason: "owner-process-command-mismatch" });
+
+      await expect(
         profileState.verifyChromeDebugTargetOwner(dir, 9223, {
           processAlive: () => true,
+          readExecutable: chromeExecutable,
           readCommand: async () =>
             `/usr/bin/google-chrome --remote-debugging-port=9223 --user-data-dir=${dir}`,
           readStartToken: async () => record.processStartToken,
@@ -482,20 +624,46 @@ describe("profileState", () => {
       await expect(
         profileState.verifyChromeDebugTargetOwner(dir, 9222, {
           processAlive: () => true,
+          readExecutable: chromeExecutable,
           readCommand: async () =>
             `/usr/bin/google-chrome --remote-debugging-port=9222 --user-data-dir=${dir}`,
           readStartToken: async () => `${record.processStartToken}-reused`,
         }),
       ).resolves.toEqual({ ok: false, reason: "owner-process-generation-mismatch" });
 
+      let generationRead = 0;
       await expect(
         profileState.verifyChromeDebugTargetOwner(dir, 9222, {
           processAlive: () => true,
+          readExecutable: chromeExecutable,
+          readCommand: async () =>
+            `/usr/bin/google-chrome --remote-debugging-port=9222 --user-data-dir=${dir}`,
+          readStartToken: async () =>
+            generationRead++ === 0
+              ? record.processStartToken
+              : `${record.processStartToken}-reused`,
+        }),
+      ).resolves.toEqual({ ok: false, reason: "owner-process-generation-mismatch" });
+
+      await expect(
+        profileState.verifyChromeDebugTargetOwner(dir, 9222, {
+          processAlive: () => true,
+          readExecutable: chromeExecutable,
           readCommand: async () =>
             `/usr/bin/google-chrome --remote-debugging-port=9222 --user-data-dir=${dir}-old`,
           readStartToken: async () => record.processStartToken,
         }),
       ).resolves.toEqual({ ok: false, reason: "owner-process-command-mismatch" });
+
+      await expect(
+        profileState.verifyChromeDebugTargetOwner(dir, 9222, {
+          processAlive: () => true,
+          readExecutable: async () => process.execPath,
+          readCommand: async () =>
+            `/usr/bin/google-chrome --remote-debugging-port=9222 --user-data-dir=${dir}`,
+          readStartToken: async () => record.processStartToken,
+        }),
+      ).resolves.toEqual({ ok: false, reason: "owner-process-executable-mismatch" });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
