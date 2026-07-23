@@ -438,7 +438,12 @@ function buildThinkingGatePredicateJs(fnName: string): string {
       return KEYWORDS.some(
         (keyword) =>
           label === keyword ||
-          label.startsWith(keyword + ' ') ||
+          // Several entries are deliberate localized stems (for example
+          // "rozumow" and "raisonn"), while real status labels commonly end
+          // in an ellipsis ("Denkt nach…"). Prefix matching is therefore the
+          // intended conservative gate: a false positive only delays capture,
+          // whereas a missed live-thinking label can finalize a preamble.
+          label.startsWith(keyword) ||
           (keyword === 'thought for' && label.includes(keyword)),
       );
     };

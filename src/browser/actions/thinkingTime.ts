@@ -1171,7 +1171,6 @@ export function buildThinkingTimeExpressionForTest(
 function inferThinkingTargetModelKind(
   desiredModel?: string | null,
 ): "pro" | "thinking" | "instant" | null {
-  if (isGpt56SolModelLabel(desiredModel)) return "pro";
   const normalized = normalizeModelLabel(desiredModel);
   if (!normalized) return null;
   const tokens = normalized.split(" ");

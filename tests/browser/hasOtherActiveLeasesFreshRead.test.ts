@@ -3,21 +3,18 @@
  * not memoize the first result for the lifetime of the run-cleanup closure.
  *
  * Property (correctness / fault isolation): runBrowserMode()'s run-cleanup
- * finally block has two lease-registry-gated cleanup decisions, separated in
- * time by acquireProfileRunLock() (`cleanupProfileLock`):
- *   1. the blank-tab-close gate (sweeps blank tabs, excluding other active
- *      leases' recorded Chrome targets, and stands down when any other
- *      occupant's tab cannot be attributed), backed by a direct
- *      listOtherActiveBrowserTabLeaseTargetIds() read at the gate, and
- *   2. the Chrome-termination gate (SIGTERMs the shared Chrome when no other
- *      lease is active), backed by the hasOtherActiveLeases closure.
+ * finally block has two lease-registry-gated cleanup decisions:
+ *   1. the Chrome-termination gate (SIGTERMs the shared Chrome when no other
+ *      lease is active), backed by the hasOtherActiveLeases closure after
+ *      acquireProfileRunLock() (`cleanupProfileLock`), and
+ *   2. the blank-tab-close gate, executed by the lease registry's onRelease
+ *      callback only when the same locked release proves `isLastLease`.
  * Under c>=2 manual-login concurrency, a second worker can acquire its own
- * tab lease and briefly touch the same profile lock in the gap between gate 1
- * and gate 2. If gate 2 reused a cached "no other leases" result computed
- * before that second worker's lease existed, it would conclude the shared
- * Chrome is idle and kill it out from under the still-running worker. The
- * fix removes the memoization so gate 2 always re-reads the registry after
- * cleanupProfileLock is acquired.
+ * lease around cleanup. If the termination gate reused a cached "no other
+ * leases" result, it could kill Chrome out from under that worker; if blank
+ * cleanup used a separate best-effort snapshot, it could sweep during the
+ * same race. The current shape makes the former a fresh read and the latter
+ * atomic with release.
  *
  * This is checked structurally against the source (like
  * closeBeforeReleaseOrdering.test.ts) because hasOtherActiveLeases is a
@@ -50,23 +47,23 @@ async function hasOtherActiveLeasesClosureSource(): Promise<string> {
   return sliceBetween(
     source,
     "const hasOtherActiveLeases = async () => {",
-    "if (\n      runStatus === \"complete\" &&",
+    "if (!keepBrowserOpen && manualLogin && tabLease) {",
   );
 }
 
 describe("hasOtherActiveLeases fresh-read regression", () => {
-  test("guard: both cleanup gates perform their own fresh registry reads", async () => {
+  test("guard: termination re-reads and blank cleanup is atomic with last-lease release", async () => {
     const source = await readSource("browser/index.ts");
-    // The Chrome-termination gate must still consult the closure (after
-    // cleanupProfileLock acquisition), and the blank-tab gate must consult
-    // the registry directly at the gate — each invocation is a fresh,
-    // lock-protected read with nothing memoized across the lock boundary.
+    // The Chrome-termination gate still consults the fresh-read closure after
+    // cleanupProfileLock acquisition. Blank-tab cleanup is stronger than its
+    // former independent snapshot: it runs only from the registry-locked
+    // release callback after that callback proves this was the last lease.
     const callSites = source.match(/hasOtherActiveLeases\(\)/gu) ?? [];
     expect(callSites.length).toBeGreaterThanOrEqual(1);
-    expect(source).toContain(
-      "await listOtherActiveBrowserTabLeaseTargetIds(userDataDir, tabLease.id)",
-    );
     expect(source).toContain("cleanupProfileLock = await acquireProfileRunLock(");
+    expect(source).toContain("onRelease: async ({ isLastLease }) => {");
+    expect(source).toContain("if (isLastLease) {");
+    expect(source).toContain("await cleanupBlankTabs();");
   });
 
   test("hasOtherActiveLeases performs a fresh registry read with no cross-call memoization", async () => {

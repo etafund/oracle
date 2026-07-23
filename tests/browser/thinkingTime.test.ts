@@ -223,8 +223,8 @@ describe("browser thinking-time selection expression", () => {
     expect(expression).toContain("'重度'");
   });
 
-  it("infers target model kind with token matching", () => {
-    expect(inferThinkingTargetModelKindForTest("GPT-5.6 Sol")).toBe("pro");
+  it("infers target mode kind without conflating GPT-5.6 Sol with Pro", () => {
+    expect(inferThinkingTargetModelKindForTest("GPT-5.6 Sol")).toBeNull();
     expect(inferThinkingTargetModelKindForTest("gpt-5.5-pro")).toBe("pro");
     expect(inferThinkingTargetModelKindForTest("Thinking 5.5")).toBe("thinking");
     expect(inferThinkingTargetModelKindForTest("Instant")).toBe("instant");
@@ -793,6 +793,11 @@ describe("browser thinking-time selection expression", () => {
     for (const testCase of cases) {
       let clickedLabel: string | null = null;
       let unrelatedPillClicks = 0;
+      // Exact GPT-5.6 Sol + extended is the protected two-axis Pro route and
+      // has dedicated fail-closed tests above. Keep the generic Chinese
+      // "High" collision case on the legacy Thinking model while retaining
+      // exact-Sol coverage for the other Intelligence tiers.
+      const desiredModel = testCase.level === "extended" ? "Thinking 5.5" : "GPT-5.6 Sol";
       const proRadio = new FakeElement("Pro 深度模式", {
         role: "menuitemradio",
         "aria-checked": "true",
@@ -840,7 +845,7 @@ describe("browser thinking-time selection expression", () => {
         effortItems,
         intelligenceGroup,
       );
-      const modelButton = new FakeElement("Pro", {
+      const modelButton = new FakeElement(testCase.level === "extended" ? "Thinking" : "Pro", {
         class: "__composer-pill",
         "aria-expanded": "true",
         "aria-haspopup": "menu",
@@ -878,7 +883,7 @@ describe("browser thinking-time selection expression", () => {
       };
       let now = 0;
       const performanceStub = { now: () => (now += 100) };
-      const expression = buildThinkingTimeExpressionForTest(testCase.level, "GPT-5.6 Sol");
+      const expression = buildThinkingTimeExpressionForTest(testCase.level, desiredModel);
       const evaluate = new Function(
         "document",
         "performance",

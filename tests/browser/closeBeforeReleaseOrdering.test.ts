@@ -42,7 +42,7 @@ const SRC_ROOT = fileURLToPath(new URL("../../src", import.meta.url));
 const INDEX_RELEASE_ANCHOR = "awaitreleaseBrowserTabLeaseOrTaint(handle,logger,";
 const PROJECT_RELEASE_ANCHOR = "tabLease=null;awaithandle.release().catch(()=>undefined);";
 const REMOTE_CLOSE_ANCHOR =
-  "awaitcloseRemoteChromeTarget(host,port,remoteTargetId??undefined,logger);";
+  "ownedTargetCleanupProved=awaitcloseOwnedTargetWithDeadline(closeOwnedRemoteTarget(),logger,{targetId:ownedRemoteTargetId},);";
 // No `.catch(...)` tail: runBrowserMode()'s close now returns the boolean
 // close outcome (so a failed close can taint cleanup state, oracle-router-lv2)
 // while projectSourcesRunner still swallows; the anchor is the shared prefix.

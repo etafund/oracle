@@ -372,6 +372,9 @@ describe("sanitizer is the single choke point between payloads and runBrowser", 
       "manualLogin",
       "manualLoginProfileDir",
       "keepBrowser",
+      // Host-owned lifecycle policy. The sanitizer strips any client value;
+      // serve writes the trusted policy after sanitization.
+      "closeOwnedRunTargetAfterRun",
     ]);
     for (const key of writes) {
       expect(allowedWrites.has(key ?? ""), `unexpected browserConfig write: ${key}`).toBe(true);
