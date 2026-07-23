@@ -27,6 +27,10 @@
 
 - Dependencies: refresh Google GenAI, OpenAI, Clipboardy, Chrome DevTools protocol, Hono/MCP runtime security fixes, Oxc tooling, and TSX.
 
+### Added
+
+- API: add `--reasoning-mode standard|pro` and `--reasoning-effort none|low|medium|high|xhigh|max` for GPT-5.6 API runs, including session persistence, long-run detach/timeout behavior, and fail-closed validation for unsupported models and Chat Completions proxy routes. GPT-5.6 Pro remains a mode (`--model gpt-5.6-sol --reasoning-mode pro --reasoning-effort max`), not a separate model slug.
+
 ### Fixed
 
 - Browser: ignore transient `/c/WEB:<request-id>` routes until ChatGPT exposes the durable conversation URL, preventing completed GPT-5.6 and Pro answers from hanging until timeout under a mismatched response scope. Fixes #333. Thanks @dbachko and @kesslerio!

@@ -62,4 +62,15 @@ describe("shouldDetachSession", () => {
     expect(shouldLaunchDetachedSessionFinalizer({ engine: "browser" })).toBe(true);
     expect(shouldLaunchDetachedSessionFinalizer({ engine: "api" })).toBe(false);
   });
+
+  test("allows detach for GPT-5.6 Pro reasoning mode", () => {
+    const result = shouldDetachSession({
+      engine: "api",
+      model: "gpt-5.6-sol",
+      reasoningMode: "pro",
+      waitPreference: false,
+      disableDetachEnv: false,
+    });
+    expect(result).toBe(true);
+  });
 });
