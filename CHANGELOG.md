@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.16.1 — Unreleased
+## 0.16.2 — Unreleased
 
 ### Added
 
@@ -12,10 +12,6 @@
   `application/octet-stream`, which Gemini silently discards. Previously a `--file clip.mp4`
   run reported the attachment as sent (`files=1`) while the model replied as though it had
   received nothing, making video look unsupported. Verified against gemini-3.1-pro.
-- Browser: ignore transient `/c/WEB:<request-id>` routes until ChatGPT exposes the durable conversation URL, preventing completed GPT-5.6 and Pro answers from hanging until timeout under a mismatched response scope. Fixes #333. Thanks @dbachko and @kesslerio!
-- Browser: recover completed answers after a recoverable DevTools disconnect by confirming target liveness and attempting bounded reattachment, while preserving fail-closed handling for unavailable targets. Fixes #326. Thanks @piyushbag!
-- CLI: avoid inheriting `browser.thinkingTime` from config when `--browser-model-strategy current` is explicit, while preserving an explicit `--browser-thinking-time` override. Thanks @jung0han!
-- Browser/Serve: keep the authenticated manual-login Chrome process alive while closing each successfully captured service-owned run tab, preventing renderer and memory accumulation across repeated remote consultations without changing explicit `--browser-keep-browser`, attached-tab, or incomplete-run recovery behavior. Thanks @rtl-ai!
 - Browser/Remote: turn stalled attachment uploads into typed pre-dispatch failures and permit one bounded auto-policy text fallback only when either inline/upload representation reconstructs byte-for-byte from the other; re-prove the focused composer and absence of stale attachment state at the final trusted dispatch boundary, reject legacy/unknown remote fallback claims even when the old opt-in environment variable is set, and carry the actual submitted branch, transport, hashes, and equivalence proof in terminal/session provenance without claiming upload-chip proof for an inline submission. Also bound DevTools reachability through complete response bodies without `fetch`, remove confirmed-dead Chrome PID hints, and distinguish reused PIDs by Linux process generation so stale leases cannot consume a lane indefinitely. Thanks @pdurlej!
 - Browser: treat WSL's systemd-resolved loopback DNS stub as localhost when connecting to a freshly launched Chrome DevTools endpoint.
 - Browser/Remote: persist shared-profile browser-slot waiters in FIFO order and give capacity admission its own `--browser-queue-timeout`/`ORACLE_BROWSER_QUEUE_TIMEOUT` budget (20m default), independent of response and profile-lock deadlines. New-run queue expiry is a typed retryable pre-submit refusal, while recovery/reattach expiry preserves the already-submitted run state and remains non-retryable; abandoned waiters are removed atomically, remote values are bounded, live owners are never evicted by wall-clock age alone, and registry-lock ownership is identity-checked across acquisition and release. Thanks @pdurlej!
@@ -24,6 +20,19 @@
 - Browser: preserve whitespace and digit regex escapes in the generated thinking gate so completed “Thought for …” summaries are not mistaken for an active Pro-thinking status.
 - Browser/Remote: retain and identity-safely roll back a tab lease when acquisition commits but registry unlock cannot be proved, then clear only that failure's readiness taint after deferred self-healing. This prevents a rare post-commit lock fault from consuming shared-browser capacity indefinitely or hiding a separate cleanup failure.
 - CLI/Remote: keep JSON error envelopes consistent with process exit codes for generic remote capacity failures: proven pre-submit refusals now report `retryable_backoff` with `retry_safe=true`, while already-submitted recovery refusals remain non-retryable.
+
+## 0.16.1 — 2026-07-23
+
+### Changed
+
+- Dependencies: refresh Google GenAI, OpenAI, Clipboardy, Chrome DevTools protocol, Hono/MCP runtime security fixes, Oxc tooling, and TSX.
+
+### Fixed
+
+- Browser: ignore transient `/c/WEB:<request-id>` routes until ChatGPT exposes the durable conversation URL, preventing completed GPT-5.6 and Pro answers from hanging until timeout under a mismatched response scope. Fixes #333. Thanks @dbachko and @kesslerio!
+- Browser: recover completed answers after a recoverable DevTools disconnect by confirming target liveness and attempting bounded reattachment, while preserving fail-closed handling for unavailable targets. Fixes #326. Thanks @piyushbag!
+- CLI: avoid inheriting `browser.thinkingTime` from config when `--browser-model-strategy current` is explicit, while preserving an explicit `--browser-thinking-time` override. Thanks @jung0han!
+- Browser/Serve: keep the authenticated manual-login Chrome process alive while closing each successfully captured service-owned run tab, preventing renderer and memory accumulation across repeated remote consultations without changing explicit `--browser-keep-browser`, attached-tab, or incomplete-run recovery behavior. Thanks @rtl-ai!
 
 ## 0.16.0 — 2026-07-12
 
