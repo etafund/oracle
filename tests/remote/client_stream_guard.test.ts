@@ -13,6 +13,10 @@ import {
   serveCompatibleRecoveryHealth,
   setCompatibleRecoveryResponseHeaders,
 } from "./_recoveryProtocolFixture.js";
+import {
+  primarySubmissionProvenance,
+  strongRemoteSuccessProvenance,
+} from "./_submissionProvenanceFixture.js";
 
 // Stream-inactivity deadline + NDJSON line-buffer cap contract (bead
 // oracle-router-xfd): the `/runs` response is a long-lived NDJSON stream
@@ -50,16 +54,10 @@ const MINIMAL_RESULT: BrowserRunResult = {
   tookMs: 5,
   answerTokens: 2,
   answerChars: 10,
+  submissionProvenance: primarySubmissionProvenance("x"),
 };
 
-const STRONG_SUCCESS_PROVENANCE = {
-  modelVerified: null,
-  modelRequested: null,
-  modelResolved: null,
-  captureBindingVerified: true,
-  captureBindingQuality: "message-handle" as const,
-  challengeClean: true,
-};
+const STRONG_SUCCESS_PROVENANCE = strongRemoteSuccessProvenance("x");
 
 describe("client: accepted route attribution", () => {
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
@@ -155,6 +153,7 @@ describe("client: stream-inactivity deadline and line-buffer cap", () => {
           host: `127.0.0.1:${fake.port}`,
           token: "secret",
           streamIdleTimeoutMs: 60,
+          recoveryClaimLookupTimeoutMs: 0,
         });
         const startedAt = Date.now();
         const failure = await executor({ prompt: "x", config: {} }).then(
@@ -202,6 +201,7 @@ describe("client: stream-inactivity deadline and line-buffer cap", () => {
           token: "secret",
           maxLineBytes: 4096,
           streamIdleTimeoutMs: 5000,
+          recoveryClaimLookupTimeoutMs: 0,
         });
         const failure = await executor({ prompt: "x", config: {} }).then(
           () => null,
@@ -295,6 +295,7 @@ describe("client: artifact-transfer and pre-header hang guards", () => {
           host: `127.0.0.1:${fake.port}`,
           token: "secret",
           streamIdleTimeoutMs: 80,
+          recoveryClaimLookupTimeoutMs: 0,
         });
         const startedAt = Date.now();
         const failure = await executor({ prompt: "x", config: {} }).then(
@@ -321,7 +322,7 @@ describe("client: artifact-transfer and pre-header hang guards", () => {
   );
 
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
-    "a connection accepted but never given response headers aborts before submit",
+    "a connection accepted but never given response headers is submission-ambiguous",
     async () => {
       const fake = await startFakeRunServer(() => {
         // Accept the /runs connection but never call res.writeHead: no response
@@ -342,12 +343,12 @@ describe("client: artifact-transfer and pre-header hang guards", () => {
         const elapsedMs = Date.now() - startedAt;
         expect(failure).toBeInstanceOf(RemoteRunFailedError);
         expect((failure as RemoteRunFailedError).message).toMatch(/no response headers/i);
-        // Nothing reached the account yet (no headers, no submit), so this is a
-        // retryable pre-submit transport failure.
+        // A missing response header is not proof that the worker did not
+        // receive or submit the request, so replay must remain disabled.
         expect((failure as RemoteRunFailedError).errorClass).toBe(
-          "transport_interrupted_before_submit",
+          "transport_interrupted_after_submit",
         );
-        expect((failure as RemoteRunFailedError).retryable).toBe(true);
+        expect((failure as RemoteRunFailedError).retryable).toBe(false);
         expect(elapsedMs).toBeGreaterThanOrEqual(30);
         expect(elapsedMs).toBeLessThan(5000);
       } finally {

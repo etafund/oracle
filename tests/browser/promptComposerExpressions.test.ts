@@ -162,15 +162,31 @@ class FakeInputElement extends FakeElement {
   }
 }
 
+class FakeTextAreaElement extends FakeElement {}
+
+class FakeButtonElement extends FakeElement {
+  readonly disabled = false;
+}
+
 class FakeDocument extends FakeEventTarget {
   readonly body: FakeElement;
   readonly documentElement: FakeElement;
+  activeElement: FakeElement | null;
   private hitTarget: FakeElement | null = null;
 
   constructor(children: FakeElement[]) {
     super();
     this.body = new FakeElement("body", {}, children);
     this.documentElement = this.body;
+    const promptCandidates = flattenElements(this.body.children).filter(
+      (element) =>
+        (element.getAttribute("id") === "prompt-textarea" ||
+          element.getAttribute("contenteditable") === "true" ||
+          element.tagName.toLowerCase() === "textarea") &&
+        element.getBoundingClientRect().width > 0 &&
+        element.getBoundingClientRect().height > 0,
+    );
+    this.activeElement = promptCandidates.length === 1 ? promptCandidates[0] : null;
   }
 
   querySelector(selector: string): FakeElement | null {
@@ -193,6 +209,10 @@ class FakeDocument extends FakeEventTarget {
 
   setHitTarget(target: FakeElement | null): void {
     this.hitTarget = target;
+  }
+
+  setActiveElement(target: FakeElement | null): void {
+    this.activeElement = target;
   }
 }
 
@@ -344,11 +364,15 @@ function evaluateAttachmentReadyExpression(
   document: FakeDocument,
   bindingToken?: string,
   bindToken = false,
+  sendBindingToken?: string,
+  exactSet = false,
 ): boolean {
   const expression = buildAttachmentReadyExpressionForTest(
     attachmentNames,
     bindingToken,
     bindToken,
+    sendBindingToken,
+    exactSet,
   );
   const evaluate = new Function(
     "document",
@@ -535,6 +559,82 @@ describe("prompt composer attachment expressions", () => {
 
     expect(expression).toContain("const attachmentRoots = Array.from(new Set([composer]))");
     expect(expression).not.toContain("new Set([composer, document])");
+  });
+
+  test("exact attachment readiness rejects an extra uploading or unlabeled attachment", () => {
+    const expectedName = "expected-review.md";
+    const makeDocument = (extra: FakeElement) =>
+      new FakeDocument([
+        new FakeElement("div", { "data-testid": "unified-composer" }, [
+          new FakeElement("div", { "data-testid": "attachment-chip" }, [
+            new FakeElement("span", {}, [], expectedName),
+            new FakeElement("button", { "aria-label": `Remove file 1: ${expectedName}` }),
+          ]),
+          extra,
+          new FakeElement(
+            "div",
+            { id: "prompt-textarea", contenteditable: "true", role: "textbox" },
+            [],
+            "review",
+          ),
+          new FakeElement("button", { "data-testid": "send-button" }),
+        ]),
+      ]);
+
+    const uploading = makeDocument(
+      new FakeElement("div", {
+        "data-testid": "attachment-upload",
+        "data-state": "uploading",
+      }),
+    );
+    expect(evaluateAttachmentReadyExpression([expectedName], uploading)).toBe(true);
+    expect(
+      evaluateAttachmentReadyExpression(
+        [expectedName],
+        uploading,
+        undefined,
+        false,
+        undefined,
+        true,
+      ),
+    ).toBe(false);
+
+    const unlabeled = makeDocument(new FakeElement("div", { "data-testid": "attachment-chip" }));
+    expect(
+      evaluateAttachmentReadyExpression(
+        [expectedName],
+        unlabeled,
+        undefined,
+        false,
+        undefined,
+        true,
+      ),
+    ).toBe(false);
+  });
+
+  test("exact attachment readiness proves file multiplicity without reusing one match", () => {
+    const document = new FakeDocument([
+      new FakeElement("div", { "data-testid": "unified-composer" }, [
+        new FakeInputElement([{ name: "same.md" }]),
+        new FakeElement("div", {
+          id: "prompt-textarea",
+          contenteditable: "true",
+          role: "textbox",
+        }),
+        new FakeElement("button", { "data-testid": "send-button" }),
+      ]),
+    ]);
+
+    expect(
+      evaluateAttachmentReadyExpression(
+        ["same.md", "same.md"],
+        document,
+        undefined,
+        false,
+        undefined,
+        true,
+      ),
+    ).toBe(false);
   });
 
   test("attachment binding fails closed when ChatGPT remounts the composer after upload", () => {
@@ -1206,22 +1306,47 @@ describe("post-upload protected-route binding", () => {
     expect(expression).not.toMatch(/\.click\(|dispatchClick|dispatchEvent|setAttribute/);
   });
 
-  function installDispatchGuard() {
+  function installDispatchGuard(exactPrompt?: string) {
     const composerBindingToken = "dispatch-race-guard-1";
     const composer = makeRouteComposer({ composerBindingToken, mode: "Pro" });
     const sendButton = composer.querySelector('[data-testid="send-button"]');
+    const editor = composer.querySelector('[contenteditable="true"]');
     const modeButton = composer.querySelector('[data-testid="effort-picker-button"]');
     expect(sendButton).not.toBeNull();
+    expect(editor).not.toBeNull();
     expect(modeButton).not.toBeNull();
     sendButton!.setAttribute("data-oracle-send-binding", composerBindingToken);
+    editor!.setAttribute("data-oracle-send-editor-binding", composerBindingToken);
+    if (exactPrompt !== undefined) editor!.setText(exactPrompt);
     const document = new FakeDocument([composer]);
+    document.setActiveElement(editor);
     document.setHitTarget(sendButton);
     const windowStub = new FakeWindow();
     const evaluate = (expression: string): unknown =>
-      new Function("document", "window", `return ${expression};`)(document, windowStub);
+      new Function(
+        "document",
+        "window",
+        "HTMLElement",
+        "HTMLInputElement",
+        "HTMLTextAreaElement",
+        "HTMLButtonElement",
+        "Node",
+        `return ${expression};`,
+      )(
+        document,
+        windowStub,
+        FakeElement,
+        FakeInputElement,
+        FakeTextAreaElement,
+        FakeButtonElement,
+        FakeElement,
+      );
 
     expect(evaluateDispatchBoundRouteProbe(document, composerBindingToken).verified).toBe(true);
-    const guard = buildGpt56SolProFinalDispatchGuard(undefined, composerBindingToken);
+    const guard = buildGpt56SolProFinalDispatchGuard(undefined, composerBindingToken, {
+      exactSubmission:
+        exactPrompt === undefined ? undefined : { prompt: exactPrompt, attachments: [] },
+    });
     const bindingPayloads: string[] = [];
     expect(guard.verdictBinding).toBeDefined();
     windowStub[guard.verdictBinding!.name] = (payload: string) => bindingPayloads.push(payload);
@@ -1238,6 +1363,7 @@ describe("post-upload protected-route binding", () => {
       composer,
       composerBindingToken,
       document,
+      editor: editor!,
       evaluate,
       guard,
       modeButton: modeButton!,
@@ -1280,6 +1406,35 @@ describe("post-upload protected-route binding", () => {
     expect(fixture.composer.getAttribute("data-oracle-send-composer-binding")).toBeNull();
     expect(fixture.document.listenerCount("click")).toBe(0);
     expect(fixture.windowStub.listenerCount("click")).toBe(0);
+  });
+
+  test("trusted-event guard binds the exact focused prompt, not a stale sibling editor", () => {
+    const fixture = installDispatchGuard("complete expected prompt");
+    fixture.editor.setText("truncated");
+    const stale = new FakeElement(
+      "div",
+      {
+        id: "prompt-textarea",
+        contenteditable: "true",
+        role: "textbox",
+        "data-hidden": "true",
+      },
+      [],
+      "complete expected prompt",
+    );
+    stale.parentElement = fixture.document.body;
+    fixture.document.body.children.unshift(stale);
+
+    const click = fixture.windowStub.dispatchDomEvent(
+      fixture.document,
+      "click",
+      fixture.sendButton,
+    );
+    expect(click.defaultPrevented).toBe(true);
+    expect(fixture.evaluate(fixture.guard.afterDispatchExpression!)).toMatchObject({
+      status: "blocked",
+      reason: "exact-prompt-changed",
+    });
   });
 
   test("only the final exact trusted click reaches application handlers and authorizes", () => {
@@ -1421,7 +1576,7 @@ describe("post-upload protected-route binding", () => {
     });
   });
 
-  test("an abandoned page guard expires and removes every owned page resource", () => {
+  test("an expired page guard remains fail-closed through the first late click", () => {
     const fixture = installDispatchGuard();
     expect(fixture.windowStub.listenerCount("click")).toBe(1);
     expect(fixture.document.listenerCount("click")).toBe(1);
@@ -1432,12 +1587,27 @@ describe("post-upload protected-route binding", () => {
     expect(
       fixture.guard.verdictBinding?.parsePayload(fixture.bindingPayloads[0] ?? ""),
     ).toMatchObject({ status: "blocked", reason: "dispatch-guard-expired" });
+    expect(fixture.windowStub.listenerCount("click")).toBe(1);
+    expect(fixture.document.listenerCount("click")).toBe(1);
+    expect(
+      fixture.windowStub.dispatchDomEvent(fixture.document, "click", fixture.sendButton)
+        .defaultPrevented,
+    ).toBe(true);
+    expect(fixture.evaluate(fixture.guard.immediatelyBeforeDispatchExpression!)).toMatchObject({
+      status: "blocked",
+      reason: "dispatch-guard-expired",
+    });
+    expect(() =>
+      fixture.guard.assertImmediatelyBeforeDispatchResult?.(
+        fixture.evaluate(fixture.guard.immediatelyBeforeDispatchExpression!),
+      ),
+    ).toThrow(/no longer armed/i);
+    // The stale guard retires only after it has consumed the complete first
+    // late click sequence, so a crashed controller cannot wedge manual use.
+    fixture.windowStub.expireGuard();
     expect(fixture.windowStub.listenerCount("click")).toBe(0);
     expect(fixture.document.listenerCount("click")).toBe(0);
     expect(fixture.sendButton.getAttribute("data-oracle-send-binding")).toBeNull();
     expect(fixture.composer.getAttribute("data-oracle-send-composer-binding")).toBeNull();
-    expect(fixture.evaluate(fixture.guard.afterDispatchExpression!)).toMatchObject({
-      status: "missing",
-    });
   });
 });

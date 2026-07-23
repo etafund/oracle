@@ -7,6 +7,7 @@ import {
   hasOtherActiveBrowserTabLeases,
   listOtherActiveBrowserTabLeaseTargetIds,
   normalizeMaxConcurrentTabs,
+  type BrowserTabLeaseRecord,
 } from "../../src/browser/tabLeaseRegistry.js";
 
 describe("tabLeaseRegistry", () => {
@@ -126,6 +127,118 @@ describe("tabLeaseRegistry", () => {
       });
 
       await fresh.release();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("reclaims a lease when a live numeric pid belongs to a new process generation", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-tab-leases-"));
+    try {
+      const stale = await acquireBrowserTabLease(
+        dir,
+        { maxConcurrentTabs: 1, timeoutMs: 500, sessionId: "reused-pid-owner" },
+        {
+          pid: 44_444,
+          isProcessAlive: () => true,
+          readProcessStartTicks: () => "generation-a",
+        },
+      );
+
+      const fresh = await acquireBrowserTabLease(
+        dir,
+        { maxConcurrentTabs: 1, timeoutMs: 500, sessionId: "fresh-owner" },
+        {
+          pid: 55_555,
+          isProcessAlive: () => true,
+          readProcessStartTicks: (pid) => (pid === 44_444 ? "generation-b" : "generation-fresh"),
+        },
+      );
+
+      const registry = JSON.parse(
+        await readFile(path.join(dir, "oracle-tab-leases.json"), "utf8"),
+      ) as { leases: Array<{ id: string; sessionId?: string; startTicks?: string | null }> };
+      expect(registry.leases).toEqual([
+        expect.objectContaining({
+          id: fresh.id,
+          sessionId: "fresh-owner",
+          startTicks: "generation-fresh",
+        }),
+      ]);
+      expect(registry.leases.some((lease) => lease.id === stale.id)).toBe(false);
+      await fresh.release();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("lease metadata updates cannot overwrite immutable owner generation", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-tab-leases-"));
+    try {
+      const lease = await acquireBrowserTabLease(
+        dir,
+        { maxConcurrentTabs: 1, timeoutMs: 500, sessionId: "owner" },
+        {
+          pid: 88_888,
+          isProcessAlive: () => true,
+          readProcessStartTicks: () => "generation-original",
+        },
+      );
+      await lease.update({
+        chromeTargetId: "target-1",
+        pid: 99_999,
+        startTicks: "generation-forged",
+        createdAt: "1970-01-01T00:00:00.000Z",
+      } as never);
+
+      const registry = JSON.parse(
+        await readFile(path.join(dir, "oracle-tab-leases.json"), "utf8"),
+      ) as { leases: BrowserTabLeaseRecord[] };
+      expect(registry.leases[0]).toMatchObject({
+        pid: 88_888,
+        startTicks: "generation-original",
+        chromeTargetId: "target-1",
+      });
+      expect(registry.leases[0]?.createdAt).not.toBe("1970-01-01T00:00:00.000Z");
+      await lease.release();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test.each([
+    { label: "same generation", recorded: "generation-a", current: "generation-a" },
+    { label: "unavailable current generation", recorded: "generation-a", current: null },
+    { label: "legacy missing generation", recorded: null, current: "generation-b" },
+  ])("retains a live lease fail-closed for $label", async ({ recorded, current }) => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-tab-leases-"));
+    try {
+      const owner = await acquireBrowserTabLease(
+        dir,
+        { maxConcurrentTabs: 1, timeoutMs: 500, sessionId: "owner" },
+        {
+          pid: 66_666,
+          isProcessAlive: () => true,
+          readProcessStartTicks: () => recorded,
+        },
+      );
+
+      await expect(
+        acquireBrowserTabLease(
+          dir,
+          { maxConcurrentTabs: 1, timeoutMs: 100, pollMs: 50, sessionId: "blocked" },
+          {
+            pid: 77_777,
+            isProcessAlive: () => true,
+            readProcessStartTicks: (pid) => (pid === 66_666 ? current : "blocked-generation"),
+          },
+        ),
+      ).rejects.toMatchObject({
+        name: "BrowserTabLeaseQueueTimeoutError",
+        details: { code: "browser_lock_timeout", retryable: true },
+      });
+
+      await owner.release();
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

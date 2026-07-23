@@ -1,13 +1,26 @@
 import http from "node:http";
 import { createReadStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
+import { TextDecoder } from "node:util";
 import os from "node:os";
 import path from "node:path";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdtemp, rm, mkdir, readFile, writeFile, stat, realpath } from "node:fs/promises";
 import chalk from "chalk";
-import type { BrowserAttachment, BrowserLogger, CookieParam } from "../browser/types.js";
+import type {
+  BrowserAttachment,
+  BrowserLogger,
+  BrowserPromptFallbackReason,
+  BrowserSubmissionProvenance,
+  CookieParam,
+} from "../browser/types.js";
+import {
+  AUTO_PROMPT_FALLBACK_EQUIVALENCE_ALGORITHM,
+  isAutoPromptFallbackWithinGpt56SolBudget,
+  verifyAutoInlineToUploadFallback,
+  verifyAutoUploadToInlineFallback,
+} from "../browser/prompt.js";
 import { runBrowserMode } from "../browserMode.js";
 import type { BrowserRunResult } from "../browserMode.js";
 import type {
@@ -18,6 +31,7 @@ import type {
   RemoteAttachmentIntegrityEntry,
   RemoteAttachmentPayload,
   RemoteBrowserRecoveryRequest,
+  RemoteRunRecoveryHint,
   RemoteRunPayload,
   RemoteRunEvent,
   RemoteRunProvenanceSummary,
@@ -27,9 +41,16 @@ import type {
 import {
   MAX_REMOTE_ARTIFACT_BYTES,
   REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
+  REMOTE_BROWSER_RECOVERY_CLAIM_HEADERS,
+  REMOTE_BROWSER_RECOVERY_CLAIM_LOOKUP_PATH,
+  REMOTE_BROWSER_RECOVERY_CLAIM_ROUTE_HEADER,
+  REMOTE_BROWSER_RECOVERY_CLAIM_ROUTE_HEADER_VALUE,
+  REMOTE_BROWSER_RECOVERY_CLAIM_SCHEMA,
   REMOTE_BROWSER_RECOVERY_PATH,
   REMOTE_BROWSER_RECOVERY_PROTOCOL,
+  REMOTE_BROWSER_RUN_SCHEMA,
   REMOTE_BROWSER_RUN_PATH,
+  REMOTE_SESSION_RECOVERY_STAGES,
 } from "./types.js";
 import {
   ACCOUNT_QUARANTINE_ERROR_CLASS,
@@ -43,9 +64,8 @@ import { getCliVersion, getOracleBuildInfo, type OracleBuildInfo } from "../vers
 import { getOracleHomeDir } from "../oracleHome.js";
 import {
   findRunningChromeDebugTargetForProfile,
-  isProcessAlive,
-  readChromePid,
   readDevToolsPort,
+  verifyChromeDebugTargetOwner,
   verifyDevToolsReachable,
 } from "../browser/profileState.js";
 import { normalizeChatgptUrl } from "../browser/utils.js";
@@ -53,10 +73,13 @@ import { estimateTokenCount } from "../browser/utils.js";
 import { resolveBrowserConfig } from "../browser/config.js";
 import { getBrowserCleanupTaint, type BrowserCleanupTaint } from "../browser/index.js";
 import { isGpt56SolModelLabel } from "../browser/actions/thinkingTime.js";
+import { readBoundedRegularFile } from "../browser/actions/attachmentDataTransfer.js";
 import {
+  buildPromptRecoveryOwnershipPreview,
   PROMPT_DOM_IDENTITY_ALGORITHM,
   PROMPT_RECOVERY_PREVIEW_ALGORITHM,
 } from "../browser/promptDomMatch.js";
+import { computePromptSha256 } from "../browser/actions/captureBinding.js";
 import type { SubmittedMessageBindingQuality } from "../browser/actions/captureBinding.js";
 import { countActiveBrowserTabLeases } from "../browser/tabLeaseRegistry.js";
 import {
@@ -73,7 +96,16 @@ import {
   sanitizeRemoteBrowserRecoveryRequestForHost,
   sanitizeRemoteRunPayloadForHost,
 } from "./payload_sanitize.js";
-import { buildRemoteRunRecoveryHint, verifyRemoteRunRecoveryCapability } from "./recovery.js";
+import {
+  buildRemoteRunRecoveryHint,
+  sanitizeRemoteRunRecoveryHint,
+  verifyRemoteRunRecoveryCapability,
+} from "./recovery.js";
+import {
+  RecoveryClaimStore,
+  type AuthenticatedRecoveryClaimInput,
+  type RecoveryClaimBinding,
+} from "./recoveryClaimStore.js";
 import {
   computeFileSha256,
   sanitizeArtifactFilename,
@@ -146,6 +178,13 @@ export interface RemoteServerOptions {
    * supervision can intervene. Also via ORACLE_SERVE_WEDGE_AFTER_MS.
    */
   wedgeAfterMs?: number;
+  /** Override the durable recovery-claim spool root (primarily for isolated tests). */
+  recoveryClaimStoreDir?: string;
+  /**
+   * After a post-submit client disconnect, keep only enough browser time to
+   * publish the exact conversation/message recovery checkpoint.
+   */
+  recoveryCheckpointGraceMs?: number;
 }
 
 interface RemoteServerDeps {
@@ -226,8 +265,23 @@ const REMOTE_ARTIFACT_TTL_MS = 30 * 60 * 1000;
 // RemoteServerOptions.maxRunRequestBodyBytes or ORACLE_SERVE_MAX_BODY_BYTES.
 export const MAX_RUN_REQUEST_BODY_BYTES = 100 * 1024 * 1024;
 export const RUN_BODY_READ_DEADLINE_MS = 60_000;
+export const DEFAULT_RECOVERY_CHECKPOINT_GRACE_MS = 75_000;
+const MAX_RECOVERY_CHECKPOINT_GRACE_MS = 5 * 60_000;
 
-type RequestBodyErrorKind = "too_large" | "timed_out" | "aborted";
+type RequestBodyErrorKind = "too_large" | "timed_out" | "aborted" | "invalid_utf8";
+
+interface RunRecoveryClaimState {
+  binding: RecoveryClaimBinding;
+  auth: AuthenticatedRecoveryClaimInput;
+  expiresAt: string;
+  previewByHash: ReadonlyMap<string, string>;
+  readyHint: RemoteRunRecoveryHint | null;
+  candidateHint: RemoteRunRecoveryHint | null;
+  publishPromise: Promise<RemoteRunRecoveryHint | null> | null;
+  publishError: unknown;
+  clientGone: boolean;
+  graceTimer: ReturnType<typeof setTimeout> | null;
+}
 
 class RequestBodyError extends Error {
   readonly kind: RequestBodyErrorKind;
@@ -247,6 +301,7 @@ const ARTIFACT_CAPABILITIES: RemoteArtifactCapabilities = {
     protocol: REMOTE_BROWSER_RECOVERY_PROTOCOL,
     promptPreviewAlgorithm: PROMPT_RECOVERY_PREVIEW_ALGORITHM,
     promptDomIdentityAlgorithm: PROMPT_DOM_IDENTITY_ALGORITHM,
+    durableClaimLookup: true,
   },
 };
 
@@ -279,7 +334,7 @@ export async function probeAttachTarget(params: {
   fixedPort?: number;
   probe?: typeof verifyDevToolsReachable;
   /** Test seam: override the ps-based process-identity fallback used on the
-   * attach path (see `checkAttachTargetOwner`) instead of shelling out. */
+   * attach path instead of shelling out. */
   findRunningTarget?: typeof findRunningChromeDebugTargetForProfile;
 }): Promise<AttachTargetProbe> {
   const probedAt = new Date().toISOString();
@@ -314,7 +369,19 @@ export async function probeAttachTarget(params: {
       probedAt,
     };
   }
-  const ownerOk = await checkAttachTargetOwner(params.profileDir, port, params.findRunningTarget);
+  let ownerOk: boolean | null = null;
+  if (params.profileDir) {
+    const owner = await verifyChromeDebugTargetOwner(params.profileDir, port, {
+      allowProcessDiscovery: true,
+      findRunningTarget: params.findRunningTarget,
+    }).catch(() => null);
+    // A structured rejection is authoritative and fail-closed. In
+    // particular, a listener is not an attachable target merely because it
+    // answers CDP: its exact profile/port argv and PID generation must match.
+    // Preserve null only for an unconfigured profile or an exceptional probe
+    // failure where no structured ownership verdict exists.
+    ownerOk = owner === null ? null : owner.ok;
+  }
   if (ownerOk === false) {
     return {
       ok: false,
@@ -339,76 +406,6 @@ export async function probeAttachTarget(params: {
  */
 function attachTargetChromeReachable(probe: AttachTargetProbe): boolean {
   return probe.ok || probe.reason === "attach-target-owner-mismatch";
-}
-
-/**
- * Best-effort verification that the DevTools endpoint belongs to the Chrome
- * recorded for this profile (split-brain / rogue-listener defense):
- * - the profile's recorded DevToolsActivePort must agree with the probed
- *   port when both exist;
- * - a recorded chrome.pid must still be alive, and (on Linux) its command
- *   line must reference this profile directory; when no chrome.pid was
- *   recorded (the attach-only topology never writes one — see
- *   oracle-router-t38), fall back to a live `ps`-based process-table lookup
- *   keyed on this profile's --user-data-dir so the check has a real signal
- *   to evaluate on that path too, instead of only ever seeing "unknown".
- * Returns null ("unverified") when ownership cannot be established (no
- * recorded state, no matching running process, or platform without
- * readable process info) — callers must treat this as distinct from a
- * confirmed match; a definitive false always means "do not attach".
- */
-async function checkAttachTargetOwner(
-  profileDir: string | undefined,
-  port: number,
-  findRunningTarget: typeof findRunningChromeDebugTargetForProfile = findRunningChromeDebugTargetForProfile,
-): Promise<boolean | null> {
-  if (!profileDir) {
-    return null;
-  }
-  try {
-    const recordedPort = await readDevToolsPort(profileDir).catch(() => null);
-    if (recordedPort !== null && recordedPort !== port) {
-      return false;
-    }
-    const pid = await readChromePid(profileDir).catch(() => null);
-    if (pid !== null) {
-      if (!isProcessAlive(pid)) {
-        return false;
-      }
-      if (process.platform === "linux") {
-        const cmdline = await readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => null);
-        if (cmdline === null) {
-          return null;
-        }
-        return cmdline.includes(profileDir);
-      }
-      return null;
-    }
-    // Attach-only topology: nothing (yet) writes chrome.pid for the
-    // operator-launched Chrome this worker attaches to, so the owner check
-    // would otherwise always resolve "unknown" here and never be able to
-    // fire (oracle-router-t38: a structurally inert discriminator is worse
-    // than none, because it reads as verified when it never ran). Fall back
-    // to a live process-table lookup keyed on this profile's
-    // --user-data-dir so attach-only workers get a real identity signal
-    // too, not just port+reachability. `findRunningTarget` already confirms
-    // the command line references both a chrome/chromium binary and this
-    // profile's user-data-dir, so a port match plus a final liveness check
-    // is sufficient here (no redundant /proc/cmdline re-check needed).
-    const discovered = await findRunningTarget(profileDir).catch(() => null);
-    if (discovered === null) {
-      return null;
-    }
-    if (discovered.port !== port) {
-      // A Chrome process for this profile exists, but not on the port we
-      // probed: something else is answering on our attach port. That is
-      // exactly the split-brain shape this check exists to catch.
-      return false;
-    }
-    return isProcessAlive(discovered.pid);
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -512,6 +509,12 @@ export async function createRemoteServer(
     tokenFile: options.tokenFile,
     token: options.token,
   });
+  const recoveryClaimStore = options.recoveryClaimStoreDir
+    ? new RecoveryClaimStore<RemoteRunRecoveryHint>({ rootDir: options.recoveryClaimStoreDir })
+    : new RecoveryClaimStore<RemoteRunRecoveryHint>();
+  const recoveryCheckpointGraceMs = resolveRecoveryCheckpointGraceMs(
+    options.recoveryCheckpointGraceMs,
+  );
   // Resolve the baseline browser config this worker will enforce on every
   // run (payloads are sanitized and cannot reintroduce these keys) and
   // refuse to start if any fleet-safety invariant would be violated.
@@ -532,14 +535,22 @@ export async function createRemoteServer(
   };
   assertFleetSafeServeBrowserConfig(effectiveRunConfig);
 
-  // Fleet trust boundary: the set of browser model labels this worker will
-  // admit. Baseline-derived (this worker's own desiredModel) so a future
-  // non-ChatGPT worker enforces its own baseline without a code change;
-  // ORACLE_SERVE_ALLOWED_MODEL_LABELS overrides with explicit exact labels.
+  // Fleet trust boundary: this serve implementation is fixed to GPT-5.6 Sol
+  // with Pro mode. Refuse startup if a stale override attempts to widen that
+  // set; silently remapping an explicitly allowlisted legacy model would make
+  // request and terminal provenance disagree.
   const serveAllowedModelLabels = resolveServeAllowedModelLabels(
     baselineBrowserConfig.desiredModel,
     process.env,
   );
+  const unsupportedServeModelLabels = serveAllowedModelLabels.filter(
+    (label) => label.trim().toLowerCase() !== "pro" && !isGpt56SolModelLabel(label),
+  );
+  if (unsupportedServeModelLabels.length > 0) {
+    throw new Error(
+      `oracle serve only supports GPT-5.6 Sol + Pro; remove unsupported ORACLE_SERVE_ALLOWED_MODEL_LABELS entries: ${unsupportedServeModelLabels.join(", ")}`,
+    );
+  }
 
   // Attach-only / fail-closed substrate probing. Manual-login serve shares
   // one operator-owned Chrome between workers, so it is attach-only by
@@ -566,14 +577,12 @@ export async function createRemoteServer(
     });
     lastAttachProbeAtMs = Date.now();
     // Surface owner-identity state on transitions rather than staying
-    // silent: `ownerOk: null` ("unverified") must never read as "verified" —
-    // log it distinctly from both true and false so an operator watching
-    // logs can tell the split-brain discriminator is actually unresolved,
-    // not passing.
+    // silent: `ownerOk: null` (verification could not execute) must never
+    // read as "verified" — log it distinctly from both true and false.
     if (lastAttachProbe.ok && lastAttachProbe.ownerOk !== lastLoggedOwnerOk) {
       if (lastAttachProbe.ownerOk === null) {
         logger(
-          "[serve] Attach target owner identity UNVERIFIED (no chrome.pid and no matching process found for this profile); relying on port+reachability only.",
+          "[serve] Attach target owner identity UNVERIFIED (ownership verifier unavailable); relying on port+reachability only.",
         );
       } else if (lastAttachProbe.ownerOk === true) {
         logger("[serve] Attach target owner identity verified.");
@@ -797,6 +806,15 @@ export async function createRemoteServer(
     "X-Oracle-Account-Id": accountId,
     ...REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
   });
+  const recoveryClaimLookupHeaders = (
+    originRunId: string,
+    originLaneId: string | null,
+  ): Record<string, string> => ({
+    ...identityHeaders(originRunId),
+    [REMOTE_BROWSER_RECOVERY_CLAIM_ROUTE_HEADER]: REMOTE_BROWSER_RECOVERY_CLAIM_ROUTE_HEADER_VALUE,
+    ...(originLaneId ? { [REMOTE_BROWSER_RECOVERY_CLAIM_HEADERS.originLaneId]: originLaneId } : {}),
+    "Cache-Control": "no-store",
+  });
 
   /**
    * Terminal safety invariant for remote workers: once a run is classified
@@ -878,6 +896,32 @@ export async function createRemoteServer(
     // handler consults it so pre-auth exceptions never leak lane/account
     // identity headers to unauthenticated callers.
     let requestAuthorized = false;
+    // Created only for accepted ordinary single-turn runs. Kept outside the
+    // inner browser try so response-header failures and other outer exceptions
+    // cannot strand a durable pending record until its TTL expires.
+    let requestRecoveryClaim: RunRecoveryClaimState | null = null;
+    const settleRequestRecoveryClaim = async (): Promise<void> => {
+      const claim = requestRecoveryClaim;
+      if (!claim) return;
+      if (claim.graceTimer) {
+        clearTimeout(claim.graceTimer);
+        claim.graceTimer = null;
+      }
+      await claim.publishPromise?.catch(() => undefined);
+      try {
+        const terminal = await recoveryClaimStore.markUnrecoverable(claim.auth);
+        if (terminal.status === "ready") {
+          const ready = sanitizeRemoteRunRecoveryHint(terminal.carrier);
+          if (ready) claim.readyHint = ready;
+        }
+      } catch (error) {
+        logger(
+          `[serve] Recovery-claim terminalization failed for run ${claim.binding.originRunId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    };
     // Single-flight ownership: only the /runs request that actually flipped
     // `admitting`/`busy` may reset them from the outermost failure handler.
     // A throwing read-path handler (/status, /health, /ready, artifacts) must
@@ -958,6 +1002,140 @@ export async function createRemoteServer(
         const readiness = await buildReadiness();
         res.writeHead(readiness.statusCode, { "Content-Type": "application/json" });
         res.end(JSON.stringify(readiness.body));
+        return;
+      }
+
+      if (req.method === "GET" && req.url === REMOTE_BROWSER_RECOVERY_CLAIM_LOOKUP_PATH) {
+        if (!isAuthorizedBearer(req.headers.authorization, authToken)) {
+          res.writeHead(401, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+          res.end(JSON.stringify({ error: "unauthorized" }));
+          return;
+        }
+        if (!hasCompatibleRemoteRecoveryAdmissionHeaders(req.headers)) {
+          res.writeHead(426, {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+            ...REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
+          });
+          res.end(JSON.stringify({ error: "remote_recovery_protocol_incompatible" }));
+          return;
+        }
+
+        const claimKey = readRecoveryClaimKey(
+          req.headers[REMOTE_BROWSER_RECOVERY_CLAIM_HEADERS.claimKey],
+        );
+        const requestedAccountId = readSingleHeader(
+          req.headers[REMOTE_BROWSER_RECOVERY_CLAIM_HEADERS.accountId],
+        );
+        const originRunId = readSingleHeader(
+          req.headers[REMOTE_BROWSER_RECOVERY_CLAIM_HEADERS.originRunId],
+        );
+        const originLaneId = readSingleHeader(
+          req.headers[REMOTE_BROWSER_RECOVERY_CLAIM_HEADERS.originLaneId],
+        );
+        const promptPreviewSha256Candidates = readRecoveryClaimCandidateHashes(
+          req.headers[REMOTE_BROWSER_RECOVERY_CLAIM_HEADERS.promptPreviewSha256],
+        );
+        const responseRunId = originRunId ?? "invalid-recovery-claim";
+        const responseHeaders = recoveryClaimLookupHeaders(responseRunId, originLaneId);
+        const respond = (
+          statusCode: number,
+          body: Record<string, unknown>,
+          extraHeaders: Record<string, string> = {},
+        ): void => {
+          res.writeHead(statusCode, {
+            "Content-Type": "application/json",
+            ...responseHeaders,
+            ...extraHeaders,
+          });
+          res.end(JSON.stringify(body));
+        };
+
+        // Every coordinate mismatch has the same observable result. The bearer
+        // token proves the caller may query this worker, but only the complete
+        // account/run/lane/candidate/key binding can reveal claim state.
+        if (
+          !claimKey ||
+          !requestedAccountId ||
+          requestedAccountId !== accountId ||
+          !originRunId ||
+          !originLaneId ||
+          !promptPreviewSha256Candidates
+        ) {
+          respond(404, { error: "recovery_claim_not_found" });
+          return;
+        }
+
+        try {
+          const binding: RecoveryClaimBinding = {
+            accountId,
+            originRunId,
+            originLaneId,
+            promptPreviewSha256Candidates,
+          };
+          const claim = await recoveryClaimStore.lookup({ ...binding, claimKey });
+          if (claim.status === "not_found") {
+            respond(404, { error: "recovery_claim_not_found" });
+            return;
+          }
+          if (claim.status === "pending") {
+            respond(425, { error: "recovery_claim_pending" }, { "Retry-After": "1" });
+            return;
+          }
+          if (claim.status === "unrecoverable") {
+            respond(410, { error: "recovery_claim_unrecoverable" });
+            return;
+          }
+          const recovery = sanitizeRemoteRunRecoveryHint(claim.carrier);
+          if (
+            !recovery ||
+            recovery.originRunId !== originRunId ||
+            recovery.promptPreviewSha256 !== claim.promptPreviewSha256 ||
+            !REMOTE_SESSION_RECOVERY_STAGES.includes(
+              recovery.stage as (typeof REMOTE_SESSION_RECOVERY_STAGES)[number],
+            )
+          ) {
+            respond(500, { error: "recovery_claim_invalid" });
+            return;
+          }
+          respond(200, {
+            schema: REMOTE_BROWSER_RECOVERY_CLAIM_SCHEMA,
+            status: "ready",
+            originRunId,
+            originLaneId: claim.originLaneId,
+            recovery,
+          });
+          return;
+        } catch {
+          // Corrupt/unreadable durable state is an infrastructure failure, not a
+          // not-found verdict; hiding it as 404 would stop the client's bounded
+          // retry loop and make a transient spool failure look authoritative.
+          respond(500, { error: "recovery_claim_unavailable" });
+          return;
+        }
+      }
+
+      if (req.method === "OPTIONS" && req.url === REMOTE_BROWSER_RECOVERY_CLAIM_LOOKUP_PATH) {
+        if (!isAuthorizedBearer(req.headers.authorization, authToken)) {
+          res.writeHead(401, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "unauthorized" }));
+          return;
+        }
+        if (!hasCompatibleRemoteRecoveryAdmissionHeaders(req.headers)) {
+          res.writeHead(426, {
+            "Content-Type": "application/json",
+            ...REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
+          });
+          res.end(JSON.stringify({ error: "remote_recovery_protocol_incompatible" }));
+          return;
+        }
+        res.writeHead(204, {
+          ...REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
+          [REMOTE_BROWSER_RECOVERY_CLAIM_ROUTE_HEADER]:
+            REMOTE_BROWSER_RECOVERY_CLAIM_ROUTE_HEADER_VALUE,
+          "Cache-Control": "no-store",
+        });
+        res.end();
         return;
       }
 
@@ -1158,8 +1336,10 @@ export async function createRemoteServer(
         | {
             prompt: string;
             attachments: BrowserAttachment[];
+            reason: BrowserPromptFallbackReason;
           }
         | undefined;
+      let verifiedFallbackReason: BrowserPromptFallbackReason | null = null;
       let uploadIntegrity: RemoteUploadIntegrity | null = null;
       try {
         try {
@@ -1192,6 +1372,7 @@ export async function createRemoteServer(
             // recovery branch below never invokes runBrowser and has no prompt
             // or attachments to submit.
             payload = {
+              schema: REMOTE_BROWSER_RUN_SCHEMA,
               prompt: "",
               attachments: [],
               browserConfig: recoveryRequest.browserConfig,
@@ -1212,10 +1393,81 @@ export async function createRemoteServer(
             // Peer is gone; nothing to answer, but the refusal is still logged
             // and the admission slot is released by the finally below.
             logRefusal("client_disconnected", 0);
+          } else if (
+            error instanceof Error &&
+            /remote attachment .*declared (?:size|digest)|declared (?:size|digest) does not match/i.test(
+              error.message,
+            )
+          ) {
+            refuseRun(400, "attachment_size_mismatch");
           } else {
             refuseRun(400, "invalid_request");
           }
           return;
+        }
+        if (!payload) {
+          refuseRun(400, "invalid_request");
+          return;
+        }
+        if (!isRecoveryRequest && payload.fallbackSubmission) {
+          const fallback = payload.fallbackSubmission;
+          const policy = payload.fallbackPolicy;
+          const allFallbackFiles = [...payload.attachments, ...fallback.attachments];
+          const namesAreExactAndUnique = (() => {
+            const names = new Set<string>();
+            for (const attachment of allFallbackFiles) {
+              if (
+                attachment.generatedBundle ||
+                attachment.fileName !== attachment.displayPath ||
+                names.has(attachment.fileName.toLowerCase())
+              ) {
+                return false;
+              }
+              names.add(attachment.fileName.toLowerCase());
+            }
+            return true;
+          })();
+          const uploadToInline =
+            payload.attachments.length > 0 &&
+            fallback.attachments.length === 0 &&
+            verifyAutoUploadToInlineFallback({
+              primaryPrompt: payload.prompt,
+              fallbackPrompt: fallback.prompt,
+              attachments: payload.attachments.map((attachment) => ({
+                displayPath: attachment.displayPath,
+                content: Buffer.from(attachment.contentBase64, "base64"),
+              })),
+            });
+          const inlineToUpload =
+            payload.attachments.length === 0 &&
+            fallback.attachments.length > 0 &&
+            verifyAutoInlineToUploadFallback({
+              primaryPrompt: payload.prompt,
+              fallbackPrompt: fallback.prompt,
+              attachments: fallback.attachments.map((attachment) => ({
+                displayPath: attachment.displayPath,
+                content: Buffer.from(attachment.contentBase64, "base64"),
+              })),
+            });
+          const submittedInlinePrompt = uploadToInline ? fallback.prompt : payload.prompt;
+          const policyAuthorized = Boolean(
+            policy &&
+            policy.attachmentsPolicy === "auto" &&
+            policy.bundleRequested === false &&
+            policy.model === "gpt-5.6-sol" &&
+            isAutoPromptFallbackWithinGpt56SolBudget(submittedInlinePrompt, policy.maxInputTokens),
+          );
+          if (
+            !policyAuthorized ||
+            !namesAreExactAndUnique ||
+            (!uploadToInline && !inlineToUpload)
+          ) {
+            refuseRun(400, "invalid_prompt_fallback");
+            return;
+          }
+          verifiedFallbackReason = uploadToInline
+            ? "auto-upload-timeout-to-inline"
+            : "auto-inline-too-large-to-upload";
         }
         if (attachOnly || isRecoveryRequest) {
           // This probe is intentionally after recovery capability/account
@@ -1228,6 +1480,7 @@ export async function createRemoteServer(
               "browser_unavailable",
               {
                 reason: attachProbeForRun.reason,
+                errorClass: "capacity_busy",
                 retryable: true,
               },
               { "Retry-After": "30" },
@@ -1237,25 +1490,23 @@ export async function createRemoteServer(
         }
 
         if (!isRecoveryRequest) {
-          // FLEET MODEL GATE (authoritative trust boundary). Validate the
-          // effective desired model label BEFORE staging attachments or flipping
-          // `busy`, so a disallowed model is refused without consuming a browser
-          // slot or touching the filesystem. The effective label is the payload's
-          // desiredModel, falling back to this worker's baseline. No silent
-          // remap/alias: a disallowed label fails closed with an actionable error.
-          const effectiveModelLabel =
-            typeof payload.browserConfig?.desiredModel === "string" &&
-            payload.browserConfig.desiredModel.trim().length > 0
-              ? payload.browserConfig.desiredModel
-              : baselineBrowserConfig.desiredModel;
-          if (!isServeModelLabelAllowed(effectiveModelLabel, serveAllowedModelLabels)) {
+          // FLEET MODEL GATE (authoritative trust boundary). The worker target
+          // is fixed: GPT-5.6 Sol with Pro mode. Legacy absent/bare-Pro requests
+          // name that same target, but are canonicalized to the exact protected
+          // Sol label before runBrowser so the atomic guard cannot be skipped.
+          const requestedModelLabel = payload.browserConfig?.desiredModel;
+          const normalizedRequestedModel = requestedModelLabel?.trim().toLowerCase();
+          const legacyDefaultModel =
+            requestedModelLabel === undefined || normalizedRequestedModel === "pro";
+          if (!legacyDefaultModel && !isGpt56SolModelLabel(requestedModelLabel)) {
             refuseRun(422, "model_not_allowed", {
               errorClass: "model_not_allowed",
               retryable: false,
-              message: `this browser worker serves only GPT-5.6 Sol + Pro; requested model label "${effectiveModelLabel ?? ""}" is not allowed. Drop --model (the default resolves to GPT-5.6 Sol) or use --engine api for API models.`,
+              message: `this browser worker serves only GPT-5.6 Sol + Pro; requested model label "${requestedModelLabel ?? ""}" is not allowed. Drop --model (the default resolves to GPT-5.6 Sol) or use --engine api for API models.`,
             });
             return;
           }
+          payload.browserConfig.desiredModel = "GPT-5.6 Sol";
 
           // FLEET MODEL-STRATEGY GATE (same trust boundary, evaluated BEFORE
           // staging attachments or flipping `busy`). modelStrategy is
@@ -1265,11 +1516,13 @@ export async function createRemoteServer(
           // currently has loaded) and slip past the model-label gate above with
           // the baseline "Pro" desiredModel — submitting UNVERIFIED, since the
           // downstream atomic-verification guard only trips for the Sol label.
-          // Require "select". Absent/undefined stays allowed (defaults to
-          // "select" downstream). No silent remap: a disallowed strategy fails
-          // closed with an actionable error.
+          // Require "select". An absent legacy value is canonicalized; every
+          // explicit non-select strategy fails closed.
           const requestedModelStrategy = payload.browserConfig?.modelStrategy;
-          if (!isServeModelStrategyAllowed(requestedModelStrategy)) {
+          if (
+            requestedModelStrategy !== undefined &&
+            !isServeModelStrategyAllowed(requestedModelStrategy)
+          ) {
             refuseRun(422, "model_strategy_not_allowed", {
               errorClass: "model_strategy_not_allowed",
               retryable: false,
@@ -1277,6 +1530,20 @@ export async function createRemoteServer(
             });
             return;
           }
+          payload.browserConfig.modelStrategy = "select";
+          if (
+            payload.browserConfig.thinkingTime !== undefined &&
+            payload.browserConfig.thinkingTime !== "extended"
+          ) {
+            refuseRun(422, "model_mode_not_allowed", {
+              errorClass: "model_mode_not_allowed",
+              retryable: false,
+              message:
+                'this browser worker requires thinkingTime "extended" so GPT-5.6 Sol + Pro is atomically verified before submit',
+            });
+            return;
+          }
+          payload.browserConfig.thinkingTime = "extended";
 
           // Stage attachments during admission (before `busy` flips) so a
           // truncated/corrupted upload is refused with a typed error instead of
@@ -1290,11 +1557,16 @@ export async function createRemoteServer(
               payloadAttachments: payload.attachments,
               dir: attachmentDir,
               fallbackLabel: "attachment",
+              preserveNames: verifiedFallbackReason !== null,
             });
             attachments = staged.attachments;
             uploadIntegrity = {
               attachments: staged.manifest,
-              preSendDomCheck: "composer-chips-by-stored-name",
+              submittedBranch: null,
+              submittedTransport: null,
+              fallbackUsed: null,
+              fallbackReason: null,
+              preSendDomCheck: null,
             };
 
             if (payload.fallbackSubmission) {
@@ -1304,10 +1576,12 @@ export async function createRemoteServer(
                 payloadAttachments: payload.fallbackSubmission.attachments,
                 dir: fallbackAttachmentDir,
                 fallbackLabel: "fallback-attachment",
+                preserveNames: true,
               });
               fallbackSubmission = {
                 prompt: payload.fallbackSubmission.prompt,
                 attachments: stagedFallback.attachments,
+                reason: verifiedFallbackReason!,
               };
               uploadIntegrity.fallbackAttachments = stagedFallback.manifest;
             }
@@ -1324,6 +1598,64 @@ export async function createRemoteServer(
           }
         }
 
+        if (!isRecoveryRequest && (payload.options.followUpPrompts?.length ?? 0) === 0) {
+          const previewByHash = new Map<string, string>();
+          for (const candidate of [payload.prompt, payload.fallbackSubmission?.prompt]) {
+            if (typeof candidate !== "string") continue;
+            const preview = buildPromptRecoveryOwnershipPreview(candidate);
+            previewByHash.set(computePromptSha256(preview), preview);
+          }
+          const promptPreviewSha256Candidates = [...previewByHash.keys()].sort();
+          const binding: RecoveryClaimBinding = {
+            accountId,
+            originRunId: runId,
+            originLaneId: laneId,
+            promptPreviewSha256Candidates,
+          };
+          try {
+            const pending = await recoveryClaimStore.createPending(binding);
+            if (!pending.created) {
+              throw new Error("A durable recovery claim already exists for this fresh run id.");
+            }
+            const auth: AuthenticatedRecoveryClaimInput = {
+              ...binding,
+              claimKey: pending.claimKey,
+            };
+            requestRecoveryClaim = {
+              binding,
+              auth,
+              expiresAt: pending.expiresAt,
+              previewByHash,
+              readyHint: null,
+              candidateHint: null,
+              publishPromise: null,
+              publishError: null,
+              clientGone: false,
+              graceTimer: null,
+            };
+          } catch (error) {
+            if (runDir) {
+              await rm(runDir, { recursive: true, force: true }).catch(() => undefined);
+              runDir = null;
+            }
+            logger(
+              `[serve] Recovery-claim admission failed for run ${runId}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+            refuseRun(
+              503,
+              "recovery_claim_unavailable",
+              {
+                errorClass: "capacity_busy",
+                retryable: true,
+              },
+              { "Retry-After": "15" },
+            );
+            return;
+          }
+        }
+
         // Admission checks passed: hand the single-flight slot to the browser
         // stage before releasing the admitting stage (no gap in coverage).
         busy = true;
@@ -1333,7 +1665,16 @@ export async function createRemoteServer(
         admitting = false;
       }
 
-      res.writeHead(200, { "Content-Type": "application/x-ndjson", ...identityHeaders(runId) });
+      res.writeHead(200, {
+        "Content-Type": "application/x-ndjson",
+        "Cache-Control": "no-store",
+        ...identityHeaders(runId),
+        ...(requestRecoveryClaim
+          ? {
+              [REMOTE_BROWSER_RECOVERY_CLAIM_HEADERS.claimKey]: requestRecoveryClaim.auth.claimKey,
+            }
+          : {}),
+      });
       // Flush immediately: callers correlate on X-Oracle-Run-Id before the
       // first NDJSON event arrives (long runs may stay quiet for a while).
       res.flushHeaders();
@@ -1358,13 +1699,41 @@ export async function createRemoteServer(
       // the typed transport class (before/after submit) lands in the run's
       // sink line. Post-submit aborts never attempt ChatGPT-side cancels.
       const runAbort = new AbortController();
+      const abortDisconnectedRun = (reason: string): void => {
+        if (runAbort.signal.aborted) return;
+        logger(`[serve] ${reason} for run ${runId}; aborting to free the lane`);
+        runAbort.abort();
+      };
+      const armRecoveryCheckpointGrace = (): void => {
+        const claim = requestRecoveryClaim;
+        if (!claim || claim.graceTimer || responseCompleted || runAbort.signal.aborted) return;
+        if (claim.readyHint) {
+          abortDisconnectedRun("Client disconnected after the recovery checkpoint was durable");
+          return;
+        }
+        if (recoveryCheckpointGraceMs === 0) {
+          abortDisconnectedRun("Client disconnected and recovery checkpoint grace is disabled");
+          return;
+        }
+        claim.graceTimer = setTimeout(() => {
+          claim.graceTimer = null;
+          if (!responseCompleted && claim.clientGone && !claim.readyHint) {
+            abortDisconnectedRun(
+              `Client disconnected and the ${recoveryCheckpointGraceMs}ms recovery checkpoint grace expired`,
+            );
+          }
+        }, recoveryCheckpointGraceMs);
+        claim.graceTimer.unref?.();
+      };
       const onClientGone = () => {
         if (!responseCompleted && activeRun?.id === runId) {
           activeRun.clientConnected = false;
-          logger(
-            `[serve] Client disconnected while run ${runId} is still active; aborting to free the lane`,
-          );
-          runAbort.abort();
+          if (requestRecoveryClaim) requestRecoveryClaim.clientGone = true;
+          if (!requestRecoveryClaim || submittedAt === null) {
+            abortDisconnectedRun("Client disconnected before a durable post-submit checkpoint");
+          } else {
+            armRecoveryCheckpointGrace();
+          }
         }
       };
       res.once("close", onClientGone);
@@ -1423,13 +1792,139 @@ export async function createRemoteServer(
         }
       };
 
+      const markDispatchStarted = (): void => {
+        if (submittedAt === null) {
+          submittedAt = new Date().toISOString();
+          void countActiveBrowserTabLeases(attachProfileDir)
+            .then((census) => {
+              activeTabLeasesAtSubmit = census.activeLeaseCount;
+            })
+            .catch(() => undefined);
+        }
+        if (requestRecoveryClaim?.clientGone) armRecoveryCheckpointGrace();
+      };
+
       let runResult: BrowserRunResult | null = null;
       let runErrorMessage: string | null = null;
       let runErrorClass: RunErrorClass | null = null;
       let runRetryable: boolean | null = null;
       let bindingVerified: boolean | null = null;
       let bindingQuality: SubmittedMessageBindingQuality | null = null;
-      let latestRuntimeHint: BrowserRuntimeMetadata | null = null;
+      const latestRuntimeHint: { current: BrowserRuntimeMetadata | null } = { current: null };
+      let terminalSubmissionProvenance: BrowserSubmissionProvenance | null = null;
+      const retainRuntimeHint = (runtime: BrowserRuntimeMetadata): void => {
+        const previous = latestRuntimeHint.current;
+        if (
+          previous?.conversationId &&
+          runtime.conversationId &&
+          previous.conversationId !== runtime.conversationId
+        ) {
+          throw new BrowserAutomationError(
+            "Remote recovery runtime changed conversation identity; refusing to publish a cross-conversation claim.",
+            {
+              stage: "capture-binding",
+              code: "remote-recovery-conversation-changed",
+              retryable: false,
+              runtime: { promptSubmitted: previous.promptSubmitted === true },
+            },
+          );
+        }
+        latestRuntimeHint.current = {
+          ...(previous ?? {}),
+          ...runtime,
+          tabUrl: runtime.tabUrl ?? previous?.tabUrl,
+          conversationId: runtime.conversationId ?? previous?.conversationId,
+          promptSubmitted: runtime.promptSubmitted === true || previous?.promptSubmitted === true,
+          submissionProvenance: runtime.submissionProvenance ?? previous?.submissionProvenance,
+        };
+      };
+      const publishRecoveryClaimIfReady = async (
+        runtimeOverride?: BrowserRuntimeMetadata | null,
+      ): Promise<RemoteRunRecoveryHint | null> => {
+        const claim = requestRecoveryClaim;
+        if (!claim) return null;
+        if (claim.readyHint) return claim.readyHint;
+        if (claim.publishPromise) return await claim.publishPromise;
+
+        const ownership = submittedPromptOwnership.current;
+        const runtime = runtimeOverride ?? latestRuntimeHint.current;
+        if (!ownership || runtime?.promptSubmitted !== true) return null;
+        const actualPromptPreviewSha256 = computePromptSha256(ownership.promptPreview);
+        if (claim.previewByHash.get(actualPromptPreviewSha256) !== ownership.promptPreview) {
+          const error = new BrowserAutomationError(
+            "Submitted prompt ownership did not match an authorized recovery-claim branch.",
+            {
+              stage: "capture-binding",
+              code: "remote-recovery-prompt-branch-mismatch",
+              retryable: false,
+              runtime: { promptSubmitted: true },
+            },
+          );
+          claim.publishError = error;
+          throw error;
+        }
+
+        if (!claim.candidateHint) {
+          const nowMs = Date.now();
+          const expiresAtMs = Date.parse(claim.expiresAt);
+          if (!Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs) {
+            const error = new Error("Durable recovery claim expired before publication.");
+            claim.publishError = error;
+            throw error;
+          }
+          claim.candidateHint =
+            buildRemoteRunRecoveryHint({ stage: "capture-binding", runtime }, runtime, {
+              originRunId: runId,
+              accountId,
+              authToken,
+              promptPreview: ownership.promptPreview,
+              promptDomSha256: ownership.promptDomSha256,
+              nowMs,
+              ttlMs: expiresAtMs - nowMs,
+            }) ?? null;
+        }
+        if (!claim.candidateHint) return null;
+
+        const candidateHint = claim.candidateHint;
+        const operation = (async (): Promise<RemoteRunRecoveryHint | null> => {
+          const published = await recoveryClaimStore.publishReady({
+            ...claim.auth,
+            promptPreviewSha256: actualPromptPreviewSha256,
+            carrier: candidateHint,
+          });
+          if (published.status !== "ready") {
+            throw new Error(`Recovery claim did not become ready (status=${published.status}).`);
+          }
+          const ready = sanitizeRemoteRunRecoveryHint(published.carrier);
+          if (
+            !ready ||
+            ready.originRunId !== runId ||
+            ready.promptPreviewSha256 !== published.promptPreviewSha256
+          ) {
+            throw new Error("Recovery claim store returned an invalid ready carrier.");
+          }
+          claim.readyHint = ready;
+          claim.publishError = null;
+          if (claim.graceTimer) {
+            clearTimeout(claim.graceTimer);
+            claim.graceTimer = null;
+          }
+          if (claim.clientGone && !responseCompleted) {
+            abortDisconnectedRun(
+              "Client disconnected after the recovery checkpoint became durable",
+            );
+          }
+          return ready;
+        })();
+        claim.publishPromise = operation;
+        try {
+          return await operation;
+        } catch (error) {
+          claim.publishError = error;
+          if (claim.publishPromise === operation) claim.publishPromise = null;
+          throw error;
+        }
+      };
       try {
         if (
           uploadIntegrity &&
@@ -1446,14 +1941,7 @@ export async function createRemoteServer(
             // Send-confirmation marker (see SUBMIT_CONFIRMATION_LOG_PATTERN):
             // the account-safety boundary for run accounting is the ChatGPT
             // submit moment, not /runs acceptance.
-            if (submittedAt === null && SUBMIT_CONFIRMATION_LOG_PATTERN.test(message)) {
-              submittedAt = new Date().toISOString();
-              void countActiveBrowserTabLeases(attachProfileDir)
-                .then((census) => {
-                  activeTabLeasesAtSubmit = census.activeLeaseCount;
-                })
-                .catch(() => undefined);
-            }
+            if (SUBMIT_CONFIRMATION_LOG_PATTERN.test(message)) markDispatchStarted();
             // First answer output observed: the browser heartbeat reports
             // status=response streaming only while generation is actively
             // producing output (stop control visible). This marks TIMING for
@@ -1562,13 +2050,15 @@ export async function createRemoteServer(
               verbose: payload.options.verbose,
               sessionId: payload.options.sessionId,
               followUpPrompts: payload.options.followUpPrompts,
-              runtimeHintCb: (runtime) => {
+              runtimeHintCb: async (runtime) => {
+                if (runtime.promptSubmitted === true) markDispatchStarted();
                 // Retain only in memory until the terminal event is built. The
                 // failure envelope later strips every worker-local CDP/process/
                 // profile field and carries only a durable ChatGPT URL + id.
-                latestRuntimeHint = runtime;
+                retainRuntimeHint(runtime);
+                await publishRecoveryClaimIfReady();
               },
-              submittedPromptPreviewCb: (promptPreview, promptDomSha256) => {
+              submittedPromptPreviewCb: async (promptPreview, promptDomSha256) => {
                 // Replace the pair atomically for every submitted turn. A
                 // follow-up callback without a fresh DOM digest invalidates
                 // the prior turn's proof instead of accidentally reusing it.
@@ -1582,6 +2072,7 @@ export async function createRemoteServer(
                   typeof promptDomSha256 === "string" && /^[a-f0-9]{64}$/.test(promptDomSha256)
                     ? { promptPreview, promptDomSha256 }
                     : null;
+                await publishRecoveryClaimIfReady();
               },
               signal: runAbort.signal,
               // Same resolved identity /ready and /runs admission use (options.accountId ?? env
@@ -1591,6 +2082,32 @@ export async function createRemoteServer(
               accountId,
             });
         runResult = result;
+        if (!recoveryRequest && result.promptSubmitted === true) markDispatchStarted();
+        if (!recoveryRequest && requestRecoveryClaim) {
+          const terminalRuntime: BrowserRuntimeMetadata = {
+            ...(latestRuntimeHint.current ?? {}),
+            tabUrl: result.tabUrl ?? latestRuntimeHint.current?.tabUrl,
+            conversationId: result.conversationId ?? latestRuntimeHint.current?.conversationId,
+            promptSubmitted:
+              result.promptSubmitted === true ||
+              latestRuntimeHint.current?.promptSubmitted === true,
+          };
+          retainRuntimeHint(terminalRuntime);
+          const ready = await publishRecoveryClaimIfReady(terminalRuntime);
+          if (!ready) {
+            throw new BrowserAutomationError(
+              "Remote browser result completed without a durable recovery checkpoint; refusing to publish success.",
+              {
+                stage: "capture-binding",
+                code: "remote-success-recovery-claim-unproven",
+                oracleErrorClass: "integrity_binding_failed",
+                retryable: false,
+                runtime: { promptSubmitted: result.promptSubmitted === true },
+              },
+              requestRecoveryClaim.publishError ?? undefined,
+            );
+          }
+        }
         if (activeRun?.id === runId) {
           const completedAtMs = Date.now();
           activeRun.phase = "completed";
@@ -1628,6 +2145,27 @@ export async function createRemoteServer(
           );
         }
         if (
+          !recoveryRequest &&
+          (successProvenance.modelVerified !== true ||
+            successProvenance.modelLabelVerified !== true ||
+            successProvenance.modeVerified !== true ||
+            successProvenance.verifiedBeforePromptSubmit !== true ||
+            !isGpt56SolModelLabel(successProvenance.requestedModelLabel) ||
+            !isGpt56SolModelLabel(successProvenance.resolvedModelLabel) ||
+            successProvenance.requestedMode?.trim().toLowerCase() !== "pro" ||
+            successProvenance.resolvedModeLabel?.trim().toLowerCase() !== "pro")
+        ) {
+          throw new BrowserAutomationError(
+            "Remote result lacked atomic GPT-5.6 Sol + Pro selection provenance; refusing to publish an answer from an unverified model route.",
+            {
+              stage: "model-selection",
+              code: "remote-success-model-provenance-unproven",
+              oracleErrorClass: "integrity_ui_unknown",
+              retryable: false,
+            },
+          );
+        }
+        if (
           successProvenance.captureBindingVerified !== true ||
           successProvenance.captureBindingQuality !== "message-handle"
         ) {
@@ -1639,6 +2177,29 @@ export async function createRemoteServer(
               oracleErrorClass: "integrity_binding_failed",
               retryable: false,
               bindingQuality: successProvenance.captureBindingQuality,
+            },
+          );
+        }
+        if (!recoveryRequest) {
+          result.submissionProvenance = assertRemoteSubmissionProvenance({
+            actual: result.submissionProvenance,
+            primaryPrompt: payload.prompt,
+            primaryAttachmentCount: attachments.length,
+            fallbackPrompt: fallbackSubmission?.prompt,
+            fallbackAttachmentCount: fallbackSubmission?.attachments.length ?? 0,
+            fallbackReason: verifiedFallbackReason,
+          });
+          terminalSubmissionProvenance = result.submissionProvenance;
+          successProvenance.submission = result.submissionProvenance;
+        }
+        if (!recoveryRequest && successProvenance.submission === null) {
+          throw new BrowserAutomationError(
+            "Remote result lacked exact initial-submission branch provenance; refusing to publish an answer whose transport is unproven.",
+            {
+              stage: "submit-prompt",
+              code: "remote-success-submission-provenance-unproven",
+              oracleErrorClass: "integrity_ui_unknown",
+              retryable: false,
             },
           );
         }
@@ -1657,6 +2218,9 @@ export async function createRemoteServer(
         // Success is defined as done.ok, never as "stream ended after some
         // result-shaped bytes" — loose wrappers must not act on a truncated
         // stream or on non-authoritative intermediate events.
+        const terminalUploadIntegrity = uploadIntegrity
+          ? finalizeRemoteUploadIntegrity(uploadIntegrity, successProvenance.submission)
+          : null;
         sendEvent({
           type: "done",
           ok: true,
@@ -1664,9 +2228,9 @@ export async function createRemoteServer(
           retryable: null,
           provenance: successProvenance,
           result: sanitizeResult(result, artifactRegistration.warnings),
-          // Repeat the staging proof on the terminal event so consumers that
-          // only persist the result still get the upload-plumbing evidence.
-          ...(uploadIntegrity ? { uploadIntegrity } : {}),
+          // Preserve both staging manifests, but bind terminal evidence to the
+          // branch and transport that actually crossed Send.
+          ...(terminalUploadIntegrity ? { uploadIntegrity: terminalUploadIntegrity } : {}),
         });
         logger(
           // answerChars/answerTokens are logged so truncated captures are
@@ -1685,6 +2249,17 @@ export async function createRemoteServer(
         const message = error instanceof Error ? error.message : String(error);
         runErrorMessage = message;
         const details = (error as Partial<OracleUserError>)?.details;
+        const errorRuntime =
+          details?.runtime && typeof details.runtime === "object"
+            ? (details.runtime as { promptSubmitted?: unknown })
+            : null;
+        if (
+          errorRuntime?.promptSubmitted === true ||
+          latestRuntimeHint.current?.promptSubmitted === true ||
+          runResult?.promptSubmitted === true
+        ) {
+          markDispatchStarted();
+        }
         // Structural capture-binding failures surface as a typed
         // BrowserAutomationError with details.stage === "capture-binding"
         // (buildCaptureBindingFailureError, browser/actions/captureBinding.ts)
@@ -1702,6 +2277,13 @@ export async function createRemoteServer(
         const declaredRunErrorClass = isRunErrorClass(declaredClass) ? declaredClass : null;
         runErrorClass =
           declaredRunErrorClass ?? classifyRunErrorClass(message, submittedAt !== null);
+        if (
+          submittedAt !== null &&
+          (runErrorClass === "transport_interrupted_before_submit" ||
+            runErrorClass === "capacity_busy")
+        ) {
+          runErrorClass = "transport_interrupted_after_submit";
+        }
         // Central account-safety invariant. Browser gates normally publish
         // the latch before throwing, but legacy navigation detection throws
         // only {stage:"cloudflare-challenge"}; the message heuristic then
@@ -1746,23 +2328,64 @@ export async function createRemoteServer(
           });
         }
         runRetryable =
-          runErrorClass === "account_quarantine"
+          submittedAt !== null || runErrorClass === "account_quarantine"
             ? false
             : typeof declaredRetryable === "boolean"
               ? declaredRetryable
               : runErrorClass === "capacity_busy" ||
                 runErrorClass === "transport_interrupted_before_submit";
         const latestPromptOwnership = submittedPromptOwnership.current;
-        const recovery =
-          recoveryRequest || !latestPromptOwnership
-            ? undefined
-            : buildRemoteRunRecoveryHint(details, latestRuntimeHint, {
-                originRunId: runId,
-                accountId,
-                authToken,
-                promptPreview: latestPromptOwnership.promptPreview,
-                promptDomSha256: latestPromptOwnership.promptDomSha256,
+        let recovery: RemoteRunRecoveryHint | undefined;
+        if (!recoveryRequest && requestRecoveryClaim) {
+          try {
+            if (details?.runtime && typeof details.runtime === "object") {
+              retainRuntimeHint(details.runtime as BrowserRuntimeMetadata);
+            }
+            recovery =
+              (await publishRecoveryClaimIfReady(latestRuntimeHint.current)) ??
+              requestRecoveryClaim.readyHint ??
+              undefined;
+          } catch (claimError) {
+            requestRecoveryClaim.publishError = claimError;
+            recovery = requestRecoveryClaim.readyHint ?? undefined;
+            logger(
+              `[serve] Recovery-claim publication failed for run ${runId}: ${
+                claimError instanceof Error ? claimError.message : String(claimError)
+              }`,
+            );
+          }
+        } else if (!recoveryRequest && latestPromptOwnership) {
+          // Multi-turn compatibility path: durable claim lookup is intentionally
+          // limited to one-shot runs, but an intact terminal stream still keeps
+          // the existing executable latest-turn recovery carrier.
+          recovery = buildRemoteRunRecoveryHint(details, latestRuntimeHint.current, {
+            originRunId: runId,
+            accountId,
+            authToken,
+            promptPreview: latestPromptOwnership.promptPreview,
+            promptDomSha256: latestPromptOwnership.promptDomSha256,
+          });
+        }
+        let failureSubmission: BrowserSubmissionProvenance | null = null;
+        if (!recoveryRequest) {
+          const candidate =
+            runResult?.submissionProvenance ?? latestRuntimeHint.current?.submissionProvenance;
+          if (candidate) {
+            try {
+              failureSubmission = assertRemoteSubmissionProvenance({
+                actual: candidate,
+                primaryPrompt: payload.prompt,
+                primaryAttachmentCount: attachments.length,
+                fallbackPrompt: fallbackSubmission?.prompt,
+                fallbackAttachmentCount: fallbackSubmission?.attachments.length ?? 0,
+                fallbackReason: verifiedFallbackReason,
               });
+            } catch {
+              failureSubmission = null;
+            }
+          }
+        }
+        terminalSubmissionProvenance = failureSubmission;
         sendEvent({
           type: "done",
           ok: false,
@@ -1779,6 +2402,7 @@ export async function createRemoteServer(
             bindingQuality,
             accountId,
             inMemoryQuarantined: inMemoryQuarantine !== null,
+            submission: failureSubmission,
           }),
         });
         const logMessage =
@@ -1789,24 +2413,29 @@ export async function createRemoteServer(
           `[serve] Run ${runId} failed after ${Date.now() - runStartedAt}ms (${runErrorClass}, retryable=${runRetryable}): ${logMessage}`,
         );
       } finally {
+        responseCompleted = true;
+        await settleRequestRecoveryClaim();
         busy = false;
         lastRunProgressAtMs = null;
         if (activeRun?.id === runId) {
           activeRun = null;
         }
-        responseCompleted = true;
         // Exactly one oracle.run.v1 line per accepted run — success, failure,
         // and client-abort all land here. Sink failures are logged, never
         // allowed to disturb the response path.
         try {
-          const attachmentDigests: RunAttachmentDigest[] | null = uploadIntegrity
-            ? [...uploadIntegrity.attachments, ...(uploadIntegrity.fallbackAttachments ?? [])].map(
-                (entry) => ({
-                  index: entry.index,
-                  bytes: entry.bytes,
-                  sha256: entry.sha256,
-                }),
-              )
+          const submittedManifest =
+            uploadIntegrity && terminalSubmissionProvenance
+              ? terminalSubmissionProvenance.fallbackUsed
+                ? (uploadIntegrity.fallbackAttachments ?? [])
+                : uploadIntegrity.attachments
+              : null;
+          const attachmentDigests: RunAttachmentDigest[] | null = submittedManifest
+            ? submittedManifest.map((entry) => ({
+                index: entry.index,
+                bytes: entry.bytes,
+                sha256: entry.sha256,
+              }))
             : null;
           const challengeMatched = runErrorMessage
             ? /challenge|captcha|interstitial/i.test(runErrorMessage)
@@ -1871,11 +2500,12 @@ export async function createRemoteServer(
           }
         }
       }
-    })().catch((error) => {
+    })().catch(async (error) => {
       const message = error instanceof Error ? error.message : String(error);
       logger(
         `[serve] Unhandled request failure${requestRunId ? ` for run ${requestRunId}` : ""} from ${formatSocket(req)}: ${message}`,
       );
+      await settleRequestRecoveryClaim();
       if (!res.headersSent) {
         // Identity headers only after the bearer check passed: requestRunId
         // is minted pre-auth, so an exception thrown before authorization
@@ -2443,7 +3073,14 @@ async function readRequestBody(
       chunks.push(buffer);
     };
     const onEnd = () => {
-      settle(() => resolve(Buffer.concat(chunks).toString("utf8")));
+      try {
+        const decoded = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
+        settle(() => resolve(decoded));
+      } catch {
+        settle(() =>
+          reject(new RequestBodyError("invalid_utf8", "request body is not valid UTF-8")),
+        );
+      }
     };
     const onError = (error: Error) => {
       settle(() => reject(new RequestBodyError("aborted", error.message)));
@@ -2557,6 +3194,76 @@ function sha256Hex(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
+function assertRemoteSubmissionProvenance(params: {
+  actual: BrowserSubmissionProvenance | undefined;
+  primaryPrompt: string;
+  primaryAttachmentCount: number;
+  fallbackPrompt?: string;
+  fallbackAttachmentCount: number;
+  fallbackReason: BrowserPromptFallbackReason | null;
+}): BrowserSubmissionProvenance {
+  const actual = params.actual;
+  const fallbackUsed = actual?.fallbackUsed === true;
+  if (!actual || (fallbackUsed && (!params.fallbackPrompt || !params.fallbackReason))) {
+    throw new BrowserAutomationError(
+      "Remote browser returned no verifiable initial-submission provenance.",
+      {
+        stage: "submit-prompt",
+        code: "remote-success-submission-provenance-unproven",
+        oracleErrorClass: "integrity_ui_unknown",
+        retryable: false,
+      },
+    );
+  }
+  const expectedPrimaryTransport = params.primaryAttachmentCount > 0 ? "upload" : "inline";
+  const expectedSubmittedPrompt = fallbackUsed ? params.fallbackPrompt! : params.primaryPrompt;
+  const expectedSubmittedTransport = fallbackUsed
+    ? params.fallbackAttachmentCount > 0
+      ? "upload"
+      : "inline"
+    : expectedPrimaryTransport;
+  const expected: BrowserSubmissionProvenance = {
+    primaryPromptSha256: sha256Hex(params.primaryPrompt),
+    submittedPromptSha256: sha256Hex(expectedSubmittedPrompt),
+    primaryTransport: expectedPrimaryTransport,
+    submittedTransport: expectedSubmittedTransport,
+    fallbackUsed,
+    fallbackReason: fallbackUsed ? params.fallbackReason : null,
+    equivalenceAlgorithm: fallbackUsed ? AUTO_PROMPT_FALLBACK_EQUIVALENCE_ALGORITHM : null,
+    equivalenceVerified: fallbackUsed ? true : null,
+  };
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new BrowserAutomationError(
+      "Remote browser submission provenance did not match the worker-authorized branch.",
+      {
+        stage: "submit-prompt",
+        code: "remote-success-submission-provenance-mismatch",
+        oracleErrorClass: "integrity_ui_unknown",
+        retryable: false,
+      },
+    );
+  }
+  return expected;
+}
+
+function finalizeRemoteUploadIntegrity(
+  staged: RemoteUploadIntegrity,
+  submission: BrowserSubmissionProvenance | null,
+): RemoteUploadIntegrity {
+  if (!submission) return { ...staged };
+  return {
+    ...staged,
+    submittedBranch: submission.fallbackUsed ? "fallback" : "primary",
+    submittedTransport: submission.submittedTransport,
+    fallbackUsed: submission.fallbackUsed,
+    fallbackReason: submission.fallbackReason,
+    preSendDomCheck:
+      submission.submittedTransport === "upload"
+        ? "composer-chips-by-stored-name"
+        : "not-applicable",
+  };
+}
+
 /**
  * Provenance summary for the terminal done event: what the worker VERIFIED
  * (model selection, structural capture binding, quarantine-latch cleanliness).
@@ -2569,6 +3276,7 @@ async function buildRunProvenance(params: {
   accountId: string;
   /** Process-local hard stop when durable quarantine publication failed. */
   inMemoryQuarantined?: boolean;
+  submission?: BrowserSubmissionProvenance | null;
 }): Promise<RemoteRunProvenanceSummary> {
   let challengeClean: boolean | null = null;
   if (params.inMemoryQuarantined) {
@@ -2596,6 +3304,10 @@ async function buildRunProvenance(params: {
     captureBindingVerified: params.bindingVerified,
     captureBindingQuality: params.bindingVerified === true ? params.bindingQuality : null,
     challengeClean,
+    submission:
+      params.submission !== undefined
+        ? params.submission
+        : (params.result?.submissionProvenance ?? null),
   };
 }
 
@@ -2766,6 +3478,30 @@ function readSingleHeader(value: string | string[] | undefined): string | null {
   return /^[A-Za-z0-9._-]+$/.test(value) ? value : null;
 }
 
+function readRecoveryClaimKey(value: string | string[] | undefined): string | null {
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(value)) return null;
+  const decoded = Buffer.from(value, "base64url");
+  return decoded.length === 32 && decoded.toString("base64url") === value ? value : null;
+}
+
+function readRecoveryClaimCandidateHashes(value: string | string[] | undefined): string[] | null {
+  if (typeof value !== "string" || !/^[a-f0-9]{64}(?:,[a-f0-9]{64})?$/.test(value)) {
+    return null;
+  }
+  const candidates = [...new Set(value.split(","))].sort();
+  return candidates.length >= 1 && candidates.length <= 2 ? candidates : null;
+}
+
+function resolveRecoveryCheckpointGraceMs(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_RECOVERY_CHECKPOINT_GRACE_MS;
+  if (!Number.isSafeInteger(value) || value < 0 || value > MAX_RECOVERY_CHECKPOINT_GRACE_MS) {
+    throw new Error(
+      `Recovery checkpoint grace must be an integer between 0 and ${MAX_RECOVERY_CHECKPOINT_GRACE_MS} ms.`,
+    );
+  }
+  return value;
+}
+
 function hasCompatibleRemoteRecoveryAdmissionHeaders(headers: http.IncomingHttpHeaders): boolean {
   return Object.entries(REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES).every(
     ([name, expected]) => headers[name] === expected,
@@ -2784,7 +3520,7 @@ function sanitizeName(raw: string): string {
   return raw.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
-class AttachmentIntegrityError extends Error {
+export class AttachmentIntegrityError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "AttachmentIntegrityError";
@@ -2804,10 +3540,12 @@ function buildStoredAttachmentName(index: number, sha256: string, originalName: 
   return `${String(index).padStart(3, "0")}-${sha256.slice(0, 12)}-${safeName}`;
 }
 
-async function stageAttachmentsWithIntegrity(params: {
+/** @internal Exported so the staging boundary can be regression-tested without the payload sanitizer. */
+export async function stageAttachmentsWithIntegrity(params: {
   payloadAttachments: unknown;
   dir: string;
   fallbackLabel: string;
+  preserveNames?: boolean;
 }): Promise<{
   attachments: BrowserAttachment[];
   manifest: RemoteAttachmentIntegrityEntry[];
@@ -2818,12 +3556,9 @@ async function stageAttachmentsWithIntegrity(params: {
   const attachments: BrowserAttachment[] = [];
   const manifest: RemoteAttachmentIntegrityEntry[] = [];
   for (const [index, attachment] of entries.entries()) {
-    const originalName = attachment.fileName ?? `${params.fallbackLabel}-${index + 1}`;
-    const content = Buffer.from(
-      typeof attachment.contentBase64 === "string" ? attachment.contentBase64 : "",
-      "base64",
-    );
-    if (typeof attachment.sizeBytes === "number" && attachment.sizeBytes !== content.length) {
+    const originalName = attachment.fileName || `${params.fallbackLabel}-${index + 1}`;
+    const content = Buffer.from(attachment.contentBase64, "base64");
+    if (attachment.sizeBytes !== content.length) {
       // Fail loud: a declared-size mismatch means the upload was truncated or
       // corrupted in transit; silently staging it would hand the model wrong
       // bytes.
@@ -2832,13 +3567,42 @@ async function stageAttachmentsWithIntegrity(params: {
       );
     }
     const sha256 = createHash("sha256").update(content).digest("hex");
-    const storedName = buildStoredAttachmentName(index, sha256, originalName);
+    if (attachment.sha256 !== sha256) {
+      throw new AttachmentIntegrityError(
+        `attachment ${index} (${sanitizeName(originalName)}) digest did not match its declaration`,
+      );
+    }
+    if (
+      params.preserveNames &&
+      (originalName === "." ||
+        originalName === ".." ||
+        path.basename(originalName) !== originalName ||
+        /[\\/\u0000-\u001f\u007f]/.test(originalName))
+    ) {
+      throw new AttachmentIntegrityError(`attachment ${index} has an unsafe preserved filename`);
+    }
+    const storedName = params.preserveNames
+      ? originalName
+      : buildStoredAttachmentName(index, sha256, originalName);
     const filePath = path.join(params.dir, storedName);
-    await writeFile(filePath, content);
+    await writeFile(filePath, content, { flag: "wx" });
+    try {
+      await readBoundedRegularFile(filePath, {
+        maxBytes: Math.max(1, content.length),
+        declaredSizeBytes: content.length,
+        declaredSha256: sha256,
+      });
+    } catch {
+      throw new AttachmentIntegrityError(
+        `attachment ${index} (${sanitizeName(originalName)}) changed while being staged`,
+      );
+    }
     attachments.push({
       path: filePath,
       displayPath: attachment.displayPath,
       sizeBytes: content.length,
+      integritySha256: sha256,
+      generatedBundle: attachment.generatedBundle,
     });
     manifest.push({
       index,
@@ -2887,6 +3651,7 @@ function sanitizeResult(
     tabUrl: result.tabUrl,
     conversationId: result.conversationId,
     promptSubmitted: result.promptSubmitted,
+    submissionProvenance: result.submissionProvenance,
     controllerPid: undefined,
     // Preserve model-selection evidence + warnings across the remote boundary.
     // Without these the local session runner fabricates `resolved=(unavailable)`

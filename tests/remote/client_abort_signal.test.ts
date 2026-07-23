@@ -1,12 +1,20 @@
 import { describe, expect, test } from "vitest";
 import http from "node:http";
 import { spawnSync } from "node:child_process";
-import { createRemoteBrowserExecutor, RemoteRunFailedError } from "../../src/remote/client.js";
+import {
+  createRemoteBrowserExecutor,
+  getRemoteBrowserPendingRecoveryClaimFromError,
+  RemoteRunFailedError,
+} from "../../src/remote/client.js";
 import { REMOTE_BROWSER_RUN_PATH } from "../../src/remote/types.js";
 import {
   serveCompatibleRecoveryHealth,
   setCompatibleRecoveryResponseHeaders,
 } from "./_recoveryProtocolFixture.js";
+import {
+  primarySubmissionProvenance,
+  strongRemoteSuccessProvenance,
+} from "./_submissionProvenanceFixture.js";
 
 // Caller-gone abort contract for the remote HTTP executor: BrowserRunOptions
 // documents `signal` as "Caller-gone abort. When the signal fires, the run
@@ -20,10 +28,9 @@ import {
 //   the typed transport class AND tear down the outbound request so the
 //   worker's client-gone handling (res "close" -> onClientGone, which frees
 //   the single-flight busy slot) actually fires;
-// - the before/after-submit classification must key off the worker's
-//   send-confirmation log marker ("Submitted prompt via ..."), the same
-//   account-safety boundary the worker itself uses — post-submit aborts are
-//   never auto-retryable;
+// - once request dispatch starts, an abort is conservatively classified as
+//   submission-ambiguous until proven otherwise. Neither a missing response
+//   header nor a missing submit marker proves that the account was untouched;
 // - a run that settles normally must remove its abort listener (no leak, and
 //   a later abort of the same signal must not touch the settled run).
 
@@ -77,7 +84,7 @@ describe("client: caller-gone abort via options.signal", () => {
   );
 
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
-    "aborting mid-stream before the submit marker rejects as before-submit and tears down the connection",
+    "aborting mid-stream without a submit marker is ambiguous and tears down the connection",
     async () => {
       const fake = await startFakeRunServer((res, clientGone) => {
         res.writeHead(200, { "Content-Type": "application/x-ndjson" });
@@ -111,13 +118,22 @@ describe("client: caller-gone abort via options.signal", () => {
         const failure = await pending;
         const elapsedMs = Date.now() - abortedAt;
         expect(failure).toBeInstanceOf(RemoteRunFailedError);
-        expect((failure as RemoteRunFailedError).message).toMatch(/aborted before submit/i);
-        expect((failure as RemoteRunFailedError).errorClass).toBe(
-          "transport_interrupted_before_submit",
+        expect((failure as RemoteRunFailedError).message).toMatch(
+          /aborted after request dispatch.*submission status is unknown/i,
         );
-        expect((failure as RemoteRunFailedError).retryable).toBe(true);
+        expect((failure as RemoteRunFailedError).errorClass).toBe(
+          "transport_interrupted_after_submit",
+        );
+        expect((failure as RemoteRunFailedError).retryable).toBe(false);
         // Rejection must be prompt (the whole point: not waiting out the run).
         expect(elapsedMs).toBeLessThan(5000);
+        expect(fake.recoveryClaimLookupCount()).toBe(0);
+        expect(getRemoteBrowserPendingRecoveryClaimFromError(failure)).toMatchObject({
+          claimKey: "A".repeat(43),
+          originRunId: "fixture-run",
+          accountId: "acct1",
+          originLaneId: "acct1-9473",
+        });
         // The outbound request must actually be destroyed so the worker's
         // client-gone handling (busy-slot release) can fire.
         await fake.waitForClientGone(5000);
@@ -173,6 +189,13 @@ describe("client: caller-gone abort via options.signal", () => {
           "transport_interrupted_after_submit",
         );
         expect((failure as RemoteRunFailedError).retryable).toBe(false);
+        expect(fake.recoveryClaimLookupCount()).toBe(0);
+        expect(getRemoteBrowserPendingRecoveryClaimFromError(failure)).toMatchObject({
+          claimKey: "A".repeat(43),
+          originRunId: "fixture-run",
+          accountId: "acct1",
+          originLaneId: "acct1-9473",
+        });
         await fake.waitForClientGone(5000);
       } finally {
         await fake.close();
@@ -197,15 +220,9 @@ describe("client: caller-gone abort via options.signal", () => {
               tookMs: 5,
               answerTokens: 2,
               answerChars: 10,
+              submissionProvenance: primarySubmissionProvenance("x"),
             },
-            provenance: {
-              modelVerified: null,
-              modelRequested: null,
-              modelResolved: null,
-              captureBindingVerified: true,
-              captureBindingQuality: "message-handle",
-              challengeClean: true,
-            },
+            provenance: strongRemoteSuccessProvenance("x"),
           })}\n`,
         );
         res.end();
@@ -248,15 +265,23 @@ async function startFakeRunServer(
 ): Promise<{
   port: number;
   requestCount: () => number;
+  recoveryClaimLookupCount: () => number;
   waitForClientGone: (timeoutMs: number) => Promise<void>;
   close: () => Promise<void>;
 }> {
   let requests = 0;
+  let recoveryClaimLookups = 0;
   let signalClientGone: (() => void) | null = null;
   const clientGone = new Promise<void>((resolve) => {
     signalClientGone = resolve;
   });
   const server = http.createServer((req, res) => {
+    if (req.method === "GET" && req.url?.startsWith("/recovery-claims?")) {
+      recoveryClaimLookups += 1;
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "explicit_abort_must_not_lookup" }));
+      return;
+    }
     if (serveCompatibleRecoveryHealth(req, res)) return;
     if (req.method === "POST" && req.url === REMOTE_BROWSER_RUN_PATH) {
       setCompatibleRecoveryResponseHeaders(res);
@@ -284,6 +309,7 @@ async function startFakeRunServer(
   return {
     port: address.port,
     requestCount: () => requests,
+    recoveryClaimLookupCount: () => recoveryClaimLookups,
     waitForClientGone: async (timeoutMs: number) => {
       await Promise.race([
         clientGone,

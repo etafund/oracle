@@ -1,5 +1,6 @@
 import http from "node:http";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
 import { describe, expect, test } from "vitest";
 
@@ -64,27 +65,99 @@ describe("remote payload sanitization", () => {
     expect(parsed.browserConfig).not.toHaveProperty("browserTabRef");
   });
 
-  test("host intake enforces server-owned cookie sync and keeps unsafe client fields out", () => {
-    const sanitized = sanitizeRemoteRunPayloadForHost(maliciousPayload());
-    expect(sanitized.browserConfig.cookieSync).toBe(true);
-    expect(sanitized.browserConfig.inlineCookies).toBeNull();
-    expect(sanitized.browserConfig.inlineCookiesSource).toBeNull();
-    expect(sanitized.browserConfig.desiredModel).toBe("gpt-5.5-pro");
-    expect(sanitized.browserConfig).not.toHaveProperty("chromeCookiePath");
-    expect(sanitized.browserConfig).not.toHaveProperty("manualLoginProfileDir");
+  test("host intake rejects unknown browser fields instead of silently dropping them", () => {
+    expect(() => sanitizeRemoteRunPayloadForHost(maliciousPayload())).toThrow(
+      /unexpected field inlineCookies/i,
+    );
+  });
+
+  test.each([
+    ["empty desiredModel", { desiredModel: "" }, /desiredModel.*non-empty string/i],
+    ["boolean desiredModel", { desiredModel: false }, /desiredModel.*non-empty string/i],
+    ["numeric desiredModel", { desiredModel: 0 }, /desiredModel.*non-empty string/i],
+    ["numeric modelStrategy", { modelStrategy: 0 }, /modelStrategy.*non-empty string/i],
+    ["unknown thinkingTime", { thinkingTime: "maximum" }, /thinkingTime.*not recognized/i],
+  ])("host intake rejects %s", (_label, browserConfig, expected) => {
+    expect(() =>
+      sanitizeRemoteRunPayloadForHost({
+        prompt: "x",
+        attachments: [],
+        browserConfig,
+        options: {},
+      } as unknown as RemoteRunPayload),
+    ).toThrow(expected);
+  });
+
+  test.each([
+    ["a tab in fileName", { fileName: "bad\tname.txt" }, /fileName|basename/i],
+    ["a newline in displayPath", { displayPath: "bad\npath.txt" }, /displayPath|relative/i],
+    ["non-canonical base64", { contentBase64: "eA" }, /contentBase64.*canonical/i],
+  ])("rejects an attachment with %s", (_label, override, expected) => {
+    const content = Buffer.from("x", "utf8");
+    const attachment = {
+      fileName: "safe.txt",
+      displayPath: "safe.txt",
+      sizeBytes: content.length,
+      sha256: createHash("sha256").update(content).digest("hex"),
+      generatedBundle: false,
+      contentBase64: content.toString("base64"),
+      ...override,
+    };
+    expect(() =>
+      sanitizeRemoteRunPayloadForHost({
+        prompt: "x",
+        attachments: [attachment],
+        browserConfig: {},
+        options: {},
+      }),
+    ).toThrow(expected);
+  });
+
+  test("preserves strict prompt fallback policy and rejects missing or extra authorization", () => {
+    const payload: RemoteRunPayload = {
+      prompt: "primary",
+      attachments: [],
+      fallbackSubmission: {
+        prompt: "fallback",
+        attachments: [],
+      },
+      fallbackPolicy: {
+        attachmentsPolicy: "auto",
+        bundleRequested: false,
+        model: "gpt-5.6-sol",
+        maxInputTokens: 272_000,
+      },
+      browserConfig: {},
+      options: {},
+    };
+
+    const wire = JSON.parse(serializeRemoteRunPayloadForWire(payload)) as RemoteRunPayload;
+    expect(wire.fallbackPolicy).toEqual(payload.fallbackPolicy);
+    expect(sanitizeRemoteRunPayloadForHost(payload).fallbackPolicy).toEqual(payload.fallbackPolicy);
+
+    const forgedPolicy = {
+      ...payload,
+      fallbackPolicy: { ...payload.fallbackPolicy, model: "gpt-5.5-pro" },
+    } as unknown as RemoteRunPayload;
+    expect(() => sanitizeRemoteRunPayloadForHost(forgedPolicy)).toThrow(/fallback policy/i);
+
+    const missingPolicy = {
+      ...payload,
+      fallbackPolicy: undefined,
+    } as unknown as RemoteRunPayload;
+    expect(() => sanitizeRemoteRunPayloadForHost(missingPolicy)).toThrow(/supplied together/i);
+
+    const extraField = {
+      ...payload,
+      fallbackSubmission: { ...payload.fallbackSubmission, trusted: true },
+    } as unknown as RemoteRunPayload;
+    expect(() => sanitizeRemoteRunPayloadForHost(extraField)).toThrow(/unexpected field trusted/i);
   });
 
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
-    "server does not pass client cookies or host-local paths to runBrowser",
+    "server rejects client cookies and host-local paths before runBrowser",
     async () => {
       let capturedConfig: Record<string, unknown> | null = null;
-      // This test exercises secret-stripping sanitization, not the serve model
-      // gate; admit the malicious payload's (legacy) desiredModel via the
-      // allow-list override so the run reaches runBrowser and its sanitized
-      // config can be inspected. The model gate itself is covered by
-      // tests/remote/server_model_gate.test.ts.
-      const savedAllowedLabels = process.env.ORACLE_SERVE_ALLOWED_MODEL_LABELS;
-      process.env.ORACLE_SERVE_ALLOWED_MODEL_LABELS = "gpt-5.5-pro";
       const server = await createRemoteServer(
         {
           host: "127.0.0.1",
@@ -108,40 +181,13 @@ describe("remote payload sanitization", () => {
 
       try {
         const response = await postRun(server.port, maliciousPayload(), "server-token");
-        expect(response.statusCode).toBe(200);
-        expect(response.body).toContain('"type":"done"');
+        expect(response.statusCode).toBe(400);
+        expect(response.body).toContain("invalid_request");
       } finally {
         await server.close();
-        if (savedAllowedLabels === undefined) {
-          delete process.env.ORACLE_SERVE_ALLOWED_MODEL_LABELS;
-        } else {
-          process.env.ORACLE_SERVE_ALLOWED_MODEL_LABELS = savedAllowedLabels;
-        }
       }
 
-      expect(capturedConfig).toMatchObject({
-        desiredModel: "gpt-5.5-pro",
-        modelStrategy: "select",
-        timeoutMs: 90_000,
-        queueTimeoutMs: 75_000,
-        thinkingTime: "heavy",
-        resumeConversationUrl: "https://chatgpt.com/c/safe-resume-id",
-        cookieSync: true,
-        inlineCookies: null,
-        inlineCookiesSource: null,
-        manualLogin: true,
-        manualLoginProfileDir: "/server-owned/manual-profile",
-        keepBrowser: true,
-        closeOwnedRunTargetAfterRun: "always",
-      });
-      expect(capturedConfig).not.toHaveProperty("chromePath");
-      expect(capturedConfig).not.toHaveProperty("chromeCookiePath");
-      expect(capturedConfig).not.toHaveProperty("chromeProfile");
-      expect(capturedConfig).not.toHaveProperty("debugPort");
-      expect(capturedConfig).not.toHaveProperty("attachRunning");
-      expect(capturedConfig).not.toHaveProperty("browserTabRef");
-      expect(JSON.stringify(capturedConfig)).not.toContain("client-cookie-secret");
-      expect(JSON.stringify(capturedConfig)).not.toContain("/Users/client");
+      expect(capturedConfig).toBeNull();
     },
   );
 });

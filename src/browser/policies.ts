@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { formatFileSections } from "../oracle/markdown.js";
 import type { BrowserAttachment } from "./types.js";
 import type { BrowserSessionConfig } from "../sessionManager.js";
@@ -25,7 +26,10 @@ export function buildAttachmentPlan(
   }: { inlineFiles: boolean; bundleRequested: boolean; maxAttachments?: number },
 ): AttachmentPlan {
   if (inlineFiles) {
-    const inlineBlock = formatFileSections(sections);
+    // Automatic transport fallback compares this representation against the
+    // original file bytes. Dropping a final newline or spaces would make the
+    // mapping non-injective and could certify different source files as equal.
+    const inlineBlock = formatFileSections(sections, { preserveTrailingWhitespace: true });
     return {
       mode: "inline",
       inlineBlock,
@@ -39,6 +43,7 @@ export function buildAttachmentPlan(
     path: section.absolutePath,
     displayPath: section.displayPath,
     sizeBytes: Buffer.byteLength(section.content, "utf8"),
+    integritySha256: createHash("sha256").update(section.content, "utf8").digest("hex"),
   }));
   const shouldBundle = bundleRequested || attachments.length > maxAttachments;
 

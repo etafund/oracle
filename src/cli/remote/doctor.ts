@@ -73,6 +73,9 @@ export async function runRemoteDoctor(options: RemoteDoctorCliOptions): Promise<
         recovery.protocol ?? "missing protocol",
         recovery.promptPreviewAlgorithm ?? "missing prompt-preview algorithm",
         recovery.promptDomIdentityAlgorithm ?? "missing DOM-identity algorithm",
+        recovery.durableClaimLookup === true
+          ? "durable claim lookup"
+          : "missing durable claim lookup",
       ].join("; ");
       lines.push(
         `Browser recovery: ${recovery.compatible ? chalk.green("compatible") : chalk.red("incompatible")} (${observed})`,

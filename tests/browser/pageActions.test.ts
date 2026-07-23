@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { mkdtemp } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -2874,6 +2875,53 @@ describe("uploadAttachmentFile", () => {
     ).rejects.toThrow(/unable to locate.*attachment input/i);
   });
 
+  test("rejects planner-bound attachment bytes changed before DOM upload", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oracle-attachment-toctou-"));
+    const filePath = path.join(tempDir, "bound.txt");
+    const original = Buffer.from("original");
+    try {
+      await writeFile(filePath, original);
+      const attachment = {
+        path: filePath,
+        displayPath: "bound.txt",
+        sizeBytes: original.length,
+        integritySha256: createHash("sha256").update(original).digest("hex"),
+      };
+      await writeFile(filePath, Buffer.from("mutated!"));
+      const dom = {
+        getDocument: vi.fn(),
+        querySelector: vi.fn(),
+        setFileInputFiles: vi.fn(),
+      } as unknown as ChromeClient["DOM"];
+      const runtime = {
+        evaluate: vi.fn().mockResolvedValue({
+          result: {
+            value: {
+              ui: false,
+              input: false,
+              chipCount: 0,
+              inputCount: 0,
+              uploading: false,
+              chipSignature: "",
+              fileCount: 0,
+            },
+          },
+        }),
+      } as unknown as ChromeClient["Runtime"];
+
+      await expect(
+        uploadAttachmentFile({ runtime, dom }, attachment, logger),
+      ).rejects.toMatchObject({
+        name: "BrowserAutomationError",
+        details: { code: "attachment-file-declared-hash-mismatch" },
+      });
+      expect(dom.getDocument).not.toHaveBeenCalled();
+      expect(dom.setFileInputFiles).not.toHaveBeenCalled();
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   test("skips upload when attachment already present (ellipsis-aware detection)", async () => {
     logger.mockClear();
     let capturedPresenceExpression = "";
@@ -3311,6 +3359,116 @@ describe("uploadAttachmentFile", () => {
     ).resolves.toBe(true);
 
     expect(transferSpy).not.toHaveBeenCalled();
+  });
+
+  test("retains a planner-bound snapshot until the caller releases it after upload completion", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oracle-attachment-snapshot-lease-"));
+    const sourcePath = path.join(tempDir, "bound.txt");
+    const sourceBytes = Buffer.from("immutable upload bytes");
+    let retainedCleanup: (() => Promise<void>) | undefined;
+    try {
+      await writeFile(sourcePath, sourceBytes);
+      vi.spyOn(attachments, "waitForAttachmentVisible").mockResolvedValue(undefined);
+      let readSignalCalls = 0;
+      const dom = {
+        getDocument: vi.fn().mockResolvedValue({ root: { nodeId: 1 } }),
+        querySelector: vi.fn().mockResolvedValue({ nodeId: 2 }),
+        setFileInputFiles: vi.fn().mockResolvedValue(undefined),
+      } as unknown as ChromeClient["DOM"];
+      const runtime = {
+        evaluate: vi.fn().mockImplementation(async (params: { expression?: string }) => {
+          const expr = String(params?.expression ?? "");
+          if (expr.includes("const normalizedExpected") && expr.includes("matchesExpected")) {
+            readSignalCalls += 1;
+            return {
+              result: {
+                value:
+                  readSignalCalls <= 2
+                    ? {
+                        ui: false,
+                        input: false,
+                        chipCount: 0,
+                        inputCount: 0,
+                        uploading: false,
+                        chipSignature: "",
+                        fileCount: 0,
+                      }
+                    : {
+                        ui: true,
+                        input: true,
+                        chipCount: 1,
+                        inputCount: 1,
+                        uploading: false,
+                        chipSignature: "bound.txt",
+                        fileCount: 1,
+                      },
+              },
+            };
+          }
+          if (expr.includes("baselineChipCount") && expr.includes("baselineChips")) {
+            return {
+              result: {
+                value: {
+                  ok: true,
+                  baselineChipCount: 0,
+                  baselineChips: [],
+                  baselineUploading: false,
+                  baselineInputCount: 0,
+                  baselineFileCount: 0,
+                  order: [0],
+                },
+              },
+            };
+          }
+          if (expr.includes("chipCount") && expr.includes("composerText")) {
+            return {
+              result: {
+                value: {
+                  chipCount: 1,
+                  chips: [],
+                  inputNames: ["bound.txt"],
+                  composerText: "",
+                  uploading: false,
+                },
+              },
+            };
+          }
+          if (expr.includes("attachmentSelectors") || expr.includes("normalizedNoExt")) {
+            return { result: { value: { found: true } } };
+          }
+          return { result: { value: null } };
+        }),
+      } as unknown as ChromeClient["Runtime"];
+
+      await expect(
+        uploadAttachmentFile(
+          { runtime, dom },
+          {
+            path: sourcePath,
+            displayPath: "bound.txt",
+            sizeBytes: sourceBytes.length,
+            integritySha256: createHash("sha256").update(sourceBytes).digest("hex"),
+          },
+          logger,
+          { retainPreparedSnapshot: (cleanup) => (retainedCleanup = cleanup) },
+        ),
+      ).resolves.toBe(true);
+
+      const uploadedPath = (
+        dom.setFileInputFiles as unknown as { mock: { calls: Array<[{ files: string[] }]> } }
+      ).mock.calls.find(([value]) => value.files.length > 0)?.[0].files[0];
+      expect(uploadedPath).toBeTruthy();
+      expect(uploadedPath).not.toBe(sourcePath);
+      await expect(readFile(uploadedPath!)).resolves.toEqual(sourceBytes);
+
+      expect(retainedCleanup).toBeTypeOf("function");
+      await retainedCleanup!();
+      retainedCleanup = undefined;
+      await expect(readFile(uploadedPath!)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await retainedCleanup?.().catch(() => undefined);
+      await rm(tempDir, { recursive: true, force: true });
+    }
   });
 
   test("clears stale file inputs before trying alternate candidates", async () => {

@@ -4,6 +4,8 @@ export type FenceLanguage = string | null | undefined;
 
 export interface FormatFileSectionOptions {
   lineNumbers?: boolean;
+  /** Preserve source trailing whitespace byte-for-byte inside the fence. */
+  preserveTrailingWhitespace?: boolean;
 }
 
 export interface FormatFileSectionsOptions extends FormatFileSectionOptions {
@@ -85,7 +87,7 @@ function renderFileSection(
 ): string {
   const fence = pickFence(content);
   const lang = detectFenceLanguage(displayPath);
-  const normalized = content.replace(/\s+$/u, "");
+  const normalized = options.preserveTrailingWhitespace ? content : content.replace(/\s+$/u, "");
   const header =
     options.index == null
       ? `### File: ${displayPath}`
@@ -118,6 +120,7 @@ export function formatFileSections(
     .map((section) =>
       renderFileSection(section.displayPath, section.content, {
         lineNumbers,
+        preserveTrailingWhitespace: options.preserveTrailingWhitespace,
         index: options.includeFileIndex ? section.index : undefined,
       }).trimEnd(),
     )

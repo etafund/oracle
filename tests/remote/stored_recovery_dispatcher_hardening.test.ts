@@ -11,6 +11,7 @@ import {
 } from "../../src/remote/client.js";
 import { buildRemoteRunRecoveryHint } from "../../src/remote/recovery.js";
 import { sanitizeRemoteBrowserRecoveryRequestForWire } from "../../src/remote/payload_sanitize.js";
+import { REMOTE_BROWSER_RECOVERY_PROTOCOL } from "../../src/remote/types.js";
 import {
   isFailedRemoteBrowserOrigin,
   recoverStoredRemoteBrowserSession,
@@ -193,7 +194,7 @@ describe("stored remote recovery dispatcher", () => {
       log,
       signal: controller.signal,
       request: {
-        schema: "remote-browser-recovery.v2",
+        schema: REMOTE_BROWSER_RECOVERY_PROTOCOL,
         recovery: carrier.recovery,
         promptPreview: PROMPT_PREVIEW,
         browserConfig: {

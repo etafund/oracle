@@ -26,7 +26,49 @@ export interface BrowserAttachment {
   path: string;
   displayPath: string;
   sizeBytes?: number;
+  /** Exact source bytes expected immediately before browser File creation. */
+  integritySha256?: string;
   generatedBundle?: boolean;
+}
+
+export type BrowserPromptFallbackReason =
+  | "auto-inline-too-large-to-upload"
+  | "auto-upload-timeout-to-inline";
+
+export type BrowserSubmissionTransport = "inline" | "upload";
+
+export interface BrowserPromptFallbackAuthorization {
+  attachmentsPolicy: "auto";
+  bundleRequested: false;
+  model: string;
+  /** Caller limit after intersecting it with the selected model's limit. */
+  maxInputTokens: number;
+}
+
+/**
+ * Terminal evidence for the initial browser submission. Hashes bind the exact
+ * primary and actually submitted prompt strings without exposing their text;
+ * the transport fields and fallback reason identify the branch that crossed
+ * the send boundary.
+ */
+export interface BrowserSubmissionProvenance {
+  primaryPromptSha256: string;
+  submittedPromptSha256: string;
+  primaryTransport: BrowserSubmissionTransport;
+  submittedTransport: BrowserSubmissionTransport;
+  fallbackUsed: boolean;
+  fallbackReason: BrowserPromptFallbackReason | null;
+  equivalenceAlgorithm: "oracle.browser-auto-fallback-exact.v2" | null;
+  equivalenceVerified: boolean | null;
+}
+
+export interface BrowserSubmissionFallback {
+  prompt: string;
+  attachments: BrowserAttachment[];
+  /** Planner provenance; legacy callers may omit this and remain opt-in only remotely. */
+  reason?: BrowserPromptFallbackReason;
+  /** Planner policy evidence. Remote workers revalidate every field authoritatively. */
+  authorization?: BrowserPromptFallbackAuthorization;
 }
 
 export interface BrowserGeneratedImage {
@@ -139,9 +181,11 @@ export interface BrowserRunOptions {
   attachments?: BrowserAttachment[];
   /**
    * Optional secondary submission to try if the initial prompt is rejected by ChatGPT
-   * (e.g. inline file paste exceeds composer limits). Intended for auto inline->upload fallback.
+   * before dispatch (e.g. inline text exceeds composer limits, or an auto-policy
+   * text upload stalls). Runtime direction checks keep explicit upload policy and
+   * raw/binary attachments from silently becoming inline text.
    */
-  fallbackSubmission?: { prompt: string; attachments: BrowserAttachment[] };
+  fallbackSubmission?: BrowserSubmissionFallback;
   config?: BrowserAutomationConfig;
   log?: BrowserLogger;
   heartbeatIntervalMs?: number;
@@ -240,6 +284,8 @@ export interface BrowserRunResult {
   tabUrl?: string;
   conversationId?: string;
   promptSubmitted?: boolean;
+  /** Exact branch/transport evidence for the initial submitted prompt. */
+  submissionProvenance?: BrowserSubmissionProvenance;
   controllerPid?: number;
 }
 

@@ -28,7 +28,8 @@ import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { serveRemote } from "../../src/remote/server.js";
 import {
@@ -355,7 +356,15 @@ describe("attach-only serve: fail-closed admission", () => {
     async () => {
       const profileDir = await mkdtemp(path.join(os.tmpdir(), "oracle-attach-only-"));
       const fakeCdp = await startFakeCdp();
+      const chromeScript = path.join(profileDir, "google-chrome");
+      await writeFile(chromeScript, "setInterval(() => {}, 1_000);\n", "utf8");
+      const chrome = spawn(
+        process.execPath,
+        [chromeScript, `--remote-debugging-port=${fakeCdp.port}`, `--user-data-dir=${profileDir}`],
+        { stdio: "ignore" },
+      );
       try {
+        await once(chrome, "spawn");
         await writeFile(
           path.join(profileDir, "DevToolsActivePort"),
           `${fakeCdp.port}\n/devtools/browser/00000000-0000-0000-0000-000000000000\n`,
@@ -372,6 +381,8 @@ describe("attach-only serve: fail-closed admission", () => {
         expect(body.chromeReachable).toBe(true);
         expect(launchMock).not.toHaveBeenCalled();
       } finally {
+        chrome.kill("SIGTERM");
+        await once(chrome, "exit").catch(() => undefined);
         await fakeCdp.close();
         await rm(profileDir, { recursive: true, force: true });
       }

@@ -67,14 +67,18 @@ import type { BrowserLogger } from "../browser/types.js";
 import type { BrowserRunResult } from "../browserMode.js";
 import {
   getRemoteBrowserFailedRouteFromError,
+  getRemoteBrowserPendingRecoveryClaimFromError,
   getRemoteBrowserRecoveryFromError,
   RemoteRunFailedError,
   type RemoteBrowserFailedRoute,
+  type RemoteBrowserPendingRecoveryClaim,
   type RemoteBrowserRecoveryCarrier,
 } from "../remote/client.js";
 import {
+  deleteRemoteBrowserPendingRecoveryClaim,
   deleteRemoteBrowserRecoverySecret,
   toPublicRemoteRecoveryMetadata,
+  writeRemoteBrowserPendingRecoveryClaim,
   writeRemoteBrowserRecoverySecret,
 } from "../remote/sessionRecoveryStore.js";
 import {
@@ -82,6 +86,7 @@ import {
   isFailedRemoteBrowserOrigin,
   isRemoteBrowserRecoveryCompletionPersisted,
   ownsRemoteBrowserRecoveryCompletion,
+  promotePendingRemoteBrowserRecoveryClaim,
   recoverStoredRemoteBrowserSession,
   releaseRemoteBrowserRecoveryCompletion,
   RemoteBrowserRecoveryUnavailableError,
@@ -143,7 +148,9 @@ type ClaudeCodeFinalizedError = Error & {
 interface RemoteBrowserFailurePersistenceDeps {
   updateSession?: typeof sessionStore.updateSession;
   writeSecret?: typeof writeRemoteBrowserRecoverySecret;
+  writePendingClaim?: typeof writeRemoteBrowserPendingRecoveryClaim;
   deleteSecret?: typeof deleteRemoteBrowserRecoverySecret;
+  deletePendingClaim?: typeof deleteRemoteBrowserPendingRecoveryClaim;
 }
 
 export class RemoteBrowserFailureSupersededError extends Error {
@@ -181,12 +188,33 @@ export async function persistRemoteBrowserFailureRecoveryState(
     browser: SessionMetadata["browser"];
     failedRoute: RemoteBrowserFailedRoute;
     recoveryCarrier?: RemoteBrowserRecoveryCarrier | null;
+    pendingRecoveryClaim?: RemoteBrowserPendingRecoveryClaim | null;
   },
   deps: RemoteBrowserFailurePersistenceDeps = {},
 ): Promise<SessionMetadata["browser"]> {
   const updateSession = deps.updateSession ?? sessionStore.updateSession.bind(sessionStore);
   const writeSecret = deps.writeSecret ?? writeRemoteBrowserRecoverySecret;
+  const writePendingClaim = deps.writePendingClaim ?? writeRemoteBrowserPendingRecoveryClaim;
   const deleteSecret = deps.deleteSecret ?? deleteRemoteBrowserRecoverySecret;
+  const deletePendingClaim = deps.deletePendingClaim ?? deleteRemoteBrowserPendingRecoveryClaim;
+  if (
+    input.recoveryCarrier &&
+    (input.recoveryCarrier.recovery.originRunId !== input.failedRoute.runId ||
+      input.recoveryCarrier.accountId !== input.failedRoute.accountId ||
+      (input.recoveryCarrier.laneId ?? null) !== (input.failedRoute.laneId ?? null))
+  ) {
+    throw new Error("Remote recovery carrier does not match its authenticated failed-run route.");
+  }
+  if (
+    input.pendingRecoveryClaim &&
+    (input.pendingRecoveryClaim.originRunId !== input.failedRoute.runId ||
+      input.pendingRecoveryClaim.accountId !== input.failedRoute.accountId ||
+      input.pendingRecoveryClaim.originLaneId !== input.failedRoute.laneId)
+  ) {
+    throw new Error(
+      "Pending remote recovery authority does not match its authenticated failed-run route.",
+    );
+  }
   let browser: SessionMetadata["browser"] = {
     ...input.browser,
     remoteRun: input.failedRoute,
@@ -227,6 +255,24 @@ export async function persistRemoteBrowserFailureRecoveryState(
     );
   }
 
+  if (!input.recoveryCarrier && input.pendingRecoveryClaim) {
+    await writePendingClaim(input.sessionId, input.pendingRecoveryClaim);
+    let stillOwned = false;
+    const refreshed = await updateSession(input.sessionId, (current) => {
+      stillOwned = failedRemoteRouteMatches(current, input.failedRoute);
+      return {};
+    });
+    if (!stillOwned) {
+      await deletePendingClaim(input.sessionId, input.pendingRecoveryClaim.originRunId).catch(
+        () => false,
+      );
+      throw new RemoteBrowserFailureSupersededError(
+        "A newer browser generation superseded this pending remote recovery claim.",
+        refreshed?.browser ?? browser,
+      );
+    }
+    return refreshed?.browser ?? browser;
+  }
   if (!input.recoveryCarrier) return browser;
   await writeSecret(input.sessionId, input.recoveryCarrier);
   const coordinate = toPublicRemoteRecoveryMetadata(input.recoveryCarrier);
@@ -261,6 +307,7 @@ export async function persistRemoteBrowserFailureRecoveryState(
       freshBrowser,
     );
   }
+  await deletePendingClaim(input.sessionId, input.failedRoute.runId).catch(() => false);
   return publishedMetadata?.browser ?? { ...browser, remoteRecovery: coordinate };
 }
 
@@ -315,6 +362,7 @@ export interface SessionRunParams {
   remoteFailureDeps?: {
     getFailedRoute?: typeof getRemoteBrowserFailedRouteFromError;
     getRecovery?: typeof getRemoteBrowserRecoveryFromError;
+    getPendingRecoveryClaim?: typeof getRemoteBrowserPendingRecoveryClaimFromError;
     persistState?: typeof persistRemoteBrowserFailureRecoveryState;
   };
   /** Narrow injection seam for submitted-session recovery race tests. */
@@ -324,6 +372,7 @@ export interface SessionRunParams {
     release?: typeof releaseRemoteBrowserRecoveryCompletion;
     deleteSecret?: typeof deleteRemoteBrowserRecoverySecret;
     persistArtifacts?: typeof persistRemoteRecoveryArtifacts;
+    promotePending?: typeof promotePendingRemoteBrowserRecoveryClaim;
   };
   muteStdout?: boolean;
   claudeCodeRunner?: ClaudeCodeSessionRunner;
@@ -1154,11 +1203,15 @@ export async function performSessionRun({
     const rawRemoteRecoveryCarrier = (
       remoteFailureDeps?.getRecovery ?? getRemoteBrowserRecoveryFromError
     )(error);
+    const rawPendingRecoveryClaim = (
+      remoteFailureDeps?.getPendingRecoveryClaim ?? getRemoteBrowserPendingRecoveryClaimFromError
+    )(error);
     // A single recovered answer cannot truthfully complete a multi-turn run:
     // prior captured turns are not yet durably checkpointed, and later
     // requested follow-ups may never have been submitted. Preserve only the
     // failed route and direct the operator to account history.
     const remoteRecoveryCarrier = hasBrowserFollowUps ? null : rawRemoteRecoveryCarrier;
+    const pendingRecoveryClaim = hasBrowserFollowUps ? null : rawPendingRecoveryClaim;
     const failedRemoteRoute =
       (remoteFailureDeps?.getFailedRoute ?? getRemoteBrowserFailedRouteFromError)(error) ??
       (rawRemoteRecoveryCarrier
@@ -1169,7 +1222,15 @@ export async function performSessionRun({
             terminalDoneOk: false as const,
             provenance: null,
           }
-        : null);
+        : rawPendingRecoveryClaim
+          ? {
+              runId: rawPendingRecoveryClaim.originRunId,
+              accountId: rawPendingRecoveryClaim.accountId,
+              laneId: rawPendingRecoveryClaim.originLaneId,
+              terminalDoneOk: false as const,
+              provenance: null,
+            }
+          : null);
     const deferredFailureLogs: string[] = [];
     let failureLogsFlushed = false;
     const failureLog = (entry?: string): void => {
@@ -1198,6 +1259,7 @@ export async function performSessionRun({
           browser: currentBrowser,
           failedRoute: failedRemoteRoute,
           recoveryCarrier: remoteRecoveryCarrier,
+          pendingRecoveryClaim,
         });
       } catch (storeError) {
         if (storeError instanceof RemoteBrowserFailureSupersededError) {
@@ -1582,7 +1644,17 @@ async function recoverSubmittedBrowserSessionBeforeFreshRun({
   log: (message?: string) => void;
   deps?: SessionRunParams["remoteRecoveryDeps"];
 }): Promise<boolean> {
-  const remoteOrigin = isFailedRemoteBrowserOrigin(sessionMeta);
+  let remoteOrigin = isFailedRemoteBrowserOrigin(sessionMeta);
+  if (remoteOrigin && !sessionMeta.browser?.remoteRecovery) {
+    const promoted = await (deps?.promotePending ?? promotePendingRemoteBrowserRecoveryClaim)(
+      sessionMeta,
+      { log },
+    );
+    if (promoted) {
+      sessionMeta = promoted;
+      remoteOrigin = isFailedRemoteBrowserOrigin(sessionMeta);
+    }
+  }
   const coordinateRuntime = sessionMeta.browser?.remoteRecovery?.runtime;
   const runtime =
     buildSubmittedRecoveryRuntime(sessionMeta) ??

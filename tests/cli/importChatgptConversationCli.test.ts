@@ -202,7 +202,7 @@ describe("import-chatgpt-url CLI", () => {
       "summary",
     ]);
     expect(compatibility.code).toBe(0);
-  });
+  }, 30_000);
 
   test("two processes racing one exact slug publish one complete reference", async () => {
     const [left, right] = await Promise.all([

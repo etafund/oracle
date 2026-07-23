@@ -86,6 +86,54 @@ describe("runBrowserSessionExecution", () => {
     expect(log).toHaveBeenCalled();
   });
 
+  test("preserves terminal submission provenance in returned runtime", async () => {
+    const submissionProvenance = {
+      primaryPromptSha256: "a".repeat(64),
+      submittedPromptSha256: "b".repeat(64),
+      primaryTransport: "upload" as const,
+      submittedTransport: "inline" as const,
+      fallbackUsed: true,
+      fallbackReason: "auto-upload-timeout-to-inline" as const,
+      equivalenceAlgorithm: "oracle.browser-auto-fallback-exact.v2" as const,
+      equivalenceVerified: true,
+    };
+    const result = await runBrowserSessionExecution(
+      {
+        runOptions: baseRunOptions,
+        browserConfig: baseConfig,
+        cwd: "/repo",
+        log: vi.fn(),
+      },
+      {
+        assemblePrompt: async () => ({
+          markdown: "prompt",
+          composerText: "prompt",
+          estimatedInputTokens: 1,
+          attachments: [],
+          inlineFileCount: 0,
+          tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: "auto",
+          attachmentMode: "inline",
+          fallback: null,
+        }),
+        executeBrowser: async () => ({
+          answerText: "ok",
+          answerMarkdown: "ok",
+          tookMs: 1,
+          answerTokens: 1,
+          answerChars: 2,
+          promptSubmitted: true,
+          submissionProvenance,
+        }),
+      },
+    );
+
+    expect(result.runtime).toMatchObject({
+      promptSubmitted: true,
+      submissionProvenance,
+    });
+  });
+
   test("forwards runProgress (the --run-progress knob) from runOptions to executeBrowser", async () => {
     const executeBrowser = vi.fn(async () => ({
       answerText: "ok",
@@ -858,6 +906,13 @@ describe("runBrowserSessionExecution", () => {
           fallback: {
             composerText: "fallback prompt",
             attachments: [{ path: "/repo/a.txt", displayPath: "a.txt", sizeBytes: 1 }],
+            reason: "auto-inline-too-large-to-upload",
+            authorization: {
+              attachmentsPolicy: "auto",
+              bundleRequested: false,
+              model: "gpt-5.6-sol",
+              maxInputTokens: 272_000,
+            },
             bundled: null,
           },
         }),
@@ -869,6 +924,13 @@ describe("runBrowserSessionExecution", () => {
         fallbackSubmission: {
           prompt: "fallback prompt",
           attachments: [expect.objectContaining({ path: "/repo/a.txt", displayPath: "a.txt" })],
+          reason: "auto-inline-too-large-to-upload",
+          authorization: {
+            attachmentsPolicy: "auto",
+            bundleRequested: false,
+            model: "gpt-5.6-sol",
+            maxInputTokens: 272_000,
+          },
         },
       }),
     );

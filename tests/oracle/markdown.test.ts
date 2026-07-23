@@ -60,6 +60,26 @@ describe("formatFileSections", () => {
     expect(out).toContain("2 | const y = 2;");
   });
 
+  test("can preserve source trailing whitespace injectively", () => {
+    const withoutNewline = formatFileSections([{ displayPath: "a.txt", content: "value" }], {
+      lineNumbers: false,
+      preserveTrailingWhitespace: true,
+    });
+    const withNewline = formatFileSections([{ displayPath: "a.txt", content: "value\n" }], {
+      lineNumbers: false,
+      preserveTrailingWhitespace: true,
+    });
+    const withSpaces = formatFileSections([{ displayPath: "a.txt", content: "value  \n" }], {
+      lineNumbers: false,
+      preserveTrailingWhitespace: true,
+    });
+
+    expect(withoutNewline).not.toBe(withNewline);
+    expect(withNewline).not.toBe(withSpaces);
+    expect(withNewline).toContain("value\n\n```");
+    expect(withSpaces).toContain("value  \n\n```");
+  });
+
   test("can render generated file-section lists raw", () => {
     const out = formatFileSections([{ displayPath: "src/app.ts", content: "const x = 1;\n" }], {
       lineNumbers: false,

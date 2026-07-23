@@ -49,6 +49,7 @@ interface MockHealth {
     protocol: string | null;
     promptPreviewAlgorithm: string | null;
     promptDomIdentityAlgorithm: string | null;
+    durableClaimLookup: boolean | null;
   };
 }
 
@@ -225,6 +226,7 @@ describe("buildRemoteEndpointReport — status precedence", () => {
         protocol: "remote-browser-recovery.v1",
         promptPreviewAlgorithm: "oracle.prompt-recovery-preview.v1",
         promptDomIdentityAlgorithm: null,
+        durableClaimLookup: false,
       },
     });
     const { report } = await buildRemoteEndpointReport({
@@ -237,9 +239,34 @@ describe("buildRemoteEndpointReport — status precedence", () => {
       protocol: "remote-browser-recovery.v1",
       prompt_preview_algorithm: "oracle.prompt-recovery-preview.v1",
       prompt_dom_identity_algorithm: null,
+      durable_claim_lookup: false,
     });
     expect(report.error).toMatch(/upgrade.*client.*worker/i);
     expect(isHealthyReport(report)).toBe(false);
+  });
+
+  test("marks a worker without durable claim lookup incompatible even when older IDs match", async () => {
+    checkRemoteHealth.mockResolvedValueOnce({
+      ok: true,
+      version: "0.16.1",
+      browserRecoveryCompatibility: {
+        compatible: false,
+        protocol: "remote-browser-recovery.v4",
+        promptPreviewAlgorithm: "oracle.prompt-recovery-preview.v2",
+        promptDomIdentityAlgorithm: "oracle.rendered-prompt-dom-identity.v2",
+        durableClaimLookup: null,
+      },
+    });
+    const { report } = await buildRemoteEndpointReport({
+      resolved: resolvedConfig(),
+      env: { ORACLE_REMOTE_HOST: "h", ORACLE_REMOTE_TOKEN: "t" },
+    });
+    expect(report.status).toBe("incompatible");
+    expect(report.browser_recovery).toMatchObject({
+      compatible: false,
+      protocol: "remote-browser-recovery.v4",
+      durable_claim_lookup: null,
+    });
   });
 
   test("probe=false emits a config-only snapshot with status=unknown", async () => {

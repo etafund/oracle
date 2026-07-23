@@ -3,7 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
 import { MAX_DATA_TRANSFER_BYTES } from "../../src/browser/actions/attachmentDataTransfer.js";
-import { assembleBrowserPrompt, isRawUploadFile } from "../../src/browser/prompt.js";
+import {
+  AUTO_PROMPT_FALLBACK_MAX_LINES,
+  assembleBrowserPrompt,
+  isRawUploadFile,
+  verifyAutoInlineToUploadFallback,
+  verifyAutoUploadToInlineFallback,
+} from "../../src/browser/prompt.js";
 import { createStoredZip } from "../../src/browser/zipBundle.js";
 import { DEFAULT_SYSTEM_PROMPT, type MODEL_CONFIGS } from "../../src/oracle.js";
 import type { RunOracleOptions } from "../../src/oracle.js";
@@ -27,6 +33,7 @@ function buildOptions(overrides: Partial<RunOracleOptions> = {}): RunOracleOptio
     maxFileSizeBytes: overrides.maxFileSizeBytes,
     browserBundleFiles: overrides.browserBundleFiles,
     browserBundleFormat: overrides.browserBundleFormat,
+    maxInput: overrides.maxInput,
   } as RunOracleOptions;
 }
 
@@ -90,7 +97,7 @@ describe("assembleBrowserPrompt", () => {
     expect(result.composerText).not.toContain("[SYSTEM]");
     expect(result.composerText).not.toContain("[USER]");
     expect(result.composerText).toContain("### File: a.txt");
-    expect(result.composerText).toContain("Lines: 1-1");
+    expect(result.composerText).toContain("Lines: 1-2");
     expect(result.composerText).toContain('1 | console.log("hi")');
     expect(result.estimatedInputTokens).toBeGreaterThan(0);
     expect(result.attachments).toEqual([]);
@@ -119,7 +126,93 @@ describe("assembleBrowserPrompt", () => {
     expect(result.tokenEstimateIncludesInlineFiles).toBe(false);
     expect(result.composerText).toBe("Explain the bug");
     expect(result.composerText).not.toContain("### File: big.txt");
-    expect(result.fallback).toBeNull();
+    expect(result.fallback).toEqual(
+      expect.objectContaining({
+        composerText: expect.stringContaining("### File: big.txt"),
+        attachments: [],
+        reason: "auto-upload-timeout-to-inline",
+      }),
+    );
+    expect(
+      verifyAutoUploadToInlineFallback({
+        primaryPrompt: result.composerText,
+        fallbackPrompt: result.fallback?.composerText ?? "",
+        attachments: [{ displayPath: "big.txt", content: Buffer.from(huge) }],
+      }),
+    ).toBe(true);
+  });
+
+  test("upload-to-inline proof rejects altered, binary, and raw attachment fallbacks", () => {
+    const formatted = "Review\n\n### File: a.txt\nLines: 1-1\n```\n1 | safe\n```";
+    expect(
+      verifyAutoUploadToInlineFallback({
+        primaryPrompt: "Review",
+        fallbackPrompt: `${formatted} altered`,
+        attachments: [{ displayPath: "a.txt", content: Buffer.from("safe") }],
+      }),
+    ).toBe(false);
+    expect(
+      verifyAutoUploadToInlineFallback({
+        primaryPrompt: "Review",
+        fallbackPrompt: formatted,
+        attachments: [{ displayPath: "a.txt", content: Buffer.from([0, 1, 2]) }],
+      }),
+    ).toBe(false);
+    expect(
+      verifyAutoUploadToInlineFallback({
+        primaryPrompt: "Review",
+        fallbackPrompt: formatted,
+        attachments: [{ displayPath: "a.pdf", content: Buffer.from("safe") }],
+      }),
+    ).toBe(false);
+  });
+
+  test("automatic fallback proof is exact in both transport directions", () => {
+    const inline = "Review\n\n### File: a.txt\nLines: 1-1\n```\n1 | safe\n```";
+    const attachments = [{ displayPath: "a.txt", content: Buffer.from("safe") }];
+
+    expect(
+      verifyAutoUploadToInlineFallback({
+        primaryPrompt: "Review",
+        fallbackPrompt: inline,
+        attachments,
+      }),
+    ).toBe(true);
+    expect(
+      verifyAutoInlineToUploadFallback({
+        primaryPrompt: inline,
+        fallbackPrompt: "Review",
+        attachments,
+      }),
+    ).toBe(true);
+    expect(
+      verifyAutoInlineToUploadFallback({
+        primaryPrompt: `${inline} altered`,
+        fallbackPrompt: "Review",
+        attachments,
+      }),
+    ).toBe(false);
+  });
+
+  test("exact fallback proof rejects canonicalization-changing and expansion-heavy text", () => {
+    const zeroWidthContent = "sa\u200Bfe";
+    const zeroWidthInline = `Review\n\n### File: a.txt\nLines: 1-1\n\`\`\`\n1 | ${zeroWidthContent}\n\`\`\``;
+    expect(
+      verifyAutoUploadToInlineFallback({
+        primaryPrompt: "Review",
+        fallbackPrompt: zeroWidthInline,
+        attachments: [{ displayPath: "a.txt", content: Buffer.from(zeroWidthContent) }],
+      }),
+    ).toBe(false);
+
+    const tooManyLines = "\n".repeat(AUTO_PROMPT_FALLBACK_MAX_LINES);
+    expect(
+      verifyAutoUploadToInlineFallback({
+        primaryPrompt: "Review",
+        fallbackPrompt: "not formatted",
+        attachments: [{ displayPath: "many.txt", content: Buffer.from(tooManyLines) }],
+      }),
+    ).toBe(false);
   });
 
   test("auto inline mode includes upload fallback", async () => {
@@ -139,8 +232,32 @@ describe("assembleBrowserPrompt", () => {
       expect.objectContaining({
         composerText: "Explain the bug",
         attachments: [expect.objectContaining({ path: "/repo/a.txt", displayPath: "a.txt" })],
+        reason: "auto-inline-too-large-to-upload",
       }),
     );
+  });
+
+  test("implicit auto-bundling does not advertise an unverifiable upload fallback", async () => {
+    const files = Array.from({ length: 11 }, (_, index) => `file-${index}.txt`);
+    const result = await assembleBrowserPrompt(
+      buildOptions({
+        prompt: "Explain the bug",
+        file: files,
+        browserAttachments: "auto",
+      }),
+      {
+        cwd: "/repo",
+        readFilesImpl: async (paths) =>
+          paths.map((filePath, index) => ({
+            path: path.resolve("/repo", filePath),
+            content: `tiny-${index}`,
+          })),
+        tokenizeImpl: fastTokenizer,
+      },
+    );
+
+    expect(result.attachmentMode).toBe("inline");
+    expect(result.fallback).toBeNull();
   });
 
   test("always mode forces uploads even when small", async () => {
@@ -167,6 +284,42 @@ describe("assembleBrowserPrompt", () => {
     expect(result.composerText).not.toContain("### File: a.txt");
     expect(tokenizedContents).toContain("### File: a.txt\n```\ntiny\n```");
     expect(tokenizedContents.some((content) => content.includes("1 | tiny"))).toBe(false);
+    expect(result.fallback).toBeNull();
+  });
+
+  test("does not build upload-to-inline recovery beyond the configured token budget", async () => {
+    const result = await assembleBrowserPrompt(
+      buildOptions({
+        file: ["big.txt"],
+        browserAttachments: "auto",
+        maxInput: 100,
+      }),
+      {
+        cwd: "/repo",
+        readFilesImpl: async () => [{ path: "/repo/big.txt", content: "x".repeat(62_000) }],
+        tokenizeImpl: () => 101,
+      },
+    );
+
+    expect(result.attachmentMode).toBe("upload");
+    expect(result.fallback).toBeNull();
+  });
+
+  test("does not override explicit bundling with upload-to-inline recovery", async () => {
+    const result = await assembleBrowserPrompt(
+      buildOptions({
+        file: ["big.txt"],
+        browserAttachments: "auto",
+        browserBundleFiles: true,
+      }),
+      {
+        cwd: "/repo",
+        readFilesImpl: async () => [{ path: "/repo/big.txt", content: "x".repeat(62_000) }],
+        tokenizeImpl: fastTokenizer,
+      },
+    );
+
+    expect(result.attachmentMode).toBe("bundle");
     expect(result.fallback).toBeNull();
   });
 
@@ -465,6 +618,7 @@ describe("assembleBrowserPrompt", () => {
       bundlePath: result.attachments[0]?.displayPath,
       format: "text",
     });
+    expect(result.fallback).toBeNull();
   });
 
   test("supports opt-in ZIP bundles for browser uploads", async () => {

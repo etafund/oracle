@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "vitest";
+import { createHash } from "node:crypto";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -92,7 +93,14 @@ describe("client-disconnect abort", () => {
       const sinkDir = await isolatedSinkDir();
       let sawSignal = false;
       const server = await createRemoteServer(
-        { host: "127.0.0.1", port: 0, token: "secret", logger: () => {}, attachOnly: false },
+        {
+          host: "127.0.0.1",
+          port: 0,
+          token: "secret",
+          logger: () => {},
+          attachOnly: false,
+          recoveryCheckpointGraceMs: 50,
+        },
         {
           runBrowser: abortAwareRunStub({
             onStart: (options) => {
@@ -136,7 +144,14 @@ describe("client-disconnect abort", () => {
     async () => {
       const sinkDir = await isolatedSinkDir();
       const server = await createRemoteServer(
-        { host: "127.0.0.1", port: 0, token: "secret", logger: () => {}, attachOnly: false },
+        {
+          host: "127.0.0.1",
+          port: 0,
+          token: "secret",
+          logger: () => {},
+          attachOnly: false,
+          recoveryCheckpointGraceMs: 50,
+        },
         {
           runBrowser: abortAwareRunStub({
             onStart: async (options) => {
@@ -179,7 +194,14 @@ describe("client-disconnect abort", () => {
     async () => {
       const sinkDir = await isolatedSinkDir();
       const server = await createRemoteServer(
-        { host: "127.0.0.1", port: 0, token: "secret", logger: () => {}, attachOnly: false },
+        {
+          host: "127.0.0.1",
+          port: 0,
+          token: "secret",
+          logger: () => {},
+          attachOnly: false,
+          recoveryCheckpointGraceMs: 50,
+        },
         {
           runBrowser: abortAwareRunStub({
             onStart: async (options) => {
@@ -255,8 +277,11 @@ describe("client-disconnect abort", () => {
         attachments: [
           {
             fileName: "big.bin",
+            displayPath: "big.bin",
             contentBase64: attachmentBytes.toString("base64"),
             sizeBytes: attachmentBytes.length,
+            sha256: createHash("sha256").update(attachmentBytes).digest("hex"),
+            generatedBundle: false,
           },
         ],
         browserConfig: {},

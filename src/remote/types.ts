@@ -1,6 +1,11 @@
 import type { BrowserSessionConfig } from "../sessionStore.js";
 import type { BrowserRunResult } from "../browserMode.js";
-import type { BrowserAttachment } from "../browser/types.js";
+import type {
+  BrowserAttachment,
+  BrowserPromptFallbackReason,
+  BrowserSubmissionProvenance,
+  BrowserSubmissionTransport,
+} from "../browser/types.js";
 import type { SubmittedMessageBindingQuality } from "../browser/actions/captureBinding.js";
 import {
   PROMPT_DOM_IDENTITY_ALGORITHM,
@@ -21,14 +26,21 @@ export const MAX_REMOTE_ARTIFACT_BYTES = 512 * 1024 * 1024;
  * browser; silently degrading to a legacy sidecar would make the resulting
  * failed session unrecoverable.
  */
-export const REMOTE_BROWSER_RECOVERY_PROTOCOL = "remote-browser-recovery.v2" as const;
-// Keep the deployed router's exact `/runs` and `/recover` locations while
+export const REMOTE_BROWSER_RECOVERY_PROTOCOL = "remote-browser-recovery.v4" as const;
+// Keep the deployed router's exact `/runs`, `/recover`, and recovery-claim
+// locations while
 // versioning the upstream request target. nginx location matching excludes
 // the query string, but Node workers compare `req.url` including it: current
 // routers forward these targets, while legacy workers return 404 before body
 // parsing/browser execution instead of ignoring a new header and submitting.
-export const REMOTE_BROWSER_RUN_PATH = "/runs?protocol=remote-browser-recovery.v2" as const;
-export const REMOTE_BROWSER_RECOVERY_PATH = "/recover?protocol=remote-browser-recovery.v2" as const;
+export const REMOTE_BROWSER_RUN_PATH = "/runs?protocol=remote-browser-recovery.v4" as const;
+export const REMOTE_BROWSER_RECOVERY_PATH = "/recover?protocol=remote-browser-recovery.v4" as const;
+export const REMOTE_BROWSER_RECOVERY_CLAIM_LOOKUP_PATH =
+  "/recovery-claims?protocol=remote-browser-recovery.v4" as const;
+export const REMOTE_BROWSER_RUN_SCHEMA = "remote-browser-run.v4" as const;
+export const REMOTE_BROWSER_RECOVERY_CLAIM_SCHEMA = "remote-browser-recovery-claim.v1" as const;
+export const REMOTE_BROWSER_RECOVERY_CLAIM_ROUTE_HEADER = "x-oracle-recovery-claim-lookup" as const;
+export const REMOTE_BROWSER_RECOVERY_CLAIM_ROUTE_HEADER_VALUE = "v1" as const;
 
 export const REMOTE_BROWSER_RECOVERY_ADMISSION_HEADERS = {
   protocol: "x-oracle-browser-recovery-protocol",
@@ -42,6 +54,17 @@ export const REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES = {
     PROMPT_RECOVERY_PREVIEW_ALGORITHM,
   [REMOTE_BROWSER_RECOVERY_ADMISSION_HEADERS.promptDomIdentityAlgorithm]:
     PROMPT_DOM_IDENTITY_ALGORITHM,
+} as const;
+
+/** Private request/response headers used only for the out-of-band durable claim lookup. */
+export const REMOTE_BROWSER_RECOVERY_CLAIM_HEADERS = {
+  claimKey: "x-oracle-recovery-claim-key",
+  accountId: "x-oracle-recovery-account-id",
+  originRunId: "x-oracle-recovery-origin-run-id",
+  /** Request coordinate echoed by a direct worker or minted by the trusted router as route proof. */
+  originLaneId: "x-oracle-recovery-origin-lane-id",
+  /** Comma-separated canonical set of one or two authorized preview hashes. */
+  promptPreviewSha256: "x-oracle-recovery-prompt-preview-sha256",
 } as const;
 
 export type RemoteActiveRunPhase = "running" | "completed";
@@ -58,17 +81,29 @@ export type RemoteRunReadinessState =
 export interface RemoteAttachmentPayload {
   fileName: string;
   displayPath: string;
-  sizeBytes?: number;
+  sizeBytes: number;
+  sha256: string;
+  generatedBundle: boolean;
   contentBase64: string;
 }
 
+export interface RemotePromptFallbackPolicy {
+  attachmentsPolicy: "auto";
+  bundleRequested: false;
+  model: "gpt-5.6-sol";
+  maxInputTokens: number;
+}
+
 export interface RemoteRunPayload {
+  /** Redundant body marker; the request path and admission headers are authoritative. */
+  schema?: typeof REMOTE_BROWSER_RUN_SCHEMA;
   prompt: string;
   attachments: RemoteAttachmentPayload[];
   fallbackSubmission?: {
     prompt: string;
     attachments: RemoteAttachmentPayload[];
   };
+  fallbackPolicy?: RemotePromptFallbackPolicy;
   browserConfig: BrowserSessionConfig;
   options: {
     heartbeatIntervalMs?: number;
@@ -101,6 +136,8 @@ export interface RemoteBrowserRecoveryCapabilities {
   protocol: typeof REMOTE_BROWSER_RECOVERY_PROTOCOL;
   promptPreviewAlgorithm: typeof PROMPT_RECOVERY_PREVIEW_ALGORITHM;
   promptDomIdentityAlgorithm: typeof PROMPT_DOM_IDENTITY_ALGORITHM;
+  /** A severed run stream can recover its capability through a durable authenticated lookup. */
+  durableClaimLookup: true;
 }
 
 export interface RemoteArtifactDescriptor {
@@ -136,7 +173,12 @@ export interface RemoteAttachmentIntegrityEntry {
 export interface RemoteUploadIntegrity {
   attachments: RemoteAttachmentIntegrityEntry[];
   fallbackAttachments?: RemoteAttachmentIntegrityEntry[];
-  preSendDomCheck: "composer-chips-by-stored-name";
+  /** Null on the pre-browser staging event; terminal outcome identifies what crossed Send. */
+  submittedBranch: "primary" | "fallback" | null;
+  submittedTransport: BrowserSubmissionTransport | null;
+  fallbackUsed: boolean | null;
+  fallbackReason: BrowserPromptFallbackReason | null;
+  preSendDomCheck: "composer-chips-by-stored-name" | "not-applicable" | null;
 }
 
 /**
@@ -169,6 +211,8 @@ export interface RemoteRunProvenanceSummary {
    */
   captureBindingQuality: SubmittedMessageBindingQuality | null;
   challengeClean: boolean | null;
+  /** Exact prompt/transport branch that crossed the initial Send boundary. */
+  submission: BrowserSubmissionProvenance | null;
 }
 
 export const REMOTE_RUN_RECOVERY_STAGES = [
@@ -242,6 +286,15 @@ export interface RemoteBrowserRecoveryRequest {
     verbose?: boolean;
     sessionId?: string;
   };
+}
+
+/** Successful, authenticated response from the durable recovery-claim lookup. */
+export interface RemoteBrowserRecoveryClaimLookupResponse {
+  schema: typeof REMOTE_BROWSER_RECOVERY_CLAIM_SCHEMA;
+  status: "ready";
+  originRunId: string;
+  originLaneId: string;
+  recovery: RemoteRunRecoveryHint & { stage: RemoteSessionRecoveryStage };
 }
 
 export type RemoteRunEvent =
@@ -341,6 +394,7 @@ export interface RemoteBrowserEndpointV1 {
     protocol: string | null;
     prompt_preview_algorithm: string | null;
     prompt_dom_identity_algorithm: string | null;
+    durable_claim_lookup: boolean | null;
   } | null;
   busy?: boolean;
   activeRun?: RemoteActiveRunInfo | null;

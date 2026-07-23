@@ -1,18 +1,26 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { chmod, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { setOracleHomeDirOverrideForTest } from "../../src/oracleHome.js";
 import { buildRemoteRunRecoveryHint } from "../../src/remote/recovery.js";
 import {
+  deleteRemoteBrowserPendingRecoveryClaim,
   deleteRemoteBrowserRecoverySecret,
   InvalidStoredRemoteRecoverySecretError,
+  readRemoteBrowserPendingRecoveryClaim,
   readRemoteBrowserRecoverySecret,
+  remoteBrowserPendingRecoveryClaimFilename,
   remoteBrowserRecoverySecretFilename,
   toPublicRemoteRecoveryMetadata,
+  writeRemoteBrowserPendingRecoveryClaim,
   writeRemoteBrowserRecoverySecret,
 } from "../../src/remote/sessionRecoveryStore.js";
-import type { RemoteBrowserRecoveryCarrier } from "../../src/remote/client.js";
+import type {
+  RemoteBrowserPendingRecoveryClaim,
+  RemoteBrowserRecoveryCarrier,
+} from "../../src/remote/client.js";
 import { sessionStore } from "../../src/sessionStore.js";
 
 const PROMPT_PREVIEW = "the exact submitted composer prefix";
@@ -87,6 +95,49 @@ async function createFixture(): Promise<{
 }
 
 describe("private remote recovery sidecar", () => {
+  test.skipIf(process.platform === "win32")(
+    "stores a pending admission claim privately without publishing its key in session metadata",
+    async () => {
+      const fixture = await createFixture();
+      const promptPreview = "pending exact submitted prefix";
+      const pending: RemoteBrowserPendingRecoveryClaim = {
+        claimKey: "A".repeat(43),
+        originRunId: "pending-origin-run",
+        accountId: "acct2",
+        originLaneId: "acct2-9474",
+        promptCandidates: [
+          {
+            promptPreview,
+            promptPreviewSha256: createHash("sha256").update(promptPreview).digest("hex"),
+          },
+        ],
+      };
+
+      await writeRemoteBrowserPendingRecoveryClaim(fixture.sessionId, pending);
+      const pendingPath = path.join(
+        fixture.sessionDir,
+        remoteBrowserPendingRecoveryClaimFilename(pending.originRunId),
+      );
+      const info = await stat(pendingPath);
+      expect(info.isFile()).toBe(true);
+      expect(info.mode & 0o777).toBe(0o600);
+      await expect(
+        readRemoteBrowserPendingRecoveryClaim(fixture.sessionId, pending.originRunId),
+      ).resolves.toEqual({
+        schema: "remote-browser-pending-recovery-claim-secret.v1",
+        ...pending,
+      });
+      const metadataRaw = await readFile(path.join(fixture.sessionDir, "meta.json"), "utf8");
+      expect(metadataRaw).not.toContain(pending.claimKey);
+      await expect(
+        deleteRemoteBrowserPendingRecoveryClaim(fixture.sessionId, pending.originRunId),
+      ).resolves.toBe(true);
+      await expect(
+        readRemoteBrowserPendingRecoveryClaim(fixture.sessionId, pending.originRunId),
+      ).resolves.toBeNull();
+    },
+  );
+
   test.skipIf(process.platform === "win32")(
     "writes an owner-only 0600 file and exposes only a nonsecret public coordinate",
     async () => {

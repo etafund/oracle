@@ -21,6 +21,7 @@ import {
 import { BrowserAutomationError } from "../../oracle/errors.js";
 import { randomUUID } from "node:crypto";
 import {
+  normalizeRenderedPromptDomIdentity,
   PROMPT_DOM_EXACT_MATCH_DECLARATION,
   PROMPT_DOM_IDENTITY_NORMALIZER_DECLARATION,
   PROMPT_DOM_NORMALIZER_DECLARATION,
@@ -41,6 +42,11 @@ export interface AttachmentReadyExpectation {
 
 type AttachmentReadyInput = string | AttachmentReadyExpectation;
 
+export interface ExactSubmissionExpectation {
+  prompt: string;
+  attachments: AttachmentReadyExpectation[];
+}
+
 /**
  * A synchronous DOM proof that must be evaluated in the same browser task as
  * the final send-target check. `assertResult` runs in Node on the returned
@@ -49,6 +55,12 @@ type AttachmentReadyInput = string | AttachmentReadyExpectation;
 export interface FinalPreDispatchDomGuard {
   expression: string;
   assertResult: (value: unknown) => void;
+  /**
+   * Read the installed page guard after every awaited persistence/mouse-move
+   * step and immediately before the first submission-capable input event.
+   */
+  immediatelyBeforeDispatchExpression?: string;
+  assertImmediatelyBeforeDispatchResult?: (value: unknown) => void;
   verdictBinding?: {
     name: string;
     parsePayload: (payload: string) => unknown | undefined;
@@ -60,7 +72,11 @@ export interface FinalPreDispatchDomGuard {
 
 type BeforePromptSubmit = (
   composerBindingToken?: string,
+  exactSubmission?: ExactSubmissionExpectation,
 ) => Promise<FinalPreDispatchDomGuard | void> | FinalPreDispatchDomGuard | void;
+
+const SUBMIT_DISPATCH_STARTED_LOG =
+  "Clicked send button (dispatch attempted; awaiting prompt commit proof)";
 
 export async function submitPrompt(
   deps: {
@@ -73,6 +89,8 @@ export async function submitPrompt(
     attachmentTimeoutMs?: number | null;
     beforePromptSubmit?: BeforePromptSubmit;
     requireBoundSendTarget?: boolean;
+    /** Require strict full-text equality in the active visible composer before dispatch. */
+    requireExactPromptRoundTrip?: boolean;
     onPromptSubmitted?: (submittedPrompt: string) => Promise<void> | void;
     onPromptBound?: (
       submittedPrompt: string,
@@ -163,11 +181,17 @@ export async function submitPrompt(
       const candidates = inputSelectors.flatMap((selector) =>
         Array.from(document.querySelectorAll(selector)),
       );
-      const active = candidates.find((node) => isVisible(node)) || candidates[0] || null;
+      const focused = document.activeElement;
+      const focusedCandidate = candidates.find(
+        (node) => node === focused || (focused && node.contains?.(focused)),
+      );
+      const active = focusedCandidate || candidates.find((node) => isVisible(node)) || candidates[0] || null;
       return {
         editorText: editor?.innerText ?? '',
         fallbackValue: fallback?.value ?? '',
         activeValue: active ? readValue(active) : '',
+        activeVisible: Boolean(active && isVisible(active)),
+        activeFocused: Boolean(active && focusedCandidate === active),
       };
     })()`,
     returnByValue: true,
@@ -218,11 +242,17 @@ export async function submitPrompt(
       const candidates = inputSelectors.flatMap((selector) =>
         Array.from(document.querySelectorAll(selector)),
       );
-      const active = candidates.find((node) => isVisible(node)) || candidates[0] || null;
+      const focused = document.activeElement;
+      const focusedCandidate = candidates.find(
+        (node) => node === focused || (focused && node.contains?.(focused)),
+      );
+      const active = focusedCandidate || candidates.find((node) => isVisible(node)) || candidates[0] || null;
       return {
         editorText: editor?.innerText ?? '',
         fallbackValue: fallback?.value ?? '',
         activeValue: active ? readValue(active) : '',
+        activeVisible: Boolean(active && isVisible(active)),
+        activeFocused: Boolean(active && focusedCandidate === active),
       };
     })()`,
     returnByValue: true,
@@ -230,12 +260,33 @@ export async function submitPrompt(
   const observedEditor = postVerification.result?.value?.editorText ?? "";
   const observedFallback = postVerification.result?.value?.fallbackValue ?? "";
   const observedActive = postVerification.result?.value?.activeValue ?? "";
-  const observedLength = Math.max(
-    observedEditor.length,
-    observedFallback.length,
-    observedActive.length,
-  );
-  if (promptLength >= 50_000 && observedLength > 0 && observedLength < promptLength - 2_000) {
+  const activeVisible = postVerification.result?.value?.activeVisible === true;
+  const activeFocused = postVerification.result?.value?.activeFocused === true;
+  // The focused visible editor is the only composer that can receive the
+  // dispatch. A stale hidden editor containing the full prompt must never mask
+  // truncation in the active one.
+  const observedLength = activeVisible && activeFocused ? observedActive.length : 0;
+  if (deps.requireExactPromptRoundTrip) {
+    const normalizedPrompt = normalizeRenderedPromptDomIdentity(prompt);
+    const exactRoundTrip =
+      activeVisible &&
+      activeFocused &&
+      normalizeRenderedPromptDomIdentity(observedActive) === normalizedPrompt;
+    if (!exactRoundTrip) {
+      await logDomFailure(runtime, logger, "prompt-inline-fallback-mismatch");
+      throw new BrowserAutomationError(
+        "Inline attachment fallback did not round-trip the complete prompt; refusing to dispatch.",
+        {
+          stage: "submit-prompt",
+          code: "prompt-inline-fallback-mismatch",
+          retryable: true,
+          promptLength,
+          observedLengths: [observedEditor.length, observedFallback.length, observedActive.length],
+        },
+      );
+    }
+  }
+  if (promptLength >= 50_000 && observedLength < promptLength - 2_000) {
     // Learned: very large prompts can truncate silently; fail fast so we can fall back to file uploads.
     await logDomFailure(runtime, logger, "prompt-too-large");
     throw new BrowserAutomationError(
@@ -258,9 +309,14 @@ export async function submitPrompt(
     deps?.attachmentBindingToken,
     deps.beforePromptSubmit,
     () => deps.onPromptSubmitted?.(prompt),
+    prompt,
   );
   if (!clicked) {
-    if (deps.requireBoundSendTarget) {
+    if (
+      deps.requireBoundSendTarget ||
+      deps.requireExactPromptRoundTrip ||
+      deps.beforePromptSubmit
+    ) {
       throw new BrowserAutomationError(
         "Protected submission never reached a bound clickable send target; refusing Enter fallback.",
         {
@@ -269,33 +325,24 @@ export async function submitPrompt(
         },
       );
     }
-    // Ordinary text-only layouts retain the historical Enter fallback, but
-    // the final account/page hook still runs at the true dispatch boundary.
-    await deps.beforePromptSubmit?.();
+    // Callers without a final page/account guard retain the historical Enter
+    // fallback. Guarded provider submissions must use a bound send target.
+    // Persist the conservative account-safety boundary before issuing the
+    // first key event: a lost CDP response cannot prove that ChatGPT did not
+    // receive the keydown. If either callback/log persistence fails, no input
+    // is issued.
+    await deps.onPromptSubmitted?.(prompt);
+    logger("Submitted prompt via Enter key");
     await input.dispatchKeyEvent({
       type: "keyDown",
       ...ENTER_KEY_EVENT,
       text: ENTER_KEY_TEXT,
       unmodifiedText: ENTER_KEY_TEXT,
     });
-    await deps.onPromptSubmitted?.(prompt);
     await input.dispatchKeyEvent({
       type: "keyUp",
       ...ENTER_KEY_EVENT,
     });
-    logger("Submitted prompt via Enter key");
-  } else {
-    // SUBMIT BOUNDARY: from this moment the prompt may have reached the
-    // account. This line is the explicit send-confirmation marker consumed by
-    // the remote server (submittedAt stamp -> after-submit classification,
-    // never retried); it must be emitted at click time on the primary path,
-    // exactly like the Enter fallback above, and aligned with the
-    // onPromptSubmitted flag below.
-    // The remote accounting boundary is dispatch (the prompt may now have
-    // reached the account), while verifyPromptCommitted below is acceptance
-    // proof. Keep the legacy "clicked send button" marker recognised by both
-    // ends of the remote stream, but name the event truthfully.
-    logger("Clicked send button (dispatch attempted; awaiting prompt commit proof)");
   }
   const commitTimeoutMs = Math.max(60_000, deps.inputTimeoutMs ?? 0);
   const submittedAttachmentNames = (deps.attachmentNames ?? [])
@@ -465,10 +512,12 @@ async function waitForDomReady(
   logger?.(`Page did not reach ready/composer state within ${timeoutMs}ms; continuing cautiously.`);
 }
 
-function buildAttachmentReadyExpression(
+export function buildAttachmentReadyExpression(
   attachmentNames: AttachmentReadyInput[],
   bindingToken?: string,
   bindToken = false,
+  sendBindingToken?: string,
+  exactSet = false,
 ): string {
   const attachmentExpectations = attachmentNames.map((attachment) => {
     const name = typeof attachment === "string" ? attachment : attachment.name;
@@ -483,10 +532,14 @@ function buildAttachmentReadyExpression(
   const namesLiteral = JSON.stringify(attachmentExpectations);
   const bindingTokenLiteral = JSON.stringify(bindingToken ?? "");
   const bindTokenLiteral = JSON.stringify(bindToken);
+  const exactSetLiteral = JSON.stringify(exactSet);
+  const sendBindingTokenLiteral = JSON.stringify(sendBindingToken ?? "");
   return `(() => {
     const expected = ${namesLiteral};
+    const exactSet = ${exactSetLiteral};
     const bindingToken = ${bindingTokenLiteral};
     const bindToken = ${bindTokenLiteral};
+    const sendBindingToken = ${sendBindingTokenLiteral};
     const sendSelectors = ${JSON.stringify(SEND_BUTTON_SELECTORS)};
     const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
     const hasNameBoundary = (text, name) => {
@@ -614,7 +667,24 @@ function buildAttachmentReadyExpression(
     for (const selector of ${JSON.stringify(INPUT_SELECTORS)}) {
       promptCandidates.push(...Array.from(document.querySelectorAll(selector)));
     }
-    const activePrompt = promptCandidates.find(isVisible) || null;
+    const uniquePromptCandidates = Array.from(new Set(promptCandidates));
+    const boundEditors = sendBindingToken
+      ? uniquePromptCandidates.filter(
+          (node) => node?.getAttribute?.('data-oracle-send-editor-binding') === sendBindingToken,
+        )
+      : [];
+    const focused = document.activeElement;
+    const focusedPrompts = uniquePromptCandidates.filter(
+      (node) => isVisible(node) && Boolean(focused && (node === focused || node.contains?.(focused))),
+    );
+    const visiblePrompts = uniquePromptCandidates.filter(isVisible);
+    const activePrompt = sendBindingToken
+      ? (boundEditors.length === 1 ? boundEditors[0] : null)
+      : (
+          focusedPrompts.length === 1
+            ? focusedPrompts[0]
+            : (visiblePrompts.length === 1 ? visiblePrompts[0] : null)
+        );
     // A binding token is a claim about the exact active editor/controller.
     // Never mint or verify that claim from a chip or send-button wrapper alone.
     if (bindingToken && !activePrompt) return false;
@@ -646,14 +716,23 @@ function buildAttachmentReadyExpression(
     const fallbackSendButton = sendSelectors
       .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
       .find(isVisible) || null;
-    const composer =
-      closestComposerRoot(activePrompt) ||
-      activePrompt?.closest?.('form') ||
-      (!activePrompt ? closestComposerRoot(fallbackSendButton) : null) ||
-      (!activePrompt ? fallbackSendButton?.closest?.('form') : null) ||
-      firstComposerRoot() ||
-      (!activePrompt ? document.querySelector('form') : null);
+    const boundComposers = sendBindingToken
+      ? Array.from(document.querySelectorAll('[data-oracle-send-composer-binding]')).filter(
+          (node) => node?.getAttribute?.('data-oracle-send-composer-binding') === sendBindingToken,
+        )
+      : [];
+    const composer = sendBindingToken
+      ? (boundComposers.length === 1 ? boundComposers[0] : null)
+      : (
+          closestComposerRoot(activePrompt) ||
+          activePrompt?.closest?.('form') ||
+          (!activePrompt ? closestComposerRoot(fallbackSendButton) : null) ||
+          (!activePrompt ? fallbackSendButton?.closest?.('form') : null) ||
+          firstComposerRoot() ||
+          (!activePrompt ? document.querySelector('form') : null)
+        );
     if (!composer) return false;
+    if (activePrompt && !composer.contains(activePrompt)) return false;
     const sendButton = sendSelectors
       .flatMap((selector) => Array.from(composer.querySelectorAll(selector)))
       .find(isVisible) || null;
@@ -745,15 +824,23 @@ function buildAttachmentReadyExpression(
         return true;
       });
     })();
-    const inputsReady = expected.every((item) =>
-      attachmentRoots.some((root) =>
-        Array.from(root.querySelectorAll('input[type="file"]')).some((el) =>
-          Array.from((el instanceof HTMLInputElement ? el.files : []) || []).some((file) =>
-            matchesExpected(file?.name, item),
-          ),
-        ),
+    const selectedFiles = attachmentRoots.flatMap((root) =>
+      Array.from(root.querySelectorAll('input[type="file"]')).flatMap((el) =>
+        Array.from((el instanceof HTMLInputElement ? el.files : []) || []),
       ),
     );
+    const inputsReady = (() => {
+      const used = new Set();
+      return expected.every((item) => {
+        const index = selectedFiles.findIndex(
+          (file, candidateIndex) =>
+            !used.has(candidateIndex) && matchesExpected(file?.name, item),
+        );
+        if (index === -1) return false;
+        used.add(index);
+        return true;
+      });
+    })();
     // Count-based fallback: if we cannot match names individually (ChatGPT may strip
     // the filename out of attribute-readable text into a deeply nested span), but we
     // do see at least as many distinct "Remove" affordances as attachments we
@@ -782,7 +869,83 @@ function buildAttachmentReadyExpression(
       visibleExtensionLabelsMatchExpected &&
       removeAffordances.length >= expected.length;
 
-    const ready = chipsReady || inputsReady || countReady;
+    const selectedFileCount = selectedFiles.length;
+    const residualAttachmentNodes = chipNodes.filter((node) => {
+      if (!isVisible(node)) return false;
+      const testid = (node.getAttribute('data-testid') || '').toLowerCase();
+      const aria = (node.getAttribute('aria-label') || '').toLowerCase();
+      const state = (node.getAttribute('data-state') || '').toLowerCase();
+      const text = (node.textContent || '').trim();
+      const removeControl =
+        /remove[-_ ]?(?:file|attachment)/.test(testid + ' ' + aria) ||
+        Boolean(node.querySelector?.(
+          '[aria-label*="Remove file"], [aria-label*="remove file"], [aria-label*="Remove attachment"], [aria-label*="remove attachment"], [data-testid*="remove-attachment"], [data-testid*="attachment-remove"]',
+        ));
+      const uploadState =
+        node.getAttribute('aria-busy') === 'true' ||
+        ['loading', 'uploading', 'pending'].includes(state) ||
+        /\\b(?:uploading|processing)\\b/i.test(text);
+      const genericTrigger =
+        node.matches?.('button,[role="button"]') === true && !removeControl && !uploadState;
+      if (genericTrigger) return false;
+      return (
+        node.matches?.('[role="group"][aria-label]') === true ||
+        removeControl ||
+        uploadState ||
+        testid.includes('attachment') ||
+        testid.includes('chip') ||
+        ((testid.includes('upload') || testid.includes('file')) && text.length > 0)
+      );
+    });
+    const hasUploadingResidual = residualAttachmentNodes.some((node) => {
+      const state = (node.getAttribute('data-state') || '').toLowerCase();
+      const text = (node.textContent || '').trim();
+      return (
+        node.getAttribute('aria-busy') === 'true' ||
+        ['loading', 'uploading', 'pending'].includes(state) ||
+        /\b(?:uploading|processing)\b/i.test(text)
+      );
+    });
+    const attachmentOwnerSelector = [
+      '[role="group"][aria-label]',
+      '[data-testid*="attachment"]',
+      '[data-testid*="upload"]',
+      '[data-testid*="file"]',
+      '[data-testid*="chip"]',
+    ].join(',');
+    const canonicalAttachmentOwners = new Set();
+    for (const node of residualAttachmentNodes) {
+      const isRemoveAffordance = removeAffordances.includes(node);
+      const owner = isRemoveAffordance
+        ? (node.parentElement?.closest?.(attachmentOwnerSelector) ?? node.parentElement ?? node)
+        : (node.closest?.(attachmentOwnerSelector) ?? node);
+      canonicalAttachmentOwners.add(owner);
+    }
+    const exactInputsReady = inputsReady && selectedFileCount === expected.length;
+    const exactChipsReady = chipsReady && removeAffordances.length === expected.length;
+    const exactAttachmentSetReady =
+      (exactInputsReady || exactChipsReady) &&
+      !hasUploadingResidual &&
+      visibleExtensionLabelsMatchExpected &&
+      !visibleStemOnlyMismatch &&
+      (selectedFileCount === 0 || selectedFileCount === expected.length) &&
+      (
+        residualAttachmentNodes.length === 0 ||
+        (
+          removeAffordances.length === expected.length &&
+          canonicalAttachmentOwners.size === expected.length
+        )
+      );
+    const ready = expected.length === 0
+      ? selectedFileCount === 0 && residualAttachmentNodes.length === 0
+      : exactSet
+        ? exactAttachmentSetReady
+        : (
+            (chipsReady || inputsReady || countReady) &&
+            visibleExtensionLabelsMatchExpected &&
+            !visibleStemOnlyMismatch &&
+            (removeAffordances.length === 0 || removeAffordances.length === expected.length)
+          );
     if (ready && bindingToken) {
       if (bindToken) {
         composer.setAttribute('data-oracle-attachment-binding', bindingToken);
@@ -798,8 +961,16 @@ export function buildAttachmentReadyExpressionForTest(
   attachmentNames: AttachmentReadyInput[],
   bindingToken?: string,
   bindToken = false,
+  sendBindingToken?: string,
+  exactSet = false,
 ) {
-  return buildAttachmentReadyExpression(attachmentNames, bindingToken, bindToken);
+  return buildAttachmentReadyExpression(
+    attachmentNames,
+    bindingToken,
+    bindToken,
+    sendBindingToken,
+    exactSet,
+  );
 }
 
 export async function bindActiveComposerAttachments(
@@ -839,11 +1010,23 @@ function buildSendButtonTargetExpression(
     const sendBindingToken = ${sendBindingTokenLiteral};
     const bindSendTarget = ${JSON.stringify(bindSendTarget)};
     const isVisible = (node) => {
-      if (!(node instanceof HTMLElement)) return false;
+      if (!(node instanceof HTMLElement) || node.isConnected === false) return false;
       const rect = node.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return false;
-      const style = window.getComputedStyle(node);
-      return style.display !== 'none' && style.visibility !== 'hidden';
+      let current = node;
+      while (current instanceof HTMLElement) {
+        const style = window.getComputedStyle?.(current);
+        if (
+          current.hidden ||
+          current.getAttribute?.('aria-hidden') === 'true' ||
+          style?.display === 'none' ||
+          style?.visibility === 'hidden' ||
+          style?.visibility === 'collapse' ||
+          Number.parseFloat(style?.opacity || '1') === 0
+        ) return false;
+        current = current.parentElement;
+      }
+      return true;
     };
     const isEnabled = (node) => {
       const ariaDisabled = node.getAttribute('aria-disabled');
@@ -861,8 +1044,29 @@ function buildSendButtonTargetExpression(
     for (const selector of inputSelectors) {
       promptCandidates.push(...Array.from(document.querySelectorAll(selector)));
     }
-    const activePrompt = promptCandidates.find(isVisible) || null;
-    if (!activePrompt) return { status: 'binding-missing', reason: 'active-prompt-missing' };
+    const uniquePromptCandidates = Array.from(new Set(promptCandidates));
+    const boundEditors = sendBindingToken
+      ? uniquePromptCandidates.filter(
+          (node) => node?.getAttribute?.('data-oracle-send-editor-binding') === sendBindingToken,
+        )
+      : [];
+    const focused = document.activeElement;
+    const focusedEditors = uniquePromptCandidates.filter(
+      (node) =>
+        isVisible(node) &&
+        Boolean(focused && (node === focused || node.contains?.(focused))),
+    );
+    const activePrompt = !bindSendTarget && sendBindingToken
+      ? (boundEditors.length === 1 ? boundEditors[0] : null)
+      : (focusedEditors.length === 1 ? focusedEditors[0] : null);
+    if (!activePrompt) {
+      return {
+        status: 'binding-missing',
+        reason: !bindSendTarget && sendBindingToken
+          ? 'bound-editor-missing-or-ambiguous'
+          : 'focused-editor-missing-or-ambiguous',
+      };
+    }
     const isUsableComposerRoot = (node) => {
       if (!(node instanceof HTMLElement)) return false;
       const tagName = String(node.tagName || '').toLowerCase();
@@ -886,7 +1090,14 @@ function buildSendButtonTargetExpression(
       }
       return null;
     };
-    const composer = closestComposerRoot(activePrompt) || activePrompt.closest?.('form') || null;
+    const boundComposers = sendBindingToken
+      ? Array.from(document.querySelectorAll('[data-oracle-send-composer-binding]')).filter(
+          (node) => node?.getAttribute?.('data-oracle-send-composer-binding') === sendBindingToken,
+        )
+      : [];
+    const composer = !bindSendTarget && sendBindingToken
+      ? (boundComposers.length === 1 ? boundComposers[0] : null)
+      : (closestComposerRoot(activePrompt) || activePrompt.closest?.('form') || null);
     if (!composer || !composer.contains(activePrompt)) {
       return { status: 'binding-missing', reason: 'active-composer-missing' };
     }
@@ -900,13 +1111,25 @@ function buildSendButtonTargetExpression(
     for (const selector of sendSelectors) {
       candidates.push(...Array.from(composer.querySelectorAll(selector)));
     }
-    const button = candidates.find((node) => isVisible(node) && isEnabled(node)) || null;
-    if (!button) return { status: 'missing', reason: 'same-composer-send-missing' };
+    const usableButtons = Array.from(new Set(candidates)).filter(
+      (node) => isVisible(node) && isEnabled(node),
+    );
+    const boundButtons = sendBindingToken
+      ? usableButtons.filter(
+          (node) => node?.getAttribute?.('data-oracle-send-binding') === sendBindingToken,
+        )
+      : [];
+    const button = !bindSendTarget && sendBindingToken
+      ? (boundButtons.length === 1 ? boundButtons[0] : null)
+      : (usableButtons.length === 1 ? usableButtons[0] : null);
+    if (!button) return { status: 'missing', reason: 'same-composer-send-missing-or-ambiguous' };
     if (sendBindingToken) {
       if (bindSendTarget) {
+        activePrompt.setAttribute('data-oracle-send-editor-binding', sendBindingToken);
         composer.setAttribute('data-oracle-send-composer-binding', sendBindingToken);
         button.setAttribute('data-oracle-send-binding', sendBindingToken);
       } else if (
+        activePrompt.getAttribute('data-oracle-send-editor-binding') !== sendBindingToken ||
         composer.getAttribute('data-oracle-send-composer-binding') !== sendBindingToken ||
         button.getAttribute('data-oracle-send-binding') !== sendBindingToken
       ) {
@@ -949,6 +1172,10 @@ function buildOwnedSendBindingCleanupExpression(sendBindingToken: string): strin
     for (const node of Array.from(document.querySelectorAll('[data-oracle-send-binding]'))) {
       if (node?.getAttribute?.('data-oracle-send-binding') !== TOKEN) continue;
       try { node.removeAttribute?.('data-oracle-send-binding'); removed += 1; } catch {}
+    }
+    for (const node of Array.from(document.querySelectorAll('[data-oracle-send-editor-binding]'))) {
+      if (node?.getAttribute?.('data-oracle-send-editor-binding') !== TOKEN) continue;
+      try { node.removeAttribute?.('data-oracle-send-editor-binding'); removed += 1; } catch {}
     }
     for (const node of Array.from(document.querySelectorAll('[data-oracle-send-composer-binding]'))) {
       if (node?.getAttribute?.('data-oracle-send-composer-binding') !== TOKEN) continue;
@@ -1063,6 +1290,275 @@ function reconcileDispatchGuardVerdicts(
   return bindingVerdict;
 }
 
+type ExactComposerPreDispatchProof = {
+  activeVisible?: boolean;
+  activeFocused?: boolean;
+  promptMatches?: boolean;
+  observedLength?: number;
+  inputFileCount?: number;
+  residualAttachmentCount?: number;
+  residualAttachmentKinds?: string[];
+  attachmentExpectationSatisfied?: boolean;
+  sendBindingMatches?: boolean | null;
+  sendTargetReady?: boolean | null;
+  sendX?: number | null;
+  sendY?: number | null;
+};
+
+/**
+ * Build the last-moment proof used by the exact upload-to-inline fallback.
+ * The expression is deliberately composer-scoped: ChatGPT always keeps a
+ * hidden empty file input in the clean composer, while unrelated page-level
+ * upload controls must not make a safe text-only dispatch impossible.
+ */
+function buildExactComposerPreDispatchExpression(
+  expectedPrompt: string,
+  sendBindingToken?: string,
+  expectedAttachments: AttachmentReadyInput[] = [],
+): string {
+  const exactAttachmentStateExpression = buildAttachmentReadyExpression(
+    expectedAttachments,
+    undefined,
+    false,
+    sendBindingToken,
+    true,
+  );
+  return `(() => {
+    const normalizeRenderedPromptDomIdentity = ${normalizeRenderedPromptDomIdentity.toString()};
+    const inputSelectors = ${JSON.stringify(INPUT_SELECTORS)};
+    const sendSelectors = ${JSON.stringify(SEND_BUTTON_SELECTORS)};
+    const expected = ${JSON.stringify(expectedPrompt)};
+    const sendBindingToken = ${JSON.stringify(sendBindingToken ?? null)};
+    const expectedAttachmentCount = ${JSON.stringify(expectedAttachments.length)};
+    const readValue = (node) => {
+      if (!node) return '';
+      if (node instanceof HTMLTextAreaElement || node instanceof HTMLInputElement) {
+        return node.value ?? '';
+      }
+      return node.innerText ?? node.textContent ?? '';
+    };
+    const visible = (node) => {
+      if (!(node instanceof HTMLElement) || node.isConnected === false) return false;
+      const rect = node.getBoundingClientRect();
+      if (!(rect.width > 0 && rect.height > 0)) return false;
+      let current = node;
+      while (current instanceof HTMLElement) {
+        const style = window.getComputedStyle?.(current);
+        if (
+          current.hidden ||
+          current.getAttribute?.('aria-hidden') === 'true' ||
+          style?.display === 'none' ||
+          style?.visibility === 'hidden' ||
+          style?.visibility === 'collapse' ||
+          Number.parseFloat(style?.opacity || '1') === 0
+        ) return false;
+        current = current.parentElement;
+      }
+      return true;
+    };
+    const enabled = (node) => {
+      if (!(node instanceof HTMLElement)) return false;
+      if (node instanceof HTMLButtonElement && node.disabled) return false;
+      return node.getAttribute('aria-disabled') !== 'true';
+    };
+    const candidates = Array.from(new Set(inputSelectors.flatMap((selector) =>
+      Array.from(document.querySelectorAll(selector)),
+    )));
+    const focused = document.activeElement;
+    const boundEditors = sendBindingToken
+      ? candidates.filter(
+          (node) => node?.getAttribute?.('data-oracle-send-editor-binding') === sendBindingToken,
+        )
+      : [];
+    const focusedCandidates = candidates.filter(
+      (node) => visible(node) && Boolean(focused && (node === focused || node.contains?.(focused))),
+    );
+    const active = sendBindingToken
+      ? (boundEditors.length === 1 ? boundEditors[0] : null)
+      : (focusedCandidates.length === 1 ? focusedCandidates[0] : null);
+    const boundComposers = sendBindingToken
+      ? Array.from(document.querySelectorAll('[data-oracle-send-composer-binding]')).filter(
+          (node) => node?.getAttribute?.('data-oracle-send-composer-binding') === sendBindingToken,
+        )
+      : [];
+    const boundComposer = sendBindingToken
+      ? (boundComposers.length === 1 ? boundComposers[0] : null)
+      : (active?.closest?.('[data-testid*="composer"]') ?? active?.closest?.('form') ?? null);
+    const scope = boundComposer;
+    const sendCandidates = boundComposer
+      ? sendSelectors.flatMap((selector) =>
+          Array.from(boundComposer.querySelectorAll(selector)),
+        )
+      : [];
+    const boundSendTarget = sendBindingToken
+      ? sendCandidates.find(
+          (node) =>
+            node instanceof HTMLElement &&
+            node.getAttribute('data-oracle-send-binding') === sendBindingToken,
+        ) ?? null
+      : null;
+    const sendBindingMatches = sendBindingToken
+      ? Boolean(
+          active &&
+          boundComposer &&
+          boundComposer.contains(active) &&
+          boundSendTarget &&
+          boundComposer.contains(boundSendTarget)
+        )
+      : null;
+    const sendTarget = sendBindingToken ? boundSendTarget : null;
+    let sendTargetReady = sendBindingToken ? false : null;
+    let sendX = null;
+    let sendY = null;
+    if (sendTarget && visible(sendTarget) && enabled(sendTarget)) {
+      sendTarget.scrollIntoView({ block: 'center', inline: 'center' });
+      const rect = sendTarget.getBoundingClientRect();
+      const x = rect.left + rect.width / 2;
+      const y = rect.top + rect.height / 2;
+      const hit = document.elementFromPoint(x, y);
+      if (hit === sendTarget || (hit instanceof Node && sendTarget.contains(hit))) {
+        sendTargetReady = true;
+        sendX = x;
+        sendY = y;
+      }
+    }
+    const fileInputs = scope ? Array.from(scope.querySelectorAll('input[type="file"]')) : [];
+    const inputFileCount = fileInputs.reduce((count, node) => {
+      return count + (node instanceof HTMLInputElement ? Array.from(node.files || []).length : 0);
+    }, 0);
+    const stateSelector = [
+      '[role="group"][aria-label]',
+      '[data-testid*="attachment"]',
+      '[data-testid*="upload"]',
+      '[data-testid*="file"]',
+      '[data-testid*="chip"]',
+      '[aria-label*="Remove file"]',
+      '[aria-label*="remove file"]',
+      '[data-testid*="remove-attachment"]',
+      '[data-testid*="attachment-remove"]',
+      '[aria-busy="true"]',
+      '[data-state="loading"]',
+      '[data-state="uploading"]',
+      '[data-state="pending"]',
+    ].join(',');
+    const residualAttachmentKinds = [];
+    const seen = new Set();
+    for (const node of scope ? Array.from(scope.querySelectorAll(stateSelector)) : []) {
+      if (!(node instanceof HTMLElement) || seen.has(node)) continue;
+      seen.add(node);
+      if (node instanceof HTMLInputElement && node.type === 'file') continue;
+      const testid = (node.getAttribute('data-testid') ?? '').toLowerCase();
+      const aria = (node.getAttribute('aria-label') ?? '').toLowerCase();
+      const state = (node.getAttribute('data-state') ?? '').toLowerCase();
+      const busy = node.getAttribute('aria-busy') === 'true';
+      const text = (node.textContent ?? '').trim();
+      const removeControl =
+        /remove[-_ ]?(?:file|attachment)/.test(testid + ' ' + aria) ||
+        Boolean(node.querySelector('[aria-label*="Remove file"],[aria-label*="remove file"],[data-testid*="remove-attachment"],[data-testid*="attachment-remove"]'));
+      const uploadState = busy || ['loading', 'uploading', 'pending'].includes(state) ||
+        /\b(?:uploading|processing)\b/i.test(text);
+      if (!visible(node) && !uploadState) continue;
+      const isGenericControl = node.matches('button,[role="button"]') && !removeControl && !uploadState;
+      if (isGenericControl) continue;
+      const attachmentState =
+        node.matches('[role="group"][aria-label]') ||
+        removeControl ||
+        uploadState ||
+        testid.includes('attachment') ||
+        testid.includes('chip') ||
+        ((testid.includes('upload') || testid.includes('file')) && text.length > 0);
+      if (!attachmentState) continue;
+      residualAttachmentKinds.push(testid || aria || state || node.tagName.toLowerCase());
+    }
+    const activeVisible = Boolean(active && visible(active));
+    const activeFocused = Boolean(active && (active === focused || active.contains?.(focused)));
+    const observed = active ? readValue(active) : '';
+    let attachmentExpectationSatisfied = false;
+    try {
+      attachmentExpectationSatisfied = (${exactAttachmentStateExpression}) === true;
+    } catch {}
+    return {
+      activeVisible,
+      activeFocused,
+      promptMatches:
+        activeVisible &&
+        activeFocused &&
+        normalizeRenderedPromptDomIdentity(observed) ===
+          normalizeRenderedPromptDomIdentity(expected),
+      observedLength: observed.length,
+      inputFileCount,
+      residualAttachmentCount: residualAttachmentKinds.length,
+      residualAttachmentKinds: residualAttachmentKinds.slice(0, 8),
+      attachmentExpectationSatisfied,
+      sendBindingMatches,
+      sendTargetReady,
+      sendX,
+      sendY,
+    };
+  })()`;
+}
+
+function assertExactComposerPreDispatchProof(
+  value: unknown,
+  promptLength: number,
+  options: { requireBoundSendTarget?: boolean } = {},
+): ExactComposerPreDispatchProof {
+  const proof =
+    value && typeof value === "object" ? (value as ExactComposerPreDispatchProof) : undefined;
+  if (
+    proof?.activeVisible !== true ||
+    proof.activeFocused !== true ||
+    proof.promptMatches !== true
+  ) {
+    throw new BrowserAutomationError(
+      "Inline attachment fallback changed after its initial round-trip proof; refusing to dispatch.",
+      {
+        stage: "submit-prompt",
+        code: "prompt-inline-fallback-mismatch",
+        retryable: true,
+        promptLength,
+        observedLength: proof?.observedLength ?? null,
+        activeVisible: proof?.activeVisible ?? false,
+        activeFocused: proof?.activeFocused ?? false,
+      },
+    );
+  }
+  const inputFileCount = proof.inputFileCount ?? 0;
+  const residualAttachmentCount = proof.residualAttachmentCount ?? 0;
+  if (proof.attachmentExpectationSatisfied !== true) {
+    throw new BrowserAutomationError(
+      "Exact fallback attachment state no longer matches the verified submission; refusing to dispatch.",
+      {
+        stage: "submit-prompt",
+        code: "prompt-inline-fallback-residual-attachment",
+        retryable: true,
+        inputFileCount,
+        residualAttachmentCount,
+        residualAttachmentKinds: proof.residualAttachmentKinds ?? [],
+      },
+    );
+  }
+  if (
+    options.requireBoundSendTarget &&
+    (proof.sendBindingMatches !== true ||
+      proof.sendTargetReady !== true ||
+      typeof proof.sendX !== "number" ||
+      typeof proof.sendY !== "number")
+  ) {
+    throw new BrowserAutomationError(
+      "Exact fallback prompt and trusted send target no longer share the same focused composer; refusing to dispatch.",
+      {
+        stage: "submit-prompt",
+        code: "prompt-inline-fallback-send-binding-mismatch",
+        retryable: true,
+        sendBindingMatches: proof.sendBindingMatches ?? null,
+        sendTargetReady: proof.sendTargetReady ?? null,
+      },
+    );
+  }
+  return proof;
+}
+
 async function attemptSendButton(
   Runtime: ChromeClient["Runtime"],
   Input: ChromeClient["Input"],
@@ -1072,6 +1568,7 @@ async function attemptSendButton(
   attachmentBindingToken?: string,
   beforeDispatch?: BeforePromptSubmit,
   onDispatchAttempt?: () => Promise<void> | void,
+  exactPrompt?: string,
 ): Promise<boolean> {
   const needAttachment = Array.isArray(attachmentNames) && attachmentNames.length > 0;
   if (needAttachment && !attachmentBindingToken) {
@@ -1084,12 +1581,17 @@ async function attemptSendButton(
       },
     );
   }
-  const sendBindingToken = beforeDispatch ? randomUUID() : undefined;
+  const sendBindingToken = beforeDispatch || exactPrompt !== undefined ? randomUUID() : undefined;
   let dispatchAttemptReported = false;
   const reportDispatchAttempt = async (): Promise<void> => {
     if (dispatchAttemptReported) return;
     dispatchAttemptReported = true;
     await onDispatchAttempt?.();
+    // The remote worker consumes this exact marker as its durable
+    // submittedAt boundary. It deliberately precedes the first potentially
+    // irreversible mouse/key event so a lost CDP response is never exposed as
+    // retryable-before-submit.
+    logger?.(SUBMIT_DISPATCH_STARTED_LOG);
   };
   const script = buildSendButtonTargetExpression(
     attachmentBindingToken,
@@ -1101,6 +1603,14 @@ async function attemptSendButton(
     sendBindingToken,
     false,
   );
+  const exactComposerExpression =
+    typeof exactPrompt === "string"
+      ? buildExactComposerPreDispatchExpression(
+          exactPrompt,
+          sendBindingToken,
+          attachmentNames ?? [],
+        )
+      : undefined;
 
   // Give attachment-bearing submissions more headroom. ChatGPT's chip render can
   // settle slowly for multi-file uploads, but plain text sends should keep the
@@ -1151,7 +1661,17 @@ async function attemptSendButton(
           // Run account + protected-route proof only after attachments and an
           // exact hit-tested send target are ready. Then require the same marked
           // DOM button/controller to survive that asynchronous proof.
-          finalDomGuard = await beforeDispatch(sendBindingToken);
+          finalDomGuard = await beforeDispatch(
+            sendBindingToken,
+            typeof exactPrompt === "string"
+              ? {
+                  prompt: exactPrompt,
+                  attachments: (attachmentNames ?? []).map((attachment) =>
+                    typeof attachment === "string" ? { name: attachment } : attachment,
+                  ),
+                }
+              : undefined,
+          );
           if (finalDomGuard) armedGuard = await armFinalDispatchGuard(Runtime, finalDomGuard);
           if (needAttachment) {
             const ready = await Runtime.evaluate({
@@ -1168,23 +1688,32 @@ async function attemptSendButton(
               );
             }
           }
-          const finalExpression = finalDomGuard
-            ? `(() => ({
-                sendTarget: (${postPreflightScript}),
-                routeProof: (${finalDomGuard.expression})
-              }))()`
-            : postPreflightScript;
+        }
+        if (beforeDispatch || exactComposerExpression) {
+          const finalExpression = `(() => ({
+            sendTarget: (${postPreflightScript}),
+            ${finalDomGuard ? `routeProof: (${finalDomGuard.expression}),` : ""}
+            ${exactComposerExpression ? `composerProof: (${exactComposerExpression}),` : ""}
+          }))()`;
           const verified = await Runtime.evaluate({
             expression: finalExpression,
             returnByValue: true,
           });
           const finalValue = verified.result?.value as
-            | { sendTarget?: unknown; routeProof?: unknown }
+            | { sendTarget?: unknown; routeProof?: unknown; composerProof?: unknown }
             | undefined;
-          const verifiedValue = (finalDomGuard ? finalValue?.sendTarget : finalValue) as
+          const verifiedValue = finalValue?.sendTarget as
             | { status?: string; reason?: string; x?: number; y?: number }
             | undefined;
           finalDomGuard?.assertResult(finalValue?.routeProof);
+          let exactComposerProof: ExactComposerPreDispatchProof | undefined;
+          if (exactComposerExpression) {
+            exactComposerProof = assertExactComposerPreDispatchProof(
+              finalValue?.composerProof,
+              exactPrompt?.length ?? 0,
+              { requireBoundSendTarget: true },
+            );
+          }
           if (
             verifiedValue?.status !== "point" ||
             typeof verifiedValue.x !== "number" ||
@@ -1202,9 +1731,19 @@ async function attemptSendButton(
           }
           value.x = verifiedValue.x;
           value.y = verifiedValue.y;
+          if (
+            exactComposerProof &&
+            typeof exactComposerProof.sendX === "number" &&
+            typeof exactComposerProof.sendY === "number"
+          ) {
+            // These coordinates were derived from the bound button inside the
+            // exact focused composer, not merely from a sibling send resolver.
+            value.x = exactComposerProof.sendX;
+            value.y = exactComposerProof.sendY;
+          }
         }
 
-        if (finalDomGuard) {
+        if (finalDomGuard || exactComposerExpression) {
           if (!Input || typeof Input.dispatchMouseEvent !== "function") {
             throw new BrowserAutomationError(
               "Protected dispatch requires trusted CDP mouse input; refusing DOM click fallback.",
@@ -1215,7 +1754,24 @@ async function attemptSendButton(
               },
             );
           }
+          const assertGuardImmediatelyBeforeInput = async (): Promise<void> => {
+            if (
+              !finalDomGuard?.immediatelyBeforeDispatchExpression ||
+              !finalDomGuard.assertImmediatelyBeforeDispatchResult
+            ) {
+              return;
+            }
+            const outcome = await Runtime.evaluate({
+              expression: finalDomGuard.immediatelyBeforeDispatchExpression,
+              returnByValue: true,
+            });
+            finalDomGuard.assertImmediatelyBeforeDispatchResult(outcome.result?.value);
+          };
+          await assertGuardImmediatelyBeforeInput();
           await Input.dispatchMouseEvent({ type: "mouseMoved", x: value.x, y: value.y });
+          await assertGuardImmediatelyBeforeInput();
+          await reportDispatchAttempt();
+          await assertGuardImmediatelyBeforeInput();
           // The browser might process mousePressed even if the CDP response is
           // lost. From this line onward, only a terminal blocked verdict proves
           // that the application could not observe a submission-capable event.
@@ -1236,6 +1792,7 @@ async function attemptSendButton(
           });
           dispatched = true;
         } else {
+          await reportDispatchAttempt();
           dispatched = await clickTrustedPoint(Runtime, Input, value.x, value.y);
         }
       } catch (error) {
@@ -1269,7 +1826,6 @@ async function attemptSendButton(
       );
 
       if (primaryError !== undefined) {
-        if (pressStarted && !definitelyBlocked) await reportDispatchAttempt();
         if (definitelyBlocked && verdictError !== undefined) throw verdictError;
         throw primaryError;
       }
@@ -1280,10 +1836,8 @@ async function attemptSendButton(
         );
       }
       if (verdictError !== undefined) {
-        if (!definitelyBlocked) await reportDispatchAttempt();
         throw verdictError;
       }
-      await reportDispatchAttempt();
       if (cleanupError !== undefined && !finalDomGuard && logger?.verbose) {
         logger("Send binding cleanup could not be confirmed after dispatch.");
       }
@@ -1569,6 +2123,8 @@ function summarizeCommitProbe(probe: CommitProbeState): Record<string, unknown> 
 // biome-ignore lint/style/useNamingConvention: test-only export used in vitest suite
 export const __test__ = {
   attemptSendButton,
+  buildExactComposerPreDispatchExpression,
+  assertExactComposerPreDispatchProof,
   sendButtonTimeoutMs,
   verifyPromptCommitted,
 };

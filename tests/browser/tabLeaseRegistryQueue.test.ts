@@ -24,6 +24,7 @@ interface RegistryDocument {
   leases: Array<{
     id: string;
     pid?: number;
+    startTicks?: string | null;
     sessionId?: string;
     createdAt?: string;
     updatedAt?: string;
@@ -1229,6 +1230,40 @@ describe("tab-lease persisted FIFO queue", () => {
       vi.useRealTimers();
       await replacement?.release().catch(() => undefined);
       await original?.release().catch(() => undefined);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("legacy three-field release identity removes a generation-tagged lease", async () => {
+    const dir = await makeProfileDir();
+    let lease: Awaited<ReturnType<typeof acquireBrowserTabLease>> | null = null;
+    try {
+      lease = await acquireBrowserTabLease(
+        dir,
+        {
+          maxConcurrentTabs: 1,
+          timeoutMs: 500,
+          sessionId: "legacy-release-identity",
+        },
+        {
+          readProcessStartTicks: () => "generation-a",
+        },
+      );
+      const [identity] = (await readRegistry(dir)).leases;
+      expect(identity?.startTicks).toEqual(expect.any(String));
+
+      await releaseBrowserTabLease(dir, lease.id, undefined, {
+        expectedIdentity: {
+          id: identity!.id,
+          pid: identity!.pid!,
+          createdAt: identity!.createdAt!,
+        },
+      });
+
+      expect((await readRegistry(dir)).leases).toEqual([]);
+      lease = null;
+    } finally {
+      await lease?.release().catch(() => undefined);
       await rm(dir, { recursive: true, force: true });
     }
   });

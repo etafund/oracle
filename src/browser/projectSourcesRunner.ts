@@ -33,7 +33,9 @@ import {
   findRunningChromeDebugTargetForProfile,
   readChromePid,
   readDevToolsPort,
+  resolveChromeDebugTargetOwner,
   shouldCleanupManualLoginProfileState,
+  verifyChromeDebugTargetOwner,
   verifyDevToolsReachable,
   writeChromePid,
   writeDevToolsActivePort,
@@ -464,7 +466,7 @@ async function acquireManualLoginChromeForProjectSources(
     if (chrome.port) {
       await writeDevToolsActivePort(userDataDir, chrome.port);
       if (!reusedChrome && chrome.pid) {
-        await writeChromePid(userDataDir, chrome.pid);
+        await writeChromePid(userDataDir, chrome.pid, chrome.port);
       }
     }
     return { chrome, reusedChrome };
@@ -476,7 +478,11 @@ async function acquireManualLoginChromeForProjectSources(
 async function maybeReuseProjectSourcesChrome(
   userDataDir: string,
   logger: BrowserLogger,
-  options: { waitForPortMs?: number; probe?: typeof verifyDevToolsReachable } = {},
+  options: {
+    waitForPortMs?: number;
+    probe?: typeof verifyDevToolsReachable;
+    verifyOwner?: typeof verifyChromeDebugTargetOwner;
+  } = {},
 ): Promise<LaunchedChrome | null> {
   const waitForPortMs = Math.max(0, options.waitForPortMs ?? 0);
   let port = await readDevToolsPort(userDataDir);
@@ -502,6 +508,17 @@ async function maybeReuseProjectSourcesChrome(
       }
       return null;
     }
+    const discoveredOwner = await (options.verifyOwner ?? verifyChromeDebugTargetOwner)(
+      userDataDir,
+      discovered.port,
+      { allowProcessDiscovery: true },
+    );
+    if (!discoveredOwner.ok || discoveredOwner.pid !== discovered.pid) {
+      logger(
+        `Discovered Chrome for ${userDataDir} failed owner verification (${discoveredOwner.ok ? "pid-mismatch" : discoveredOwner.reason}); launching new Chrome.`,
+      );
+      return null;
+    }
     const probe = await (options.probe ?? verifyDevToolsReachable)({ port: discovered.port });
     if (!probe.ok) {
       logger(
@@ -513,7 +530,7 @@ async function maybeReuseProjectSourcesChrome(
       return null;
     }
     await writeDevToolsActivePort(userDataDir, discovered.port);
-    await writeChromePid(userDataDir, discovered.pid);
+    await writeChromePid(userDataDir, discovered.pid, discovered.port);
     port = discovered.port;
     pid = discovered.pid;
     logger(
@@ -521,6 +538,17 @@ async function maybeReuseProjectSourcesChrome(
     );
     return { port, pid, kill: async () => {}, process: undefined } as unknown as LaunchedChrome;
   }
+  const owner = await (options.verifyOwner ?? resolveChromeDebugTargetOwner)(userDataDir, port, {
+    allowProcessDiscovery: true,
+  });
+  if (!owner.ok) {
+    logger(
+      `Recorded Chrome DevTools port ${port} failed owner verification (${owner.reason}); refusing to attach.`,
+    );
+    return null;
+  }
+  const recordedPort = port;
+  port = owner.port;
   const probe = await (options.probe ?? verifyDevToolsReachable)({ port });
   if (!probe.ok) {
     logger(
@@ -529,10 +557,14 @@ async function maybeReuseProjectSourcesChrome(
     await cleanupStaleProfileState(userDataDir, logger, { lockRemovalMode: "if_oracle_pid_dead" });
     return null;
   }
+  if (owner.source === "process-discovery" || port !== recordedPort) {
+    await writeDevToolsActivePort(userDataDir, port);
+    await writeChromePid(userDataDir, owner.pid, port);
+  }
   logger(`Reusing running Chrome on port ${port} with profile ${userDataDir}`);
   return {
     port,
-    pid: pid ?? undefined,
+    pid: owner.pid,
     kill: async () => {},
     process: undefined,
   } as unknown as LaunchedChrome;
@@ -541,7 +573,11 @@ async function maybeReuseProjectSourcesChrome(
 export async function maybeReuseProjectSourcesChromeForTest(
   userDataDir: string,
   logger: BrowserLogger,
-  options: { waitForPortMs?: number; probe?: typeof verifyDevToolsReachable } = {},
+  options: {
+    waitForPortMs?: number;
+    probe?: typeof verifyDevToolsReachable;
+    verifyOwner?: typeof verifyChromeDebugTargetOwner;
+  } = {},
 ): Promise<LaunchedChrome | null> {
   return maybeReuseProjectSourcesChrome(userDataDir, logger, options);
 }

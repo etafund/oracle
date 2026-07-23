@@ -76,7 +76,10 @@ import {
 } from "../../src/browser/sessionRunner.ts";
 import { sendSessionNotification } from "../../src/cli/notifier.ts";
 import { getCliVersion } from "../../src/version.ts";
-import { RemoteRunFailedError } from "../../src/remote/client.ts";
+import {
+  RemoteRunFailedError,
+  type RemoteBrowserPendingRecoveryClaim,
+} from "../../src/remote/client.ts";
 import { deriveModelOutputPath } from "../../src/cli/sessionRunner.ts";
 import {
   PROMPT_DOM_IDENTITY_ALGORITHM,
@@ -519,6 +522,43 @@ beforeEach(() => {
 });
 
 describe("performSessionRun", () => {
+  test("rejects a pending recovery authority from a different authenticated route before mutation", async () => {
+    const updateSession = vi.fn();
+    const writePendingClaim = vi.fn();
+    const pendingRecoveryClaim: RemoteBrowserPendingRecoveryClaim = {
+      claimKey: "A".repeat(43),
+      originRunId: "other-run",
+      accountId: "acct1",
+      originLaneId: "acct1-9473",
+      promptCandidates: [
+        {
+          promptPreview: "original prompt",
+          promptPreviewSha256: "a".repeat(64),
+        },
+      ],
+    };
+
+    await expect(
+      persistRemoteBrowserFailureRecoveryState(
+        {
+          sessionId: baseSessionMeta.id,
+          browser: { config: { chromePath: null } },
+          failedRoute: {
+            runId: "remote-run-1",
+            accountId: "acct1",
+            laneId: "acct1-9473",
+            terminalDoneOk: false,
+            provenance: null,
+          },
+          pendingRecoveryClaim,
+        },
+        { updateSession, writePendingClaim },
+      ),
+    ).rejects.toThrow(/does not match.*failed-run route/i);
+    expect(updateSession).not.toHaveBeenCalled();
+    expect(writePendingClaim).not.toHaveBeenCalled();
+  });
+
   test("persists the failed remote marker before sidecar write and stays fail-closed across an interrupted coordinate commit", async () => {
     const events: string[] = [];
     let current: SessionMetadata = {
@@ -925,6 +965,122 @@ describe("performSessionRun", () => {
       expect(log).not.toHaveBeenCalledWith(expect.stringMatching(/^ERROR:/));
     },
   );
+
+  test("a future session run promotes a pending claim before dispatching GET-only recovery", async () => {
+    const originRunId = "remote-origin-pending";
+    const coordinate = {
+      schema: "remote-browser-recovery-public.v1" as const,
+      stage: "capture-binding" as const,
+      originRunId,
+      expiresAt: "2099-07-23T00:00:00.000Z",
+      accountId: "acct1",
+      laneId: "acct1-9473",
+      runtime: {
+        tabUrl: `https://chatgpt.com/c/${originRunId}`,
+        conversationId: originRunId,
+        promptSubmitted: true as const,
+      },
+    };
+    const completionClaim = {
+      schema: "remote-browser-recovery-completion-claim.v1" as const,
+      originRunId,
+      claimId: "pending-promotion-owner",
+      claimedAt: new Date().toISOString(),
+      ownerPid: process.pid,
+    };
+    let current: SessionMetadata = {
+      ...baseSessionMeta,
+      status: "error",
+      mode: "browser",
+      browser: {
+        config: { chromePath: null },
+        remoteRun: {
+          runId: originRunId,
+          accountId: "acct1",
+          laneId: "acct1-9473",
+          terminalDoneOk: false,
+          provenance: null,
+        },
+      },
+    };
+    sessionStoreMock.updateSession.mockImplementation(
+      async (
+        _sessionId: string,
+        updates:
+          | Partial<SessionMetadata>
+          | ((metadata: SessionMetadata) => Partial<SessionMetadata>),
+      ) => {
+        const patch = typeof updates === "function" ? updates(current) : updates;
+        current = { ...current, ...patch };
+        return current;
+      },
+    );
+    sessionStoreMock.readSession.mockImplementation(async () => current);
+    const promotePending = vi.fn(async () => {
+      current = {
+        ...current,
+        browser: { ...current.browser, remoteRecovery: coordinate },
+      };
+      return current;
+    });
+    const claim = vi.fn(async () => {
+      current = {
+        ...current,
+        browser: { ...current.browser, remoteRecoveryCompletionClaim: completionClaim },
+      };
+      return completionClaim;
+    });
+    const recoverStored = vi.fn(async () => ({
+      answerText: "promoted recovery answer",
+      answerMarkdown: "promoted recovery answer",
+      tookMs: 10,
+      answerTokens: 3,
+      answerChars: 24,
+      tabUrl: coordinate.runtime.tabUrl,
+      conversationId: originRunId,
+      remoteRun: {
+        runId: "recovery-run-after-promotion",
+        accountId: "acct1",
+        laneId: "acct1-9473",
+        terminalDoneOk: true as const,
+        provenance: null,
+      },
+    }));
+
+    await expect(
+      performSessionRun({
+        sessionMeta: current,
+        runOptions: baseRunOptions,
+        mode: "browser",
+        browserConfig: { chromePath: null },
+        cwd: "/tmp",
+        log,
+        write,
+        version: cliVersion,
+        remoteRecoveryDeps: {
+          promotePending,
+          claim,
+          recoverStored,
+          release: vi.fn(async () => true),
+          deleteSecret: vi.fn(async () => true),
+          persistArtifacts: vi.fn(async () => [
+            { kind: "transcript" as const, path: "/tmp/promoted-recovery-transcript.md" },
+          ]),
+        },
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(promotePending).toHaveBeenCalledTimes(1);
+    expect(claim).toHaveBeenCalledTimes(1);
+    expect(recoverStored).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(runBrowserSessionExecution)).not.toHaveBeenCalled();
+    expect(current).toMatchObject({
+      status: "completed",
+      browser: {
+        remoteRun: { runId: "recovery-run-after-promotion", terminalDoneOk: true },
+      },
+    });
+  });
 
   test("second-CAS loss to a same-origin completion claim preserves its retry sidecar", async () => {
     let current: SessionMetadata = {

@@ -8,7 +8,7 @@ import { mkdir, mkdtemp, readdir, rm, writeFile, readFile, stat } from "node:fs/
 import { createRemoteServer } from "../../src/remote/server.js";
 import { createRemoteBrowserExecutor } from "../../src/remote/client.js";
 import type { BrowserRunResult } from "../../src/browserMode.js";
-import type { RemoteArtifactDescriptor } from "../../src/remote/types.js";
+import type { RemoteArtifactDescriptor, RemoteRunPayload } from "../../src/remote/types.js";
 import {
   REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
   REMOTE_BROWSER_RUN_PATH,
@@ -19,6 +19,14 @@ import {
   serveCompatibleRecoveryHealth,
   setCompatibleRecoveryResponseHeaders,
 } from "./_recoveryProtocolFixture.js";
+import { formatFileSections } from "../../src/oracle/markdown.js";
+import {
+  emitDurableRecoveryCheckpoint,
+  fallbackSubmissionProvenance,
+  primarySubmissionProvenance,
+  strongRemoteSuccessProvenance,
+  verifiedSolProModelSelection,
+} from "./_submissionProvenanceFixture.js";
 
 const CAN_LISTEN_LOCALHOST =
   spawnSync(
@@ -41,17 +49,144 @@ describe("remote browser service", () => {
   });
 
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "passes the planner-tagged upload-to-inline fallback without legacy opt-in",
+    async () => {
+      vi.stubEnv("ORACLE_ALLOW_PROMPT_FALLBACK", "");
+      const tmpDir = await mkdtemp(path.join(os.tmpdir(), "oracle-safe-fallback-test-"));
+      const attachmentPath = path.join(tmpDir, "source.txt");
+      await writeFile(attachmentPath, "source contents", "utf8");
+      let observedFallback: { prompt: string; attachments: unknown[]; reason?: string } | undefined;
+      const server = await createRemoteServer(
+        { host: "127.0.0.1", port: 0, token: "secret", logger: () => {}, attachOnly: false },
+        {
+          runBrowser: async (options) => {
+            observedFallback = options.fallbackSubmission;
+            const submittedPrompt = [
+              "primary",
+              formatFileSections([{ displayPath: "source.txt", content: "source contents" }], {
+                preserveTrailingWhitespace: true,
+              }),
+            ].join("\n\n");
+            await emitDurableRecoveryCheckpoint(options, submittedPrompt, "safe-fallback-result");
+            options.log?.(formatCaptureBindingVerifiedLog("message-handle", "safe-fallback"));
+            return {
+              answerText: "ok",
+              answerMarkdown: "ok",
+              tookMs: 1,
+              answerTokens: 1,
+              answerChars: 2,
+              submissionProvenance: fallbackSubmissionProvenance({
+                primaryPrompt: "primary",
+                submittedPrompt,
+                reason: "auto-upload-timeout-to-inline",
+              }),
+              modelSelection: verifiedSolProModelSelection(),
+            };
+          },
+        },
+      );
+
+      try {
+        const executor = createRemoteBrowserExecutor({
+          host: `127.0.0.1:${server.port}`,
+          token: "secret",
+        });
+        await expect(
+          executor({
+            prompt: "primary",
+            attachments: [{ path: attachmentPath, displayPath: "source.txt" }],
+            fallbackSubmission: {
+              prompt: [
+                "primary",
+                formatFileSections([{ displayPath: "source.txt", content: "source contents" }], {
+                  preserveTrailingWhitespace: true,
+                }),
+              ].join("\n\n"),
+              attachments: [],
+              reason: "auto-upload-timeout-to-inline",
+              authorization: {
+                attachmentsPolicy: "auto",
+                bundleRequested: false,
+                model: "gpt-5.6-sol",
+                maxInputTokens: 272_000,
+              },
+            },
+          }),
+        ).resolves.toMatchObject({ answerText: "ok" });
+      } finally {
+        await server.close();
+        await rm(tmpDir, { recursive: true, force: true });
+      }
+
+      expect(observedFallback).toMatchObject({
+        prompt: expect.stringContaining("source contents"),
+        attachments: [],
+        reason: "auto-upload-timeout-to-inline",
+      });
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "rejects a forged safe fallback whose inline text does not match its attachments",
+    async () => {
+      const runBrowser = vi.fn(async () => ({
+        answerText: "must not run",
+        answerMarkdown: "must not run",
+        tookMs: 1,
+        answerTokens: 1,
+        answerChars: 12,
+      }));
+      const server = await createRemoteServer(
+        { host: "127.0.0.1", port: 0, token: "secret", logger: () => {}, attachOnly: false },
+        { runBrowser },
+      );
+      const payload: RemoteRunPayload = {
+        prompt: "primary",
+        attachments: [
+          {
+            fileName: "source.txt",
+            displayPath: "source.txt",
+            sizeBytes: 15,
+            sha256: createHash("sha256").update("source contents").digest("hex"),
+            generatedBundle: false,
+            contentBase64: Buffer.from("source contents").toString("base64"),
+          },
+        ],
+        fallbackSubmission: {
+          prompt: "primary\n\nforged different contents",
+          attachments: [],
+        },
+        fallbackPolicy: {
+          attachmentsPolicy: "auto",
+          bundleRequested: false,
+          model: "gpt-5.6-sol",
+          maxInputTokens: 272_000,
+        },
+        browserConfig: {},
+        options: {},
+      };
+
+      try {
+        const response = await postRunStream(
+          server.port,
+          payload as unknown as Record<string, unknown>,
+          "secret",
+        ).finished;
+        expect(response.statusCode).toBe(400);
+        expect(response.body).toContain("invalid_prompt_fallback");
+        expect(runBrowser).not.toHaveBeenCalled();
+      } finally {
+        await server.close();
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
     "streams logs and returns results via client executor",
     async () => {
-      // The prompt-altering fallback submission is stripped from remote
-      // payloads unless the caller explicitly opts in; this test exercises
-      // the opted-in pass-through end to end.
-      vi.stubEnv("ORACLE_ALLOW_PROMPT_FALLBACK", "1");
       const tmpDir = await mkdtemp(path.join(os.tmpdir(), "oracle-remote-test-"));
       const attachmentPath = path.join(tmpDir, "note.txt");
-      const fallbackAttachmentPath = path.join(tmpDir, "fallback.txt");
       await writeFile(attachmentPath, "hello world", "utf8");
-      await writeFile(fallbackAttachmentPath, "fallback world", "utf8");
 
       const runLog: string[] = [];
       const server = await createRemoteServer(
@@ -68,14 +203,7 @@ describe("remote browser service", () => {
             }
             const stored = await readFile(attachment.path, "utf8");
             expect(stored).toBe("hello world");
-            expect(options.fallbackSubmission?.prompt).toBe("fallback prompt");
-            expect(options.fallbackSubmission?.attachments).toHaveLength(1);
-            const fallbackAttachment = options.fallbackSubmission?.attachments[0];
-            if (!fallbackAttachment) {
-              throw new Error("missing fallback attachment");
-            }
-            const fallbackStored = await readFile(fallbackAttachment.path, "utf8");
-            expect(fallbackStored).toBe("fallback world");
+            expect(options.fallbackSubmission).toBeUndefined();
             options.log?.("uploading attachment");
             options.log?.(formatCaptureBindingVerifiedLog("message-handle", "abc123"));
             const result: BrowserRunResult = {
@@ -103,15 +231,8 @@ describe("remote browser service", () => {
               tabUrl: "https://chatgpt.com/c/remote-conversation",
               conversationId: "remote-conversation",
               controllerPid: 4321,
-              modelSelection: {
-                requestedModel: "Pro",
-                resolvedLabel: "Extended Pro",
-                strategy: "select",
-                status: "already-selected",
-                verified: true,
-                source: "chatgpt-model-picker",
-                capturedAt: "2026-06-14T00:00:00.000Z",
-              },
+              submissionProvenance: primarySubmissionProvenance("remote", "upload"),
+              modelSelection: verifiedSolProModelSelection(),
               warnings: [
                 { code: "test-warning", severity: "warning", message: "remote warning survived" },
               ],
@@ -161,12 +282,6 @@ describe("remote browser service", () => {
       const result = await executor({
         prompt: "remote",
         attachments: [{ path: attachmentPath, displayPath: "note.txt", sizeBytes: 11 }],
-        fallbackSubmission: {
-          prompt: "fallback prompt",
-          attachments: [
-            { path: fallbackAttachmentPath, displayPath: "fallback.txt", sizeBytes: 14 },
-          ],
-        },
         config: {},
         sessionId: "remote-session-id",
         followUpPrompts: ["follow up"],
@@ -195,15 +310,7 @@ describe("remote browser service", () => {
       // boundary. sanitizeResult() previously dropped them, which made the local
       // session runner fabricate resolved=(unavailable) / verified=no even when
       // the host actually selected and verified the model.
-      expect(result.modelSelection).toEqual({
-        requestedModel: "Pro",
-        resolvedLabel: "Extended Pro",
-        strategy: "select",
-        status: "already-selected",
-        verified: true,
-        source: "chatgpt-model-picker",
-        capturedAt: "2026-06-14T00:00:00.000Z",
-      });
+      expect(result.modelSelection).toEqual(verifiedSolProModelSelection());
       expect(result.warnings).toEqual(
         expect.arrayContaining([
           { code: "test-warning", severity: "warning", message: "remote warning survived" },
@@ -359,6 +466,8 @@ describe("remote browser service", () => {
           tookMs: 1,
           answerTokens: 1,
           answerChars: 2,
+          submissionProvenance: primarySubmissionProvenance("hold-open"),
+          modelSelection: verifiedSolProModelSelection(),
         });
         await activeRun.finished.catch(() => undefined);
         await server.close();
@@ -392,6 +501,11 @@ describe("remote browser service", () => {
               closeOwnedRunTargetAfterRun: "always",
             });
             cleanupPolicies.push(options.closeOwnedTabOnComplete);
+            await emitDurableRecoveryCheckpoint(
+              options,
+              options.prompt,
+              `manual-${createHash("sha256").update(options.prompt).digest("hex").slice(0, 12)}`,
+            );
             options.log?.(formatCaptureBindingVerifiedLog("message-handle", "abc123"));
             return {
               answerText: "done",
@@ -399,6 +513,8 @@ describe("remote browser service", () => {
               tookMs: 1,
               answerTokens: 1,
               answerChars: 4,
+              submissionProvenance: primarySubmissionProvenance(options.prompt),
+              modelSelection: verifiedSolProModelSelection(),
             };
           },
         },
@@ -465,6 +581,11 @@ describe("remote browser service", () => {
         { host: "127.0.0.1", port: 0, token: "secret", logger: () => {} },
         {
           runBrowser: async (options) => {
+            await emitDurableRecoveryCheckpoint(
+              options,
+              options.prompt,
+              "artifact-transfer-result",
+            );
             options.log?.(formatCaptureBindingVerifiedLog("message-handle", "abc123"));
             const result: BrowserRunResult = {
               answerText: "done",
@@ -472,6 +593,8 @@ describe("remote browser service", () => {
               tookMs: 1000,
               answerTokens: 1,
               answerChars: 4,
+              submissionProvenance: primarySubmissionProvenance(options.prompt),
+              modelSelection: verifiedSolProModelSelection(),
               savedFiles: [
                 {
                   kind: "file",
@@ -744,15 +867,9 @@ async function createFakeArtifactBridge({
             tookMs: 1,
             answerTokens: 1,
             answerChars: 4,
+            submissionProvenance: primarySubmissionProvenance("remote"),
           },
-          provenance: {
-            modelVerified: null,
-            modelRequested: null,
-            modelResolved: null,
-            captureBindingVerified: true,
-            captureBindingQuality: "message-handle",
-            challengeClean: true,
-          },
+          provenance: strongRemoteSuccessProvenance("remote"),
         })}\n`,
       );
       return;

@@ -1383,6 +1383,38 @@ describe("shouldPreferSystemTmpDirForTest", () => {
 });
 
 describe("runSubmissionWithRecoveryForTest", () => {
+  const fallbackAuthorization = {
+    attachmentsPolicy: "auto" as const,
+    bundleRequested: false as const,
+    model: "gpt-5.6-sol",
+    maxInputTokens: 120_000,
+  };
+
+  test("records the exact primary branch when no fallback is used", async () => {
+    const result = await runSubmissionWithRecoveryForTest({
+      prompt: "primary prompt",
+      attachments: [],
+      submit: vi.fn().mockResolvedValue({ baselineTurns: 1, baselineAssistantText: null }),
+      reloadPromptComposer: vi.fn(),
+      prepareFallbackSubmission: vi.fn(),
+      logger: vi.fn<(message: string) => void>(),
+    });
+
+    expect(result.submissionProvenance).toEqual({
+      primaryPromptSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      submittedPromptSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      primaryTransport: "inline",
+      submittedTransport: "inline",
+      fallbackUsed: false,
+      fallbackReason: null,
+      equivalenceAlgorithm: null,
+      equivalenceVerified: null,
+    });
+    expect(result.submissionProvenance.submittedPromptSha256).toBe(
+      result.submissionProvenance.primaryPromptSha256,
+    );
+  });
+
   test("preserves prompt-too-large fallback after a dead-composer retry", async () => {
     const submit = vi
       .fn()
@@ -1405,15 +1437,26 @@ describe("runSubmissionWithRecoveryForTest", () => {
         fallbackSubmission: {
           prompt: "fallback prompt",
           attachments: [{ path: "/tmp/fallback.txt", displayPath: "fallback.txt", sizeBytes: 12 }],
+          reason: "auto-inline-too-large-to-upload",
+          authorization: fallbackAuthorization,
         },
         submit,
         reloadPromptComposer,
         prepareFallbackSubmission,
+        verifyInlineToUploadFallback: vi.fn().mockResolvedValue(true),
         logger,
       }),
-    ).resolves.toEqual({
+    ).resolves.toMatchObject({
       baselineTurns: 7,
       baselineAssistantText: "done",
+      submissionProvenance: {
+        primaryTransport: "inline",
+        submittedTransport: "upload",
+        fallbackUsed: true,
+        fallbackReason: "auto-inline-too-large-to-upload",
+        equivalenceAlgorithm: "oracle.browser-auto-fallback-exact.v2",
+        equivalenceVerified: true,
+      },
     });
 
     expect(reloadPromptComposer).toHaveBeenCalledTimes(1);
@@ -1421,11 +1464,24 @@ describe("runSubmissionWithRecoveryForTest", () => {
     expect(logger).toHaveBeenCalledWith(
       "[browser] Inline prompt too large; retrying with file uploads.",
     );
-    expect(submit).toHaveBeenNthCalledWith(1, "inline prompt", []);
-    expect(submit).toHaveBeenNthCalledWith(2, "inline prompt", []);
-    expect(submit).toHaveBeenNthCalledWith(3, "fallback prompt", [
-      expect.objectContaining({ displayPath: "fallback.txt" }),
-    ]);
+    const primaryAttempt = expect.objectContaining({
+      requireExactPromptRoundTrip: false,
+      submissionProvenance: expect.objectContaining({ fallbackUsed: false }),
+    });
+    expect(submit).toHaveBeenNthCalledWith(1, "inline prompt", [], primaryAttempt);
+    expect(submit).toHaveBeenNthCalledWith(2, "inline prompt", [], primaryAttempt);
+    expect(submit).toHaveBeenNthCalledWith(
+      3,
+      "fallback prompt",
+      [expect.objectContaining({ displayPath: "fallback.txt" })],
+      expect.objectContaining({
+        requireExactPromptRoundTrip: true,
+        submissionProvenance: expect.objectContaining({
+          fallbackUsed: true,
+          submittedTransport: "upload",
+        }),
+      }),
+    );
   });
 
   test("throws when prompt-too-large happens again after fallback", async () => {
@@ -1444,14 +1500,369 @@ describe("runSubmissionWithRecoveryForTest", () => {
         attachments: [],
         fallbackSubmission: {
           prompt: "fallback prompt",
-          attachments: [],
+          attachments: [{ path: "/tmp/fallback.txt", displayPath: "fallback.txt", sizeBytes: 12 }],
+          reason: "auto-inline-too-large-to-upload",
+          authorization: fallbackAuthorization,
         },
         submit,
         reloadPromptComposer: vi.fn().mockResolvedValue(undefined),
         prepareFallbackSubmission: vi.fn().mockResolvedValue(undefined),
+        verifyInlineToUploadFallback: vi.fn().mockResolvedValue(true),
         logger: vi.fn<(message: string) => void>(),
       }),
     ).rejects.toThrow(/prompt too large again/i);
+  });
+
+  test("retries one typed pre-dispatch attachment timeout inline with exact round-trip required", async () => {
+    const uploadTimeout = new BrowserAutomationError("upload stalled", {
+      stage: "attachment-upload",
+      code: "attachment-upload-timeout",
+      retryable: true,
+    });
+    const submit = vi
+      .fn()
+      .mockRejectedValueOnce(uploadTimeout)
+      .mockResolvedValueOnce({ baselineTurns: 3, baselineAssistantText: "done" });
+    const prepareFallbackSubmission = vi.fn().mockResolvedValue(undefined);
+    const logger = vi.fn<(message: string) => void>();
+
+    await expect(
+      runSubmissionWithRecoveryForTest({
+        prompt: "prompt with upload",
+        attachments: [{ path: "/tmp/a.txt", displayPath: "a.txt", sizeBytes: 12 }],
+        fallbackSubmission: {
+          prompt: "prompt with inline file contents",
+          attachments: [],
+          reason: "auto-upload-timeout-to-inline",
+          authorization: fallbackAuthorization,
+        },
+        submit,
+        reloadPromptComposer: vi.fn().mockResolvedValue(undefined),
+        prepareFallbackSubmission,
+        verifyUploadToInlineFallback: vi.fn().mockResolvedValue(true),
+        logger,
+      }),
+    ).resolves.toMatchObject({
+      baselineTurns: 3,
+      submissionProvenance: {
+        primaryTransport: "upload",
+        submittedTransport: "inline",
+        fallbackUsed: true,
+        fallbackReason: "auto-upload-timeout-to-inline",
+        equivalenceAlgorithm: "oracle.browser-auto-fallback-exact.v2",
+        equivalenceVerified: true,
+      },
+    });
+
+    expect(prepareFallbackSubmission).toHaveBeenCalledOnce();
+    expect(submit).toHaveBeenNthCalledWith(
+      1,
+      "prompt with upload",
+      [expect.objectContaining({ displayPath: "a.txt" })],
+      expect.objectContaining({
+        requireExactPromptRoundTrip: false,
+        submissionProvenance: expect.objectContaining({ fallbackUsed: false }),
+      }),
+    );
+    expect(submit).toHaveBeenNthCalledWith(
+      2,
+      "prompt with inline file contents",
+      [],
+      expect.objectContaining({
+        requireExactPromptRoundTrip: true,
+        submissionProvenance: expect.objectContaining({
+          fallbackUsed: true,
+          submittedTransport: "inline",
+        }),
+      }),
+    );
+    expect(logger).toHaveBeenCalledWith(
+      "[browser] Attachment upload stalled before dispatch; retrying eligible text files inline.",
+    );
+  });
+
+  test("never retries a generic upload failure or an unsafe fallback direction", async () => {
+    const generic = new Error("upload failed generically");
+    const genericSubmit = vi.fn().mockRejectedValue(generic);
+    const genericPrepare = vi.fn();
+    await expect(
+      runSubmissionWithRecoveryForTest({
+        prompt: "upload",
+        attachments: [{ path: "/tmp/a.txt", displayPath: "a.txt", sizeBytes: 12 }],
+        fallbackSubmission: { prompt: "inline", attachments: [] },
+        submit: genericSubmit,
+        reloadPromptComposer: vi.fn(),
+        prepareFallbackSubmission: genericPrepare,
+        logger: vi.fn<(message: string) => void>(),
+      }),
+    ).rejects.toBe(generic);
+    expect(genericPrepare).not.toHaveBeenCalled();
+
+    const untypedTimeout = new BrowserAutomationError("upload stalled", {
+      code: "attachment-upload-timeout",
+    });
+    const untypedSubmit = vi.fn().mockRejectedValue(untypedTimeout);
+    const untypedPrepare = vi.fn();
+    await expect(
+      runSubmissionWithRecoveryForTest({
+        prompt: "upload",
+        attachments: [{ path: "/tmp/a.txt", displayPath: "a.txt", sizeBytes: 12 }],
+        fallbackSubmission: { prompt: "inline", attachments: [] },
+        submit: untypedSubmit,
+        reloadPromptComposer: vi.fn(),
+        prepareFallbackSubmission: untypedPrepare,
+        logger: vi.fn<(message: string) => void>(),
+      }),
+    ).rejects.toBe(untypedTimeout);
+    expect(untypedPrepare).not.toHaveBeenCalled();
+
+    const typed = new BrowserAutomationError("upload stalled", {
+      code: "attachment-upload-timeout",
+      stage: "attachment-upload",
+      retryable: true,
+    });
+    const wrongDirectionSubmit = vi.fn().mockRejectedValue(typed);
+    const wrongDirectionPrepare = vi.fn();
+    await expect(
+      runSubmissionWithRecoveryForTest({
+        prompt: "upload",
+        attachments: [{ path: "/tmp/a.txt", displayPath: "a.txt", sizeBytes: 12 }],
+        fallbackSubmission: {
+          prompt: "still upload",
+          attachments: [{ path: "/tmp/b.txt", displayPath: "b.txt", sizeBytes: 12 }],
+          reason: "auto-upload-timeout-to-inline",
+        },
+        submit: wrongDirectionSubmit,
+        reloadPromptComposer: vi.fn(),
+        prepareFallbackSubmission: wrongDirectionPrepare,
+        logger: vi.fn<(message: string) => void>(),
+      }),
+    ).rejects.toBe(typed);
+    expect(wrongDirectionPrepare).not.toHaveBeenCalled();
+  });
+
+  test("attempts upload-to-inline recovery at most once", async () => {
+    const timeout = () =>
+      new BrowserAutomationError("upload stalled", {
+        code: "attachment-upload-timeout",
+        stage: "attachment-upload",
+        retryable: true,
+      });
+    const secondFailure = timeout();
+    const submit = vi.fn().mockRejectedValueOnce(timeout()).mockRejectedValueOnce(secondFailure);
+    const prepare = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      runSubmissionWithRecoveryForTest({
+        prompt: "upload",
+        attachments: [{ path: "/tmp/a.txt", displayPath: "a.txt", sizeBytes: 12 }],
+        fallbackSubmission: {
+          prompt: "inline",
+          attachments: [],
+          reason: "auto-upload-timeout-to-inline",
+          authorization: fallbackAuthorization,
+        },
+        submit,
+        reloadPromptComposer: vi.fn(),
+        prepareFallbackSubmission: prepare,
+        verifyUploadToInlineFallback: vi.fn().mockResolvedValue(true),
+        logger: vi.fn<(message: string) => void>(),
+      }),
+    ).rejects.toBe(secondFailure);
+
+    expect(submit).toHaveBeenCalledTimes(2);
+    expect(prepare).toHaveBeenCalledOnce();
+  });
+
+  test("refuses upload-to-inline recovery when attachment content provenance does not verify", async () => {
+    const timeout = new BrowserAutomationError("upload stalled", {
+      code: "attachment-upload-timeout",
+      stage: "attachment-upload",
+      retryable: true,
+    });
+    const submit = vi.fn().mockRejectedValue(timeout);
+    const prepare = vi.fn();
+    const verifyFallback = vi.fn().mockResolvedValue(false);
+
+    await expect(
+      runSubmissionWithRecoveryForTest({
+        prompt: "upload",
+        attachments: [{ path: "/tmp/a.txt", displayPath: "a.txt", sizeBytes: 12 }],
+        fallbackSubmission: {
+          prompt: "forged inline",
+          attachments: [],
+          reason: "auto-upload-timeout-to-inline",
+          authorization: fallbackAuthorization,
+        },
+        submit,
+        reloadPromptComposer: vi.fn(),
+        prepareFallbackSubmission: prepare,
+        verifyUploadToInlineFallback: verifyFallback,
+        logger: vi.fn<(message: string) => void>(),
+      }),
+    ).rejects.toBe(timeout);
+
+    expect(verifyFallback).toHaveBeenCalledOnce();
+    expect(prepare).not.toHaveBeenCalled();
+    expect(submit).toHaveBeenCalledOnce();
+  });
+
+  test("refuses fallback without planner policy authorization", async () => {
+    const timeout = new BrowserAutomationError("upload stalled", {
+      code: "attachment-upload-timeout",
+      stage: "attachment-upload",
+      retryable: true,
+    });
+    const verifyFallback = vi.fn().mockResolvedValue(true);
+    const prepare = vi.fn();
+
+    await expect(
+      runSubmissionWithRecoveryForTest({
+        prompt: "upload",
+        attachments: [{ path: "/tmp/a.txt", displayPath: "a.txt", sizeBytes: 12 }],
+        fallbackSubmission: {
+          prompt: "inline",
+          attachments: [],
+          reason: "auto-upload-timeout-to-inline",
+        },
+        submit: vi.fn().mockRejectedValue(timeout),
+        reloadPromptComposer: vi.fn(),
+        prepareFallbackSubmission: prepare,
+        verifyUploadToInlineFallback: verifyFallback,
+        logger: vi.fn<(message: string) => void>(),
+      }),
+    ).rejects.toBe(timeout);
+
+    expect(verifyFallback).not.toHaveBeenCalled();
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  test("refuses fallback when display paths differ from delivered browser filenames", async () => {
+    const timeout = new BrowserAutomationError("upload stalled", {
+      code: "attachment-upload-timeout",
+      stage: "attachment-upload",
+      retryable: true,
+    });
+    const verifyFallback = vi.fn().mockResolvedValue(true);
+    const prepare = vi.fn();
+
+    await expect(
+      runSubmissionWithRecoveryForTest({
+        prompt: "upload",
+        attachments: [{ path: "/tmp/a.txt", displayPath: "nested/a.txt", sizeBytes: 12 }],
+        fallbackSubmission: {
+          prompt: "inline",
+          attachments: [],
+          reason: "auto-upload-timeout-to-inline",
+          authorization: fallbackAuthorization,
+        },
+        submit: vi.fn().mockRejectedValue(timeout),
+        reloadPromptComposer: vi.fn(),
+        prepareFallbackSubmission: prepare,
+        verifyUploadToInlineFallback: verifyFallback,
+        logger: vi.fn<(message: string) => void>(),
+      }),
+    ).rejects.toBe(timeout);
+
+    expect(verifyFallback).not.toHaveBeenCalled();
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  test("refuses fallback authorization for a different selected model", async () => {
+    const tooLarge = new BrowserAutomationError("too large", { code: "prompt-too-large" });
+    const verifyFallback = vi.fn().mockResolvedValue(true);
+
+    await expect(
+      runSubmissionWithRecoveryForTest({
+        prompt: "inline prompt",
+        attachments: [],
+        fallbackSubmission: {
+          prompt: "base prompt",
+          attachments: [{ path: "/tmp/a.txt", displayPath: "a.txt", sizeBytes: 12 }],
+          reason: "auto-inline-too-large-to-upload",
+          authorization: fallbackAuthorization,
+        },
+        desiredModel: "gpt-5.1",
+        submit: vi.fn().mockRejectedValue(tooLarge),
+        reloadPromptComposer: vi.fn(),
+        prepareFallbackSubmission: vi.fn(),
+        verifyInlineToUploadFallback: verifyFallback,
+        logger: vi.fn<(message: string) => void>(),
+      }),
+    ).rejects.toBe(tooLarge);
+
+    expect(verifyFallback).not.toHaveBeenCalled();
+  });
+
+  test("refuses fallback whose submitted inline branch exceeds its authorized token budget", async () => {
+    const timeout = new BrowserAutomationError("upload stalled", {
+      code: "attachment-upload-timeout",
+      stage: "attachment-upload",
+      retryable: true,
+    });
+    const verifyFallback = vi.fn().mockResolvedValue(true);
+    const prepare = vi.fn();
+
+    await expect(
+      runSubmissionWithRecoveryForTest({
+        prompt: "upload",
+        attachments: [{ path: "/tmp/a.txt", displayPath: "a.txt", sizeBytes: 12 }],
+        fallbackSubmission: {
+          prompt: "this inline fallback necessarily uses more than one token",
+          attachments: [],
+          reason: "auto-upload-timeout-to-inline",
+          authorization: { ...fallbackAuthorization, maxInputTokens: 1 },
+        },
+        desiredModel: "gpt-5.6-sol",
+        submit: vi.fn().mockRejectedValue(timeout),
+        reloadPromptComposer: vi.fn(),
+        prepareFallbackSubmission: prepare,
+        verifyUploadToInlineFallback: verifyFallback,
+        logger: vi.fn<(message: string) => void>(),
+      }),
+    ).rejects.toBe(timeout);
+
+    expect(verifyFallback).not.toHaveBeenCalled();
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  test("refuses inline-to-upload recovery when inverse attachment provenance does not verify", async () => {
+    const tooLarge = new BrowserAutomationError("too large", { code: "prompt-too-large" });
+    const submit = vi.fn().mockRejectedValue(tooLarge);
+    const prepare = vi.fn();
+    const verifyFallback = vi.fn().mockResolvedValue(false);
+
+    await expect(
+      runSubmissionWithRecoveryForTest({
+        prompt: "inline prompt",
+        attachments: [],
+        fallbackSubmission: {
+          prompt: "base prompt",
+          attachments: [{ path: "/tmp/a.txt", displayPath: "a.txt", sizeBytes: 12 }],
+          reason: "auto-inline-too-large-to-upload",
+          authorization: fallbackAuthorization,
+        },
+        submit,
+        reloadPromptComposer: vi.fn(),
+        prepareFallbackSubmission: prepare,
+        verifyInlineToUploadFallback: verifyFallback,
+        logger: vi.fn<(message: string) => void>(),
+      }),
+    ).rejects.toBe(tooLarge);
+
+    expect(verifyFallback).toHaveBeenCalledOnce();
+    expect(prepare).not.toHaveBeenCalled();
+    expect(submit).toHaveBeenCalledOnce();
+  });
+
+  test("production submission adapters forward strict fallback attempt options", async () => {
+    const source = (
+      await readFile(new URL("../../src/browser/index.ts", import.meta.url), "utf8")
+    ).replace(/\s+/gu, "");
+    const forwards = source.match(
+      /submitOnce\(submissionPrompt,submissionAttachments,submissionOptions\)/gu,
+    );
+    expect(forwards).toHaveLength(4);
   });
 
   test("never submits a fallback after an ambiguous post-dispatch commit timeout", async () => {
@@ -1480,6 +1891,71 @@ describe("runSubmissionWithRecoveryForTest", () => {
 
     expect(submit).toHaveBeenCalledTimes(1);
     expect(prepareFallbackSubmission).not.toHaveBeenCalled();
+  });
+});
+
+describe("retained attachment snapshot lifetime", () => {
+  test("keeps snapshots alive through the full submission attempt and cleans them afterward", async () => {
+    const events: string[] = [];
+    const cleanups = [
+      vi.fn(async () => {
+        events.push("cleanup");
+      }),
+    ];
+
+    await expect(
+      __test__.runWithRetainedAttachmentSnapshots(
+        async () => {
+          events.push("submit-start");
+          expect(cleanups[0]).not.toHaveBeenCalled();
+          events.push("post-send-verification");
+          expect(cleanups[0]).not.toHaveBeenCalled();
+          return "submitted";
+        },
+        cleanups,
+        vi.fn<(message: string) => void>(),
+      ),
+    ).resolves.toBe("submitted");
+
+    expect(events).toEqual(["submit-start", "post-send-verification", "cleanup"]);
+    expect(cleanups).toEqual([]);
+  });
+
+  test("cleans retained snapshots when the submission attempt fails", async () => {
+    const failure = new Error("pre-dispatch failure");
+    const cleanup = vi.fn(async () => undefined);
+
+    await expect(
+      __test__.runWithRetainedAttachmentSnapshots(
+        async () => {
+          throw failure;
+        },
+        [cleanup],
+        vi.fn<(message: string) => void>(),
+      ),
+    ).rejects.toBe(failure);
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  test("does not clean a snapshot when an outer abort race wins before the raw attempt settles", async () => {
+    let finishAttempt: (() => void) | undefined;
+    const rawAttempt = new Promise<void>((resolve) => {
+      finishAttempt = resolve;
+    });
+    const cleanup = vi.fn(async () => undefined);
+    const wrappedAttempt = __test__.runWithRetainedAttachmentSnapshots(
+      () => rawAttempt,
+      [cleanup],
+      vi.fn<(message: string) => void>(),
+    );
+    const abort = new Error("caller aborted");
+
+    await expect(Promise.race([wrappedAttempt, Promise.reject(abort)])).rejects.toBe(abort);
+    expect(cleanup).not.toHaveBeenCalled();
+
+    finishAttempt?.();
+    await expect(wrappedAttempt).resolves.toBeUndefined();
+    expect(cleanup).toHaveBeenCalledOnce();
   });
 });
 

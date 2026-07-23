@@ -20,6 +20,11 @@ import {
   REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
   REMOTE_BROWSER_RUN_PATH,
 } from "../../src/remote/types.js";
+import {
+  emitDurableRecoveryCheckpoint,
+  primarySubmissionProvenance,
+  verifiedSolProModelSelection,
+} from "./_submissionProvenanceFixture.js";
 
 // oracle.run.v1 sanitized JSONL sink: exactly one hash-chained line per
 // ACCEPTED /runs (success, failure, abort). Field names are normative; a
@@ -221,6 +226,7 @@ describe("serve emits one sink line per accepted run", () => {
             options.log?.(
               "[browser] ChatGPT thinking - 12s elapsed; status=response streaming; source=inline",
             );
+            await emitDurableRecoveryCheckpoint(options, "sink test prompt", "conv-123");
             options.log?.(formatCaptureBindingVerifiedLog("message-handle", "abc123"));
             await new Promise((resolve) => setTimeout(resolve, 35));
             const result: BrowserRunResult = {
@@ -230,15 +236,8 @@ describe("serve emits one sink line per accepted run", () => {
               answerTokens: 1,
               answerChars: 2,
               conversationId: "conv-123",
-              modelSelection: {
-                requestedModel: "Pro",
-                resolvedLabel: "Extended Pro",
-                strategy: "select",
-                status: "already-selected",
-                verified: true,
-                source: "chatgpt-model-picker",
-                capturedAt: "2026-07-03T00:00:00.000Z",
-              },
+              submissionProvenance: primarySubmissionProvenance("sink test prompt"),
+              modelSelection: verifiedSolProModelSelection(),
             };
             return result;
           },
@@ -291,8 +290,8 @@ describe("serve emits one sink line per accepted run", () => {
           createHash("sha256").update("conv-123").digest("hex"),
         );
         expect(okLine.provenance).toEqual({
-          model_requested: "Pro",
-          model_resolved: "Extended Pro",
+          model_requested: "GPT-5.6 Sol",
+          model_resolved: "GPT-5.6 Sol + Pro",
           model_verified: true,
         });
         // Timestamp ordering invariants:
@@ -343,6 +342,7 @@ describe("serve emits one sink line per accepted run", () => {
           runBrowser: async (options) => {
             markStarted();
             const result = await finished;
+            await emitDurableRecoveryCheckpoint(options, "hold", "sink-aborted-client");
             options.log?.(formatCaptureBindingVerifiedLog("message-handle", "abc123"));
             return result;
           },
@@ -360,6 +360,8 @@ describe("serve emits one sink line per accepted run", () => {
           tookMs: 1,
           answerTokens: 1,
           answerChars: 2,
+          submissionProvenance: primarySubmissionProvenance("hold"),
+          modelSelection: verifiedSolProModelSelection(),
         });
         await active.finished.catch(() => undefined);
 

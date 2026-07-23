@@ -2,7 +2,7 @@ import { mkdtemp, rm, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import net from "node:net";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { resolveBrowserConfig } from "./config.js";
 import { copyChromeProfile } from "./profileCopy.js";
 import type {
@@ -16,6 +16,9 @@ import type {
   BrowserArchiveResult,
   BrowserDownloadableFile,
   SavedBrowserFile,
+  BrowserSubmissionFallback,
+  BrowserSubmissionProvenance,
+  BrowserPromptFallbackReason,
 } from "./types.js";
 import {
   launchChrome,
@@ -92,8 +95,10 @@ import {
   findRunningChromeDebugTargetForProfile,
   readChromePid,
   readDevToolsPort,
+  resolveChromeDebugTargetOwner,
   shouldCleanupManualLoginProfileState,
   terminateRecordedChromeForProfile,
+  verifyChromeDebugTargetOwner,
   verifyDevToolsReachable,
   writeChromePid,
   writeDevToolsActivePort,
@@ -153,6 +158,14 @@ import {
   type CapturedAssistantMeta,
   type SubmittedUserMessageBinding,
 } from "./actions/captureBinding.js";
+import {
+  AUTO_PROMPT_FALLBACK_EQUIVALENCE_ALGORITHM,
+  AUTO_PROMPT_FALLBACK_MAX_SOURCE_BYTES,
+  isAutoPromptFallbackWithinModelBudget,
+  verifyAutoInlineToUploadFallback,
+  verifyAutoUploadToInlineFallback,
+} from "./prompt.js";
+import { readBoundedRegularFile } from "./actions/attachmentDataTransfer.js";
 
 export type { BrowserAutomationConfig, BrowserRunOptions, BrowserRunResult } from "./types.js";
 export { CHATGPT_URL, DEFAULT_MODEL_STRATEGY, DEFAULT_MODEL_TARGET } from "./constants.js";
@@ -547,6 +560,18 @@ function hasBrowserErrorCode(error: unknown, code: string): boolean {
   );
 }
 
+function isRetryablePreDispatchAttachmentUploadTimeout(error: unknown): boolean {
+  if (!(error instanceof BrowserAutomationError)) return false;
+  const details = error.details as
+    | { code?: unknown; stage?: unknown; retryable?: unknown }
+    | undefined;
+  return (
+    details?.code === "attachment-upload-timeout" &&
+    details.stage === "attachment-upload" &&
+    details.retryable === true
+  );
+}
+
 // Chrome throttles rendering/input for tabs it considers backgrounded or
 // occluded, which makes ChatGPT drop synthetic Send clicks. This affects any
 // attached tab that isn't the OS-focused foreground window, not just remote
@@ -906,11 +931,16 @@ export function maybeArchiveCompletedConversationForTest(
   return maybeArchiveCompletedConversation(args);
 }
 
-type BrowserSubmissionResult = {
+type BrowserSubmissionAttemptResult = {
   baselineTurns: number | null;
   baselineAssistantText: string | null;
   deepResearchTargetKeys?: string[];
   deepResearchTargetBaselineCaptured?: boolean;
+};
+
+type BrowserSubmissionResult = BrowserSubmissionAttemptResult & {
+  submittedPrompt: string;
+  submissionProvenance: BrowserSubmissionProvenance;
 };
 
 async function captureDeepResearchTargetBaseline(
@@ -927,10 +957,176 @@ async function captureDeepResearchTargetBaseline(
   }
 }
 
-type BrowserSubmissionFallback = {
-  prompt: string;
-  attachments: BrowserAttachment[];
+type BrowserSubmissionAttemptOptions = {
+  requireExactPromptRoundTrip?: boolean;
+  submissionProvenance: BrowserSubmissionProvenance;
 };
+
+type VerifyUploadToInlineFallback = (input: {
+  primaryPrompt: string;
+  fallback: BrowserSubmissionFallback;
+  primaryAttachments: BrowserAttachment[];
+}) => Promise<boolean>;
+
+type VerifyInlineToUploadFallback = (input: {
+  primaryPrompt: string;
+  fallback: BrowserSubmissionFallback;
+}) => Promise<boolean>;
+
+async function runWithRetainedAttachmentSnapshots<T>(
+  operation: () => Promise<T>,
+  cleanups: Array<() => Promise<void>>,
+  logger: BrowserLogger,
+): Promise<T> {
+  try {
+    return await operation();
+  } finally {
+    const settled = await Promise.allSettled(cleanups.splice(0).map((cleanup) => cleanup()));
+    for (const result of settled) {
+      if (result.status === "rejected") {
+        logger(
+          `Attachment snapshot cleanup failed: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
+        );
+      }
+    }
+  }
+}
+
+const verifyUploadToInlineFallbackFromFiles: VerifyUploadToInlineFallback = async ({
+  primaryPrompt,
+  fallback,
+  primaryAttachments,
+}) => {
+  try {
+    if (!attachmentsPreserveDeliveredNames(primaryAttachments)) return false;
+    const attachments: Array<{ displayPath: string; content: Buffer }> = [];
+    let totalBytes = 0;
+    for (const attachment of primaryAttachments) {
+      const remainingBytes = AUTO_PROMPT_FALLBACK_MAX_SOURCE_BYTES - totalBytes;
+      if (remainingBytes < 0) return false;
+      const verified = await readBoundedRegularFile(attachment.path, {
+        maxBytes: Math.max(1, remainingBytes),
+        declaredSizeBytes: attachment.sizeBytes,
+        declaredSha256: attachment.integritySha256,
+      });
+      totalBytes += verified.sizeBytes;
+      if (totalBytes > AUTO_PROMPT_FALLBACK_MAX_SOURCE_BYTES) return false;
+      attachments.push({
+        displayPath: attachment.displayPath,
+        content: verified.bytes,
+      });
+    }
+    return verifyAutoUploadToInlineFallback({
+      primaryPrompt,
+      fallbackPrompt: fallback.prompt,
+      attachments,
+    });
+  } catch {
+    return false;
+  }
+};
+
+const verifyInlineToUploadFallbackFromFiles: VerifyInlineToUploadFallback = async ({
+  primaryPrompt,
+  fallback,
+}) => {
+  try {
+    if (!attachmentsPreserveDeliveredNames(fallback.attachments)) return false;
+    const attachments: Array<{ displayPath: string; content: Buffer }> = [];
+    let totalBytes = 0;
+    for (const attachment of fallback.attachments) {
+      const remainingBytes = AUTO_PROMPT_FALLBACK_MAX_SOURCE_BYTES - totalBytes;
+      if (remainingBytes < 0) return false;
+      const verified = await readBoundedRegularFile(attachment.path, {
+        maxBytes: Math.max(1, remainingBytes),
+        declaredSizeBytes: attachment.sizeBytes,
+        declaredSha256: attachment.integritySha256,
+      });
+      totalBytes += verified.sizeBytes;
+      if (totalBytes > AUTO_PROMPT_FALLBACK_MAX_SOURCE_BYTES) return false;
+      attachments.push({
+        displayPath: attachment.displayPath,
+        content: verified.bytes,
+      });
+    }
+    return verifyAutoInlineToUploadFallback({
+      primaryPrompt,
+      fallbackPrompt: fallback.prompt,
+      attachments,
+    });
+  } catch {
+    return false;
+  }
+};
+
+function attachmentsPreserveDeliveredNames(attachments: BrowserAttachment[]): boolean {
+  return attachments.every(
+    (attachment) =>
+      attachment.generatedBundle !== true &&
+      attachment.displayPath.length > 0 &&
+      attachment.displayPath === path.basename(attachment.path),
+  );
+}
+
+function normalizeFallbackModelIdentity(model: string): string {
+  return model
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, "");
+}
+
+function isFallbackPolicyAuthorized(
+  fallback: BrowserSubmissionFallback,
+  desiredModel: string | null | undefined,
+): boolean {
+  const authorization = fallback.authorization;
+  if (
+    authorization?.attachmentsPolicy !== "auto" ||
+    authorization.bundleRequested !== false ||
+    typeof authorization.model !== "string" ||
+    authorization.model.trim().length === 0 ||
+    !Number.isSafeInteger(authorization.maxInputTokens) ||
+    authorization.maxInputTokens <= 0
+  ) {
+    return false;
+  }
+  if (!attachmentsPreserveDeliveredNames(fallback.attachments)) return false;
+
+  if (isDesiredGpt56SolModel(desiredModel)) {
+    return authorization.model === "gpt-5.6-sol";
+  }
+  if (typeof desiredModel === "string" && desiredModel.trim().length > 0) {
+    return (
+      normalizeFallbackModelIdentity(authorization.model) ===
+      normalizeFallbackModelIdentity(desiredModel)
+    );
+  }
+  return true;
+}
+
+function hashSubmittedPrompt(prompt: string): string {
+  return createHash("sha256").update(prompt, "utf8").digest("hex");
+}
+
+function buildSubmissionProvenance(input: {
+  primaryPrompt: string;
+  primaryAttachments: BrowserAttachment[];
+  submittedPrompt: string;
+  submittedAttachments: BrowserAttachment[];
+  fallbackUsed: boolean;
+  fallbackReason: BrowserPromptFallbackReason | null;
+}): BrowserSubmissionProvenance {
+  return {
+    primaryPromptSha256: hashSubmittedPrompt(input.primaryPrompt),
+    submittedPromptSha256: hashSubmittedPrompt(input.submittedPrompt),
+    primaryTransport: input.primaryAttachments.length > 0 ? "upload" : "inline",
+    submittedTransport: input.submittedAttachments.length > 0 ? "upload" : "inline",
+    fallbackUsed: input.fallbackUsed,
+    fallbackReason: input.fallbackUsed ? input.fallbackReason : null,
+    equivalenceAlgorithm: input.fallbackUsed ? AUTO_PROMPT_FALLBACK_EQUIVALENCE_ALGORITHM : null,
+    equivalenceVerified: input.fallbackUsed ? true : null,
+  };
+}
 
 async function runSubmissionWithRecovery({
   prompt,
@@ -939,24 +1135,51 @@ async function runSubmissionWithRecovery({
   submit,
   reloadPromptComposer,
   prepareFallbackSubmission,
+  verifyUploadToInlineFallback = verifyUploadToInlineFallbackFromFiles,
+  verifyInlineToUploadFallback = verifyInlineToUploadFallbackFromFiles,
+  desiredModel,
   logger,
 }: {
   prompt: string;
   attachments: BrowserAttachment[];
   fallbackSubmission?: BrowserSubmissionFallback;
-  submit: (prompt: string, attachments: BrowserAttachment[]) => Promise<BrowserSubmissionResult>;
+  submit: (
+    prompt: string,
+    attachments: BrowserAttachment[],
+    options?: BrowserSubmissionAttemptOptions,
+  ) => Promise<BrowserSubmissionAttemptResult>;
   reloadPromptComposer: () => Promise<void>;
   prepareFallbackSubmission: () => Promise<void>;
+  verifyUploadToInlineFallback?: VerifyUploadToInlineFallback;
+  verifyInlineToUploadFallback?: VerifyInlineToUploadFallback;
+  desiredModel?: string | null;
   logger: BrowserLogger;
 }): Promise<BrowserSubmissionResult> {
   let currentPrompt = prompt;
   let currentAttachments = attachments;
   let retriedDeadComposer = false;
   let usedFallbackSubmission = false;
+  let requireExactPromptRoundTrip = false;
 
   while (true) {
     try {
-      return await submit(currentPrompt, currentAttachments);
+      const submissionProvenance = buildSubmissionProvenance({
+        primaryPrompt: prompt,
+        primaryAttachments: attachments,
+        submittedPrompt: currentPrompt,
+        submittedAttachments: currentAttachments,
+        fallbackUsed: usedFallbackSubmission,
+        fallbackReason: fallbackSubmission?.reason ?? null,
+      });
+      const result = await submit(currentPrompt, currentAttachments, {
+        requireExactPromptRoundTrip,
+        submissionProvenance,
+      });
+      return {
+        ...result,
+        submittedPrompt: currentPrompt,
+        submissionProvenance,
+      };
     } catch (error) {
       const isDeadComposer = hasBrowserErrorCode(error, "dead-composer");
       if (isDeadComposer && !retriedDeadComposer) {
@@ -966,9 +1189,66 @@ async function runSubmissionWithRecovery({
       }
 
       const isPromptTooLarge = hasBrowserErrorCode(error, "prompt-too-large");
-      if (fallbackSubmission && isPromptTooLarge && !usedFallbackSubmission) {
+      const isAttachmentUploadTimeout = isRetryablePreDispatchAttachmentUploadTimeout(error);
+      const fallbackIsUploadToInline =
+        currentAttachments.length > 0 && fallbackSubmission?.attachments.length === 0;
+      const fallbackIsInlineToUpload =
+        currentAttachments.length === 0 && (fallbackSubmission?.attachments.length ?? 0) > 0;
+      const fallbackReasonMatchesError =
+        (isPromptTooLarge && fallbackSubmission?.reason === "auto-inline-too-large-to-upload") ||
+        (isAttachmentUploadTimeout &&
+          fallbackSubmission?.reason === "auto-upload-timeout-to-inline");
+      const fallbackDirectionIsSafe =
+        fallbackReasonMatchesError &&
+        ((isPromptTooLarge && fallbackIsInlineToUpload) ||
+          (isAttachmentUploadTimeout && fallbackIsUploadToInline));
+      const fallbackPolicyIsAuthorized =
+        fallbackSubmission !== undefined &&
+        isFallbackPolicyAuthorized(fallbackSubmission, desiredModel) &&
+        attachmentsPreserveDeliveredNames(currentAttachments);
+      const fallbackBudgetIsAuthorized =
+        fallbackSubmission !== undefined &&
+        fallbackDirectionIsSafe &&
+        fallbackPolicyIsAuthorized &&
+        isAutoPromptFallbackWithinModelBudget(
+          fallbackIsUploadToInline ? fallbackSubmission.prompt : prompt,
+          fallbackSubmission.authorization!.model,
+          fallbackSubmission.authorization!.maxInputTokens,
+        );
+      const fallbackContentIsVerified =
+        fallbackSubmission !== undefined &&
+        fallbackDirectionIsSafe &&
+        fallbackPolicyIsAuthorized &&
+        fallbackBudgetIsAuthorized &&
+        (isAttachmentUploadTimeout
+          ? await verifyUploadToInlineFallback({
+              primaryPrompt: currentPrompt,
+              fallback: fallbackSubmission,
+              primaryAttachments: currentAttachments,
+            })
+          : await verifyInlineToUploadFallback({
+              primaryPrompt: currentPrompt,
+              fallback: fallbackSubmission,
+            }));
+      if (
+        fallbackSubmission &&
+        fallbackDirectionIsSafe &&
+        fallbackPolicyIsAuthorized &&
+        fallbackBudgetIsAuthorized &&
+        fallbackContentIsVerified &&
+        !usedFallbackSubmission
+      ) {
         usedFallbackSubmission = true;
-        logger("[browser] Inline prompt too large; retrying with file uploads.");
+        // Both fallback directions are a second paid submission path. Reprove
+        // the exact prompt and expected attachment state on one bound
+        // composer through the trusted click event; never rely only on the
+        // pre-retry file equivalence check.
+        requireExactPromptRoundTrip = true;
+        logger(
+          isPromptTooLarge
+            ? "[browser] Inline prompt too large; retrying with file uploads."
+            : "[browser] Attachment upload stalled before dispatch; retrying eligible text files inline.",
+        );
         await prepareFallbackSubmission();
         currentPrompt = fallbackSubmission.prompt;
         currentAttachments = fallbackSubmission.attachments;
@@ -984,9 +1264,16 @@ export async function runSubmissionWithRecoveryForTest(args: {
   prompt: string;
   attachments: BrowserAttachment[];
   fallbackSubmission?: BrowserSubmissionFallback;
-  submit: (prompt: string, attachments: BrowserAttachment[]) => Promise<BrowserSubmissionResult>;
+  submit: (
+    prompt: string,
+    attachments: BrowserAttachment[],
+    options?: BrowserSubmissionAttemptOptions,
+  ) => Promise<BrowserSubmissionAttemptResult>;
   reloadPromptComposer: () => Promise<void>;
   prepareFallbackSubmission: () => Promise<void>;
+  verifyUploadToInlineFallback?: VerifyUploadToInlineFallback;
+  verifyInlineToUploadFallback?: VerifyInlineToUploadFallback;
+  desiredModel?: string | null;
   logger: BrowserLogger;
 }): Promise<BrowserSubmissionResult> {
   return runSubmissionWithRecovery(args);
@@ -1455,35 +1742,43 @@ async function assertProtectedSolProSelectionReadOnlyBeforeSubmit({
   logger,
   attachmentBindingToken,
   composerBindingToken,
+  exactSubmission,
 }: {
   desiredModel: string | null | undefined;
   runtime: ChromeClient["Runtime"];
   logger: BrowserLogger;
   attachmentBindingToken?: string;
   composerBindingToken?: string;
+  exactSubmission?: import("./actions/promptComposer.js").ExactSubmissionExpectation;
 }): Promise<ReturnType<typeof buildGpt56SolProFinalDispatchGuard> | void> {
-  if (!isDesiredGpt56SolModel(desiredModel)) return;
-  const evidence = await readGpt56SolProRouteReadOnly(
-    runtime,
-    attachmentBindingToken,
-    composerBindingToken,
-  );
-  if (!evidence.verified) {
-    throw new BrowserAutomationError(
-      "GPT-5.6 Sol + Pro could not be verified on the exact dispatch composer; refusing to submit.",
-      {
-        stage: "model-selection",
-        code: "protected-route-readonly-unverified",
-        composerBindingVerified: evidence.composerBindingVerified,
-        modelVerified: evidence.modelVerified,
-        modeVerified: evidence.modeVerified,
-        modelSignalCount: evidence.modelSignals.length,
-        modeSignalCount: evidence.modeSignals.length,
-      },
+  const requireProtectedRoute = isDesiredGpt56SolModel(desiredModel);
+  if (requireProtectedRoute) {
+    const evidence = await readGpt56SolProRouteReadOnly(
+      runtime,
+      attachmentBindingToken,
+      composerBindingToken,
     );
+    if (!evidence.verified) {
+      throw new BrowserAutomationError(
+        "GPT-5.6 Sol + Pro could not be verified on the exact dispatch composer; refusing to submit.",
+        {
+          stage: "model-selection",
+          code: "protected-route-readonly-unverified",
+          composerBindingVerified: evidence.composerBindingVerified,
+          modelVerified: evidence.modelVerified,
+          modeVerified: evidence.modeVerified,
+          modelSignalCount: evidence.modelSignals.length,
+          modeSignalCount: evidence.modeSignals.length,
+        },
+      );
+    }
+    logger("Protected route: GPT-5.6 Sol + Pro verified read-only at the dispatch boundary");
   }
-  logger("Protected route: GPT-5.6 Sol + Pro verified read-only at the dispatch boundary");
-  return buildGpt56SolProFinalDispatchGuard(attachmentBindingToken, composerBindingToken);
+  if (!requireProtectedRoute && !exactSubmission) return;
+  return buildGpt56SolProFinalDispatchGuard(attachmentBindingToken, composerBindingToken, {
+    requireProtectedRoute,
+    exactSubmission,
+  });
 }
 
 async function prepareSubmissionComposerWithProtectedRoute({
@@ -1617,14 +1912,32 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
   let canonicalConversationId = extractConversationIdFromUrl(config.resumeConversationUrl ?? "");
   let conversationIdentityConflict: BrowserAutomationError | null = null;
   let promptSubmitted = false;
+  let submissionProvenance: BrowserSubmissionProvenance | undefined;
   let modelSelectionEvidence: BrowserModelSelectionEvidence | undefined;
   let tabLease: BrowserTabLease | null = null;
   // Initialized to a no-op so control-flow analysis keeps the callable type;
   // the abort-race wiring below replaces it with the real disposer.
   let removeAbortListener: (() => void) | null = () => {};
   let conversationUrlMonitor: ConversationUrlMonitor | null = null;
-  const emitRuntimeHint = async (): Promise<void> => {
+  const emitRuntimeHint = async (
+    overrides: {
+      promptSubmitted?: boolean;
+      submissionProvenance?: BrowserSubmissionProvenance;
+      strict?: boolean;
+    } = {},
+  ): Promise<void> => {
     if (!chrome?.port) {
+      if (overrides.strict) {
+        throw new BrowserAutomationError(
+          "Chrome runtime metadata was unavailable at the dispatch boundary; refusing to submit.",
+          {
+            stage: "submit-prompt",
+            code: "runtime-hint-unavailable-before-submit",
+            retryable: true,
+            runtime: { promptSubmitted: false },
+          },
+        );
+      }
       return;
     }
     const conversationId = lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined;
@@ -1635,12 +1948,30 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       chromeTargetId: lastTargetId,
       tabUrl: lastUrl,
       conversationId,
-      promptSubmitted,
+      promptSubmitted: overrides.promptSubmitted ?? promptSubmitted,
+      submissionProvenance: overrides.submissionProvenance ?? submissionProvenance,
       userDataDir,
       controllerPid: process.pid,
     };
     try {
       await runtimeHintCb?.(hint, modelSelectionEvidence);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger(`Failed to persist runtime hint: ${message}`);
+      if (overrides.strict) {
+        throw new BrowserAutomationError(
+          "Could not persist the pre-dispatch runtime boundary; refusing to submit.",
+          {
+            stage: "submit-prompt",
+            code: "runtime-hint-persistence-failed-before-submit",
+            retryable: true,
+            runtime: { promptSubmitted: false },
+          },
+          error,
+        );
+      }
+    }
+    try {
       await tabLease?.update({
         chromeHost,
         chromePort: chrome.port,
@@ -1649,7 +1980,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      logger(`Failed to persist runtime hint: ${message}`);
+      logger(`Failed to update browser tab lease: ${message}`);
     }
   };
   const observeConversationUrl = async (
@@ -1708,13 +2039,18 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       );
     }
   };
-  const markPromptSubmitted = async (): Promise<void> => {
+  const markPromptSubmitted = async (provenance: BrowserSubmissionProvenance): Promise<void> => {
     const firstSubmission = !promptSubmitted;
-    promptSubmitted = true;
     if (!firstSubmission) {
       return;
     }
-    await emitRuntimeHint();
+    await emitRuntimeHint({
+      promptSubmitted: true,
+      submissionProvenance: provenance,
+      strict: true,
+    });
+    promptSubmitted = true;
+    submissionProvenance = provenance;
     void conversationUrlMonitor?.schedule("post-submit", config.timeoutMs ?? 120_000);
   };
   const markPromptBound = async (
@@ -2493,7 +2829,12 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       profileLock = null;
       await handle.release().catch(() => undefined);
     };
-    const submitOnce = async (prompt: string, submissionAttachments: BrowserAttachment[]) => {
+    const submitOnceCore = async (
+      prompt: string,
+      submissionAttachments: BrowserAttachment[],
+      submissionOptions?: BrowserSubmissionAttemptOptions,
+      retainedAttachmentSnapshotCleanups: Array<() => Promise<void>> = [],
+    ) => {
       await markPromptAttemptStarted(prompt);
       const baselineSnapshot = await readAssistantSnapshot(Runtime).catch(() => null);
       const baselineAssistantText =
@@ -2530,7 +2871,11 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
                 { runtime: Runtime, dom: DOM, input: Input },
                 attachment,
                 logger,
-                { expectedCount: attachmentIndex + 1 },
+                {
+                  expectedCount: attachmentIndex + 1,
+                  retainPreparedSnapshot: (cleanup) =>
+                    retainedAttachmentSnapshotCleanups.push(cleanup),
+                },
               );
               if (!uiConfirmed) {
                 inputOnlyAttachments = true;
@@ -2594,17 +2939,24 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         baselineTurns: baselineTurns ?? undefined,
         attachmentNames: attachmentExpectations,
         attachmentBindingToken,
-        beforePromptSubmit: (composerBindingToken?: string) =>
+        beforePromptSubmit: (
+          composerBindingToken?: string,
+          exactSubmission?: import("./actions/promptComposer.js").ExactSubmissionExpectation,
+        ) =>
           assertProtectedSolProSelectionReadOnlyBeforeSubmit({
             desiredModel: config.desiredModel,
             runtime: Runtime,
             logger,
             attachmentBindingToken,
             composerBindingToken,
+            exactSubmission,
           }),
         requireBoundSendTarget:
-          isDesiredGpt56SolModel(config.desiredModel) || submissionAttachments.length > 0,
-        onPromptSubmitted: markPromptSubmitted,
+          isDesiredGpt56SolModel(config.desiredModel) ||
+          submissionAttachments.length > 0 ||
+          submissionOptions?.requireExactPromptRoundTrip === true,
+        requireExactPromptRoundTrip: submissionOptions?.requireExactPromptRoundTrip === true,
+        onPromptSubmitted: () => markPromptSubmitted(submissionOptions!.submissionProvenance),
         onPromptBound: markPromptBound,
         // Authoritative account id (server: options.accountId ?? env) so the
         // browser-side quarantine gates trip under the same identity the
@@ -2664,6 +3016,28 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         deepResearchTargetBaselineCaptured: deepResearchTargetBaseline?.captured,
       };
     };
+    const submitOnce = (
+      prompt: string,
+      submissionAttachments: BrowserAttachment[],
+      submissionOptions?: BrowserSubmissionAttemptOptions,
+    ): Promise<BrowserSubmissionAttemptResult> => {
+      const retainedAttachmentSnapshotCleanups: Array<() => Promise<void>> = [];
+      // Scope immutable filesystem snapshots to the raw attempt promise, not
+      // the outer abort/disconnect race. Promise.race does not cancel losers:
+      // if a caller leaves while CDP is still consuming a path-backed File,
+      // cleanup must wait for that underlying attempt to settle.
+      return runWithRetainedAttachmentSnapshots(
+        () =>
+          submitOnceCore(
+            prompt,
+            submissionAttachments,
+            submissionOptions,
+            retainedAttachmentSnapshotCleanups,
+          ),
+        retainedAttachmentSnapshotCleanups,
+        logger,
+      );
+    };
     const reloadPromptComposer = async () => {
       logger("[browser] Composer became unresponsive; reloading page and retrying once.");
       await raceWithDisconnect(Page.reload({ ignoreCache: true }));
@@ -2687,16 +3061,19 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     let baselineAssistantText: string | null = null;
     let deepResearchTargetKeys: string[] = [];
     let deepResearchTargetBaselineCaptured = false;
+    let initialSubmissionProvenance: BrowserSubmissionProvenance | undefined;
+    let initialSubmittedPrompt = promptText;
     await acquireProfileLockIfNeeded();
     try {
       const submission = await runSubmissionWithRecovery({
         prompt: promptText,
         attachments,
         fallbackSubmission,
-        submit: (submissionPrompt, submissionAttachments) =>
+        desiredModel: config.desiredModel,
+        submit: (submissionPrompt, submissionAttachments, submissionOptions) =>
           raceWithDisconnect(
             preserveChallengeOverPageFailure(
-              submitOnce(submissionPrompt, submissionAttachments),
+              submitOnce(submissionPrompt, submissionAttachments, submissionOptions),
               Runtime,
               logger,
               { accountId: options.accountId, sessionId: options.sessionId },
@@ -2704,6 +3081,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           ),
         reloadPromptComposer,
         prepareFallbackSubmission: async () => {
+          await raceWithDisconnect(clearComposerAttachments(Runtime, 5_000, logger));
           await raceWithDisconnect(clearPromptComposer(Runtime, logger));
           await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
         },
@@ -2713,6 +3091,8 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       baselineAssistantText = submission.baselineAssistantText;
       deepResearchTargetKeys = submission.deepResearchTargetKeys ?? [];
       deepResearchTargetBaselineCaptured = submission.deepResearchTargetBaselineCaptured ?? false;
+      initialSubmissionProvenance = submission.submissionProvenance;
+      initialSubmittedPrompt = submission.submittedPrompt;
     } finally {
       await releaseProfileLockIfHeld();
     }
@@ -2781,7 +3161,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         () =>
           saveBrowserTranscriptArtifact({
             sessionId: options.sessionId,
-            prompt: promptText,
+            prompt: initialSubmittedPrompt,
             answerMarkdown: researchResult.text,
             conversationUrl: lastUrl,
             artifacts: appendArtifacts(undefined, [reportArtifact]),
@@ -2830,6 +3210,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         tabUrl: lastUrl,
         conversationId: lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined,
         promptSubmitted,
+        submissionProvenance: initialSubmissionProvenance,
         controllerPid: process.pid,
       };
     }
@@ -3272,10 +3653,11 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         const submission = await runSubmissionWithRecovery({
           prompt: followUpPrompt,
           attachments: [],
-          submit: (submissionPrompt, submissionAttachments) =>
+          desiredModel: config.desiredModel,
+          submit: (submissionPrompt, submissionAttachments, submissionOptions) =>
             raceWithDisconnect(
               preserveChallengeOverPageFailure(
-                submitOnce(submissionPrompt, submissionAttachments),
+                submitOnce(submissionPrompt, submissionAttachments, submissionOptions),
                 Runtime,
                 logger,
                 { accountId: options.accountId, sessionId: options.sessionId },
@@ -3363,7 +3745,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       () =>
         saveBrowserTranscriptArtifact({
           sessionId: options.sessionId,
-          prompt: promptText,
+          prompt: initialSubmittedPrompt,
           answerMarkdown,
           conversationUrl: lastUrl,
           artifacts: savedBrowserArtifacts,
@@ -3436,6 +3818,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       tabUrl: lastUrl,
       conversationId: lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined,
       promptSubmitted,
+      submissionProvenance: initialSubmissionProvenance,
       controllerPid: process.pid,
     };
   } catch (error) {
@@ -3998,7 +4381,7 @@ export async function acquireManualLoginChromeForRun(
     if (chrome.port) {
       await writeDevToolsActivePort(userDataDir, chrome.port);
       if (!reusedChrome && chrome.pid) {
-        await writeChromePid(userDataDir, chrome.pid);
+        await writeChromePid(userDataDir, chrome.pid, chrome.port);
       }
     }
 
@@ -4013,7 +4396,11 @@ export async function acquireManualLoginChromeForRun(
 async function maybeReuseRunningChrome(
   userDataDir: string,
   logger: BrowserLogger,
-  options: { waitForPortMs?: number; probe?: typeof verifyDevToolsReachable } = {},
+  options: {
+    waitForPortMs?: number;
+    probe?: typeof verifyDevToolsReachable;
+    verifyOwner?: typeof verifyChromeDebugTargetOwner;
+  } = {},
 ): Promise<LaunchedChrome | null> {
   const waitForPortMs = Math.max(0, options.waitForPortMs ?? 0);
   let port = await readDevToolsPort(userDataDir);
@@ -4039,6 +4426,17 @@ async function maybeReuseRunningChrome(
       }
       return null;
     }
+    const discoveredOwner = await (options.verifyOwner ?? verifyChromeDebugTargetOwner)(
+      userDataDir,
+      discovered.port,
+      { allowProcessDiscovery: true },
+    );
+    if (!discoveredOwner.ok || discoveredOwner.pid !== discovered.pid) {
+      logger(
+        `Discovered Chrome for ${userDataDir} failed owner verification (${discoveredOwner.ok ? "pid-mismatch" : discoveredOwner.reason}); launching new Chrome.`,
+      );
+      return null;
+    }
     const discoveredProbe = await (options.probe ?? verifyDevToolsReachable)({
       port: discovered.port,
     });
@@ -4052,7 +4450,7 @@ async function maybeReuseRunningChrome(
       return null;
     }
     await writeDevToolsActivePort(userDataDir, discovered.port);
-    await writeChromePid(userDataDir, discovered.pid);
+    await writeChromePid(userDataDir, discovered.pid, discovered.port);
     port = discovered.port;
     pid = discovered.pid;
     logger(
@@ -4066,6 +4464,17 @@ async function maybeReuseRunningChrome(
     } as unknown as LaunchedChrome;
   }
 
+  const owner = await (options.verifyOwner ?? resolveChromeDebugTargetOwner)(userDataDir, port, {
+    allowProcessDiscovery: true,
+  });
+  if (!owner.ok) {
+    logger(
+      `DevToolsActivePort found for ${userDataDir} but owner verification failed (${owner.reason}); refusing to attach.`,
+    );
+    return null;
+  }
+  const recordedPort = port;
+  port = owner.port;
   const probe = await (options.probe ?? verifyDevToolsReachable)({ port });
   if (!probe.ok) {
     logger(
@@ -4075,13 +4484,17 @@ async function maybeReuseRunningChrome(
     await cleanupStaleProfileState(userDataDir, logger, { lockRemovalMode: "if_oracle_pid_dead" });
     return null;
   }
+  if (owner.source === "process-discovery" || port !== recordedPort) {
+    await writeDevToolsActivePort(userDataDir, port);
+    await writeChromePid(userDataDir, owner.pid, port);
+  }
 
   logger(
-    `Found running Chrome for ${userDataDir}; reusing (DevTools port ${port}${pid ? `, pid ${pid}` : ""})`,
+    `Found running Chrome for ${userDataDir}; reusing (DevTools port ${port}, pid ${owner.pid})`,
   );
   return {
     port,
-    pid: pid ?? undefined,
+    pid: owner.pid,
     kill: async () => {},
     process: undefined,
   } as unknown as LaunchedChrome;
@@ -4146,16 +4559,22 @@ async function runRemoteBrowserMode(
   let canonicalConversationId = extractConversationIdFromUrl(config.resumeConversationUrl ?? "");
   let conversationIdentityConflict: BrowserAutomationError | null = null;
   let promptSubmitted = false;
+  let submissionProvenance: BrowserSubmissionProvenance | undefined;
   let modelSelectionEvidence: BrowserModelSelectionEvidence | undefined;
   let attachedExistingTab = false;
   let ownsTarget = true;
   let orphanedTargetNeedsCleanup = false;
   let conversationUrlMonitor: ConversationUrlMonitor | null = null;
   const runtimeHintCb = options.runtimeHintCb;
-  const emitRuntimeHint = async () => {
-    if (!runtimeHintCb) return;
+  const emitRuntimeHint = async (
+    overrides: {
+      promptSubmitted?: boolean;
+      submissionProvenance?: BrowserSubmissionProvenance;
+      strict?: boolean;
+    } = {},
+  ) => {
     try {
-      await runtimeHintCb(
+      await runtimeHintCb?.(
         {
           chromePort: port,
           chromeHost: host,
@@ -4164,11 +4583,29 @@ async function runRemoteBrowserMode(
           chromeTargetId: remoteTargetId ?? undefined,
           tabUrl: lastUrl,
           conversationId: lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined,
-          promptSubmitted,
+          promptSubmitted: overrides.promptSubmitted ?? promptSubmitted,
+          submissionProvenance: overrides.submissionProvenance ?? submissionProvenance,
           controllerPid: process.pid,
         },
         modelSelectionEvidence,
       );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger(`Failed to persist runtime hint: ${message}`);
+      if (overrides.strict) {
+        throw new BrowserAutomationError(
+          "Could not persist the pre-dispatch runtime boundary; refusing to submit.",
+          {
+            stage: "submit-prompt",
+            code: "runtime-hint-persistence-failed-before-submit",
+            retryable: true,
+            runtime: { promptSubmitted: false },
+          },
+          error,
+        );
+      }
+    }
+    try {
       await tabLease?.update({
         chromeHost: host,
         chromePort: port,
@@ -4177,7 +4614,7 @@ async function runRemoteBrowserMode(
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      logger(`Failed to persist runtime hint: ${message}`);
+      logger(`Failed to update browser tab lease: ${message}`);
     }
   };
   const observeConversationUrl = async (
@@ -4234,13 +4671,18 @@ async function runRemoteBrowserMode(
       );
     }
   };
-  const markPromptSubmitted = async (): Promise<void> => {
+  const markPromptSubmitted = async (provenance: BrowserSubmissionProvenance): Promise<void> => {
     const firstSubmission = !promptSubmitted;
-    promptSubmitted = true;
     if (!firstSubmission) {
       return;
     }
-    await emitRuntimeHint();
+    await emitRuntimeHint({
+      promptSubmitted: true,
+      submissionProvenance: provenance,
+      strict: true,
+    });
+    promptSubmitted = true;
+    submissionProvenance = provenance;
     void conversationUrlMonitor?.schedule("post-submit", config.timeoutMs ?? 120_000);
   };
   const markPromptBound = async (
@@ -4642,7 +5084,11 @@ async function runRemoteBrowserMode(
         await emitRuntimeHint();
       }
     };
-    const submitOnce = async (prompt: string, submissionAttachments: BrowserAttachment[]) => {
+    const submitOnce = async (
+      prompt: string,
+      submissionAttachments: BrowserAttachment[],
+      submissionOptions?: BrowserSubmissionAttemptOptions,
+    ) => {
       await markPromptAttemptStarted(prompt);
       const baselineSnapshot = await readAssistantSnapshot(Runtime).catch(() => null);
       const baselineAssistantText =
@@ -4730,17 +5176,24 @@ async function runRemoteBrowserMode(
         baselineTurns: baselineTurns ?? undefined,
         attachmentNames: attachmentExpectations,
         attachmentBindingToken,
-        beforePromptSubmit: (composerBindingToken?: string) =>
+        beforePromptSubmit: (
+          composerBindingToken?: string,
+          exactSubmission?: import("./actions/promptComposer.js").ExactSubmissionExpectation,
+        ) =>
           assertProtectedSolProSelectionReadOnlyBeforeSubmit({
             desiredModel: config.desiredModel,
             runtime: Runtime,
             logger,
             attachmentBindingToken,
             composerBindingToken,
+            exactSubmission,
           }),
         requireBoundSendTarget:
-          isDesiredGpt56SolModel(config.desiredModel) || submissionAttachments.length > 0,
-        onPromptSubmitted: markPromptSubmitted,
+          isDesiredGpt56SolModel(config.desiredModel) ||
+          submissionAttachments.length > 0 ||
+          submissionOptions?.requireExactPromptRoundTrip === true,
+        requireExactPromptRoundTrip: submissionOptions?.requireExactPromptRoundTrip === true,
+        onPromptSubmitted: () => markPromptSubmitted(submissionOptions!.submissionProvenance),
         onPromptBound: markPromptBound,
         // Authoritative account id (server: options.accountId ?? env) so the
         // browser-side quarantine gates trip under the same identity the
@@ -4802,15 +5255,17 @@ async function runRemoteBrowserMode(
         prompt: promptText,
         attachments,
         fallbackSubmission: options.fallbackSubmission,
-        submit: (submissionPrompt, submissionAttachments) =>
+        desiredModel: config.desiredModel,
+        submit: (submissionPrompt, submissionAttachments, submissionOptions) =>
           preserveChallengeOverPageFailure(
-            submitOnce(submissionPrompt, submissionAttachments),
+            submitOnce(submissionPrompt, submissionAttachments, submissionOptions),
             Runtime,
             logger,
             { accountId: options.accountId, sessionId: options.sessionId },
           ),
         reloadPromptComposer,
         prepareFallbackSubmission: async () => {
+          await raceWithAbort(clearComposerAttachments(Runtime, 5_000, logger));
           await raceWithAbort(clearPromptComposer(Runtime, logger));
           await raceWithAbort(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
         },
@@ -4821,6 +5276,8 @@ async function runRemoteBrowserMode(
     baselineAssistantText = submission.baselineAssistantText;
     deepResearchTargetKeys = submission.deepResearchTargetKeys ?? [];
     deepResearchTargetBaselineCaptured = submission.deepResearchTargetBaselineCaptured ?? false;
+    const initialSubmissionProvenance = submission.submissionProvenance;
+    const initialSubmittedPrompt = submission.submittedPrompt;
     void activeConversationUrlMonitor.schedule("post-submit", config.timeoutMs ?? 120_000);
     const imageArtifactMinTurnIndex = baselineTurns;
     if (deepResearch) {
@@ -4885,7 +5342,7 @@ async function runRemoteBrowserMode(
         () =>
           saveBrowserTranscriptArtifact({
             sessionId: options.sessionId,
-            prompt: promptText,
+            prompt: initialSubmittedPrompt,
             answerMarkdown: researchResult.text,
             conversationUrl: lastUrl,
             artifacts: appendArtifacts(undefined, [reportArtifact]),
@@ -4932,6 +5389,7 @@ async function runRemoteBrowserMode(
         tabUrl: lastUrl,
         conversationId: lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined,
         promptSubmitted,
+        submissionProvenance: initialSubmissionProvenance,
         controllerPid: process.pid,
       };
     }
@@ -5375,9 +5833,10 @@ async function runRemoteBrowserMode(
         runSubmissionWithRecovery({
           prompt: followUpPrompt,
           attachments: [],
-          submit: (submissionPrompt, submissionAttachments) =>
+          desiredModel: config.desiredModel,
+          submit: (submissionPrompt, submissionAttachments, submissionOptions) =>
             preserveChallengeOverPageFailure(
-              submitOnce(submissionPrompt, submissionAttachments),
+              submitOnce(submissionPrompt, submissionAttachments, submissionOptions),
               Runtime,
               logger,
               { accountId: options.accountId, sessionId: options.sessionId },
@@ -5459,7 +5918,7 @@ async function runRemoteBrowserMode(
       () =>
         saveBrowserTranscriptArtifact({
           sessionId: options.sessionId,
-          prompt: promptText,
+          prompt: initialSubmittedPrompt,
           answerMarkdown,
           conversationUrl: lastUrl,
           artifacts: savedBrowserArtifacts,
@@ -5529,6 +5988,7 @@ async function runRemoteBrowserMode(
       tabUrl: lastUrl,
       conversationId: lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined,
       promptSubmitted,
+      submissionProvenance: initialSubmissionProvenance,
       artifacts: savedArtifacts,
       generatedImages: imageArtifacts.generatedImages,
       savedImages: imageArtifacts.savedImages,
@@ -5713,6 +6173,7 @@ export const __test__ = {
   shouldRefreshInitialModelPicker,
   verifyProtectedSolProSelectionForSubmit,
   prepareSubmissionComposerWithProtectedRoute,
+  runWithRetainedAttachmentSnapshots,
   shouldCleanupBlankTabsAfterLastLease,
   shouldCloseOwnedRunTargetAfterRun,
   shouldRetainBrowserTabLeaseAfterRun,
@@ -5737,7 +6198,11 @@ export {
 export async function maybeReuseRunningChromeForTest(
   userDataDir: string,
   logger: BrowserLogger,
-  options: { waitForPortMs?: number; probe?: typeof verifyDevToolsReachable } = {},
+  options: {
+    waitForPortMs?: number;
+    probe?: typeof verifyDevToolsReachable;
+    verifyOwner?: typeof verifyChromeDebugTargetOwner;
+  } = {},
 ): Promise<LaunchedChrome | null> {
   return maybeReuseRunningChrome(userDataDir, logger, options);
 }

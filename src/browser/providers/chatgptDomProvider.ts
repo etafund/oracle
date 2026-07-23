@@ -1,14 +1,17 @@
 import { randomUUID } from "node:crypto";
 import type { BrowserLogger, ChromeClient } from "../types.js";
 import type { ProviderDomAdapter, ProviderDomFlowContext } from "../providerDomFlow.js";
-import { SEND_BUTTON_SELECTORS } from "../constants.js";
+import { INPUT_SELECTORS, SEND_BUTTON_SELECTORS } from "../constants.js";
 import { ensurePromptReady } from "../actions/navigation.js";
 import { assertPreRunAccessState } from "../actions/challengeDetection.js";
 import {
+  buildAttachmentReadyExpression,
   submitPrompt,
   type AttachmentReadyExpectation,
+  type ExactSubmissionExpectation,
   type FinalPreDispatchDomGuard,
 } from "../actions/promptComposer.js";
+import { normalizeRenderedPromptDomIdentity } from "../promptDomMatch.js";
 // Capture must flow through the pageActions facade so the structural
 // run-binding validation (captureBinding.ts) covers this provider path too.
 import { waitForAssistantResponse } from "../pageActions.js";
@@ -76,8 +79,10 @@ interface ChatgptDomProviderState {
   committedTurns?: number | null;
   beforePromptSubmit?: (
     composerBindingToken?: string,
+    exactSubmission?: ExactSubmissionExpectation,
   ) => Promise<FinalPreDispatchDomGuard | void> | FinalPreDispatchDomGuard | void;
   requireBoundSendTarget?: boolean;
+  requireExactPromptRoundTrip?: boolean;
   onPromptSubmitted?: (submittedPrompt: string) => Promise<void> | void;
   onPromptBound?: (
     submittedPrompt: string,
@@ -157,16 +162,17 @@ async function submitPromptViaAdapter(ctx: ProviderDomFlowContext): Promise<void
       baselineTurns: state.baselineTurns ?? undefined,
       inputTimeoutMs: state.inputTimeoutMs ?? undefined,
       attachmentTimeoutMs: state.attachmentTimeoutMs ?? undefined,
-      beforePromptSubmit: async (composerBindingToken) => {
+      beforePromptSubmit: async (composerBindingToken, exactSubmission) => {
         // Re-check the shared account latch and live page at the final
         // pre-dispatch boundary. Another lane may have quarantined this
         // account while this one was typing/uploading.
         await assertPreRunAccessState(state.runtime, state.logger, {
           quarantine: { accountId: state.accountId },
         });
-        return await state.beforePromptSubmit?.(composerBindingToken);
+        return await state.beforePromptSubmit?.(composerBindingToken, exactSubmission);
       },
       requireBoundSendTarget: state.requireBoundSendTarget,
+      requireExactPromptRoundTrip: state.requireExactPromptRoundTrip,
       onPromptSubmitted: state.onPromptSubmitted,
       onPromptBound: state.onPromptBound,
     },
@@ -681,6 +687,10 @@ function buildProtectedDispatchGuardInstallExpression(
   composerBindingToken?: string,
   verdictBindingName?: string,
   verdictNonce?: string,
+  options: {
+    requireProtectedRoute: boolean;
+    exactSubmission?: ExactSubmissionExpectation;
+  } = { requireProtectedRoute: true },
 ): string {
   const routeProbeExpression = buildChatGptProDomProbeExpression(
     attachmentBindingToken,
@@ -692,6 +702,19 @@ function buildProtectedDispatchGuardInstallExpression(
   const registryLiteral = JSON.stringify(PROTECTED_DISPATCH_GUARD_REGISTRY);
   const sendSelectorsLiteral = JSON.stringify(SEND_BUTTON_SELECTORS);
   const ttlLiteral = JSON.stringify(PROTECTED_DISPATCH_GUARD_TTL_MS);
+  const requireProtectedRouteLiteral = JSON.stringify(options.requireProtectedRoute);
+  const exactPromptLiteral = JSON.stringify(options.exactSubmission?.prompt ?? "");
+  const hasExactSubmissionLiteral = JSON.stringify(Boolean(options.exactSubmission));
+  const attachmentStateExpression = options.exactSubmission
+    ? buildAttachmentReadyExpression(
+        options.exactSubmission.attachments,
+        attachmentBindingToken,
+        false,
+        composerBindingToken,
+        true,
+      )
+    : "true";
+  const inputSelectorsLiteral = JSON.stringify(INPUT_SELECTORS);
   return `(() => {
     const TOKEN = ${tokenLiteral};
     const BINDING_NAME = ${bindingNameLiteral};
@@ -699,7 +722,13 @@ function buildProtectedDispatchGuardInstallExpression(
     const REGISTRY_KEY = ${registryLiteral};
     const SEND_SELECTORS = ${sendSelectorsLiteral};
     const TTL_MS = ${ttlLiteral};
+    const REQUIRE_PROTECTED_ROUTE = ${requireProtectedRouteLiteral};
+    const HAS_EXACT_SUBMISSION = ${hasExactSubmissionLiteral};
+    const EXPECTED_PROMPT = ${exactPromptLiteral};
+    const INPUT_SELECTORS = ${inputSelectorsLiteral};
     const EVENT_TYPES = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+    const normalizeRenderedPromptDomIdentity = ${normalizeRenderedPromptDomIdentity.toString()};
+    const readAttachmentState = () => (${attachmentStateExpression});
     const normalize = (value) => String(value || '')
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, ' ')
@@ -718,15 +747,17 @@ function buildProtectedDispatchGuardInstallExpression(
           .filter(Boolean),
         ...(probe?.hasProPill === true ? ['pro'] : []),
       ]));
-      const composerBindingVerified = probe?.composerBindingVerified === true;
+      const composerBindingVerified = REQUIRE_PROTECTED_ROUTE
+        ? probe?.composerBindingVerified === true
+        : true;
       const modelVerified =
-        composerBindingVerified &&
+        !REQUIRE_PROTECTED_ROUTE || (composerBindingVerified &&
         modelSignals.length > 0 &&
-        modelSignals.every((label) => label === 'gpt 5 6 sol');
+        modelSignals.every((label) => label === 'gpt 5 6 sol'));
       const modeVerified =
-        composerBindingVerified &&
+        !REQUIRE_PROTECTED_ROUTE || (composerBindingVerified &&
         modeSignals.length > 0 &&
-        modeSignals.every((label) => label === 'pro');
+        modeSignals.every((label) => label === 'pro'));
       return {
         verified: composerBindingVerified && modelVerified && modeVerified,
         composerBindingVerified,
@@ -742,12 +773,20 @@ function buildProtectedDispatchGuardInstallExpression(
       }
       const rect = node.getBoundingClientRect();
       if (!(rect.width > 0 && rect.height > 0)) return false;
-      const style = window.getComputedStyle?.(node);
-      return !style || !(
-        style.display === 'none' ||
-        style.visibility === 'hidden' ||
-        style.visibility === 'collapse'
-      );
+      let current = node;
+      while (current instanceof HTMLElement) {
+        const style = window.getComputedStyle?.(current);
+        if (
+          current.hidden ||
+          current.getAttribute?.('aria-hidden') === 'true' ||
+          style?.display === 'none' ||
+          style?.visibility === 'hidden' ||
+          style?.visibility === 'collapse' ||
+          Number.parseFloat(style?.opacity || '1') === 0
+        ) return false;
+        current = current.parentElement;
+      }
+      return true;
     };
     const isEnabled = (node) => {
       if (!node) return false;
@@ -765,50 +804,100 @@ function buildProtectedDispatchGuardInstallExpression(
         .filter((node) => node?.getAttribute?.('data-oracle-send-binding') === TOKEN);
       const composers = Array.from(document.querySelectorAll('[data-oracle-send-composer-binding]'))
         .filter((node) => node?.getAttribute?.('data-oracle-send-composer-binding') === TOKEN);
+      const editors = Array.from(document.querySelectorAll('[data-oracle-send-editor-binding]'))
+        .filter((node) => node?.getAttribute?.('data-oracle-send-editor-binding') === TOKEN);
       const button = buttons.length === 1 ? buttons[0] : null;
       const composer = composers.length === 1 ? composers[0] : null;
+      const editor = editors.length === 1 ? editors[0] : null;
       const currentCandidates = [];
       if (composer) {
         for (const selector of SEND_SELECTORS) {
           currentCandidates.push(...Array.from(composer.querySelectorAll(selector)));
         }
       }
-      const currentButton = currentCandidates.find(
+      const currentButtons = Array.from(new Set(currentCandidates)).filter(
         (candidate) => isVisible(candidate) && isEnabled(candidate)
-      ) || null;
+      );
+      const currentButton = currentButtons.length === 1 ? currentButtons[0] : null;
       const verified = Boolean(
         button &&
         composer &&
+        editor &&
         button.isConnected !== false &&
         composer.isConnected !== false &&
+        editor.isConnected !== false &&
         typeof composer.contains === 'function' &&
+        composer.contains(editor) &&
         composer.contains(button) &&
+        isVisible(editor) &&
         isVisible(button) &&
         isEnabled(button) &&
         currentButton === button
       );
-      return { verified, button, composer, currentButton };
+      return { verified, button, composer, editor, currentButton };
     };
-    const inspect = () => {
+    const readEditorValue = (editor) => {
+      if (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement) {
+        return editor.value || '';
+      }
+      return editor?.innerText ?? editor?.textContent ?? '';
+    };
+    const inspect = (allowButtonFocus = false) => {
       let probe = null;
       try {
         probe = readRoute();
       } catch {}
       const route = classifyRoute(probe);
       const target = findExactBoundTarget();
+      const focused = document.activeElement;
+      const editorFocused = Boolean(
+        target.editor && focused &&
+        (focused === target.editor || target.editor.contains?.(focused))
+      );
+      const buttonFocused = Boolean(
+        allowButtonFocus && target.button && focused &&
+        (focused === target.button || target.button.contains?.(focused))
+      );
+      const exactPromptVerified = !HAS_EXACT_SUBMISSION || Boolean(
+        target.editor &&
+        normalizeRenderedPromptDomIdentity(readEditorValue(target.editor)) ===
+          normalizeRenderedPromptDomIdentity(EXPECTED_PROMPT)
+      );
+      let attachmentStateVerified = !HAS_EXACT_SUBMISSION;
+      if (HAS_EXACT_SUBMISSION) {
+        try { attachmentStateVerified = readAttachmentState() === true; } catch {}
+      }
+      const focusVerified = !HAS_EXACT_SUBMISSION || editorFocused || buttonFocused;
       return {
-        ok: Boolean(TOKEN && route.verified && target.verified),
+        ok: Boolean(
+          TOKEN &&
+          route.verified &&
+          target.verified &&
+          exactPromptVerified &&
+          attachmentStateVerified &&
+          focusVerified
+        ),
         reason: !TOKEN
           ? 'guard-token-missing'
           : !route.verified
             ? 'protected-route-changed'
             : !target.verified
               ? 'bound-send-target-changed'
+              : !exactPromptVerified
+                ? 'exact-prompt-changed'
+                : !attachmentStateVerified
+                  ? 'exact-attachment-state-changed'
+                  : !focusVerified
+                    ? 'exact-editor-focus-changed'
               : null,
         probe,
         route,
         button: target.button,
         composer: target.composer,
+        editor: target.editor,
+        exactPromptVerified,
+        attachmentStateVerified,
+        focusVerified,
       };
     };
     const removeOwnedAttributes = () => {
@@ -822,8 +911,13 @@ function buildProtectedDispatchGuardInstallExpression(
           try { node.removeAttribute?.('data-oracle-send-composer-binding'); } catch {}
         }
       }
+      for (const node of Array.from(document.querySelectorAll('[data-oracle-send-editor-binding]'))) {
+        if (node?.getAttribute?.('data-oracle-send-editor-binding') === TOKEN) {
+          try { node.removeAttribute?.('data-oracle-send-editor-binding'); } catch {}
+        }
+      }
     };
-    const initial = inspect();
+    const initial = inspect(false);
     const root = window;
     if (
       !initial.ok ||
@@ -844,6 +938,9 @@ function buildProtectedDispatchGuardInstallExpression(
             ? 'verdict-binding-unavailable'
             : 'event-guard-unavailable'),
         routeProof: initial.probe,
+        exactPromptVerified: initial.exactPromptVerified,
+        attachmentStateVerified: initial.attachmentStateVerified,
+        focusVerified: initial.focusVerified,
       };
     }
     let registry = root[REGISTRY_KEY];
@@ -907,6 +1004,16 @@ function buildProtectedDispatchGuardInstallExpression(
     const listener = (event) => {
       if (state.status === 'blocked') {
         cancel(event, state.reason || 'dispatch-guard-already-blocked');
+        if (
+          state.reason === 'dispatch-guard-expired' &&
+          (event?.type === 'mouseup' || event?.type === 'click') &&
+          typeof root.setTimeout === 'function'
+        ) {
+          // A crashed controller must not leave the shared browser unusable.
+          // Keep the entire first late click sequence blocked, then retire the
+          // stale guard so the user's next deliberate click can proceed.
+          root.setTimeout(() => cleanup(), 250);
+        }
         return;
       }
       if (state.status === 'allowed') {
@@ -924,7 +1031,7 @@ function buildProtectedDispatchGuardInstallExpression(
         cancel(event, 'non-primary-dispatch-event');
         return;
       }
-      const current = inspect();
+      const current = inspect(event.type !== 'pointerdown' && event.type !== 'mousedown');
       const eventTarget = event?.target;
       const eventPath = typeof event?.composedPath === 'function' ? event.composedPath() : [];
       const targetMatches = Boolean(
@@ -944,6 +1051,7 @@ function buildProtectedDispatchGuardInstallExpression(
         !current.ok ||
         current.button !== initial.button ||
         current.composer !== initial.composer ||
+        current.editor !== initial.editor ||
         !targetMatches ||
         !hitMatches
       ) {
@@ -998,7 +1106,6 @@ function buildProtectedDispatchGuardInstallExpression(
           state.lastEvent = state.lastEvent || 'timeout';
           reportTerminal();
         }
-        cleanup();
       }, TTL_MS);
     }
     return {
@@ -1006,6 +1113,26 @@ function buildProtectedDispatchGuardInstallExpression(
       status: state.status,
       reason: null,
       routeProof: initial.probe,
+      exactPromptVerified: initial.exactPromptVerified,
+      attachmentStateVerified: initial.attachmentStateVerified,
+      focusVerified: initial.focusVerified,
+    };
+  })()`;
+}
+
+function buildProtectedDispatchGuardStatusExpression(composerBindingToken?: string): string {
+  const tokenLiteral = JSON.stringify(composerBindingToken ?? "");
+  const registryLiteral = JSON.stringify(PROTECTED_DISPATCH_GUARD_REGISTRY);
+  return `(() => {
+    const registry = window[${registryLiteral}];
+    const state = registry instanceof Map ? registry.get(${tokenLiteral}) : null;
+    if (!state) {
+      return { status: 'missing', reason: 'dispatch-guard-missing', lastEvent: null };
+    }
+    return {
+      status: state.status,
+      reason: state.reason || null,
+      lastEvent: state.lastEvent || null,
     };
   })()`;
 }
@@ -1034,6 +1161,11 @@ function buildProtectedDispatchGuardVerdictExpression(
           try { node.removeAttribute?.('data-oracle-send-composer-binding'); } catch {}
         }
       }
+      for (const node of Array.from(document.querySelectorAll('[data-oracle-send-editor-binding]'))) {
+        if (node?.getAttribute?.('data-oracle-send-editor-binding') === TOKEN) {
+          try { node.removeAttribute?.('data-oracle-send-editor-binding'); } catch {}
+        }
+      }
       try { delete root[BINDING_NAME]; } catch {}
       return { status: 'missing', reason: 'dispatch-guard-missing', lastEvent: null };
     }
@@ -1056,7 +1188,12 @@ function buildProtectedDispatchGuardVerdictExpression(
 export function buildGpt56SolProFinalDispatchGuard(
   attachmentBindingToken?: string,
   composerBindingToken?: string,
+  options: {
+    requireProtectedRoute?: boolean;
+    exactSubmission?: ExactSubmissionExpectation;
+  } = {},
 ): FinalPreDispatchDomGuard {
+  const requireProtectedRoute = options.requireProtectedRoute ?? true;
   const verdictBindingName = `__oracleProtectedDispatchVerdict_${randomUUID().replaceAll("-", "")}`;
   const verdictNonce = randomUUID();
   const evidenceFromInstallResult = (value: unknown): Gpt56SolProReadOnlyRouteEvidence | null => {
@@ -1071,6 +1208,7 @@ export function buildGpt56SolProFinalDispatchGuard(
       composerBindingToken,
       verdictBindingName,
       verdictNonce,
+      { requireProtectedRoute, exactSubmission: options.exactSubmission },
     ),
     verdictBinding: {
       name: verdictBindingName,
@@ -1094,12 +1232,34 @@ export function buildGpt56SolProFinalDispatchGuard(
     assertResult(value: unknown): void {
       const result =
         value && typeof value === "object"
-          ? (value as { installed?: unknown; status?: unknown; reason?: unknown })
+          ? (value as {
+              installed?: unknown;
+              status?: unknown;
+              reason?: unknown;
+              exactPromptVerified?: unknown;
+              attachmentStateVerified?: unknown;
+              focusVerified?: unknown;
+            })
           : null;
       const evidence = evidenceFromInstallResult(value);
-      if (result?.installed === true && result.status === "armed" && evidence?.verified) return;
+      const routeVerified = !requireProtectedRoute || evidence?.verified === true;
+      const exactVerified =
+        !options.exactSubmission ||
+        (result?.exactPromptVerified === true &&
+          result.attachmentStateVerified === true &&
+          result.focusVerified === true);
+      if (
+        result?.installed === true &&
+        result.status === "armed" &&
+        routeVerified &&
+        exactVerified
+      ) {
+        return;
+      }
       throw new BrowserAutomationError(
-        "GPT-5.6 Sol + Pro changed after protected preflight; refusing to dispatch.",
+        options.exactSubmission
+          ? "The exact ChatGPT submission changed after protected preflight; refusing to dispatch."
+          : "GPT-5.6 Sol + Pro changed after protected preflight; refusing to dispatch.",
         {
           stage: "model-selection",
           code: "protected-route-changed-after-preflight",
@@ -1111,6 +1271,29 @@ export function buildGpt56SolProFinalDispatchGuard(
           guardInstalled: result?.installed === true,
           guardStatus: typeof result?.status === "string" ? result.status : null,
           guardReason: typeof result?.reason === "string" ? result.reason : null,
+          exactPromptVerified: result?.exactPromptVerified === true,
+          attachmentStateVerified: result?.attachmentStateVerified === true,
+          focusVerified: result?.focusVerified === true,
+        },
+      );
+    },
+    immediatelyBeforeDispatchExpression:
+      buildProtectedDispatchGuardStatusExpression(composerBindingToken),
+    assertImmediatelyBeforeDispatchResult(value: unknown): void {
+      const result =
+        value && typeof value === "object"
+          ? (value as { status?: unknown; reason?: unknown; lastEvent?: unknown })
+          : null;
+      if (result?.status === "armed") return;
+      throw new BrowserAutomationError(
+        "The protected dispatch guard was no longer armed immediately before input; refusing to click.",
+        {
+          stage: "model-selection",
+          code: "protected-dispatch-guard-not-armed",
+          retryable: true,
+          guardStatus: typeof result?.status === "string" ? result.status : null,
+          guardReason: typeof result?.reason === "string" ? result.reason : null,
+          guardLastEvent: typeof result?.lastEvent === "string" ? result.lastEvent : null,
         },
       );
     },
@@ -1126,7 +1309,7 @@ export function buildGpt56SolProFinalDispatchGuard(
       if (result?.status === "allowed" && result.lastEvent === "click") return;
       throw new BrowserAutomationError(
         result?.status === "blocked"
-          ? "GPT-5.6 Sol + Pro changed during trusted dispatch; the click was blocked."
+          ? "The protected ChatGPT submission changed during trusted dispatch; the click was blocked."
           : "Protected dispatch could not prove that its page guard observed the trusted click.",
         {
           stage: "model-selection",

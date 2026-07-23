@@ -11,6 +11,8 @@ const {
   writeDevToolsActivePort,
   writeChromePid,
   cleanupStaleProfileState,
+  resolveChromeDebugTargetOwner,
+  verifyChromeDebugTargetOwner,
   verifyDevToolsReachable,
 } = vi.hoisted(() => ({
   launchChrome: vi.fn(),
@@ -20,6 +22,20 @@ const {
   writeDevToolsActivePort: vi.fn(async () => undefined),
   writeChromePid: vi.fn(async () => undefined),
   cleanupStaleProfileState: vi.fn(async () => undefined),
+  resolveChromeDebugTargetOwner: vi.fn(async () => ({
+    ok: true as const,
+    pid: 12345,
+    port: 9222,
+    processStartToken: "test:1",
+    source: "record" as const,
+  })),
+  verifyChromeDebugTargetOwner: vi.fn(async () => ({
+    ok: true as const,
+    pid: 12345,
+    port: 9222,
+    processStartToken: "test:1",
+    source: "record" as const,
+  })),
   verifyDevToolsReachable: vi.fn(async () => ({ ok: false, error: "unreachable" })),
 }));
 
@@ -34,6 +50,8 @@ vi.mock("../../src/browser/profileState.js", () => ({
   writeDevToolsActivePort,
   writeChromePid,
   cleanupStaleProfileState,
+  resolveChromeDebugTargetOwner,
+  verifyChromeDebugTargetOwner,
   verifyDevToolsReachable,
 }));
 
@@ -52,6 +70,8 @@ describe("openGeminiBrowserSession", () => {
     writeDevToolsActivePort.mockClear();
     writeChromePid.mockClear();
     cleanupStaleProfileState.mockClear();
+    resolveChromeDebugTargetOwner.mockClear();
+    verifyChromeDebugTargetOwner.mockClear();
     verifyDevToolsReachable.mockReset();
 
     launchChrome.mockResolvedValue({

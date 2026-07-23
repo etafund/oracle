@@ -8,6 +8,7 @@ import {
   REMOTE_RUN_TIMEOUT_MS_MAX,
   REMOTE_RUN_TIMEOUT_MS_MIN,
   sanitizeRemoteRunPayloadForHost,
+  sanitizeRemoteRunPayloadForWire,
 } from "../../src/remote/payload_sanitize.js";
 import { createRemoteServer } from "../../src/remote/server.js";
 import type { BrowserRunResult } from "../../src/browserMode.js";
@@ -286,15 +287,28 @@ describe("host-side resumeConversationUrl validation", () => {
 });
 
 describe("sanitizer is the single choke point between payloads and runBrowser", () => {
+  test("the trusted client serializer omits host-control fields before transmission", () => {
+    const sanitized = sanitizeRemoteRunPayloadForWire(
+      hostilePayload() as unknown as RemoteRunPayload,
+    );
+    const config = sanitized.browserConfig as Record<string, unknown>;
+    for (const key of STRIPPED_KEYS) {
+      expect(config[key], `stripped key leaked: ${key}`).toBeUndefined();
+    }
+    expect(config.timeoutMs).toBe(0);
+    expect(config.inputTimeoutMs).toBe(-1);
+    expect(config.queueTimeoutMs).toBe(0);
+  });
+
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
-    "a hostile payload with every stripped key reaches runBrowser with none of them",
+    "a hostile direct payload with unknown host-control keys is rejected",
     async () => {
-      let receivedConfig: Record<string, unknown> | null = null;
+      let calledRunBrowser = false;
       const server = await createRemoteServer(
         { host: "127.0.0.1", port: 0, token: "secret", logger: () => {} },
         {
-          runBrowser: async (options) => {
-            receivedConfig = { ...(options.config as Record<string, unknown>) };
+          runBrowser: async () => {
+            calledRunBrowser = true;
             return MINIMAL_RESULT;
           },
         },
@@ -302,20 +316,9 @@ describe("sanitizer is the single choke point between payloads and runBrowser", 
 
       try {
         const response = await sendRun(server.port, "secret", JSON.stringify(hostilePayload()));
-        expect(response.statusCode).toBe(200);
-        expect(receivedConfig).not.toBeNull();
-        const config = receivedConfig as unknown as Record<string, unknown>;
-        for (const key of STRIPPED_KEYS) {
-          expect(config[key], `stripped key leaked: ${key}`).toBeUndefined();
-        }
-        // Cookie handling is force-pinned regardless of hostile input.
-        expect(config.cookieSync).toBe(true);
-        expect(config.inlineCookies).toBeNull();
-        expect(config.inlineCookiesSource).toBeNull();
-        // Sentinel attempts on allowlisted timings never arrive.
-        expect(config.timeoutMs).toBeUndefined();
-        expect(config.inputTimeoutMs).toBeUndefined();
-        expect(config.queueTimeoutMs).toBeUndefined();
+        expect(response.statusCode).toBe(400);
+        expect(response.body).toContain("invalid_request");
+        expect(calledRunBrowser).toBe(false);
       } finally {
         await server.close();
       }
@@ -385,6 +388,11 @@ describe("sanitizer is the single choke point between payloads and runBrowser", 
       "manualLogin",
       "manualLoginProfileDir",
       "keepBrowser",
+      // Fixed-fleet canonicalization: absent/legacy baseline values are
+      // rewritten to the exact GPT-5.6 Sol + Pro route before execution.
+      "desiredModel",
+      "modelStrategy",
+      "thinkingTime",
       // Host-owned lifecycle policy. The sanitizer strips any client value;
       // serve writes the trusted policy after sanitization.
       "closeOwnedRunTargetAfterRun",

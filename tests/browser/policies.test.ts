@@ -23,6 +23,20 @@ describe("buildAttachmentPlan", () => {
     expect(plan.inlineBlock).toContain("1 | world");
   });
 
+  test("keeps trailing source bytes distinct in inline plans", () => {
+    const plain = buildAttachmentPlan(
+      [{ displayPath: "a.txt", absolutePath: "/repo/a.txt", content: "value" }],
+      { inlineFiles: true, bundleRequested: false },
+    );
+    const newline = buildAttachmentPlan(
+      [{ displayPath: "a.txt", absolutePath: "/repo/a.txt", content: "value\n" }],
+      { inlineFiles: true, bundleRequested: false },
+    );
+
+    expect(plain.inlineBlock).not.toBe(newline.inlineBlock);
+    expect(newline.inlineBlock).toContain("2 | ");
+  });
+
   test("bundles when over max attachments", () => {
     const many = Array.from({ length: 11 }, (_, i) => ({
       displayPath: `f${i}.txt`,

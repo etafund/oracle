@@ -7,7 +7,11 @@
 // and tests/bridge/doctor.test.ts). Token redaction is enforced here:
 // no caller of this module may inject a raw token into the output.
 
-import { checkRemoteHealth, checkTcpConnection } from "../../remote/health.js";
+import {
+  checkRemoteHealth,
+  checkTcpConnection,
+  type RemoteBrowserRecoveryCompatibility,
+} from "../../remote/health.js";
 import type { ResolvedRemoteServiceConfig } from "../../remote/remoteServiceConfig.js";
 import type { RemoteActiveRunInfo, RemoteBrowserEndpointV1 } from "../../remote/types.js";
 import { getCliVersion, getOracleBuildInfo, type OracleBuildInfo } from "../../version.js";
@@ -36,12 +40,7 @@ export interface RemoteEndpointProbe {
     build?: OracleBuildInfo;
     busy?: boolean;
     activeRun?: RemoteActiveRunInfo;
-    browserRecoveryCompatibility?: {
-      compatible: boolean;
-      protocol: string | null;
-      promptPreviewAlgorithm: string | null;
-      promptDomIdentityAlgorithm: string | null;
-    };
+    browserRecoveryCompatibility?: RemoteBrowserRecoveryCompatibility;
   };
 }
 
@@ -209,6 +208,7 @@ function applyHealthMetadata(
         protocol: recovery.protocol,
         prompt_preview_algorithm: recovery.promptPreviewAlgorithm,
         prompt_dom_identity_algorithm: recovery.promptDomIdentityAlgorithm,
+        durable_claim_lookup: recovery.durableClaimLookup,
       }
     : null;
 }

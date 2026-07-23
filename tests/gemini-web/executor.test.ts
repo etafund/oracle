@@ -15,6 +15,8 @@ const {
   writeDevToolsActivePort,
   writeChromePid,
   cleanupStaleProfileState,
+  resolveChromeDebugTargetOwner,
+  verifyChromeDebugTargetOwner,
   verifyDevToolsReachable,
   delay,
 } = vi.hoisted(() => ({
@@ -27,6 +29,20 @@ const {
   writeDevToolsActivePort: vi.fn(async () => undefined),
   writeChromePid: vi.fn(async () => undefined),
   cleanupStaleProfileState: vi.fn(async () => undefined),
+  resolveChromeDebugTargetOwner: vi.fn(async () => ({
+    ok: true as const,
+    pid: 12345,
+    port: 9222,
+    processStartToken: "test:1",
+    source: "record" as const,
+  })),
+  verifyChromeDebugTargetOwner: vi.fn(async () => ({
+    ok: true as const,
+    pid: 12345,
+    port: 9222,
+    processStartToken: "test:1",
+    source: "record" as const,
+  })),
   verifyDevToolsReachable: vi.fn(async () => ({ ok: false, error: "unreachable" })),
   delay: vi.fn(async () => undefined),
 }));
@@ -87,6 +103,8 @@ vi.mock("../../src/browser/profileState.js", () => ({
   writeDevToolsActivePort,
   writeChromePid,
   cleanupStaleProfileState,
+  resolveChromeDebugTargetOwner,
+  verifyChromeDebugTargetOwner,
   verifyDevToolsReachable,
 }));
 vi.mock("../../src/browser/utils.js", () => ({
@@ -127,6 +145,8 @@ describe("gemini-web executor", () => {
     writeDevToolsActivePort.mockClear();
     writeChromePid.mockClear();
     cleanupStaleProfileState.mockClear();
+    resolveChromeDebugTargetOwner.mockClear();
+    verifyChromeDebugTargetOwner.mockClear();
     verifyDevToolsReachable.mockReset();
     delay.mockClear();
     killChrome.mockClear();
@@ -456,9 +476,8 @@ describe("gemini-web executor", () => {
   });
 
   it("throws GeminiDeepThinkFallbackBlockedError when fallback=fail and attachments force HTTP", async () => {
-    const { createGeminiWebExecutor, GeminiDeepThinkFallbackBlockedError } = await import(
-      "../../src/gemini-web/executor.js"
-    );
+    const { createGeminiWebExecutor, GeminiDeepThinkFallbackBlockedError } =
+      await import("../../src/gemini-web/executor.js");
     const exec = createGeminiWebExecutor({ deepThinkFallback: "fail" });
     const run = () =>
       exec({

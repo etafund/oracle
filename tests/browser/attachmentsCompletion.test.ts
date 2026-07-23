@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 import {
+  clearComposerAttachments,
   waitForAttachmentCompletion,
   waitForUserTurnAttachments,
 } from "../../src/browser/pageActions.js";
@@ -107,7 +108,16 @@ describe("attachment completion fallbacks", () => {
     } as unknown as ChromeClient["Runtime"];
 
     const promise = waitForAttachmentCompletion(runtime, 800, ["a.txt", "b.txt"]);
-    const assertion = expect(promise).rejects.toThrow(/did not finish uploading/i);
+    const assertion = expect(promise).rejects.toMatchObject({
+      name: "BrowserAutomationError",
+      details: {
+        stage: "attachment-upload",
+        code: "attachment-upload-timeout",
+        retryable: true,
+        stalledFiles: ["b.txt"],
+        expectedFiles: ["a.txt", "b.txt"],
+      },
+    });
     await vi.advanceTimersByTimeAsync(2_000);
     await assertion;
     useRealTime();
@@ -207,6 +217,94 @@ describe("attachment completion fallbacks", () => {
     await vi.advanceTimersByTimeAsync(2_000);
     await assertion;
     useRealTime();
+  });
+});
+
+describe("attachment cleanup proof", () => {
+  test("requires two consecutive clean composer samples", async () => {
+    useFakeTime();
+    try {
+      const runtime = {
+        evaluate: vi.fn().mockResolvedValue({
+          result: {
+            value: {
+              removeClicks: 0,
+              chipCount: 0,
+              inputCount: 0,
+              hadAttachments: false,
+              residualKinds: [],
+            },
+          },
+        }),
+      } as unknown as ChromeClient["Runtime"];
+
+      const cleanup = clearComposerAttachments(runtime, 1_000);
+      await vi.advanceTimersByTimeAsync(300);
+      await expect(cleanup).resolves.toBeUndefined();
+      expect(runtime.evaluate).toHaveBeenCalledTimes(2);
+    } finally {
+      useRealTime();
+    }
+  });
+
+  test("refuses a visible residual attachment node even without a remove button", async () => {
+    useFakeTime();
+    try {
+      const runtime = {
+        evaluate: vi.fn(async ({ expression }: { expression: string }) => {
+          expect(expression).toContain("residualKinds");
+          expect(expression).toContain('[data-testid*="attachment"]');
+          return {
+            result: {
+              value: {
+                removeClicks: 0,
+                chipCount: 1,
+                inputCount: 0,
+                hadAttachments: true,
+                residualKinds: ["attachment-preview"],
+              },
+            },
+          };
+        }),
+      } as unknown as ChromeClient["Runtime"];
+
+      const cleanup = clearComposerAttachments(runtime, 500);
+      const assertion = expect(cleanup).rejects.toMatchObject({
+        name: "BrowserAutomationError",
+        details: {
+          stage: "attachment-cleanup",
+          code: "attachment-cleanup-unverified",
+          retryable: true,
+          chipCount: 1,
+          residualKinds: ["attachment-preview"],
+        },
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      await assertion;
+    } finally {
+      useRealTime();
+    }
+  });
+
+  test("fails closed when the cleanup DOM evaluation returns no value", async () => {
+    useFakeTime();
+    try {
+      const runtime = {
+        evaluate: vi.fn().mockResolvedValue({ result: {} }),
+      } as unknown as ChromeClient["Runtime"];
+
+      const cleanup = clearComposerAttachments(runtime, 500);
+      const assertion = expect(cleanup).rejects.toMatchObject({
+        details: {
+          code: "attachment-cleanup-unverified",
+          evaluationMissing: true,
+        },
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      await assertion;
+    } finally {
+      useRealTime();
+    }
   });
 });
 

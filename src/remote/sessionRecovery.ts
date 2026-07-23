@@ -8,12 +8,16 @@ import type {
 } from "../sessionManager.js";
 import type { SessionMetadata } from "../sessionManager.js";
 import { sessionStore } from "../sessionStore.js";
-import { recoverRemoteBrowserSession } from "./client.js";
+import { recoverRemoteBrowserSession, resolveRemoteBrowserPendingRecoveryClaim } from "./client.js";
 import { resolveRemoteServiceConfig } from "./remoteServiceConfig.js";
 import {
+  deleteRemoteBrowserPendingRecoveryClaim,
   deleteRemoteBrowserRecoverySecret,
   InvalidStoredRemoteRecoverySecretError,
+  readRemoteBrowserPendingRecoveryClaim,
   readRemoteBrowserRecoverySecret,
+  toPublicRemoteRecoveryMetadata,
+  writeRemoteBrowserRecoverySecret,
 } from "./sessionRecoveryStore.js";
 import { REMOTE_BROWSER_RECOVERY_PROTOCOL } from "./types.js";
 
@@ -231,6 +235,116 @@ async function pruneStaleRemoteRecoveryCoordinate(
   if (pruned) {
     await deleteRemoteBrowserRecoverySecret(metadata.id, originRunId).catch(() => undefined);
   }
+}
+
+/**
+ * Promote the private authority captured at /runs admission into the existing
+ * executable recovery sidecar after the worker has durably bound it. This is
+ * GET-only and cannot replay the original prompt.
+ */
+export async function promotePendingRemoteBrowserRecoveryClaim(
+  metadata: SessionMetadata,
+  options: { log?: (message?: string) => void; timeoutMs?: number } = {},
+): Promise<SessionMetadata | null> {
+  const failedRun = metadata.browser?.remoteRun;
+  if (
+    failedRun?.terminalDoneOk !== false ||
+    !failedRun.runId ||
+    !failedRun.accountId ||
+    !failedRun.laneId
+  ) {
+    return null;
+  }
+  let pending;
+  try {
+    pending = await readRemoteBrowserPendingRecoveryClaim(metadata.id, failedRun.runId);
+  } catch (error) {
+    throw new RemoteBrowserRecoveryUnavailableError(
+      `The stored pending remote recovery authority failed its owner-only file checks. ${MANUAL_HISTORY_GUIDANCE}`,
+      { cause: error },
+    );
+  }
+  if (!pending) return null;
+  if (
+    pending.originRunId !== failedRun.runId ||
+    pending.accountId !== failedRun.accountId ||
+    pending.originLaneId !== failedRun.laneId
+  ) {
+    throw new RemoteBrowserRecoveryUnavailableError(
+      `Pending remote recovery authority does not match its authenticated failed-run route. ${MANUAL_HISTORY_GUIDANCE}`,
+    );
+  }
+
+  const loaded = await loadUserConfig({ cwd: metadata.cwd ?? process.cwd() });
+  const remote = resolveRemoteServiceConfig({ userConfig: loaded.config });
+  if (!remote.host || !remote.token) {
+    throw new RemoteBrowserRecoveryUnavailableError(
+      "Remote browser recovery endpoint is not configured. Restore ORACLE_REMOTE_HOST and ORACLE_REMOTE_TOKEN (or browser.remoteHost/remoteToken) for the Oracle router that owns this account.",
+    );
+  }
+  options.log?.(
+    "[remote] Resolving the stored post-submit recovery claim without submitting another prompt.",
+  );
+  const { schema: _pendingSchema, ...pendingClaim } = pending;
+  const carrier = await resolveRemoteBrowserPendingRecoveryClaim({
+    host: remote.host,
+    token: remote.token,
+    claim: pendingClaim,
+    timeoutMs: options.timeoutMs,
+  });
+  if (!carrier) {
+    throw new RemoteBrowserRecoveryUnavailableError(
+      "The stored post-submit recovery claim is not ready or is no longer available; the original prompt will not be replayed.",
+    );
+  }
+  if (
+    carrier.recovery.originRunId !== failedRun.runId ||
+    carrier.accountId !== failedRun.accountId ||
+    carrier.laneId !== failedRun.laneId
+  ) {
+    throw new RemoteBrowserRecoveryUnavailableError(
+      "Resolved remote recovery capability changed its authenticated route; refusing promotion.",
+    );
+  }
+
+  await writeRemoteBrowserRecoverySecret(metadata.id, carrier);
+  const coordinate = toPublicRemoteRecoveryMetadata(carrier);
+  let promoted = false;
+  const updated = await sessionStore.updateSession(metadata.id, (current) => {
+    promoted = false;
+    const currentRun = current.browser?.remoteRun;
+    const existing = current.browser?.remoteRecovery;
+    const routeStillMatches =
+      currentRun?.terminalDoneOk === false &&
+      currentRun.runId === failedRun.runId &&
+      currentRun.accountId === failedRun.accountId &&
+      (currentRun.laneId ?? null) === (failedRun.laneId ?? null);
+    if (
+      !routeStillMatches ||
+      current.browser?.remoteRecoveryCompletionClaim ||
+      (existing && existing.originRunId !== failedRun.runId)
+    ) {
+      return {};
+    }
+    promoted = true;
+    return {
+      browser: {
+        ...current.browser,
+        remoteRecovery: coordinate,
+      },
+    };
+  });
+  if (!promoted) {
+    const current = await sessionStore.readSession(metadata.id).catch(() => null);
+    if (current?.browser?.remoteRecovery?.originRunId !== failedRun.runId) {
+      await deleteRemoteBrowserRecoverySecret(metadata.id, failedRun.runId).catch(() => false);
+    }
+    throw new RemoteBrowserRecoveryUnavailableError(
+      "A newer browser generation superseded the pending remote recovery claim.",
+    );
+  }
+  await deleteRemoteBrowserPendingRecoveryClaim(metadata.id, failedRun.runId).catch(() => false);
+  return updated ?? (await sessionStore.readSession(metadata.id));
 }
 
 /**

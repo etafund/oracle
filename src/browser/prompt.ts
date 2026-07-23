@@ -1,6 +1,8 @@
 import fs from "node:fs/promises";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
+import { TextDecoder } from "node:util";
 import type { BrowserBundleFormat, FileSection, RunOracleOptions } from "../oracle.js";
 import { MODEL_CONFIGS, TOKENIZER_OPTIONS } from "../oracle/config.js";
 import { readFiles, createFileSections } from "../oracle/files.js";
@@ -8,14 +10,23 @@ import { FileValidationError } from "../oracle/errors.js";
 import { formatFileSections } from "../oracle/markdown.js";
 import { isKnownModel } from "../oracle/modelResolver.js";
 import { buildPromptMarkdown } from "../oracle/promptAssembly.js";
-import type { BrowserAttachment } from "./types.js";
+import type {
+  BrowserAttachment,
+  BrowserPromptFallbackAuthorization,
+  BrowserPromptFallbackReason,
+} from "./types.js";
 import { buildAttachmentPlan } from "./policies.js";
-import { MAX_DATA_TRANSFER_BYTES } from "./actions/attachmentDataTransfer.js";
+import {
+  MAX_DATA_TRANSFER_BYTES,
+  readBoundedRegularFile,
+} from "./actions/attachmentDataTransfer.js";
 import { createStoredZip, estimateStoredZipSize } from "./zipBundle.js";
+import { normalizeRenderedPromptDomIdentity } from "./promptDomMatch.js";
 
 const DEFAULT_BROWSER_INLINE_CHAR_BUDGET = 60_000;
 const MAX_BROWSER_ATTACHMENTS = 10;
 const MAX_BROWSER_ZIP_BUNDLE_BYTES = MAX_DATA_TRANSFER_BYTES;
+const MAX_BROWSER_ATTACHMENT_SOURCE_BYTES = 100 * 1024 * 1024;
 
 const MEDIA_EXTENSIONS = new Set([
   ".mp4",
@@ -94,6 +105,128 @@ export function isRawUploadFile(filePath: string): boolean {
   return MEDIA_EXTENSIONS.has(ext) || ARCHIVE_EXTENSIONS.has(ext);
 }
 
+export const AUTO_PROMPT_FALLBACK_EQUIVALENCE_ALGORITHM =
+  "oracle.browser-auto-fallback-exact.v2" as const;
+export const AUTO_PROMPT_FALLBACK_MAX_FILES = 10;
+export const AUTO_PROMPT_FALLBACK_MAX_SOURCE_BYTES = 4 * 1024 * 1024;
+export const AUTO_PROMPT_FALLBACK_MAX_LINES = 100_000;
+export const AUTO_PROMPT_FALLBACK_MAX_EXPANDED_CHARS = 8 * 1024 * 1024;
+
+type AutoFallbackAttachment = {
+  displayPath: string;
+  content: Uint8Array;
+};
+
+function reconstructBoundedInlinePrompt(
+  basePrompt: string,
+  attachments: ReadonlyArray<AutoFallbackAttachment>,
+): string | null {
+  if (
+    attachments.length === 0 ||
+    attachments.length > AUTO_PROMPT_FALLBACK_MAX_FILES ||
+    attachments.some(
+      (attachment) =>
+        !attachment.displayPath ||
+        attachment.displayPath.length > 4_096 ||
+        isRawUploadFile(attachment.displayPath),
+    )
+  ) {
+    return null;
+  }
+  const sourceBytes = attachments.reduce((total, attachment) => {
+    return total + attachment.content.byteLength;
+  }, 0);
+  if (sourceBytes > AUTO_PROMPT_FALLBACK_MAX_SOURCE_BYTES) return null;
+
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const sections: Array<{ displayPath: string; content: string }> = [];
+  let lineCount = 0;
+  try {
+    for (const attachment of attachments) {
+      const content = decoder.decode(attachment.content);
+      // Conservative text-only proof: reject transport/control bytes that can
+      // hide binary payloads inside an otherwise decodable UTF-8 file.
+      if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u.test(content)) return null;
+      lineCount += 1;
+      for (let index = 0; index < content.length; index += 1) {
+        if (content.charCodeAt(index) === 10) lineCount += 1;
+        if (lineCount > AUTO_PROMPT_FALLBACK_MAX_LINES) return null;
+      }
+      sections.push({ displayPath: attachment.displayPath, content });
+    }
+  } catch {
+    return null;
+  }
+
+  const inlineBlock = formatFileSections(sections, { preserveTrailingWhitespace: true });
+  const reconstructed = [basePrompt, inlineBlock]
+    .filter((value) => Boolean(value.trim()))
+    .join("\n\n")
+    .trim();
+  return reconstructed.length <= AUTO_PROMPT_FALLBACK_MAX_EXPANDED_CHARS ? reconstructed : null;
+}
+
+function isExactFallbackTextStable(value: string): boolean {
+  return normalizeRenderedPromptDomIdentity(value) === value;
+}
+
+export function isAutoPromptFallbackWithinModelBudget(
+  submittedPrompt: string,
+  model: string,
+  callerMaxInputTokens: number,
+): boolean {
+  if (!Number.isSafeInteger(callerMaxInputTokens) || callerMaxInputTokens <= 0) return false;
+  if (!isKnownModel(model)) return false;
+  const modelConfig = MODEL_CONFIGS[model];
+  const effectiveLimit = Math.min(modelConfig.inputLimit, callerMaxInputTokens);
+  const tokens = modelConfig.tokenizer(
+    [{ role: "user", content: submittedPrompt }],
+    TOKENIZER_OPTIONS,
+  );
+  return Number.isSafeInteger(tokens) && tokens <= effectiveLimit;
+}
+
+export function isAutoPromptFallbackWithinGpt56SolBudget(
+  submittedPrompt: string,
+  callerMaxInputTokens: number,
+): boolean {
+  return isAutoPromptFallbackWithinModelBudget(
+    submittedPrompt,
+    "gpt-5.6-sol",
+    callerMaxInputTokens,
+  );
+}
+
+export function verifyAutoUploadToInlineFallback(input: {
+  primaryPrompt: string;
+  fallbackPrompt: string;
+  attachments: ReadonlyArray<AutoFallbackAttachment>;
+}): boolean {
+  if (!input.fallbackPrompt.trim() || input.attachments.length === 0) return false;
+  const expectedFallback = reconstructBoundedInlinePrompt(input.primaryPrompt, input.attachments);
+  return Boolean(
+    expectedFallback !== null &&
+    isExactFallbackTextStable(expectedFallback) &&
+    isExactFallbackTextStable(input.fallbackPrompt) &&
+    input.fallbackPrompt === expectedFallback,
+  );
+}
+
+export function verifyAutoInlineToUploadFallback(input: {
+  primaryPrompt: string;
+  fallbackPrompt: string;
+  attachments: ReadonlyArray<AutoFallbackAttachment>;
+}): boolean {
+  if (!input.primaryPrompt.trim() || input.attachments.length === 0) return false;
+  const expectedPrimary = reconstructBoundedInlinePrompt(input.fallbackPrompt, input.attachments);
+  return Boolean(
+    expectedPrimary !== null &&
+    isExactFallbackTextStable(expectedPrimary) &&
+    isExactFallbackTextStable(input.primaryPrompt) &&
+    input.primaryPrompt === expectedPrimary,
+  );
+}
+
 export interface BrowserPromptArtifacts {
   markdown: string;
   composerText: string;
@@ -106,6 +239,8 @@ export interface BrowserPromptArtifacts {
   fallback?: {
     composerText: string;
     attachments: BrowserAttachment[];
+    reason: BrowserPromptFallbackReason;
+    authorization: BrowserPromptFallbackAuthorization;
     bundled?: BrowserBundleMetadata | null;
   } | null;
   bundled?: BrowserBundleMetadata | null;
@@ -133,6 +268,7 @@ interface BrowserBundleSource {
   absolutePath: string;
   displayPath: string;
   sizeBytes: number;
+  integritySha256: string;
 }
 
 type ResolvedBrowserBundleFormat = Exclude<BrowserBundleFormat, "auto">;
@@ -210,14 +346,24 @@ async function writeBrowserBundle(
       );
     }
     const bundlePath = path.join(bundleDir, "attachments-bundle.zip");
-    const buffer = createStoredZip(
-      await Promise.all(
-        sources.map(async (source) => ({
-          path: source.displayPath,
-          content: await fs.readFile(source.absolutePath),
-        })),
-      ),
-    );
+    const verifiedSources: Array<{ path: string; content: Buffer }> = [];
+    let sourceBytes = 0;
+    for (const source of sources) {
+      const remainingBytes = MAX_BROWSER_ZIP_BUNDLE_BYTES - sourceBytes;
+      const verified = await readBoundedRegularFile(source.absolutePath, {
+        maxBytes: Math.max(1, remainingBytes),
+        declaredSizeBytes: source.sizeBytes,
+        declaredSha256: source.integritySha256,
+      });
+      sourceBytes += verified.sizeBytes;
+      if (sourceBytes > MAX_BROWSER_ZIP_BUNDLE_BYTES) {
+        throw new Error(
+          `Browser ZIP bundle sources exceed the ${MAX_BROWSER_ZIP_BUNDLE_BYTES}-byte DataTransfer upload limit.`,
+        );
+      }
+      verifiedSources.push({ path: source.displayPath, content: verified.bytes });
+    }
+    const buffer = createStoredZip(verifiedSources);
     if (buffer.length > MAX_BROWSER_ZIP_BUNDLE_BYTES) {
       throw new Error(
         `Browser ZIP bundle is ${buffer.length} bytes, exceeding the ${MAX_BROWSER_ZIP_BUNDLE_BYTES}-byte DataTransfer upload limit.`,
@@ -229,6 +375,7 @@ async function writeBrowserBundle(
         path: bundlePath,
         displayPath: bundlePath,
         sizeBytes: buffer.length,
+        integritySha256: createHash("sha256").update(buffer).digest("hex"),
         generatedBundle: true,
       },
       metadata: { originalCount: sources.length, bundlePath, format },
@@ -242,6 +389,7 @@ async function writeBrowserBundle(
       path: bundlePath,
       displayPath: bundlePath,
       sizeBytes: Buffer.byteLength(tokenEstimateText, "utf8"),
+      integritySha256: createHash("sha256").update(tokenEstimateText, "utf8").digest("hex"),
       generatedBundle: true,
     },
     metadata: { originalCount: sections.length, bundlePath, format },
@@ -274,22 +422,18 @@ export async function assembleBrowserPrompt(
   const rawUploadAttachments: BrowserAttachment[] = await Promise.all(
     rawUploadFiles.map(async ({ path: filePath }) => {
       const resolvedPath = path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
-      const stats = await fs.stat(resolvedPath);
-      if (maxFileSizeBytes && stats.size > maxFileSizeBytes) {
-        throw new FileValidationError(
-          `The following file exceeds the ${maxFileSizeBytes}-byte limit:\n- ${
-            path.relative(cwd, resolvedPath) || resolvedPath
-          } (${stats.size} bytes)`,
-          {
-            files: [resolvedPath],
-            limitBytes: maxFileSizeBytes,
-          },
-        );
-      }
+      // Raw browser uploads historically bypass the 1 MiB text-file default.
+      // Keep that behavior, but impose a finite process-memory ceiling when
+      // establishing the source digest. Explicit lower user limits still win.
+      const effectiveMaxBytes = maxFileSizeBytes ?? MAX_BROWSER_ATTACHMENT_SOURCE_BYTES;
+      const verified = await readBoundedRegularFile(resolvedPath, {
+        maxBytes: effectiveMaxBytes,
+      });
       return {
         path: resolvedPath,
         displayPath: path.relative(cwd, resolvedPath) || path.basename(resolvedPath),
-        sizeBytes: stats.size,
+        sizeBytes: verified.sizeBytes,
+        integritySha256: verified.sha256,
       };
     }),
   );
@@ -340,11 +484,13 @@ export async function assembleBrowserPrompt(
     absolutePath: section.absolutePath,
     displayPath: section.displayPath,
     sizeBytes: Buffer.byteLength(section.content, "utf8"),
+    integritySha256: createHash("sha256").update(section.content, "utf8").digest("hex"),
   }));
   const rawUploadBundleSources: BrowserBundleSource[] = rawUploadAttachments.map((attachment) => ({
     absolutePath: attachment.path,
     displayPath: attachment.displayPath,
     sizeBytes: attachment.sizeBytes ?? 0,
+    integritySha256: attachment.integritySha256 ?? "",
   }));
   const allBundleSources = [...textBundleSources, ...rawUploadBundleSources];
   const attachments: BrowserAttachment[] = [...selectedPlan.attachments, ...rawUploadAttachments];
@@ -415,11 +561,28 @@ export async function assembleBrowserPrompt(
     estimatedInputTokens += attachmentTokens;
   }
 
+  const configuredInputLimit =
+    typeof runOptions.maxInput === "number" &&
+    Number.isFinite(runOptions.maxInput) &&
+    runOptions.maxInput > 0
+      ? Math.min(modelConfig.inputLimit, Math.floor(runOptions.maxInput))
+      : modelConfig.inputLimit;
+  const fallbackAuthorization: BrowserPromptFallbackAuthorization = {
+    attachmentsPolicy: "auto",
+    bundleRequested: false,
+    model: modelConfig.model,
+    maxInputTokens: configuredInputLimit,
+  };
+
   let fallback: BrowserPromptArtifacts["fallback"] = null;
-  if (attachmentsPolicy === "auto" && selectedPlan.mode === "inline" && sections.length > 0) {
+  if (
+    attachmentsPolicy === "auto" &&
+    attachments.length === 0 &&
+    selectedPlan.mode === "inline" &&
+    sections.length > 0
+  ) {
     const fallbackComposerText = baseComposerSections.join("\n\n").trim();
     const fallbackAttachments = [...uploadPlan.attachments, ...rawUploadAttachments];
-    let fallbackBundled: BrowserBundleMetadata | null = null;
     const fallbackBundleFormat = resolveBrowserBundleFormat(bundleFormat, {
       hasRawUploadFiles: rawUploadAttachments.length > 0,
     });
@@ -429,25 +592,56 @@ export async function assembleBrowserPrompt(
       textSourceCount: textBundleSources.length,
       textPlanShouldBundle: uploadPlan.shouldBundle,
     });
-    if (fallbackShouldBundle) {
-      const writtenBundle = await writeBrowserBundle(
-        sections,
-        fallbackBundleFormat === "zip" ? allBundleSources : textBundleSources,
-        fallbackBundleFormat,
-      );
-      fallbackAttachments.length = 0;
-      fallbackAttachments.push(writtenBundle.attachment);
-      if (fallbackBundleFormat === "text") {
-        fallbackAttachments.push(...rawUploadAttachments);
-      }
-      fallbackBundled = writtenBundle.metadata;
+    if (!fallbackShouldBundle) {
+      assertAttachmentCount(fallbackAttachments, fallbackBundleFormat);
+      fallback = {
+        composerText: fallbackComposerText,
+        attachments: fallbackAttachments,
+        reason: "auto-inline-too-large-to-upload",
+        authorization: fallbackAuthorization,
+        bundled: null,
+      };
     }
-    assertAttachmentCount(fallbackAttachments, fallbackBundleFormat);
-    fallback = {
-      composerText: fallbackComposerText,
-      attachments: fallbackAttachments,
-      bundled: fallbackBundled,
-    };
+  } else {
+    const uploadToInlineFallbackCandidate =
+      attachmentsPolicy === "auto" &&
+      attachments.length > 0 &&
+      rawUploadAttachments.length === 0 &&
+      !bundleRequested &&
+      !shouldBundle &&
+      sections.length > 0;
+    let inlineEstimatedInputTokens = Number.POSITIVE_INFINITY;
+    if (uploadToInlineFallbackCandidate) {
+      const inlineTokenizerUserContent = [userPrompt, inlinePlan.inlineBlock]
+        .filter((value) => Boolean(value?.trim()))
+        .join("\n\n")
+        .trim();
+      const inlineTokenizerMessages = [
+        systemPrompt ? { role: "system", content: systemPrompt } : null,
+        inlineTokenizerUserContent ? { role: "user", content: inlineTokenizerUserContent } : null,
+      ].filter(Boolean) as Array<{ role: "system" | "user"; content: string }>;
+      inlineEstimatedInputTokens = tokenizer(
+        inlineTokenizerMessages.length > 0
+          ? inlineTokenizerMessages
+          : [{ role: "user", content: "" }],
+        TOKENIZER_OPTIONS,
+      );
+    }
+    const uploadToInlineFallbackEligible =
+      uploadToInlineFallbackCandidate && inlineEstimatedInputTokens <= configuredInputLimit;
+    if (uploadToInlineFallbackEligible) {
+      // The 60k character threshold is the normal planning preference, not a
+      // proof that ChatGPT cannot accept the text. If upload stalls before any
+      // dispatch, one exact-round-trip inline attempt is safe when the full
+      // text remains inside the model/user token budget.
+      fallback = {
+        composerText: inlineComposerText,
+        attachments: [],
+        reason: "auto-upload-timeout-to-inline",
+        authorization: fallbackAuthorization,
+        bundled: null,
+      };
+    }
   }
 
   return {

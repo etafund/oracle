@@ -1,18 +1,17 @@
-// NO SILENT PROMPT FALLBACK on fleet lanes: the remote payload must not
-// carry a prompt-altering fallback submission unless the caller explicitly
-// opts in via ORACLE_ALLOW_PROMPT_FALLBACK. Opting in logs both prompt hashes
-// so the run's event trail can prove which question was actually submitted.
+// Fleet fallbacks are armed only when their declared direction and exact
+// byte-derived representation verify locally; the worker repeats the proof.
 //
 // Uses the requestFn DI seam (see tests/remote/payload.test.ts for why
 // vi.mock of node:http is avoided).
 
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import {
-  createRemoteBrowserExecutor,
-  isPromptFallbackOptInEnabled,
-} from "../../src/remote/client.js";
+import { createRemoteBrowserExecutor } from "../../src/remote/client.js";
 import { computePromptSha256 } from "../../src/browser/actions/captureBinding.js";
+import { formatFileSections } from "../../src/oracle/markdown.js";
 
 type ExecutorOptions = Parameters<typeof createRemoteBrowserExecutor>[0];
 type RequestFn = NonNullable<ExecutorOptions["requestFn"]>;
@@ -53,13 +52,26 @@ const FALLBACK_RUN = {
   fallbackSubmission: { prompt: "re-packed fallback prompt", attachments: [] },
 };
 
+function inlineFallback(primary: string, displayPath: string, content: string): string {
+  return [
+    primary,
+    formatFileSections([{ displayPath, content }], { preserveTrailingWhitespace: true }),
+  ].join("\n\n");
+}
+
+const FALLBACK_AUTHORIZATION = {
+  attachmentsPolicy: "auto" as const,
+  bundleRequested: false as const,
+  model: "gpt-5.6-sol",
+  maxInputTokens: 272_000,
+};
+
 afterEach(() => {
   vi.unstubAllEnvs();
 });
 
 describe("remote prompt-fallback gate", () => {
-  it("drops the fallback submission from the payload by default and says so", async () => {
-    vi.stubEnv("ORACLE_ALLOW_PROMPT_FALLBACK", "");
+  it("drops an unverifiable fallback submission and says so", async () => {
     const { fn, capture } = makeCapturingRequest();
     const logs: string[] = [];
     const exec = createRemoteBrowserExecutor({ host: "localhost:9222", requestFn: fn });
@@ -72,11 +84,10 @@ describe("remote prompt-fallback gate", () => {
     expect(payload).not.toBeNull();
     expect(payload?.prompt).toBe("primary prompt");
     expect(payload?.fallbackSubmission).toBeUndefined();
-    expect(logs.join("\n")).toContain("fallback submission is disabled");
-    expect(logs.join("\n")).toContain("ORACLE_ALLOW_PROMPT_FALLBACK");
+    expect(logs.join("\n")).toContain("Refusing to arm an unverifiable prompt fallback");
   });
 
-  it("keeps the fallback submission when the caller explicitly opts in, logging both prompt hashes", async () => {
+  it("does not let the legacy environment opt-in bypass exact verification", async () => {
     vi.stubEnv("ORACLE_ALLOW_PROMPT_FALLBACK", "1");
     const { fn, capture } = makeCapturingRequest();
     const logs: string[] = [];
@@ -88,16 +99,99 @@ describe("remote prompt-fallback gate", () => {
 
     const payload = capture();
     expect(payload).not.toBeNull();
-    const fallback = payload?.fallbackSubmission as { prompt?: string } | undefined;
-    expect(fallback?.prompt).toBe("re-packed fallback prompt");
-    const logText = logs.join("\n");
-    expect(logText).toContain("provenance degraded");
-    expect(logText).toContain(computePromptSha256("primary prompt"));
-    expect(logText).toContain(computePromptSha256("re-packed fallback prompt"));
+    expect(payload?.fallbackSubmission).toBeUndefined();
+    expect(logs.join("\n")).toContain("Refusing to arm an unverifiable prompt fallback");
+  });
+
+  it("keeps a planner-tagged upload-to-inline fallback by default", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-remote-fallback-"));
+    try {
+      const attachmentPath = path.join(dir, "source.txt");
+      await writeFile(attachmentPath, "source contents", "utf8");
+      const { fn, capture } = makeCapturingRequest();
+      const logs: string[] = [];
+      const exec = createRemoteBrowserExecutor({ host: "localhost:9222", requestFn: fn });
+
+      await exec({
+        prompt: "primary prompt",
+        attachments: [{ path: attachmentPath, displayPath: "source.txt" }],
+        fallbackSubmission: {
+          prompt: inlineFallback("primary prompt", "source.txt", "source contents"),
+          attachments: [],
+          reason: "auto-upload-timeout-to-inline",
+          authorization: FALLBACK_AUTHORIZATION,
+        },
+        log: (message) => logs.push(String(message)),
+      }).catch(() => {
+        // ignore stubbed transport failure
+      });
+
+      const captured = capture();
+      const fallback = captured?.fallbackSubmission as { prompt?: string } | undefined;
+      expect(fallback).toMatchObject({
+        prompt: expect.stringContaining("source contents"),
+      });
+      expect(captured?.fallbackPolicy).toEqual(FALLBACK_AUTHORIZATION);
+      expect(logs.join("\n")).toContain(
+        "Exact pre-dispatch auto-upload-timeout-to-inline fallback armed",
+      );
+      expect(logs.join("\n")).toContain(computePromptSha256("primary prompt"));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps an exactly verified inline-to-upload fallback", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-remote-fallback-"));
+    try {
+      const attachmentPath = path.join(dir, "source.txt");
+      await writeFile(attachmentPath, "source contents", "utf8");
+      const { fn, capture } = makeCapturingRequest();
+      const exec = createRemoteBrowserExecutor({ host: "localhost:9222", requestFn: fn });
+
+      await exec({
+        prompt: inlineFallback("base prompt", "source.txt", "source contents"),
+        attachments: [],
+        fallbackSubmission: {
+          prompt: "base prompt",
+          attachments: [{ path: attachmentPath, displayPath: "source.txt" }],
+          reason: "auto-inline-too-large-to-upload",
+          authorization: FALLBACK_AUTHORIZATION,
+        },
+      }).catch(() => {
+        // ignore stubbed transport failure
+      });
+
+      expect(capture()?.fallbackSubmission).toMatchObject({
+        prompt: "base prompt",
+        attachments: [expect.objectContaining({ displayPath: "source.txt" })],
+      });
+      expect(capture()?.fallbackPolicy).toEqual(FALLBACK_AUTHORIZATION);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("drops a safe reason whose primary/fallback direction does not match", async () => {
+    const { fn, capture } = makeCapturingRequest();
+    const exec = createRemoteBrowserExecutor({ host: "localhost:9222", requestFn: fn });
+
+    await exec({
+      prompt: "primary prompt",
+      attachments: [],
+      fallbackSubmission: {
+        prompt: "inline fallback",
+        attachments: [],
+        reason: "auto-upload-timeout-to-inline",
+      },
+    }).catch(() => {
+      // ignore stubbed transport failure
+    });
+
+    expect(capture()?.fallbackSubmission).toBeUndefined();
   });
 
   it("leaves runs without a fallback submission untouched", async () => {
-    vi.stubEnv("ORACLE_ALLOW_PROMPT_FALLBACK", "");
     const { fn, capture } = makeCapturingRequest();
     const logs: string[] = [];
     const exec = createRemoteBrowserExecutor({ host: "localhost:9222", requestFn: fn });
@@ -108,18 +202,6 @@ describe("remote prompt-fallback gate", () => {
 
     expect(capture()?.prompt).toBe("plain run");
     expect(capture()?.fallbackSubmission).toBeUndefined();
-    expect(logs.join("\n")).not.toContain("fallback submission is disabled");
-  });
-});
-
-describe("isPromptFallbackOptInEnabled", () => {
-  it("is off by default and on only for explicit truthy values", () => {
-    expect(isPromptFallbackOptInEnabled({})).toBe(false);
-    expect(isPromptFallbackOptInEnabled({ ORACLE_ALLOW_PROMPT_FALLBACK: "" })).toBe(false);
-    expect(isPromptFallbackOptInEnabled({ ORACLE_ALLOW_PROMPT_FALLBACK: "0" })).toBe(false);
-    expect(isPromptFallbackOptInEnabled({ ORACLE_ALLOW_PROMPT_FALLBACK: "no" })).toBe(false);
-    expect(isPromptFallbackOptInEnabled({ ORACLE_ALLOW_PROMPT_FALLBACK: "1" })).toBe(true);
-    expect(isPromptFallbackOptInEnabled({ ORACLE_ALLOW_PROMPT_FALLBACK: "true" })).toBe(true);
-    expect(isPromptFallbackOptInEnabled({ ORACLE_ALLOW_PROMPT_FALLBACK: "TRUE" })).toBe(true);
+    expect(logs.join("\n")).not.toContain("Refusing to arm");
   });
 });

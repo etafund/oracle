@@ -28,11 +28,17 @@ import {
   serveCompatibleRecoveryHealth,
   setCompatibleRecoveryResponseHeaders,
 } from "./_recoveryProtocolFixture.js";
+import {
+  emitDurableRecoveryCheckpoint,
+  primarySubmissionProvenance,
+  strongRemoteSuccessProvenance,
+  verifiedSolProModelSelection,
+} from "./_submissionProvenanceFixture.js";
 
 // Terminal done-event contract:
 // - the server emits exactly one terminal `done` event per accepted run and
 //   the caller-usable answer travels ONLY in done.ok === true;
-// - intermediate `result`-style events are non-authoritative and ignored;
+// - legacy `result`-style events are forbidden under the versioned contract;
 // - the client refuses to treat a stream without a terminal done event as
 //   success (EOF-without-done = failure; error event = failure; truncated
 //   stream = failure) and surfaces typed retry classes so automation never
@@ -59,32 +65,11 @@ const MINIMAL_RESULT: BrowserRunResult = {
   tookMs: 5,
   answerTokens: 2,
   answerChars: 10,
-  modelSelection: {
-    requestedModel: "GPT-5.6 Sol",
-    resolvedLabel: "GPT-5.6 Sol + Pro",
-    requestedModelLabel: "GPT-5.6 Sol",
-    resolvedModelLabel: "GPT-5.6 Sol",
-    modelVerified: true,
-    requestedMode: "Pro",
-    resolvedModeLabel: "Pro",
-    modeVerified: true,
-    verifiedBeforePromptSubmit: true,
-    strategy: "select",
-    status: "already-selected",
-    verified: true,
-    source: "chatgpt-model-picker",
-    capturedAt: "2026-07-03T00:00:00.000Z",
-  },
+  submissionProvenance: primarySubmissionProvenance("x"),
+  modelSelection: verifiedSolProModelSelection(),
 };
 
-const STRONG_SUCCESS_PROVENANCE = {
-  modelVerified: true,
-  modelRequested: "GPT-5.6 Sol",
-  modelResolved: "GPT-5.6 Sol + Pro",
-  captureBindingVerified: true,
-  captureBindingQuality: "message-handle" as const,
-  challengeClean: true,
-};
+const STRONG_SUCCESS_PROVENANCE = strongRemoteSuccessProvenance("x");
 
 const savedFleetDir = process.env.ORACLE_FLEET_DIR;
 const tempDirs: string[] = [];
@@ -117,9 +102,12 @@ describe("server: terminal done event", () => {
         {
           runBrowser: async (options) => {
             options.log?.("Submitted prompt via Enter key");
-            options.submittedPromptPreviewCb?.("test", "d".repeat(64));
+            await emitDurableRecoveryCheckpoint(options, "terminal done test", "terminal-success");
             options.log?.(formatCaptureBindingVerifiedLog("message-handle", "abc123"));
-            return MINIMAL_RESULT;
+            return {
+              ...MINIMAL_RESULT,
+              submissionProvenance: primarySubmissionProvenance("terminal done test"),
+            };
           },
         },
       );
@@ -152,9 +140,64 @@ describe("server: terminal done event", () => {
           captureBindingVerified: true,
           captureBindingQuality: "message-handle",
           challengeClean: true,
+          submission: primarySubmissionProvenance("terminal done test"),
         });
       } finally {
         await server.close();
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "server refuses missing or forged atomic Sol + Pro selection evidence",
+    async () => {
+      const cases: Array<[string, BrowserRunResult["modelSelection"]]> = [
+        ["missing evidence", undefined],
+        [
+          "null model verdict",
+          { ...verifiedSolProModelSelection(), modelVerified: undefined, verified: false },
+        ],
+        [
+          "wrong resolved model",
+          {
+            ...verifiedSolProModelSelection(),
+            resolvedModelLabel: "GPT-5.6 Instant",
+          },
+        ],
+        [
+          "wrong resolved mode",
+          { ...verifiedSolProModelSelection(), resolvedModeLabel: "Instant" },
+        ],
+      ];
+      for (const [label, modelSelection] of cases) {
+        await isolatedFleetDir();
+        const server = await createRemoteServer(
+          { host: "127.0.0.1", port: 0, token: "secret", logger: () => {}, attachOnly: false },
+          {
+            runBrowser: async (options) => {
+              await emitDurableRecoveryCheckpoint(
+                options,
+                "terminal done test",
+                `model-evidence-${label.replace(/[^a-z0-9]+/gi, "-")}`,
+              );
+              options.log?.(formatCaptureBindingVerifiedLog("message-handle", "abc123"));
+              return {
+                ...MINIMAL_RESULT,
+                modelSelection,
+                submissionProvenance: primarySubmissionProvenance("terminal done test"),
+              };
+            },
+          },
+        );
+        try {
+          const done = lastEvent((await rawRun(server.port, "secret")).body);
+          expect(done.ok, label).toBe(false);
+          expect(done.errorClass, label).toBe("integrity_ui_unknown");
+          expect(done.retryable, label).toBe(false);
+          expect(String(done.errorMessage), label).toMatch(/atomic GPT-5\.6 Sol \+ Pro/i);
+        } finally {
+          await server.close();
+        }
       }
     },
   );
@@ -253,8 +296,7 @@ describe("server: terminal done event", () => {
             // Turn 1: submit confirmed and capture binding verified at full
             // structural strength.
             options.log?.("Submitted prompt via Enter key");
-            await options.submittedPromptPreviewCb?.("test", "d".repeat(64));
-            options.log?.(formatCaptureBindingVerifiedLog("message-handle", "abc123"));
+            await emitDurableRecoveryCheckpoint(options, "terminal done test", "recoverable-123");
             await options.runtimeHintCb?.({
               tabUrl: "https://chatgpt.com/c/recoverable-123?private=1",
               conversationId: "recoverable-123",
@@ -263,6 +305,7 @@ describe("server: terminal done event", () => {
               chromePort: 9222,
               userDataDir: "/home/oracle/private-profile",
             });
+            options.log?.(formatCaptureBindingVerifiedLog("message-handle", "abc123"));
             // Follow-up turn: the capture binding fails structurally — thrown
             // exactly as assertCapturedAssistantResponseBound throws it.
             throw buildCaptureBindingFailureError(
@@ -493,6 +536,7 @@ describe("client: terminal done enforcement", () => {
             captureBindingVerified: true,
             captureBindingQuality: "message-handle",
             challengeClean: true,
+            submission: primarySubmissionProvenance("x"),
           },
         },
       ],
@@ -635,7 +679,198 @@ describe("client: terminal done enforcement", () => {
   );
 
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
-    "EOF without done fails, even when a legacy result event was streamed",
+    "rejects null, forged, or non-atomic terminal model proof",
+    async () => {
+      const cases: Array<[string, Record<string, unknown>]> = [
+        ["null model verdict", { ...STRONG_SUCCESS_PROVENANCE, modelVerified: null }],
+        ["null requested model label", { ...STRONG_SUCCESS_PROVENANCE, requestedModelLabel: null }],
+        [
+          "forged requested model label",
+          { ...STRONG_SUCCESS_PROVENANCE, requestedModelLabel: "GPT-5.5 Pro" },
+        ],
+        [
+          "wrong resolved model label",
+          { ...STRONG_SUCCESS_PROVENANCE, resolvedModelLabel: "GPT-5.6 Instant" },
+        ],
+        ["wrong mode", { ...STRONG_SUCCESS_PROVENANCE, resolvedModeLabel: "Instant" }],
+        [
+          "verification after submit",
+          { ...STRONG_SUCCESS_PROVENANCE, verifiedBeforePromptSubmit: false },
+        ],
+      ];
+      for (const [label, provenance] of cases) {
+        const fake = await startFakeRunServer([
+          { type: "done", ok: true, result: MINIMAL_RESULT, provenance },
+        ]);
+        try {
+          const executor = createRemoteBrowserExecutor({
+            host: `127.0.0.1:${fake.port}`,
+            token: "secret",
+          });
+          const failure = await executor({ prompt: "x", config: {} }).then(
+            () => null,
+            (error: unknown) => error,
+          );
+          expect(failure, label).toBeInstanceOf(RemoteRunFailedError);
+          expect((failure as RemoteRunFailedError).errorClass, label).toBe("integrity_ui_unknown");
+          expect((failure as RemoteRunFailedError).retryable, label).toBe(false);
+          expect((failure as RemoteRunFailedError).message, label).toMatch(/unproven|provenance/i);
+        } finally {
+          await fake.close();
+        }
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "rejects a non-NDJSON success response before trusting its body",
+    async () => {
+      const fake = await startFakeRunServer(
+        [
+          {
+            type: "done",
+            ok: true,
+            result: MINIMAL_RESULT,
+            provenance: STRONG_SUCCESS_PROVENANCE,
+          },
+        ],
+        { contentType: "application/json" },
+      );
+      try {
+        const executor = createRemoteBrowserExecutor({
+          host: `127.0.0.1:${fake.port}`,
+          token: "secret",
+        });
+        const failure = await executor({ prompt: "x", config: {} }).then(
+          () => null,
+          (error: unknown) => error,
+        );
+        expect(failure).toBeInstanceOf(RemoteRunFailedError);
+        expect((failure as RemoteRunFailedError).message).toMatch(/invalid content type/i);
+        expect((failure as RemoteRunFailedError).errorClass).toBe("integrity_ui_unknown");
+        expect((failure as RemoteRunFailedError).retryable).toBe(false);
+      } finally {
+        await fake.close();
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)("rejects malformed done and result payloads", async () => {
+    const cases: Array<[string, Record<string, unknown>]> = [
+      [
+        "non-boolean done.ok",
+        {
+          type: "done",
+          ok: "yes",
+          result: MINIMAL_RESULT,
+          provenance: STRONG_SUCCESS_PROVENANCE,
+        },
+      ],
+      [
+        "negative answer token count",
+        {
+          type: "done",
+          ok: true,
+          result: { ...MINIMAL_RESULT, answerTokens: -1 },
+          provenance: STRONG_SUCCESS_PROVENANCE,
+        },
+      ],
+      [
+        "non-string answer",
+        {
+          type: "done",
+          ok: true,
+          result: { ...MINIMAL_RESULT, answerText: false },
+          provenance: STRONG_SUCCESS_PROVENANCE,
+        },
+      ],
+      [
+        "unknown result field",
+        {
+          type: "done",
+          ok: true,
+          result: { ...MINIMAL_RESULT, trusted: true },
+          provenance: STRONG_SUCCESS_PROVENANCE,
+        },
+      ],
+    ];
+    for (const [label, event] of cases) {
+      const fake = await startFakeRunServer([event]);
+      try {
+        const executor = createRemoteBrowserExecutor({
+          host: `127.0.0.1:${fake.port}`,
+          token: "secret",
+        });
+        const failure = await executor({ prompt: "x", config: {} }).then(
+          () => null,
+          (error: unknown) => error,
+        );
+        expect(failure, label).toBeInstanceOf(RemoteRunFailedError);
+        expect((failure as RemoteRunFailedError).errorClass, label).toBe("integrity_ui_unknown");
+        expect((failure as RemoteRunFailedError).retryable, label).toBe(false);
+        expect((failure as RemoteRunFailedError).message, label).toMatch(/malformed/i);
+      } finally {
+        await fake.close();
+      }
+    }
+  });
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)("rejects malformed NDJSON", async () => {
+    const fake = await startFakeRunServer([], { rawTail: "{not-json}\n" });
+    try {
+      const executor = createRemoteBrowserExecutor({
+        host: `127.0.0.1:${fake.port}`,
+        token: "secret",
+      });
+      const failure = await executor({ prompt: "x", config: {} }).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(failure).toBeInstanceOf(RemoteRunFailedError);
+      expect((failure as RemoteRunFailedError).message).toMatch(/failed to parse remote event/i);
+      expect((failure as RemoteRunFailedError).errorClass).toBe("integrity_ui_unknown");
+      expect((failure as RemoteRunFailedError).retryable).toBe(false);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "does not trust retry advice from a legacy 409 without v4 route headers",
+    async () => {
+      const fake = await startStaticRunServer({
+        statusCode: 409,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: "busy",
+          errorClass: "capacity_busy",
+          retryable: true,
+          message: "retry me",
+        }),
+      });
+      try {
+        const executor = createRemoteBrowserExecutor({
+          host: `127.0.0.1:${fake.port}`,
+          token: "secret",
+        });
+        const failure = await executor({ prompt: "x", config: {} }).then(
+          () => null,
+          (error: unknown) => error,
+        );
+        expect(failure).toBeInstanceOf(RemoteRunFailedError);
+        expect((failure as RemoteRunFailedError).message).toMatch(
+          /lacked the exact authenticated remote-browser-recovery\.v4 protocol and route identity/i,
+        );
+        expect((failure as RemoteRunFailedError).errorClass).toBe("integrity_ui_unknown");
+        expect((failure as RemoteRunFailedError).retryable).toBe(false);
+      } finally {
+        await fake.close();
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "a forbidden legacy result event fails immediately",
     async () => {
       const fake = await startFakeRunServer([
         { type: "log", message: "working" },
@@ -651,12 +886,8 @@ describe("client: terminal done enforcement", () => {
           (error: unknown) => error,
         );
         expect(failure).toBeInstanceOf(RemoteRunFailedError);
-        expect((failure as RemoteRunFailedError).message).toContain(
-          "without a terminal done event",
-        );
-        expect((failure as RemoteRunFailedError).errorClass).toBe(
-          "transport_interrupted_after_submit",
-        );
+        expect((failure as RemoteRunFailedError).message).toMatch(/forbidden legacy result/i);
+        expect((failure as RemoteRunFailedError).errorClass).toBe("integrity_ui_unknown");
         expect((failure as RemoteRunFailedError).retryable).toBe(false);
       } finally {
         await fake.close();
@@ -687,6 +918,7 @@ describe("client: terminal done enforcement", () => {
         const executor = createRemoteBrowserExecutor({
           host: `127.0.0.1:${fake.port}`,
           token: "secret",
+          recoveryClaimLookupTimeoutMs: 0,
         });
         const failure = await executor({ prompt: "x", config: {} }).then(
           () => null,
@@ -905,6 +1137,9 @@ describe("client: terminal done enforcement", () => {
         token: "secret",
       });
       const active = executor({ prompt: "hold", config: {} });
+      // Attach a handler immediately so an admission-contract regression cannot
+      // become an unhandled rejection while this test waits for the browser seam.
+      void active.catch(() => undefined);
       try {
         await startedPromise;
         const refusal = await executor({ prompt: "second", config: {} }).then(
@@ -972,7 +1207,11 @@ async function rawRun(port: number, token: string): Promise<{ statusCode: number
 /** Fake /runs endpoint that streams the given events and ends. */
 async function startFakeRunServer(
   events: Array<Record<string, unknown>>,
-  options: { rawTail?: string; headers?: Record<string, string> } = {},
+  options: {
+    rawTail?: string;
+    headers?: Record<string, string>;
+    contentType?: string;
+  } = {},
 ): Promise<{ port: number; close: () => Promise<void> }> {
   const server = http.createServer((req, res) => {
     if (serveCompatibleRecoveryHealth(req, res)) return;
@@ -981,7 +1220,7 @@ async function startFakeRunServer(
       req.resume();
       req.on("end", () => {
         res.writeHead(200, {
-          "Content-Type": "application/x-ndjson",
+          "Content-Type": options.contentType ?? "application/x-ndjson",
           ...options.headers,
         });
         const responseRunId = options.headers?.["x-oracle-run-id"] ?? "fixture-run";
@@ -1005,6 +1244,41 @@ async function startFakeRunServer(
   const address = server.address();
   if (!address || typeof address === "string") {
     throw new Error("fake run server did not bind");
+  }
+  return {
+    port: address.port,
+    close: async () =>
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      }),
+  };
+}
+
+async function startStaticRunServer(options: {
+  statusCode: number;
+  contentType: string;
+  body: string;
+}): Promise<{ port: number; close: () => Promise<void> }> {
+  const server = http.createServer((req, res) => {
+    if (serveCompatibleRecoveryHealth(req, res)) return;
+    if (req.method === "POST" && req.url === REMOTE_BROWSER_RUN_PATH) {
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(options.statusCode, { "Content-Type": options.contentType });
+        res.end(options.body);
+      });
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("static run server did not bind");
   }
   return {
     port: address.port,

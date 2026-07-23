@@ -18,6 +18,11 @@ import {
   REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
   REMOTE_BROWSER_RUN_PATH,
 } from "../../src/remote/types.js";
+import {
+  emitDurableRecoveryCheckpoint,
+  primarySubmissionProvenance,
+  verifiedSolProModelSelection,
+} from "./_submissionProvenanceFixture.js";
 
 // Serve-side half of the challenge/login account-safety gates.
 // ACCOUNT-SAFETY HARD-HALT DOCTRINE: while the worker-local quarantine latch
@@ -49,6 +54,8 @@ const MINIMAL_RESULT: BrowserRunResult = {
   tookMs: 1,
   answerTokens: 1,
   answerChars: 2,
+  submissionProvenance: primarySubmissionProvenance("quarantine gate test"),
+  modelSelection: verifiedSolProModelSelection(),
 };
 
 const savedFleetDir = process.env.ORACLE_FLEET_DIR;
@@ -110,8 +117,14 @@ describe("serve quarantine gates", () => {
           accountId: "acct1",
         },
         {
-          runBrowser: async () => {
+          runBrowser: async (options) => {
             runs.count += 1;
+            await emitDurableRecoveryCheckpoint(
+              options,
+              "quarantine gate test",
+              "quarantine-before-finalization",
+            );
+            options.log?.(formatCaptureBindingVerifiedLog("message-handle", "abc123"));
             return {
               ...MINIMAL_RESULT,
               artifacts: [
@@ -350,6 +363,11 @@ describe("serve quarantine gates", () => {
         {
           runBrowser: async (options) => {
             runs.count += 1;
+            await emitDurableRecoveryCheckpoint(
+              options,
+              "quarantine gate test",
+              "sibling-account-clean",
+            );
             options.log?.(formatCaptureBindingVerifiedLog("message-handle", "abc123"));
             return MINIMAL_RESULT;
           },

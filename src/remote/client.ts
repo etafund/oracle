@@ -4,10 +4,11 @@ import { createWriteStream } from "node:fs";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import path from "node:path";
-import { mkdir, readFile, rename, rm, stat } from "node:fs/promises";
+import { mkdir, rename, rm, stat } from "node:fs/promises";
 import type { BrowserRunOptions } from "../browserMode.js";
 import type { BrowserRunResult } from "../browserMode.js";
 import type { BrowserAttachment, SavedBrowserFile } from "../browser/types.js";
+import type { BrowserSubmissionProvenance } from "../browser/types.js";
 import {
   appendArtifacts,
   resolveSessionArtifactsDir,
@@ -19,11 +20,18 @@ import {
 import {
   MAX_REMOTE_ARTIFACT_BYTES,
   REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
+  REMOTE_BROWSER_RECOVERY_CLAIM_HEADERS,
+  REMOTE_BROWSER_RECOVERY_CLAIM_LOOKUP_PATH,
+  REMOTE_BROWSER_RECOVERY_CLAIM_ROUTE_HEADER,
+  REMOTE_BROWSER_RECOVERY_CLAIM_ROUTE_HEADER_VALUE,
+  REMOTE_BROWSER_RECOVERY_CLAIM_SCHEMA,
   REMOTE_BROWSER_RECOVERY_PATH,
   REMOTE_BROWSER_RECOVERY_PROTOCOL,
+  REMOTE_BROWSER_RUN_SCHEMA,
   REMOTE_BROWSER_RUN_PATH,
   REMOTE_SESSION_RECOVERY_STAGES,
   type RemoteBrowserRecoveryRequest,
+  type RemoteBrowserRecoveryClaimLookupResponse,
   type RemoteArtifactDescriptor,
   type RemoteRunPayload,
   type RemoteRunEvent,
@@ -46,6 +54,14 @@ import { BrowserAutomationError } from "../oracle/errors.js";
 import { extractConversationIdFromUrl } from "../browser/conversationIdentity.js";
 import type { BrowserRemoteRunProvenance } from "../sessionManager.js";
 import { checkRemoteHealth } from "./health.js";
+import {
+  verifyAutoInlineToUploadFallback,
+  verifyAutoUploadToInlineFallback,
+} from "../browser/prompt.js";
+import {
+  MAX_DATA_TRANSFER_BYTES,
+  readBoundedRegularFile,
+} from "../browser/actions/attachmentDataTransfer.js";
 
 const EXECUTABLE_RECOVERY_STAGE_SET: ReadonlySet<string> = new Set(REMOTE_SESSION_RECOVERY_STAGES);
 
@@ -84,6 +100,10 @@ interface RemoteExecutorOptions {
    * answer text/markdown/html) while still bounded.
    */
   maxLineBytes?: number;
+  /** Bounded out-of-band wait for a post-submit durable recovery claim. */
+  recoveryClaimLookupTimeoutMs?: number;
+  /** Poll interval for a claim that is authenticated but not bound yet. */
+  recoveryClaimPollIntervalMs?: number;
 }
 
 /**
@@ -95,23 +115,20 @@ export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
 
 /** Default per-line NDJSON buffer cap (see `RemoteExecutorOptions.maxLineBytes`). */
 export const MAX_NDJSON_LINE_BYTES = 32 * 1024 * 1024;
+export const DEFAULT_RECOVERY_CLAIM_LOOKUP_TIMEOUT_MS = 90_000;
+export const DEFAULT_RECOVERY_CLAIM_POLL_INTERVAL_MS = 500;
+const MAX_RECOVERY_CLAIM_RESPONSE_BYTES = 64 * 1024;
+const RECOVERY_CLAIM_KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+
+function isCanonicalRecoveryClaimKey(value: unknown): value is string {
+  if (typeof value !== "string" || !RECOVERY_CLAIM_KEY_PATTERN.test(value)) return false;
+  const bytes = Buffer.from(value, "base64url");
+  return bytes.length === 32 && bytes.toString("base64url") === value;
+}
 
 function resolveDefaultStreamIdleTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = Number.parseInt(env.ORACLE_REMOTE_STREAM_IDLE_MS ?? "", 10);
   return Number.isSafeInteger(raw) && raw > 0 ? raw : DEFAULT_STREAM_IDLE_TIMEOUT_MS;
-}
-
-/**
- * Whether the caller has explicitly opted in to the prompt-altering fallback
- * submission on remote (fleet) lanes. Default OFF: the fallback replaces the
- * submitted question with a re-packed variant (inline text moved to file
- * uploads), so a silent switch breaks answer provenance. Opting in accepts
- * degraded provenance; the run log records both prompt hashes so the JSONL
- * event stream can prove which prompt was actually submitted.
- */
-export function isPromptFallbackOptInEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const raw = (env.ORACLE_ALLOW_PROMPT_FALLBACK ?? "").trim().toLowerCase();
-  return raw === "1" || raw === "true";
 }
 
 /**
@@ -179,6 +196,19 @@ export interface RemoteBrowserRecoveryCarrier {
   promptDomSha256: string;
 }
 
+export interface RemoteBrowserPendingRecoveryClaim {
+  /** Opaque one-time authority minted before the worker touches the browser. */
+  claimKey: string;
+  originRunId: string;
+  accountId: string;
+  originLaneId: string;
+  /** Exact canonical one-shot branches owned by the originating request. */
+  promptCandidates: Array<{
+    promptPreview: string;
+    promptPreviewSha256: string;
+  }>;
+}
+
 /** Nonsecret proof that a remote account accepted a run which did not finish. */
 export interface RemoteBrowserFailedRoute {
   runId: string;
@@ -190,6 +220,7 @@ export interface RemoteBrowserFailedRoute {
 
 const remoteRecoveryByError = new WeakMap<Error, RemoteBrowserRecoveryCarrier>();
 const remoteFailedRouteByError = new WeakMap<Error, RemoteBrowserFailedRoute>();
+const remotePendingRecoveryClaimByError = new WeakMap<Error, RemoteBrowserPendingRecoveryClaim>();
 
 function walkErrorCauses<T>(error: unknown, read: (candidate: Error) => T | null): T | null {
   const seen = new Set<Error>();
@@ -221,6 +252,16 @@ export function getRemoteBrowserFailedRouteFromError(
   return walkErrorCauses(error, (candidate) => remoteFailedRouteByError.get(candidate) ?? null);
 }
 
+/** Private pending authority is non-enumerable and never included in error text. */
+export function getRemoteBrowserPendingRecoveryClaimFromError(
+  error: unknown,
+): RemoteBrowserPendingRecoveryClaim | null {
+  return walkErrorCauses(
+    error,
+    (candidate) => remotePendingRecoveryClaimByError.get(candidate) ?? null,
+  );
+}
+
 function failedRouteFromIdentity(
   route: RemoteRouteIdentity | null,
 ): RemoteBrowserFailedRoute | null {
@@ -234,9 +275,29 @@ function failedRouteFromIdentity(
   };
 }
 
-function sanitizeStrongRemoteSuccessProvenance(value: unknown): BrowserRemoteRunProvenance | null {
+function sanitizeStrongRemoteSuccessProvenance(
+  value: unknown,
+  options: { requireModelProof?: boolean } = {},
+): BrowserRemoteRunProvenance | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const raw = value as Record<string, unknown>;
+  const allowedKeys = new Set([
+    "modelVerified",
+    "modelRequested",
+    "modelResolved",
+    "requestedModelLabel",
+    "resolvedModelLabel",
+    "modelLabelVerified",
+    "requestedMode",
+    "resolvedModeLabel",
+    "modeVerified",
+    "verifiedBeforePromptSubmit",
+    "captureBindingVerified",
+    "captureBindingQuality",
+    "challengeClean",
+    "submission",
+  ]);
+  if (Object.keys(raw).some((key) => !allowedKeys.has(key))) return null;
   // Both ordinary completion and capture-only recovery are accepted only with
   // the strongest structural proof: the captured assistant turn was paired to
   // the exact submitted user-message handle on the exact target Runtime, and
@@ -248,11 +309,30 @@ function sanitizeStrongRemoteSuccessProvenance(value: unknown): BrowserRemoteRun
   ) {
     return null;
   }
+  if (
+    options.requireModelProof &&
+    (raw.modelVerified !== true ||
+      raw.modelLabelVerified !== true ||
+      raw.modeVerified !== true ||
+      raw.verifiedBeforePromptSubmit !== true ||
+      typeof raw.requestedModelLabel !== "string" ||
+      !isGpt56SolModelLabel(raw.requestedModelLabel) ||
+      typeof raw.resolvedModelLabel !== "string" ||
+      !isGpt56SolModelLabel(raw.resolvedModelLabel) ||
+      typeof raw.requestedMode !== "string" ||
+      raw.requestedMode.trim().toLowerCase() !== "pro" ||
+      typeof raw.resolvedModeLabel !== "string" ||
+      raw.resolvedModeLabel.trim().toLowerCase() !== "pro")
+  ) {
+    return null;
+  }
   const nullableBoolean = (candidate: unknown): boolean | null =>
     typeof candidate === "boolean" ? candidate : null;
   const nullableString = (candidate: unknown): string | null =>
     typeof candidate === "string" && candidate.length <= 512 ? candidate : null;
   const quality = raw.captureBindingQuality;
+  const submission = sanitizeBrowserSubmissionProvenance(raw.submission);
+  if (submission === undefined) return null;
   return {
     modelVerified: nullableBoolean(raw.modelVerified),
     modelRequested: nullableString(raw.modelRequested),
@@ -267,7 +347,168 @@ function sanitizeStrongRemoteSuccessProvenance(value: unknown): BrowserRemoteRun
     captureBindingVerified: true,
     captureBindingQuality: quality,
     challengeClean: true,
+    submission,
   };
+}
+
+function sanitizeBrowserSubmissionProvenance(
+  value: unknown,
+): BrowserSubmissionProvenance | null | undefined {
+  if (value === null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const allowedKeys = new Set([
+    "primaryPromptSha256",
+    "submittedPromptSha256",
+    "primaryTransport",
+    "submittedTransport",
+    "fallbackUsed",
+    "fallbackReason",
+    "equivalenceAlgorithm",
+    "equivalenceVerified",
+  ]);
+  if (Object.keys(raw).some((key) => !allowedKeys.has(key))) return undefined;
+  const hash = (candidate: unknown): string | null =>
+    typeof candidate === "string" && /^[a-f0-9]{64}$/.test(candidate) ? candidate : null;
+  const primaryPromptSha256 = hash(raw.primaryPromptSha256);
+  const submittedPromptSha256 = hash(raw.submittedPromptSha256);
+  const primaryTransport =
+    raw.primaryTransport === "inline" || raw.primaryTransport === "upload"
+      ? raw.primaryTransport
+      : null;
+  const submittedTransport =
+    raw.submittedTransport === "inline" || raw.submittedTransport === "upload"
+      ? raw.submittedTransport
+      : null;
+  const fallbackUsed = typeof raw.fallbackUsed === "boolean" ? raw.fallbackUsed : null;
+  const fallbackReason =
+    raw.fallbackReason === "auto-inline-too-large-to-upload" ||
+    raw.fallbackReason === "auto-upload-timeout-to-inline"
+      ? raw.fallbackReason
+      : raw.fallbackReason === null
+        ? null
+        : undefined;
+  if (
+    !primaryPromptSha256 ||
+    !submittedPromptSha256 ||
+    !primaryTransport ||
+    !submittedTransport ||
+    fallbackUsed === null ||
+    fallbackReason === undefined
+  ) {
+    return undefined;
+  }
+  if (!fallbackUsed) {
+    if (
+      fallbackReason !== null ||
+      raw.equivalenceAlgorithm !== null ||
+      raw.equivalenceVerified !== null ||
+      primaryPromptSha256 !== submittedPromptSha256 ||
+      primaryTransport !== submittedTransport
+    ) {
+      return undefined;
+    }
+  } else {
+    const directionMatches =
+      (fallbackReason === "auto-inline-too-large-to-upload" &&
+        primaryTransport === "inline" &&
+        submittedTransport === "upload") ||
+      (fallbackReason === "auto-upload-timeout-to-inline" &&
+        primaryTransport === "upload" &&
+        submittedTransport === "inline");
+    if (
+      !directionMatches ||
+      raw.equivalenceAlgorithm !== "oracle.browser-auto-fallback-exact.v2" ||
+      raw.equivalenceVerified !== true
+    ) {
+      return undefined;
+    }
+  }
+  return {
+    primaryPromptSha256,
+    submittedPromptSha256,
+    primaryTransport,
+    submittedTransport,
+    fallbackUsed,
+    fallbackReason,
+    equivalenceAlgorithm: fallbackUsed ? "oracle.browser-auto-fallback-exact.v2" : null,
+    equivalenceVerified: fallbackUsed ? true : null,
+  };
+}
+
+function validateRemoteUploadIntegrity(
+  value: unknown,
+  submission: BrowserSubmissionProvenance,
+  primary: RemoteAttachmentPayload[],
+  fallback: RemoteAttachmentPayload[],
+  exactFallbackArmed: boolean,
+): boolean {
+  if (!value) return primary.length === 0 && fallback.length === 0;
+  if (typeof value !== "object" || Array.isArray(value)) return false;
+  const raw = value as Record<string, unknown>;
+  const allowedKeys = new Set([
+    "attachments",
+    "fallbackAttachments",
+    "submittedBranch",
+    "submittedTransport",
+    "fallbackUsed",
+    "fallbackReason",
+    "preSendDomCheck",
+  ]);
+  if (Object.keys(raw).some((key) => !allowedKeys.has(key))) return false;
+
+  const validateManifest = (candidate: unknown, expected: RemoteAttachmentPayload[]): boolean => {
+    if (!Array.isArray(candidate) || candidate.length !== expected.length) return false;
+    const storedNames = new Set<string>();
+    return candidate.every((entry, index) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+      const record = entry as Record<string, unknown>;
+      if (
+        Object.keys(record).some(
+          (key) => !["index", "originalName", "storedName", "bytes", "sha256"].includes(key),
+        )
+      ) {
+        return false;
+      }
+      const expectedEntry = expected[index];
+      if (!expectedEntry || typeof record.storedName !== "string" || !record.storedName) {
+        return false;
+      }
+      if (storedNames.has(record.storedName)) return false;
+      storedNames.add(record.storedName);
+      const safeOriginalName =
+        expectedEntry.fileName.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120) || "attachment";
+      const expectedStoredName = `${String(index).padStart(3, "0")}-${expectedEntry.sha256.slice(0, 12)}-${safeOriginalName}`;
+      return (
+        record.index === index &&
+        record.originalName === expectedEntry.fileName &&
+        record.bytes === expectedEntry.sizeBytes &&
+        record.sha256 === expectedEntry.sha256 &&
+        record.storedName === (exactFallbackArmed ? expectedEntry.fileName : expectedStoredName)
+      );
+    });
+  };
+
+  if (!validateManifest(raw.attachments, primary)) return false;
+  if (exactFallbackArmed) {
+    if (!validateManifest(raw.fallbackAttachments, fallback)) return false;
+  } else if (raw.fallbackAttachments !== undefined) {
+    return false;
+  }
+  const expectedBranch = submission.fallbackUsed ? "fallback" : "primary";
+  const selected = submission.fallbackUsed ? fallback : primary;
+  if (submission.submittedTransport === "upload" && selected.length === 0) return false;
+  if (submission.submittedTransport === "inline" && selected.length !== 0) return false;
+  return (
+    raw.submittedBranch === expectedBranch &&
+    raw.submittedTransport === submission.submittedTransport &&
+    raw.fallbackUsed === submission.fallbackUsed &&
+    raw.fallbackReason === submission.fallbackReason &&
+    raw.preSendDomCheck ===
+      (submission.submittedTransport === "upload"
+        ? "composer-chips-by-stored-name"
+        : "not-applicable")
+  );
 }
 
 /**
@@ -294,6 +535,31 @@ function hasCompatibleRemoteRecoveryResponseHeaders(headers: http.IncomingHttpHe
   );
 }
 
+function hasAuthenticatedVersionedRefusalIdentity(
+  res: http.IncomingMessage,
+  expectedAccountId?: string,
+): boolean {
+  if (!hasCompatibleRemoteRecoveryResponseHeaders(res.headers)) return false;
+  const route = readRemoteRouteIdentity(res.headers);
+  return Boolean(
+    route.runId &&
+    route.accountId &&
+    route.laneId &&
+    (expectedAccountId === undefined || route.accountId === expectedAccountId),
+  );
+}
+
+function isCoherentRetryableRefusal(
+  statusCode: number | undefined,
+  refusal: { errorClass: string | null; retryable: boolean | null },
+): boolean {
+  return (
+    refusal.retryable === true &&
+    refusal.errorClass === "capacity_busy" &&
+    (statusCode === 409 || statusCode === 503)
+  );
+}
+
 function resolveRecoveryPromptOwnership(
   options: BrowserRunOptions,
   recovery: RemoteBrowserRecoveryRequest["recovery"],
@@ -315,6 +581,336 @@ function resolveRecoveryPromptOwnership(
     }
   }
   return null;
+}
+
+function recoveryPromptPreviewCandidates(
+  options: BrowserRunOptions,
+): RemoteBrowserPendingRecoveryClaim["promptCandidates"] {
+  const byHash = new Map<string, string>();
+  for (const prompt of [options.prompt, options.fallbackSubmission?.prompt]) {
+    if (typeof prompt !== "string") continue;
+    const promptPreview = buildPromptRecoveryOwnershipPreview(prompt);
+    byHash.set(computePromptSha256(promptPreview), promptPreview);
+  }
+  return [...byHash.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([promptPreviewSha256, promptPreview]) => ({
+      promptPreview,
+      promptPreviewSha256,
+    }));
+}
+
+function resolveRecoveryPromptOwnershipFromCandidates(
+  recovery: RemoteBrowserRecoveryRequest["recovery"],
+  candidates: RemoteBrowserPendingRecoveryClaim["promptCandidates"],
+): { promptPreview: string; promptDomSha256: string } | null {
+  if (!/^[a-f0-9]{64}$/.test(recovery.promptDomSha256)) return null;
+  const candidate = candidates.find(
+    (entry) => entry.promptPreviewSha256 === recovery.promptPreviewSha256,
+  );
+  return candidate
+    ? { promptPreview: candidate.promptPreview, promptDomSha256: recovery.promptDomSha256 }
+    : null;
+}
+
+type RecoveryClaimLookupAttempt =
+  | { status: "pending" }
+  | { status: "not_found" }
+  | { status: "ready"; carrier: RemoteBrowserRecoveryCarrier };
+
+function lookupRemoteRecoveryClaimOnce(params: {
+  hostname: string;
+  port: number;
+  token?: string;
+  requestFn: typeof http.request;
+  routeIdentity: RemoteRouteIdentity;
+  claimKey: string;
+  promptCandidates: RemoteBrowserPendingRecoveryClaim["promptCandidates"];
+  timeoutMs: number;
+}): Promise<RecoveryClaimLookupAttempt> {
+  return new Promise((resolve, reject) => {
+    const route = params.routeIdentity;
+    if (!route.runId || !route.accountId || !route.laneId) {
+      reject(new Error("Recovery claim lookup is missing its accepted run/account identity."));
+      return;
+    }
+    const originRunId = route.runId;
+    const accountId = route.accountId;
+    const originLaneId = route.laneId;
+    const req = params.requestFn(
+      {
+        hostname: params.hostname,
+        port: params.port,
+        path: REMOTE_BROWSER_RECOVERY_CLAIM_LOOKUP_PATH,
+        method: "GET",
+        headers: {
+          accept: "application/json",
+          ...REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
+          [REMOTE_BROWSER_RECOVERY_CLAIM_HEADERS.claimKey]: params.claimKey,
+          [REMOTE_BROWSER_RECOVERY_CLAIM_HEADERS.accountId]: accountId,
+          [REMOTE_BROWSER_RECOVERY_CLAIM_HEADERS.originRunId]: originRunId,
+          [REMOTE_BROWSER_RECOVERY_CLAIM_HEADERS.originLaneId]: originLaneId,
+          [REMOTE_BROWSER_RECOVERY_CLAIM_HEADERS.promptPreviewSha256]: params.promptCandidates
+            .map((candidate) => candidate.promptPreviewSha256)
+            .join(","),
+          ...(params.token ? { authorization: `Bearer ${params.token}` } : {}),
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        let received = 0;
+        res.on("data", (chunk: Buffer | string) => {
+          const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          received += bytes.length;
+          if (received > MAX_RECOVERY_CLAIM_RESPONSE_BYTES) {
+            reject(new Error("Recovery claim response exceeded its bounded size."));
+            res.destroy();
+            req.destroy();
+            return;
+          }
+          chunks.push(bytes);
+        });
+        res.on("error", reject);
+        res.on("end", () => {
+          const responseRoute = readRemoteRouteIdentity(res.headers);
+          const responseOriginProofLaneId =
+            res.headers[REMOTE_BROWSER_RECOVERY_CLAIM_HEADERS.originLaneId];
+          const authenticatedRoute =
+            hasCompatibleRemoteRecoveryResponseHeaders(res.headers) &&
+            res.headers[REMOTE_BROWSER_RECOVERY_CLAIM_ROUTE_HEADER] ===
+              REMOTE_BROWSER_RECOVERY_CLAIM_ROUTE_HEADER_VALUE &&
+            responseRoute.runId === originRunId &&
+            responseRoute.accountId === accountId &&
+            responseRoute.laneId !== null &&
+            responseOriginProofLaneId === originLaneId;
+          if (res.statusCode === 404 || res.statusCode === 410) {
+            if (!authenticatedRoute) {
+              reject(
+                new Error(
+                  `Recovery claim not-found response lacked its authenticated ${REMOTE_BROWSER_RECOVERY_PROTOCOL} route identity.`,
+                ),
+              );
+              return;
+            }
+            resolve({ status: "not_found" });
+            return;
+          }
+          if (res.statusCode === 425) {
+            if (!authenticatedRoute) {
+              reject(new Error("Pending recovery claim lacked its authenticated route identity."));
+              return;
+            }
+            resolve({ status: "pending" });
+            return;
+          }
+          if (res.statusCode !== 200 || !authenticatedRoute) {
+            reject(
+              new Error("Recovery claim lookup returned an unauthenticated or invalid response."),
+            );
+            return;
+          }
+          const contentType = res.headers["content-type"];
+          if (
+            typeof contentType !== "string" ||
+            !/^application\/json(?:\s*;|$)/i.test(contentType)
+          ) {
+            reject(new Error("Recovery claim lookup response was not application/json."));
+            return;
+          }
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          } catch {
+            reject(new Error("Recovery claim lookup response was not valid JSON."));
+            return;
+          }
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            reject(new Error("Recovery claim lookup response was not an object."));
+            return;
+          }
+          const raw = parsed as Record<string, unknown>;
+          const allowedKeys = new Set([
+            "schema",
+            "status",
+            "originRunId",
+            "originLaneId",
+            "recovery",
+          ]);
+          if (Object.keys(raw).some((key) => !allowedKeys.has(key))) {
+            reject(new Error("Recovery claim lookup response contained unsupported fields."));
+            return;
+          }
+          const recovery = sanitizeRemoteRunRecoveryHint(raw.recovery);
+          const responseOriginLaneId = raw.originLaneId;
+          if (
+            raw.schema !== REMOTE_BROWSER_RECOVERY_CLAIM_SCHEMA ||
+            raw.status !== "ready" ||
+            raw.originRunId !== originRunId ||
+            responseOriginLaneId !== originLaneId ||
+            !recovery ||
+            recovery.originRunId !== originRunId ||
+            !EXECUTABLE_RECOVERY_STAGE_SET.has(recovery.stage)
+          ) {
+            reject(new Error("Recovery claim lookup response failed strict validation."));
+            return;
+          }
+          const ownership = resolveRecoveryPromptOwnershipFromCandidates(
+            {
+              ...recovery,
+              stage: recovery.stage as RemoteBrowserRecoveryRequest["recovery"]["stage"],
+            },
+            params.promptCandidates,
+          );
+          if (!ownership) {
+            reject(new Error("Recovery claim did not match any prompt owned by the original run."));
+            return;
+          }
+          const response = raw as unknown as RemoteBrowserRecoveryClaimLookupResponse;
+          resolve({
+            status: "ready",
+            carrier: {
+              recovery: response.recovery,
+              accountId,
+              laneId: response.originLaneId,
+              promptPreview: ownership.promptPreview,
+              promptDomSha256: ownership.promptDomSha256,
+            },
+          });
+        });
+      },
+    );
+    req.on("error", reject);
+    if (typeof req.setTimeout === "function") {
+      req.setTimeout(params.timeoutMs, () => {
+        reject(new Error("Recovery claim lookup timed out."));
+        req.destroy();
+      });
+    }
+    req.end();
+  });
+}
+
+async function lookupRemoteRecoveryClaim(params: {
+  hostname: string;
+  port: number;
+  token?: string;
+  requestFn: typeof http.request;
+  routeIdentity: RemoteRouteIdentity;
+  claimKey: string;
+  promptCandidates: RemoteBrowserPendingRecoveryClaim["promptCandidates"];
+  timeoutMs: number;
+  pollIntervalMs: number;
+}): Promise<RemoteBrowserRecoveryCarrier | null> {
+  if (!isCanonicalRecoveryClaimKey(params.claimKey)) return null;
+  if (params.timeoutMs <= 0) return null;
+  if (params.promptCandidates.length === 0) return null;
+  const deadline = Date.now() + Math.max(0, params.timeoutMs);
+  do {
+    const remaining = Math.max(1, deadline - Date.now());
+    try {
+      const attempt = await lookupRemoteRecoveryClaimOnce({
+        ...params,
+        timeoutMs: Math.min(5_000, remaining),
+      });
+      if (attempt.status === "ready") return attempt.carrier;
+      if (attempt.status === "not_found") return null;
+    } catch {
+      // A transient router/worker cut is precisely why this out-of-band path
+      // exists. Retry only inside the caller's strict overall lookup budget.
+    }
+    if (Date.now() >= deadline) break;
+    await new Promise((resolveDelay) =>
+      setTimeout(resolveDelay, Math.min(params.pollIntervalMs, Math.max(1, deadline - Date.now()))),
+    );
+  } while (Date.now() < deadline);
+  return null;
+}
+
+export function sanitizeRemoteBrowserPendingRecoveryClaim(
+  value: unknown,
+): RemoteBrowserPendingRecoveryClaim | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  const allowedKeys = new Set([
+    "claimKey",
+    "originRunId",
+    "accountId",
+    "originLaneId",
+    "promptCandidates",
+  ]);
+  if (Object.keys(raw).some((key) => !allowedKeys.has(key))) return null;
+  const claimKey = raw.claimKey;
+  const originRunId = raw.originRunId;
+  const accountId = raw.accountId;
+  const originLaneId = raw.originLaneId;
+  if (
+    !isCanonicalRecoveryClaimKey(claimKey) ||
+    typeof originRunId !== "string" ||
+    !/^[A-Za-z0-9._-]{1,128}$/.test(originRunId) ||
+    typeof accountId !== "string" ||
+    !/^[A-Za-z0-9._-]{1,64}$/.test(accountId) ||
+    typeof originLaneId !== "string" ||
+    !/^[A-Za-z0-9._-]{1,64}$/.test(originLaneId) ||
+    !Array.isArray(raw.promptCandidates) ||
+    raw.promptCandidates.length < 1 ||
+    raw.promptCandidates.length > 2
+  ) {
+    return null;
+  }
+  const promptCandidates: RemoteBrowserPendingRecoveryClaim["promptCandidates"] = [];
+  for (const candidate of raw.promptCandidates) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
+    const entry = candidate as Record<string, unknown>;
+    if (
+      Object.keys(entry).some((key) => key !== "promptPreview" && key !== "promptPreviewSha256") ||
+      typeof entry.promptPreview !== "string" ||
+      !entry.promptPreview.trim() ||
+      entry.promptPreview.length > 160 ||
+      typeof entry.promptPreviewSha256 !== "string" ||
+      !/^[a-f0-9]{64}$/.test(entry.promptPreviewSha256) ||
+      computePromptSha256(entry.promptPreview) !== entry.promptPreviewSha256
+    ) {
+      return null;
+    }
+    promptCandidates.push({
+      promptPreview: entry.promptPreview,
+      promptPreviewSha256: entry.promptPreviewSha256,
+    });
+  }
+  const hashes = promptCandidates.map((candidate) => candidate.promptPreviewSha256);
+  if (new Set(hashes).size !== hashes.length || hashes.join(",") !== [...hashes].sort().join(",")) {
+    return null;
+  }
+  return { claimKey, originRunId, accountId, originLaneId, promptCandidates };
+}
+
+/** Resolve a previously persisted pending authority using GET only; never submits a prompt. */
+export async function resolveRemoteBrowserPendingRecoveryClaim(params: {
+  host: string;
+  token?: string;
+  claim: RemoteBrowserPendingRecoveryClaim;
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+  requestFn?: typeof http.request;
+}): Promise<RemoteBrowserRecoveryCarrier | null> {
+  const claim = sanitizeRemoteBrowserPendingRecoveryClaim(params.claim);
+  if (!claim) return null;
+  const { hostname, port } = parseHost(params.host);
+  return await lookupRemoteRecoveryClaim({
+    hostname,
+    port,
+    token: params.token,
+    requestFn: params.requestFn ?? http.request,
+    routeIdentity: {
+      runId: claim.originRunId,
+      accountId: claim.accountId,
+      laneId: claim.originLaneId,
+    },
+    claimKey: claim.claimKey,
+    promptCandidates: claim.promptCandidates,
+    timeoutMs: params.timeoutMs ?? DEFAULT_RECOVERY_CLAIM_LOOKUP_TIMEOUT_MS,
+    pollIntervalMs: params.pollIntervalMs ?? DEFAULT_RECOVERY_CLAIM_POLL_INTERVAL_MS,
+  });
 }
 
 async function assertRemoteWorkerRecoveryCompatibility(params: {
@@ -346,6 +942,9 @@ async function assertRemoteWorkerRecoveryCompatibility(params: {
       compatibility?.protocol ?? "missing protocol",
       compatibility?.promptPreviewAlgorithm ?? "missing prompt-preview algorithm",
       compatibility?.promptDomIdentityAlgorithm ?? "missing DOM-identity algorithm",
+      compatibility?.durableClaimLookup === true
+        ? "durable claim lookup"
+        : "missing durable claim lookup",
     ].join(", ");
     throw new RemoteRunFailedError(
       `Remote browser worker recovery protocol is incompatible (${observed}). Expected ` +
@@ -354,6 +953,62 @@ async function assertRemoteWorkerRecoveryCompatibility(params: {
       { errorClass: "integrity_ui_unknown", retryable: false },
     );
   }
+  const { hostname, port } = parseHost(params.host);
+  await new Promise<void>((resolve, reject) => {
+    const req = params.requestFn(
+      {
+        hostname,
+        port,
+        path: REMOTE_BROWSER_RECOVERY_CLAIM_LOOKUP_PATH,
+        method: "OPTIONS",
+        headers: {
+          ...REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
+          ...(params.token ? { authorization: `Bearer ${params.token}` } : {}),
+        },
+      },
+      (res) => {
+        if (typeof req.setTimeout === "function") req.setTimeout(0);
+        res.resume();
+        res.once("end", () => {
+          if (
+            res.statusCode === 204 &&
+            hasCompatibleRemoteRecoveryResponseHeaders(res.headers) &&
+            res.headers[REMOTE_BROWSER_RECOVERY_CLAIM_ROUTE_HEADER] ===
+              REMOTE_BROWSER_RECOVERY_CLAIM_ROUTE_HEADER_VALUE
+          ) {
+            resolve();
+            return;
+          }
+          reject(
+            new RemoteRunFailedError(
+              `Remote recovery-claim route probe failed; the router and worker fleet must expose the authenticated ${REMOTE_BROWSER_RECOVERY_PROTOCOL} lookup path before any prompt is submitted.`,
+              { errorClass: "integrity_ui_unknown", retryable: false },
+            ),
+          );
+        });
+      },
+    );
+    req.once("error", (error) =>
+      reject(
+        new RemoteRunFailedError(
+          `Remote recovery-claim route probe failed before submit (${error.message}).`,
+          { errorClass: "transport_interrupted_before_submit", retryable: true },
+        ),
+      ),
+    );
+    if (typeof req.setTimeout === "function") {
+      req.setTimeout(5_000, () => {
+        reject(
+          new RemoteRunFailedError("Remote recovery-claim route probe timed out before submit.", {
+            errorClass: "transport_interrupted_before_submit",
+            retryable: true,
+          }),
+        );
+        req.destroy();
+      });
+    }
+    req.end();
+  });
 }
 
 export function createRemoteBrowserExecutor({
@@ -362,6 +1017,8 @@ export function createRemoteBrowserExecutor({
   requestFn = http.request,
   streamIdleTimeoutMs = resolveDefaultStreamIdleTimeoutMs(),
   maxLineBytes = MAX_NDJSON_LINE_BYTES,
+  recoveryClaimLookupTimeoutMs = DEFAULT_RECOVERY_CLAIM_LOOKUP_TIMEOUT_MS,
+  recoveryClaimPollIntervalMs = DEFAULT_RECOVERY_CLAIM_POLL_INTERVAL_MS,
 }: RemoteExecutorOptions) {
   // A successful capability probe is reusable for this executor. Every POST
   // still carries the exact contract headers, so a worker restarted or
@@ -402,14 +1059,24 @@ export function createRemoteBrowserExecutor({
     // This executor is instantiated ONLY behind a resolved remote host
     // (src/mcp/tools/consult.ts and bin/oracle-cli.ts wire it exclusively for
     // fleet runs), so every request here is fleet-bound. The browser fleet
-    // serves ONLY GPT-5.6 Sol + Pro, so an EXPLICIT non-Sol model label is
-    // rejected here — before any attachment file is read or any connection is
-    // opened — with the same actionable error the worker returns. An
-    // absent/empty label is left to the worker's baseline (no silent remap).
+    // serves ONLY GPT-5.6 Sol + Pro. Legacy absent/bare-Pro selection is
+    // canonicalized to the exact protected label below; every other explicit
+    // label is rejected before attachment I/O or a network connection.
     const desiredModelLabel = options.config?.desiredModel;
+    if (
+      desiredModelLabel !== undefined &&
+      desiredModelLabel !== null &&
+      (typeof desiredModelLabel !== "string" || desiredModelLabel.trim().length === 0)
+    ) {
+      throw new RemoteRunFailedError(
+        "this browser worker requires a valid GPT-5.6 Sol model label.",
+        { errorClass: "model_not_allowed", retryable: false },
+      );
+    }
     if (
       typeof desiredModelLabel === "string" &&
       desiredModelLabel.trim().length > 0 &&
+      desiredModelLabel.trim().toLowerCase() !== "pro" &&
       !isGpt56SolModelLabel(desiredModelLabel)
     ) {
       throw new RemoteRunFailedError(
@@ -417,32 +1084,110 @@ export function createRemoteBrowserExecutor({
         { errorClass: "model_not_allowed", retryable: false },
       );
     }
+    const requestedModelStrategy = options.config?.modelStrategy as unknown;
+    if (
+      requestedModelStrategy !== undefined &&
+      (typeof requestedModelStrategy !== "string" ||
+        requestedModelStrategy.trim().toLowerCase() !== "select")
+    ) {
+      throw new RemoteRunFailedError(
+        'this browser worker requires modelStrategy "select" for atomic model and Pro-mode verification.',
+        { errorClass: "model_strategy_not_allowed", retryable: false },
+      );
+    }
+    const requestedThinkingTime = options.config?.thinkingTime as unknown;
+    if (requestedThinkingTime !== undefined && requestedThinkingTime !== "extended") {
+      throw new RemoteRunFailedError(
+        'this browser worker requires thinkingTime "extended" so GPT-5.6 Sol + Pro is verified before submit.',
+        { errorClass: "model_mode_not_allowed", retryable: false },
+      );
+    }
+    const fleetBrowserConfig = {
+      ...(options.config ?? {}),
+      desiredModel: "GPT-5.6 Sol",
+      modelStrategy: "select" as const,
+      thinkingTime: "extended" as const,
+    };
+    const primaryPrompt = options.prompt.trim();
+    const serializedAttachments = await serializeAttachments(options.attachments ?? []);
     let fallbackSubmission = options.fallbackSubmission;
-    if (fallbackSubmission && !isPromptFallbackOptInEnabled()) {
-      // NO SILENT PROMPT FALLBACK on fleet lanes: an oversized inline prompt
-      // must fail loudly instead of being silently re-packed into a different
-      // submission. Callers that accept degraded provenance opt in explicitly.
+    let serializedFallbackAttachments = fallbackSubmission
+      ? await serializeAttachments(fallbackSubmission.attachments ?? [])
+      : [];
+    const fallbackAuthorization = fallbackSubmission?.authorization;
+    const fallbackPolicyEligible = Boolean(
+      fallbackAuthorization?.attachmentsPolicy === "auto" &&
+      fallbackAuthorization.bundleRequested === false &&
+      fallbackAuthorization.model === "gpt-5.6-sol" &&
+      Number.isSafeInteger(fallbackAuthorization.maxInputTokens) &&
+      fallbackAuthorization.maxInputTokens > 0 &&
+      [...serializedAttachments, ...serializedFallbackAttachments].every(
+        (attachment) =>
+          attachment.generatedBundle === false && attachment.fileName === attachment.displayPath,
+      ),
+    );
+    const safeAutoUploadToInlineFallback = Boolean(
+      fallbackPolicyEligible &&
+      fallbackSubmission?.reason === "auto-upload-timeout-to-inline" &&
+      fallbackSubmission.attachments.length === 0 &&
+      verifyAutoUploadToInlineFallback({
+        primaryPrompt,
+        fallbackPrompt: fallbackSubmission.prompt,
+        attachments: serializedAttachments.map((attachment) => ({
+          displayPath: attachment.displayPath,
+          content: Buffer.from(attachment.contentBase64, "base64"),
+        })),
+      }),
+    );
+    const safeAutoInlineToUploadFallback = Boolean(
+      fallbackPolicyEligible &&
+      fallbackSubmission?.reason === "auto-inline-too-large-to-upload" &&
+      serializedAttachments.length === 0 &&
+      serializedFallbackAttachments.length > 0 &&
+      verifyAutoInlineToUploadFallback({
+        primaryPrompt,
+        fallbackPrompt: fallbackSubmission.prompt,
+        attachments: serializedFallbackAttachments.map((attachment) => ({
+          displayPath: attachment.displayPath,
+          content: Buffer.from(attachment.contentBase64, "base64"),
+        })),
+      }),
+    );
+    const safeAutoFallback = safeAutoUploadToInlineFallback || safeAutoInlineToUploadFallback;
+    if (fallbackSubmission && !safeAutoFallback) {
+      // Fleet fallback is executable only when the client can prove the exact
+      // bounded representation in the declared direction. The worker repeats
+      // this proof authoritatively before it stages files or touches Chrome.
       log(
-        "[remote] Prompt-altering fallback submission is disabled on remote runs; submitting the primary prompt only. " +
-          "Set ORACLE_ALLOW_PROMPT_FALLBACK=1 to opt in (provenance is marked degraded if the fallback is used).",
+        "[remote] Refusing to arm an unverifiable prompt fallback; submitting the primary prompt only.",
       );
       fallbackSubmission = undefined;
+      serializedFallbackAttachments = [];
     } else if (fallbackSubmission) {
       log(
-        `[remote] Prompt fallback opt-in active (ORACLE_ALLOW_PROMPT_FALLBACK); provenance degraded if the fallback is used. ` +
-          `primary prompt sha256 ${computePromptSha256(options.prompt)}; fallback prompt sha256 ${computePromptSha256(fallbackSubmission.prompt)}`,
+        `[remote] Exact pre-dispatch ${fallbackSubmission.reason} fallback armed; the worker will independently verify equivalence before browser admission. ` +
+          `primary prompt sha256 ${computePromptSha256(primaryPrompt)}; fallback prompt sha256 ${computePromptSha256(fallbackSubmission.prompt)}`,
       );
     }
     const payload: RemoteRunPayload = {
-      prompt: options.prompt,
-      attachments: await serializeAttachments(options.attachments ?? []),
+      schema: REMOTE_BROWSER_RUN_SCHEMA,
+      prompt: primaryPrompt,
+      attachments: serializedAttachments,
       fallbackSubmission: fallbackSubmission
         ? {
             prompt: fallbackSubmission.prompt,
-            attachments: await serializeAttachments(fallbackSubmission.attachments ?? []),
+            attachments: serializedFallbackAttachments,
           }
         : undefined,
-      browserConfig: options.config ?? {},
+      fallbackPolicy: fallbackSubmission
+        ? {
+            attachmentsPolicy: "auto",
+            bundleRequested: false,
+            model: "gpt-5.6-sol",
+            maxInputTokens: fallbackAuthorization!.maxInputTokens,
+          }
+        : undefined,
+      browserConfig: fleetBrowserConfig,
       options: {
         heartbeatIntervalMs: options.heartbeatIntervalMs,
         verbose: options.verbose,
@@ -454,6 +1199,12 @@ export function createRemoteBrowserExecutor({
     const body = Buffer.from(serializeRemoteRunPayloadForWire(payload));
     const { hostname, port } = parseHost(host);
     await ensureCompatibleWorker();
+    if (signal?.aborted) {
+      throw new RemoteRunFailedError("Caller aborted before the remote run request was sent.", {
+        errorClass: "transport_interrupted_before_submit",
+        retryable: true,
+      });
+    }
 
     return new Promise<BrowserRunResult>((resolve, reject) => {
       const transferredFiles: SavedBrowserFile[] = [];
@@ -484,6 +1235,8 @@ export function createRemoteBrowserExecutor({
       // class (before/after submit) for a caller-gone abort.
       let submitObserved = false;
       let acceptedRouteIdentity: RemoteRouteIdentity | null = null;
+      let acceptedRecoveryClaimKey: string | null = null;
+      let acceptedPendingRecoveryClaim: RemoteBrowserPendingRecoveryClaim | null = null;
       // Live 200 response, if the stream has started — destroyed alongside
       // the request on caller-gone abort. Registered abort-listener removal
       // runs whenever the run settles (success or failure).
@@ -494,6 +1247,7 @@ export function createRemoteBrowserExecutor({
       // pre-header window is covered by a separate request-level timeout that
       // this flag disarms once the 200 (or any) response begins.
       let headersReceived = false;
+      let requestBodyStarted = false;
 
       const clearIdleTimer = () => {
         if (idleTimer) {
@@ -518,9 +1272,36 @@ export function createRemoteBrowserExecutor({
         // whenever that accepted route later fails, even without a capability.
         const failedRoute = failedRouteFromIdentity(acceptedRouteIdentity);
         if (failedRoute) remoteFailedRouteByError.set(error, failedRoute);
+        if (acceptedPendingRecoveryClaim) {
+          remotePendingRecoveryClaimByError.set(error, acceptedPendingRecoveryClaim);
+        }
         settled = true;
         cleanup();
-        reject(error);
+        void (async () => {
+          if (
+            error instanceof RemoteRunFailedError &&
+            error.errorClass === "transport_interrupted_after_submit" &&
+            acceptedRouteIdentity?.runId &&
+            acceptedRouteIdentity.accountId &&
+            acceptedRecoveryClaimKey &&
+            !signal?.aborted &&
+            !remoteRecoveryByError.has(error)
+          ) {
+            const carrier = await lookupRemoteRecoveryClaim({
+              hostname,
+              port,
+              token,
+              requestFn,
+              routeIdentity: acceptedRouteIdentity,
+              claimKey: acceptedRecoveryClaimKey,
+              promptCandidates: acceptedPendingRecoveryClaim?.promptCandidates ?? [],
+              timeoutMs: recoveryClaimLookupTimeoutMs,
+              pollIntervalMs: recoveryClaimPollIntervalMs,
+            });
+            if (carrier) remoteRecoveryByError.set(error, carrier);
+          }
+          reject(error);
+        })().catch(() => reject(error));
       };
 
       const req = requestFn(
@@ -546,16 +1327,37 @@ export function createRemoteBrowserExecutor({
             req.setTimeout(0);
           }
           if (res.statusCode !== 200) {
+            const trustedRefusal = hasAuthenticatedVersionedRefusalIdentity(res);
             collectRefusal(res, { inactivityTimeoutMs: streamIdleTimeoutMs })
               .then((refusal) =>
                 fail(
-                  new RemoteRunFailedError(refusal.message, {
-                    errorClass: refusal.errorClass,
-                    retryable: refusal.retryable,
-                  }),
+                  trustedRefusal
+                    ? new RemoteRunFailedError(refusal.message, {
+                        errorClass: refusal.errorClass,
+                        retryable: isCoherentRetryableRefusal(res.statusCode, refusal),
+                      })
+                    : new RemoteRunFailedError(
+                        `Remote refusal lacked the exact authenticated ${REMOTE_BROWSER_RECOVERY_PROTOCOL} protocol and route identity; refusing to trust its retry advice.`,
+                        { errorClass: "integrity_ui_unknown", retryable: false },
+                      ),
                 ),
               )
               .catch(fail);
+            return;
+          }
+          const contentType = res.headers["content-type"];
+          if (
+            typeof contentType !== "string" ||
+            !/^application\/x-ndjson(?:\s*;|$)/i.test(contentType)
+          ) {
+            fail(
+              new RemoteRunFailedError(
+                "Remote run response had an invalid content type; expected application/x-ndjson.",
+                { errorClass: "integrity_ui_unknown", retryable: false },
+              ),
+            );
+            req.destroy();
+            res.destroy();
             return;
           }
           const routeIdentity = readRemoteRouteIdentity(res.headers);
@@ -581,6 +1383,32 @@ export function createRemoteBrowserExecutor({
             req.destroy();
             res.destroy();
             return;
+          }
+          const recoveryClaimKey = res.headers[REMOTE_BROWSER_RECOVERY_CLAIM_HEADERS.claimKey];
+          const durableClaimRequired = (options.followUpPrompts?.length ?? 0) === 0;
+          if (durableClaimRequired && !isCanonicalRecoveryClaimKey(recoveryClaimKey)) {
+            fail(
+              new RemoteRunFailedError(
+                "Remote worker accepted the run without a valid durable recovery-claim key; refusing a stream that could become unrecoverable after submission.",
+                { errorClass: "integrity_ui_unknown", retryable: false },
+              ),
+            );
+            req.destroy();
+            res.destroy();
+            return;
+          }
+          acceptedRecoveryClaimKey = isCanonicalRecoveryClaimKey(recoveryClaimKey)
+            ? recoveryClaimKey
+            : null;
+          const promptCandidates = recoveryPromptPreviewCandidates(options);
+          if (acceptedRecoveryClaimKey && promptCandidates.length > 0) {
+            acceptedPendingRecoveryClaim = {
+              claimKey: acceptedRecoveryClaimKey,
+              originRunId: routeIdentity.runId,
+              accountId: routeIdentity.accountId,
+              originLaneId: routeIdentity.laneId,
+              promptCandidates,
+            };
           }
           if (routeIdentity.runId || routeIdentity.accountId || routeIdentity.laneId) {
             log(
@@ -633,6 +1461,9 @@ export function createRemoteBrowserExecutor({
             const transferPromise = handleEvent({
               line,
               options,
+              armedFallback: fallbackSubmission,
+              expectedPrimaryAttachments: serializedAttachments,
+              expectedFallbackAttachments: serializedFallbackAttachments,
               hostname,
               port,
               token,
@@ -809,17 +1640,40 @@ export function createRemoteBrowserExecutor({
               resolve(mergeTransferredArtifacts(resolved, transferredFiles, transferFailures));
             })().catch(fail);
           });
-          res.on("error", fail);
+          res.on("error", (error) => {
+            fail(
+              new RemoteRunFailedError(
+                `Remote run response failed after request dispatch; submission status is unknown (${error.message}).`,
+                { errorClass: "transport_interrupted_after_submit", retryable: false },
+              ),
+            );
+          });
         },
       );
-      req.on("error", fail);
+      req.on("error", (error) => {
+        if (settled) return;
+        fail(
+          new RemoteRunFailedError(
+            requestBodyStarted
+              ? `Remote run request failed after dispatch began; submission status is unknown (${error.message}).`
+              : `Remote run request failed before dispatch (${error.message}).`,
+            {
+              errorClass: requestBodyStarted
+                ? "transport_interrupted_after_submit"
+                : "transport_interrupted_before_submit",
+              retryable: !requestBodyStarted,
+            },
+          ),
+        );
+      });
       // Pre-response header watchdog (bugs-remote#1): armIdleTimer only arms
       // AFTER the 200 response begins, so a worker that accepts the TCP
       // connection but never sends response headers would otherwise pin the
       // caller until TCP keepalive (~2h). Bound the header-wait window here;
       // the response callback disarms this (req.setTimeout(0)) the instant any
-      // response begins. A pre-header stall means nothing reached the account
-      // yet, so it is classified before-submit and is retryable. (Guarded for
+      // response begins. Once the request body has been handed to the socket,
+      // missing headers cannot prove the worker did not submit, so ambiguity
+      // is conservatively non-retryable. (Guarded for
       // the injected requestFn test seam, whose minimal stub omits setTimeout.)
       if (typeof req.setTimeout === "function") {
         req.setTimeout(streamIdleTimeoutMs, () => {
@@ -827,8 +1681,8 @@ export function createRemoteBrowserExecutor({
           fail(
             new RemoteRunFailedError(
               `Remote worker accepted the connection but sent no response headers within ${streamIdleTimeoutMs}ms; ` +
-                "aborting before submit rather than waiting indefinitely on a worker that never began responding.",
-              { errorClass: "transport_interrupted_before_submit", retryable: true },
+                "submission status is unknown, so refusing an automatic retry.",
+              { errorClass: "transport_interrupted_after_submit", retryable: false },
             ),
           );
           req.destroy();
@@ -848,12 +1702,14 @@ export function createRemoteBrowserExecutor({
             new RemoteRunFailedError(
               submitObserved
                 ? "Caller aborted after submit; abandoning the remote run without ChatGPT-side cancellation."
-                : "Caller aborted before submit; aborting the remote run.",
+                : requestBodyStarted
+                  ? "Caller aborted after request dispatch; submission status is unknown, so the run is not retryable."
+                  : "Caller aborted before request dispatch.",
               {
-                errorClass: submitObserved
+                errorClass: requestBodyStarted
                   ? "transport_interrupted_after_submit"
                   : "transport_interrupted_before_submit",
-                retryable: !submitObserved,
+                retryable: !requestBodyStarted,
               },
             ),
           );
@@ -867,6 +1723,8 @@ export function createRemoteBrowserExecutor({
           removeAbortListener = () => signal.removeEventListener("abort", onAbort);
         }
       }
+      if (settled) return;
+      requestBodyStarted = true;
       req.write(body);
       req.end();
     });
@@ -879,11 +1737,19 @@ async function serializeAttachments(
   const serialized: RemoteAttachmentPayload[] = [];
   for (const attachment of attachments) {
     // Read the local file upfront so the remote host never touches the caller's filesystem.
-    const content = await readFile(attachment.path);
+    const verified = await readBoundedRegularFile(attachment.path, {
+      maxBytes: MAX_DATA_TRANSFER_BYTES,
+      declaredSizeBytes: attachment.sizeBytes,
+      declaredSha256: attachment.integritySha256,
+    });
+    const content = verified.bytes;
+    const sha256 = verified.sha256;
     serialized.push({
       fileName: path.basename(attachment.path),
       displayPath: attachment.displayPath,
-      sizeBytes: attachment.sizeBytes,
+      sizeBytes: content.length,
+      sha256,
+      generatedBundle: attachment.generatedBundle === true,
       contentBase64: content.toString("base64"),
     });
   }
@@ -979,13 +1845,19 @@ export async function recoverRemoteBrowserSession({
         headersReceived = true;
         req.setTimeout?.(0);
         if (res.statusCode !== 200) {
+          const trustedRefusal = hasAuthenticatedVersionedRefusalIdentity(res, accountId);
           collectRefusal(res, { inactivityTimeoutMs: streamIdleTimeoutMs })
             .then((refusal) =>
               fail(
-                new RemoteRunFailedError(refusal.message, {
-                  errorClass: refusal.errorClass,
-                  retryable: refusal.retryable,
-                }),
+                trustedRefusal
+                  ? new RemoteRunFailedError(refusal.message, {
+                      errorClass: refusal.errorClass,
+                      retryable: isCoherentRetryableRefusal(res.statusCode, refusal),
+                    })
+                  : new RemoteRunFailedError(
+                      `Remote recovery refusal lacked the exact authenticated ${REMOTE_BROWSER_RECOVERY_PROTOCOL} protocol and account-bound route identity; refusing to trust its retry advice.`,
+                      { errorClass: "integrity_ui_unknown", retryable: false },
+                    ),
               ),
             )
             .catch(fail);
@@ -1299,9 +2171,72 @@ function parseHost(input: string): { hostname: string; port: number } {
   }
 }
 
+function hasOnlyEventKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  const allowedSet = new Set(allowed);
+  return Object.keys(value).every((key) => allowedSet.has(key));
+}
+
+function sanitizeRemoteBrowserRunResult(value: unknown): BrowserRunResult | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  if (
+    !hasOnlyEventKeys(raw, [
+      "answerText",
+      "answerMarkdown",
+      "answerHtml",
+      "generatedImages",
+      "downloadableFiles",
+      "archive",
+      "tookMs",
+      "answerTokens",
+      "answerChars",
+      "browserTransport",
+      "warnings",
+      "tabUrl",
+      "conversationId",
+      "promptSubmitted",
+      "submissionProvenance",
+      "modelSelection",
+    ])
+  ) {
+    return null;
+  }
+  const nonNegativeFinite = (candidate: unknown): candidate is number =>
+    typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 0;
+  const nonNegativeSafeInteger = (candidate: unknown): candidate is number =>
+    Number.isSafeInteger(candidate) && (candidate as number) >= 0;
+  if (
+    typeof raw.answerText !== "string" ||
+    typeof raw.answerMarkdown !== "string" ||
+    (raw.answerHtml !== undefined && typeof raw.answerHtml !== "string") ||
+    !nonNegativeFinite(raw.tookMs) ||
+    !nonNegativeSafeInteger(raw.answerTokens) ||
+    !nonNegativeSafeInteger(raw.answerChars) ||
+    (raw.browserTransport !== undefined && raw.browserTransport !== "cdp") ||
+    (raw.promptSubmitted !== undefined && typeof raw.promptSubmitted !== "boolean") ||
+    (raw.tabUrl !== undefined && typeof raw.tabUrl !== "string") ||
+    (raw.conversationId !== undefined && typeof raw.conversationId !== "string") ||
+    (raw.generatedImages !== undefined && !Array.isArray(raw.generatedImages)) ||
+    (raw.downloadableFiles !== undefined && !Array.isArray(raw.downloadableFiles)) ||
+    (raw.warnings !== undefined && !Array.isArray(raw.warnings)) ||
+    (raw.archive !== undefined &&
+      (!raw.archive || typeof raw.archive !== "object" || Array.isArray(raw.archive))) ||
+    (raw.modelSelection !== undefined &&
+      (!raw.modelSelection ||
+        typeof raw.modelSelection !== "object" ||
+        Array.isArray(raw.modelSelection)))
+  ) {
+    return null;
+  }
+  return raw as unknown as BrowserRunResult;
+}
+
 function handleEvent(params: {
   line: string;
   options: BrowserRunOptions;
+  armedFallback: BrowserRunOptions["fallbackSubmission"];
+  expectedPrimaryAttachments: RemoteAttachmentPayload[];
+  expectedFallbackAttachments: RemoteAttachmentPayload[];
   hostname: string;
   port: number;
   token?: string;
@@ -1318,11 +2253,16 @@ function handleEvent(params: {
 }): Promise<void> | null {
   let event: RemoteRunEvent;
   try {
-    event = JSON.parse(params.line) as RemoteRunEvent;
+    const parsed = JSON.parse(params.line) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("event must be an object");
+    }
+    event = parsed as RemoteRunEvent;
   } catch (error) {
     params.onError(
-      new Error(
+      new RemoteRunFailedError(
         `Failed to parse remote event: ${error instanceof Error ? error.message : String(error)}`,
+        { errorClass: "integrity_ui_unknown", retryable: false },
       ),
     );
     return null;
@@ -1341,6 +2281,23 @@ function handleEvent(params: {
     return null;
   }
   if (event.type === "log") {
+    if (
+      !hasOnlyEventKeys(event as unknown as Record<string, unknown>, [
+        "type",
+        "runId",
+        "message",
+      ]) ||
+      typeof event.message !== "string" ||
+      event.message.length > 64 * 1024
+    ) {
+      params.onError(
+        new RemoteRunFailedError("Remote log event was malformed.", {
+          errorClass: "integrity_ui_unknown",
+          retryable: false,
+        }),
+      );
+      return null;
+    }
     if (SUBMIT_CONFIRMATION_LOG_PATTERN.test(event.message)) {
       params.onSubmitObserved();
     }
@@ -1348,10 +2305,52 @@ function handleEvent(params: {
     return null;
   }
   if (event.type === "error") {
+    if (
+      !hasOnlyEventKeys(event as unknown as Record<string, unknown>, [
+        "type",
+        "runId",
+        "message",
+      ]) ||
+      typeof event.message !== "string" ||
+      event.message.length > 4_096
+    ) {
+      params.onError(
+        new RemoteRunFailedError("Remote error event was malformed.", {
+          errorClass: "integrity_ui_unknown",
+          retryable: false,
+        }),
+      );
+      return null;
+    }
     params.onError(new Error(event.message));
     return null;
   }
   if (event.type === "artifact-progress") {
+    if (
+      !hasOnlyEventKeys(event as unknown as Record<string, unknown>, [
+        "type",
+        "runId",
+        "artifactId",
+        "receivedBytes",
+        "totalBytes",
+        "phase",
+      ]) ||
+      typeof event.artifactId !== "string" ||
+      !event.artifactId ||
+      !["download", "transfer", "validate"].includes(event.phase) ||
+      (event.receivedBytes !== undefined &&
+        (!Number.isSafeInteger(event.receivedBytes) || event.receivedBytes < 0)) ||
+      (event.totalBytes !== undefined &&
+        (!Number.isSafeInteger(event.totalBytes) || event.totalBytes < 0))
+    ) {
+      params.onError(
+        new RemoteRunFailedError("Remote artifact-progress event was malformed.", {
+          errorClass: "integrity_ui_unknown",
+          retryable: false,
+        }),
+      );
+      return null;
+    }
     if (params.options.verbose) {
       params.options.log?.(
         `[browser] Artifact ${event.artifactId} ${event.phase}${
@@ -1364,6 +2363,24 @@ function handleEvent(params: {
     return null;
   }
   if (event.type === "artifact-ready") {
+    if (
+      !hasOnlyEventKeys(event as unknown as Record<string, unknown>, [
+        "type",
+        "runId",
+        "artifact",
+      ]) ||
+      !event.artifact ||
+      typeof event.artifact !== "object" ||
+      Array.isArray(event.artifact)
+    ) {
+      params.onError(
+        new RemoteRunFailedError("Remote artifact-ready event was malformed.", {
+          errorClass: "integrity_ui_unknown",
+          retryable: false,
+        }),
+      );
+      return null;
+    }
     if (event.artifact?.runId !== params.routeIdentity.runId) {
       params.onError(
         new RemoteRunFailedError(
@@ -1418,12 +2435,89 @@ function handleEvent(params: {
     return transfer;
   }
   if (event.type === "done") {
-    if (event.ok && event.result) {
-      const successProvenance = sanitizeStrongRemoteSuccessProvenance(event.provenance);
-      if (!successProvenance) {
+    if (
+      !hasOnlyEventKeys(event as unknown as Record<string, unknown>, [
+        "type",
+        "runId",
+        "ok",
+        "errorClass",
+        "errorMessage",
+        "retryable",
+        "provenance",
+        "recovery",
+        "result",
+        "uploadIntegrity",
+      ]) ||
+      typeof event.ok !== "boolean"
+    ) {
+      params.onError(
+        new RemoteRunFailedError("Terminal done event was malformed.", {
+          errorClass: "integrity_ui_unknown",
+          retryable: false,
+        }),
+      );
+      return null;
+    }
+    if (event.ok === true && event.result) {
+      const sanitizedResult = sanitizeRemoteBrowserRunResult(event.result);
+      if (!sanitizedResult) {
+        params.onError(
+          new RemoteRunFailedError("Remote success carried a malformed result object.", {
+            errorClass: "integrity_ui_unknown",
+            retryable: false,
+          }),
+        );
+        return null;
+      }
+      const successProvenance = sanitizeStrongRemoteSuccessProvenance(event.provenance, {
+        requireModelProof: true,
+      });
+      const expectedPrimaryTransport =
+        (params.options.attachments?.length ?? 0) > 0 ? "upload" : "inline";
+      const resultSubmission = sanitizeBrowserSubmissionProvenance(
+        sanitizedResult.submissionProvenance,
+      );
+      const submitted = successProvenance?.submission;
+      const expectedSubmittedPrompt = submitted?.fallbackUsed
+        ? params.armedFallback?.prompt.trim()
+        : params.options.prompt.trim();
+      const expectedSubmittedTransport = submitted?.fallbackUsed
+        ? params.expectedFallbackAttachments.length > 0
+          ? "upload"
+          : "inline"
+        : expectedPrimaryTransport;
+      const fallbackBranchMatches = submitted?.fallbackUsed
+        ? Boolean(
+            params.armedFallback?.reason &&
+            submitted.fallbackReason === params.armedFallback.reason &&
+            expectedSubmittedPrompt &&
+            submitted.submittedPromptSha256 === computePromptSha256(expectedSubmittedPrompt) &&
+            submitted.submittedTransport === expectedSubmittedTransport,
+          )
+        : Boolean(
+            submitted &&
+            submitted.fallbackReason === null &&
+            submitted.submittedPromptSha256 === computePromptSha256(params.options.prompt.trim()) &&
+            submitted.submittedTransport === expectedPrimaryTransport,
+          );
+      if (
+        !submitted ||
+        submitted.primaryPromptSha256 !== computePromptSha256(params.options.prompt.trim()) ||
+        submitted.primaryTransport !== expectedPrimaryTransport ||
+        !fallbackBranchMatches ||
+        !resultSubmission ||
+        JSON.stringify(resultSubmission) !== JSON.stringify(submitted) ||
+        !validateRemoteUploadIntegrity(
+          event.uploadIntegrity,
+          submitted,
+          params.expectedPrimaryAttachments,
+          params.expectedFallbackAttachments,
+          Boolean(params.armedFallback),
+        )
+      ) {
         params.onError(
           new RemoteRunFailedError(
-            "Remote success lacked full message-handle capture-binding and challenge-clean provenance; refusing the unproven answer.",
+            "Remote success lacked matching full message-handle capture-binding, challenge-clean, and initial-submission provenance; refusing the unproven answer.",
             { errorClass: "integrity_ui_unknown", retryable: false },
           ),
         );
@@ -1436,10 +2530,11 @@ function handleEvent(params: {
         `[remote] Terminal done.ok observed. Provenance: model=${String(successProvenance.modelVerified)} ` +
           `binding=${String(successProvenance.captureBindingVerified)} bindingQuality=${String(successProvenance.captureBindingQuality)} ` +
           `challengeClean=${String(successProvenance.challengeClean)} ` +
+          `submission=${submitted.submittedTransport}${submitted.fallbackUsed ? ":fallback" : ":primary"} ` +
           "(provenance verified means the plumbing was right, not that the answer is correct).",
       );
       params.onResult({
-        ...event.result,
+        ...sanitizedResult,
         remoteRun: {
           runId: params.routeIdentity.runId,
           accountId: params.routeIdentity.accountId,
@@ -1451,9 +2546,26 @@ function handleEvent(params: {
       params.onDone();
       return null;
     }
-    if (event.ok) {
+    if (event.ok === true) {
       params.onError(
         new RemoteRunFailedError("Terminal done event claimed success but carried no result.", {
+          errorClass: "integrity_ui_unknown",
+          retryable: false,
+        }),
+      );
+      return null;
+    }
+    if (
+      (event.errorMessage !== undefined && typeof event.errorMessage !== "string") ||
+      (event.errorClass !== undefined &&
+        event.errorClass !== null &&
+        typeof event.errorClass !== "string") ||
+      (event.retryable !== undefined &&
+        event.retryable !== null &&
+        typeof event.retryable !== "boolean")
+    ) {
+      params.onError(
+        new RemoteRunFailedError("Remote failure event was malformed.", {
           errorClass: "integrity_ui_unknown",
           retryable: false,
         }),
@@ -1528,13 +2640,40 @@ function handleEvent(params: {
     return null;
   }
   if (event.type === "result") {
-    // NON-AUTHORITATIVE legacy event: only the terminal done event may
-    // certify success. Deliberately ignored (no back-compat shims).
-    params.options.log?.(
-      "[remote] Ignoring non-authoritative result event; waiting for the terminal done event.",
+    params.onError(
+      new RemoteRunFailedError("Versioned remote worker emitted a forbidden legacy result event.", {
+        errorClass: "integrity_ui_unknown",
+        retryable: false,
+      }),
     );
     return null;
   }
+  if (event.type === "attachment-manifest") {
+    if (
+      !hasOnlyEventKeys(event as unknown as Record<string, unknown>, [
+        "type",
+        "runId",
+        "uploadIntegrity",
+      ]) ||
+      !event.uploadIntegrity ||
+      typeof event.uploadIntegrity !== "object" ||
+      Array.isArray(event.uploadIntegrity)
+    ) {
+      params.onError(
+        new RemoteRunFailedError("Remote attachment-manifest event was malformed.", {
+          errorClass: "integrity_ui_unknown",
+          retryable: false,
+        }),
+      );
+    }
+    return null;
+  }
+  params.onError(
+    new RemoteRunFailedError("Versioned remote worker emitted an unknown event type.", {
+      errorClass: "integrity_ui_unknown",
+      retryable: false,
+    }),
+  );
   return null;
 }
 

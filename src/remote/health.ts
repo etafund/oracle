@@ -21,6 +21,7 @@ export interface RemoteBrowserRecoveryCompatibility {
   protocol: string | null;
   promptPreviewAlgorithm: string | null;
   promptDomIdentityAlgorithm: string | null;
+  durableClaimLookup: boolean | null;
 }
 
 export interface RemoteHealthResult {
@@ -412,6 +413,7 @@ function parseCapabilities(value: unknown): RemoteArtifactCapabilities | undefin
             protocol: REMOTE_BROWSER_RECOVERY_PROTOCOL,
             promptPreviewAlgorithm: PROMPT_RECOVERY_PREVIEW_ALGORITHM,
             promptDomIdentityAlgorithm: PROMPT_DOM_IDENTITY_ALGORITHM,
+            durableClaimLookup: true,
           },
         }
       : {}),
@@ -435,14 +437,18 @@ export function inspectRemoteBrowserRecoveryCompatibility(
     typeof raw.promptPreviewAlgorithm === "string" ? raw.promptPreviewAlgorithm : null;
   const promptDomIdentityAlgorithm =
     typeof raw.promptDomIdentityAlgorithm === "string" ? raw.promptDomIdentityAlgorithm : null;
+  const durableClaimLookup =
+    typeof raw.durableClaimLookup === "boolean" ? raw.durableClaimLookup : null;
   return {
     compatible:
       protocol === REMOTE_BROWSER_RECOVERY_PROTOCOL &&
       promptPreviewAlgorithm === PROMPT_RECOVERY_PREVIEW_ALGORITHM &&
-      promptDomIdentityAlgorithm === PROMPT_DOM_IDENTITY_ALGORITHM,
+      promptDomIdentityAlgorithm === PROMPT_DOM_IDENTITY_ALGORITHM &&
+      durableClaimLookup === true,
     protocol,
     promptPreviewAlgorithm,
     promptDomIdentityAlgorithm,
+    durableClaimLookup,
   };
 }
 

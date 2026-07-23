@@ -5,6 +5,7 @@ import type { BrowserRunOptions, BrowserLogger, ChromeClient } from "../browser/
 import { launchChrome, connectWithNewTab, closeTab } from "../browser/chromeLifecycle.js";
 import {
   readDevToolsPort,
+  resolveChromeDebugTargetOwner,
   writeDevToolsActivePort,
   writeChromePid,
   cleanupStaleProfileState,
@@ -46,11 +47,23 @@ export async function openGeminiBrowserSession(
   let chromeWasLaunched = false;
 
   if (port) {
-    const probe = await verifyDevToolsReachable({ port });
+    const recordedPort = port;
+    const owner = await resolveChromeDebugTargetOwner(profileDir, port, {
+      allowProcessDiscovery: true,
+    });
+    if (owner.ok) port = owner.port;
+    const probe = owner.ok
+      ? await verifyDevToolsReachable({ port })
+      : ({ ok: false, error: `owner verification failed (${owner.reason})` } as const);
     if (!probe.ok) {
-      log?.(`[gemini-web] Stale DevTools port ${port}; launching fresh Chrome for ${purpose}.`);
+      log?.(
+        `[gemini-web] Unusable DevTools port ${port} (${probe.error}); launching fresh Chrome for ${purpose}.`,
+      );
       await cleanupStaleProfileState(profileDir, log, { lockRemovalMode: "if_oracle_pid_dead" });
       port = null;
+    } else if (owner.ok && (owner.source === "process-discovery" || owner.port !== recordedPort)) {
+      await writeDevToolsActivePort(profileDir, owner.port);
+      await writeChromePid(profileDir, owner.pid, port);
     }
   }
 
@@ -61,7 +74,7 @@ export async function openGeminiBrowserSession(
     chromeWasLaunched = true;
     await writeDevToolsActivePort(profileDir, port);
     if (launchedChrome.pid) {
-      await writeChromePid(profileDir, launchedChrome.pid);
+      await writeChromePid(profileDir, launchedChrome.pid, port);
     }
   } else {
     log?.(`[gemini-web] Reusing Chrome on port ${port} for ${purpose}.`);

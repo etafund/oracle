@@ -59,6 +59,7 @@ interface MockHealth {
     protocol: string | null;
     promptPreviewAlgorithm: string | null;
     promptDomIdentityAlgorithm: string | null;
+    durableClaimLookup: boolean | null;
   };
 }
 
@@ -232,6 +233,7 @@ describe("runRemoteDoctor --json", () => {
         protocol: "remote-browser-recovery.v1",
         promptPreviewAlgorithm: null,
         promptDomIdentityAlgorithm: null,
+        durableClaimLookup: null,
       },
     });
     await runRemoteDoctor({ json: true });
@@ -240,8 +242,27 @@ describe("runRemoteDoctor --json", () => {
     expect(out.browser_recovery).toMatchObject({
       compatible: false,
       protocol: "remote-browser-recovery.v1",
+      durable_claim_lookup: null,
     });
     expect(out.error).toMatch(/upgrade.*client.*worker/i);
+    expect(process.exitCode).toBe(1);
+  });
+
+  test("human output names missing durable recovery-claim lookup", async () => {
+    checkRemoteHealth.mockResolvedValueOnce({
+      ok: true,
+      version: "1.2.3",
+      browserRecoveryCompatibility: {
+        compatible: false,
+        protocol: "remote-browser-recovery.v4",
+        promptPreviewAlgorithm: "oracle.prompt-recovery-preview.v2",
+        promptDomIdentityAlgorithm: "oracle.rendered-prompt-dom-identity.v2",
+        durableClaimLookup: null,
+      },
+    });
+    await runRemoteDoctor({ json: false });
+    const raw = logSpy.mock.calls.map((args: unknown[]) => String(args[0])).join("\n");
+    expect(raw).toMatch(/missing durable claim lookup/i);
     expect(process.exitCode).toBe(1);
   });
 

@@ -1,7 +1,8 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
+import http from "node:http";
 import { promisify } from "node:util";
 import { delay } from "./utils.js";
 
@@ -14,6 +15,7 @@ const DEVTOOLS_ACTIVE_PORT_RELATIVE_PATHS = [
 ] as const;
 
 const CHROME_PID_FILENAME = "chrome.pid";
+const CHROME_OWNER_SCHEMA = "oracle.chrome-owner.v1" as const;
 const ORACLE_PROFILE_LOCK_FILENAME = "oracle-automation.lock";
 
 const execFileAsync = promisify(execFile);
@@ -27,8 +29,8 @@ export async function readDevToolsPort(userDataDir: string): Promise<number | nu
     try {
       const raw = await readFile(candidate, "utf8");
       const firstLine = raw.split(/\r?\n/u)[0]?.trim();
-      const port = Number.parseInt(firstLine ?? "", 10);
-      if (Number.isFinite(port)) {
+      const port = parsePositiveInteger(firstLine);
+      if (port !== null && port <= 65_535) {
         return port;
       }
     } catch {
@@ -50,28 +52,109 @@ export async function writeDevToolsActivePort(userDataDir: string, port: number)
   }
 }
 
-export async function readChromePid(userDataDir: string): Promise<number | null> {
+export interface ChromeOwnerRecord {
+  schema: typeof CHROME_OWNER_SCHEMA;
+  pid: number;
+  processStartToken: string;
+  userDataDir: string;
+  debugPort: number;
+}
+
+interface LegacyChromePidRecord {
+  schema: "legacy";
+  pid: number;
+}
+
+type ReadChromeOwnerRecord = ChromeOwnerRecord | LegacyChromePidRecord;
+
+function normalizeProfilePath(value: string): string {
+  const normalized = path.resolve(value);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function parsePositiveInteger(value: unknown): number | null {
+  if (typeof value !== "number" && (typeof value !== "string" || !/^\d+$/u.test(value))) {
+    return null;
+  }
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+async function readChromeOwnerRecord(userDataDir: string): Promise<ReadChromeOwnerRecord | null> {
   const pidPath = path.join(userDataDir, CHROME_PID_FILENAME);
   try {
     const raw = (await readFile(pidPath, "utf8")).trim();
-    const pid = Number.parseInt(raw, 10);
-    if (!Number.isFinite(pid) || pid <= 0) {
+    if (/^\d+$/u.test(raw)) {
+      const pid = parsePositiveInteger(raw);
+      return pid === null ? null : { schema: "legacy", pid };
+    }
+    const parsed = JSON.parse(raw) as Partial<ChromeOwnerRecord>;
+    const pid = parsePositiveInteger(parsed.pid);
+    const debugPort = parsePositiveInteger(parsed.debugPort);
+    if (
+      parsed.schema !== CHROME_OWNER_SCHEMA ||
+      pid === null ||
+      debugPort === null ||
+      debugPort > 65_535 ||
+      typeof parsed.processStartToken !== "string" ||
+      parsed.processStartToken.length === 0 ||
+      typeof parsed.userDataDir !== "string" ||
+      parsed.userDataDir.length === 0
+    ) {
       return null;
     }
-    return pid;
+    return {
+      schema: CHROME_OWNER_SCHEMA,
+      pid,
+      debugPort,
+      processStartToken: parsed.processStartToken,
+      userDataDir: parsed.userDataDir,
+    };
   } catch {
     return null;
   }
 }
 
-export async function writeChromePid(userDataDir: string, pid: number): Promise<void> {
-  if (!Number.isFinite(pid) || pid <= 0) return;
+export async function readChromePid(userDataDir: string): Promise<number | null> {
+  return (await readChromeOwnerRecord(userDataDir))?.pid ?? null;
+}
+
+/**
+ * Persist a generation-bound Chrome owner record. Calls without a debug port
+ * retain the legacy numeric format for compatibility with old cleanup-only
+ * callers, but legacy records are never trusted for attachment or termination.
+ */
+export async function writeChromePid(
+  userDataDir: string,
+  pid: number,
+  debugPort?: number,
+): Promise<void> {
+  const validPid = parsePositiveInteger(pid);
+  if (validPid === null) return;
   const pidPath = path.join(userDataDir, CHROME_PID_FILENAME);
+  let temporaryPath: string | null = null;
   try {
     await mkdir(path.dirname(pidPath), { recursive: true });
-    await writeFile(pidPath, `${Math.trunc(pid)}\n`, "utf8");
+    const validPort = parsePositiveInteger(debugPort);
+    const processStartToken = await readProcessStartToken(validPid);
+    const payload =
+      validPort !== null && validPort <= 65_535 && processStartToken
+        ? `${JSON.stringify({
+            schema: CHROME_OWNER_SCHEMA,
+            pid: validPid,
+            processStartToken,
+            userDataDir: normalizeProfilePath(userDataDir),
+            debugPort: validPort,
+          } satisfies ChromeOwnerRecord)}\n`
+        : `${validPid}\n`;
+    temporaryPath = `${pidPath}.${process.pid}.${randomUUID()}.tmp`;
+    await writeFile(temporaryPath, payload, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    await rename(temporaryPath, pidPath);
+    temporaryPath = null;
   } catch {
     // best effort
+  } finally {
+    if (temporaryPath) await rm(temporaryPath, { force: true }).catch(() => undefined);
   }
 }
 
@@ -106,13 +189,10 @@ function findChromeDebugTargetForProfileFromProcessList(
     if (!match) continue;
     const pid = Number.parseInt(match[1] ?? "", 10);
     const command = match[2] ?? "";
-    const lower = command.toLowerCase();
     if (!Number.isFinite(pid) || pid <= 0) continue;
-    if (!lower.includes("chrome") && !lower.includes("chromium")) continue;
-    if (!lower.includes("user-data-dir") || !command.includes(userDataDir)) continue;
-    const portMatch = command.match(/--remote-debugging-port(?:=|\s+)(\d+)/);
-    const port = Number.parseInt(portMatch?.[1] ?? "", 10);
-    if (!Number.isFinite(port) || port <= 0) continue;
+    if (!isChromeCommandForUserDataDir(command, userDataDir)) continue;
+    const port = parsePositiveInteger(readCommandFlag(command, "--remote-debugging-port"));
+    if (port === null || port > 65_535) continue;
     return { pid, port };
   }
   return null;
@@ -125,37 +205,166 @@ export function findChromeDebugTargetForProfileFromProcessListForTest(
   return findChromeDebugTargetForProfileFromProcessList(processList, userDataDir);
 }
 
+export type ChromeOwnerVerification =
+  | {
+      ok: true;
+      pid: number;
+      port: number;
+      processStartToken: string;
+      source: "record" | "process-discovery";
+    }
+  | {
+      ok: false;
+      reason:
+        | "owner-record-missing-or-legacy"
+        | "owner-record-profile-mismatch"
+        | "owner-record-port-mismatch"
+        | "owner-process-not-found"
+        | "owner-process-dead"
+        | "owner-process-command-mismatch"
+        | "owner-process-generation-unavailable"
+        | "owner-process-generation-mismatch";
+    };
+
+export interface ChromeOwnerVerificationOptions {
+  allowProcessDiscovery?: boolean;
+  findRunningTarget?: typeof findRunningChromeDebugTargetForProfile;
+  readCommand?: (pid: number) => Promise<string | null>;
+  readStartToken?: (pid: number) => Promise<string | null>;
+  processAlive?: (pid: number) => boolean;
+}
+
+/**
+ * Correlate a DevTools port to one exact Chrome process and profile. This is
+ * the single attachment/termination ownership gate: reachability alone is not
+ * ownership, and a PID without a birth token is vulnerable to PID reuse.
+ */
+export async function verifyChromeDebugTargetOwner(
+  userDataDir: string,
+  port: number,
+  options: ChromeOwnerVerificationOptions = {},
+): Promise<ChromeOwnerVerification> {
+  const expectedProfile = normalizeProfilePath(userDataDir);
+  const record = await readChromeOwnerRecord(userDataDir);
+  const verifyCandidate = async (
+    pid: number,
+    expectedStartToken: string | null,
+    source: "record" | "process-discovery",
+  ): Promise<ChromeOwnerVerification> => {
+    if (!(options.processAlive ?? isProcessAlive)(pid)) {
+      return { ok: false, reason: "owner-process-dead" };
+    }
+    const command = await (options.readCommand ?? readProcessCommand)(pid);
+    if (
+      !isChromeCommandForUserDataDir(command, userDataDir) ||
+      parsePositiveInteger(readCommandFlag(command ?? "", "--remote-debugging-port")) !== port
+    ) {
+      return { ok: false, reason: "owner-process-command-mismatch" };
+    }
+    const actualStartToken = await (options.readStartToken ?? readProcessStartToken)(pid);
+    if (!actualStartToken) {
+      return { ok: false, reason: "owner-process-generation-unavailable" };
+    }
+    if (expectedStartToken !== null && actualStartToken !== expectedStartToken) {
+      return { ok: false, reason: "owner-process-generation-mismatch" };
+    }
+    return { ok: true, pid, port, processStartToken: actualStartToken, source };
+  };
+  const verifyDiscoveredOwner = async (): Promise<ChromeOwnerVerification> => {
+    const discovered = await (options.findRunningTarget ?? findRunningChromeDebugTargetForProfile)(
+      userDataDir,
+    ).catch(() => null);
+    if (!discovered || discovered.port !== port) {
+      return { ok: false, reason: "owner-process-not-found" };
+    }
+    return verifyCandidate(discovered.pid, null, "process-discovery");
+  };
+
+  if (record?.schema !== CHROME_OWNER_SCHEMA) {
+    return options.allowProcessDiscovery === true
+      ? verifyDiscoveredOwner()
+      : { ok: false, reason: "owner-record-missing-or-legacy" };
+  }
+  if (normalizeProfilePath(record.userDataDir) !== expectedProfile) {
+    return options.allowProcessDiscovery === true
+      ? verifyDiscoveredOwner()
+      : { ok: false, reason: "owner-record-profile-mismatch" };
+  }
+  if (record.debugPort !== port) {
+    return options.allowProcessDiscovery === true
+      ? verifyDiscoveredOwner()
+      : { ok: false, reason: "owner-record-port-mismatch" };
+  }
+  const recordedOwner = await verifyCandidate(record.pid, record.processStartToken, "record");
+  if (recordedOwner.ok || options.allowProcessDiscovery !== true) {
+    return recordedOwner;
+  }
+  return verifyDiscoveredOwner();
+}
+
+/**
+ * Resolve a local profile's current owner even when DevToolsActivePort is
+ * stale. A different port is accepted only after the same exact process,
+ * profile, Chrome-command, and generation proof succeeds for that port.
+ */
+export async function resolveChromeDebugTargetOwner(
+  userDataDir: string,
+  preferredPort: number,
+  options: ChromeOwnerVerificationOptions = {},
+): Promise<ChromeOwnerVerification> {
+  const preferred = await verifyChromeDebugTargetOwner(userDataDir, preferredPort, {
+    ...options,
+    allowProcessDiscovery: true,
+  });
+  if (preferred.ok) return preferred;
+  const discovered = await (options.findRunningTarget ?? findRunningChromeDebugTargetForProfile)(
+    userDataDir,
+  ).catch(() => null);
+  if (!discovered || discovered.port === preferredPort) return preferred;
+  return verifyChromeDebugTargetOwner(userDataDir, discovered.port, {
+    ...options,
+    allowProcessDiscovery: true,
+  });
+}
+
 export async function terminateRecordedChromeForProfile(
   userDataDir: string,
   logger?: ProfileStateLogger,
 ): Promise<boolean> {
-  const pid = await readChromePid(userDataDir);
-  if (!pid || !isProcessAlive(pid)) {
+  const record = await readChromeOwnerRecord(userDataDir);
+  if (record?.schema !== CHROME_OWNER_SCHEMA) {
     return false;
   }
-  const command = await readProcessCommand(pid);
-  if (!isChromeCommandForUserDataDir(command, userDataDir)) {
-    logger?.(`Recorded Chrome pid ${pid} does not match ${userDataDir}; skipping termination`);
+  const verified = await verifyChromeDebugTargetOwner(userDataDir, record.debugPort);
+  if (!verified.ok) {
+    logger?.(
+      `Recorded Chrome pid ${record.pid} failed owner verification (${verified.reason}); skipping termination`,
+    );
     return false;
   }
   try {
-    process.kill(pid, "SIGTERM");
-    logger?.(`Terminated shared manual-login Chrome pid ${pid}`);
+    process.kill(verified.pid, "SIGTERM");
+    logger?.(`Terminated shared manual-login Chrome pid ${verified.pid}`);
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    logger?.(`Failed to terminate shared manual-login Chrome pid ${pid}: ${message}`);
+    logger?.(`Failed to terminate shared manual-login Chrome pid ${verified.pid}: ${message}`);
     return false;
   }
 }
 
 function isChromeCommandForUserDataDir(command: string | null, userDataDir: string): boolean {
   if (!command) return false;
-  const lower = command.toLowerCase();
+  const executablePortion = command.split("--", 1)[0]?.toLowerCase() ?? "";
+  const looksLikeChrome =
+    /(?:^|[\\/\s\0])(?:google[ -]?chrome|chrome|chromium)(?:\.app|\.exe)?(?:[\\/\s\0]|$)/u.test(
+      executablePortion,
+    );
+  const commandProfile = readCommandFlag(command, "--user-data-dir");
   return (
-    (lower.includes("chrome") || lower.includes("chromium")) &&
-    lower.includes("user-data-dir") &&
-    command.includes(userDataDir)
+    looksLikeChrome &&
+    commandProfile !== null &&
+    normalizeProfilePath(commandProfile) === normalizeProfilePath(userDataDir)
   );
 }
 
@@ -314,16 +523,9 @@ export async function verifyDevToolsReachable({
   attempts?: number;
   timeoutMs?: number;
 }): Promise<{ ok: true } | { ok: false; error: string }> {
-  const versionUrl = `http://${host}:${port}/json/version`;
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), timeoutMs);
-      const response = await fetch(versionUrl, { signal: controller.signal });
-      clearTimeout(timeout);
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
+      await requestDevToolsVersion({ host, port, timeoutMs });
       return { ok: true };
     } catch (error) {
       if (attempt < attempts - 1) {
@@ -335,6 +537,61 @@ export async function verifyDevToolsReachable({
     }
   }
   return { ok: false, error: "unreachable" };
+}
+
+function requestDevToolsVersion({
+  host,
+  port,
+  timeoutMs,
+}: {
+  host: string;
+  port: number;
+  timeoutMs: number;
+}): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let request: http.ClientRequest | undefined;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    const settle = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      if (deadline) clearTimeout(deadline);
+      request?.setTimeout(0);
+      if (error) reject(error);
+      else resolve();
+    };
+    deadline = setTimeout(() => {
+      const error = new Error(`timed out after ${timeoutMs}ms`);
+      settle(error);
+      request?.destroy(error);
+    }, timeoutMs);
+    try {
+      request = http.request({ host, port, path: "/json/version", method: "GET" }, (response) => {
+        const status = response.statusCode ?? 0;
+        if (status < 200 || status >= 300) {
+          settle(new Error(`HTTP ${status}`));
+          response.destroy();
+          return;
+        }
+        // Drain the tiny DevTools response, but do not declare success until
+        // it ends. A peer that sends 2xx headers and then holds the body open
+        // remains bounded by the same outer deadline.
+        response.once("end", () => settle());
+        response.once("error", (error) => settle(error));
+        response.resume();
+      });
+    } catch (error) {
+      settle(error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+    request.setTimeout(timeoutMs, () => {
+      const error = new Error(`timed out after ${timeoutMs}ms`);
+      settle(error);
+      request.destroy(error);
+    });
+    request.once("error", (error) => settle(error));
+    request.end();
+  });
 }
 
 export async function shouldCleanupManualLoginProfileState(
@@ -373,16 +630,29 @@ export async function cleanupStaleProfileState(
     }
   }
 
+  const pid = await readChromePid(userDataDir);
+  const chromePidAlive = pid ? isProcessAlive(pid) : false;
+  if (pid && !chromePidAlive) {
+    // chrome.pid is only an advisory ownership hint. Once its exact numeric
+    // owner is confirmed dead, retaining it invites a later PID-reuse false
+    // match even when lock removal itself is intentionally disabled.
+    try {
+      await rm(path.join(userDataDir, CHROME_PID_FILENAME), { force: true });
+      logger?.(`Removed stale Chrome pid hint ${pid}`);
+    } catch {
+      // Advisory cleanup must not make profile lock preservation less safe.
+    }
+  }
+
   const lockRemovalMode = options.lockRemovalMode ?? "never";
   if (lockRemovalMode === "never") {
     return;
   }
 
-  const pid = await readChromePid(userDataDir);
   if (!pid) {
     return;
   }
-  if (isProcessAlive(pid)) {
+  if (chromePidAlive) {
     logger?.(`Chrome pid ${pid} still alive; skipping profile lock cleanup`);
     return;
   }
@@ -417,12 +687,9 @@ async function isChromeUsingUserDataDir(userDataDir: string): Promise<boolean> {
       maxBuffer: 10 * 1024 * 1024,
     });
     const lines = String(stdout ?? "").split("\n");
-    const needle = userDataDir;
     for (const line of lines) {
       if (!line) continue;
-      const lower = line.toLowerCase();
-      if (!lower.includes("chrome") && !lower.includes("chromium")) continue;
-      if (line.includes(needle) && lower.includes("user-data-dir")) {
+      if (isChromeCommandForUserDataDir(line, userDataDir)) {
         return true;
       }
     }
@@ -432,7 +699,91 @@ async function isChromeUsingUserDataDir(userDataDir: string): Promise<boolean> {
   return false;
 }
 
+function readCommandFlag(command: string, flag: string): string | null {
+  if (command.includes("\0")) {
+    const args = command.split("\0").filter(Boolean);
+    for (let index = 0; index < args.length; index += 1) {
+      const argument = args[index] ?? "";
+      if (argument === flag) return args[index + 1] ?? null;
+      if (argument.startsWith(`${flag}=`)) return argument.slice(flag.length + 1);
+    }
+    return null;
+  }
+
+  const escapedFlag = flag.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const match = command.match(
+    new RegExp(`(?:^|\\s)${escapedFlag}(?:=|\\s+)(?:"([^"]*)"|'([^']*)'|([^\\s]+))`, "u"),
+  );
+  return match?.[1] ?? match?.[2] ?? match?.[3] ?? null;
+}
+
+async function readProcessStartToken(pid: number): Promise<string | null> {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+  if (process.platform === "linux") {
+    try {
+      const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+      const commandEnd = stat.lastIndexOf(")");
+      if (commandEnd < 0) return null;
+      // Fields after the closing command parenthesis begin at stat field 3.
+      // Process start time is field 22, hence offset 19 in this suffix.
+      const suffixFields = stat
+        .slice(commandEnd + 1)
+        .trim()
+        .split(/\s+/u);
+      const startTicks = suffixFields[19];
+      return startTicks ? `linux:${startTicks}` : null;
+    } catch {
+      return null;
+    }
+  }
+  if (process.platform === "win32") {
+    try {
+      const { stdout } = await execFileAsync("powershell.exe", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `(Get-Process -Id ${Math.trunc(pid)} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`,
+      ]);
+      const value = String(stdout ?? "").trim();
+      return /^\d+$/u.test(value) ? `win32:${value}` : null;
+    } catch {
+      return null;
+    }
+  }
+  try {
+    const { stdout } = await execFileAsync("ps", ["-p", String(Math.trunc(pid)), "-o", "lstart="]);
+    const value = String(stdout ?? "")
+      .replace(/\s+/gu, " ")
+      .trim();
+    return value ? `${process.platform}:${value}` : null;
+  } catch {
+    return null;
+  }
+}
+
 async function readProcessCommand(pid: number): Promise<string | null> {
+  if (process.platform === "win32") {
+    try {
+      const { stdout } = await execFileAsync("powershell.exe", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `(Get-CimInstance Win32_Process -Filter "ProcessId = ${Math.trunc(pid)}" -ErrorAction Stop).CommandLine`,
+      ]);
+      const command = String(stdout ?? "").trim();
+      return command || null;
+    } catch {
+      return null;
+    }
+  }
+  if (process.platform === "linux") {
+    try {
+      const command = await readFile(`/proc/${pid}/cmdline`, "utf8");
+      if (command) return command;
+    } catch {
+      // Fall through to ps for containers with a restricted /proc mount.
+    }
+  }
   try {
     const { stdout } = await execFileAsync(
       "ps",

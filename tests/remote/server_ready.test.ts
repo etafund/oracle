@@ -6,10 +6,16 @@ import { spawnSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRemoteServer } from "../../src/remote/server.js";
 import type { BrowserRunResult } from "../../src/browserMode.js";
+import { formatCaptureBindingVerifiedLog } from "../../src/browser/actions/captureBinding.js";
 import {
   REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
   REMOTE_BROWSER_RUN_PATH,
 } from "../../src/remote/types.js";
+import {
+  emitDurableRecoveryCheckpoint,
+  primarySubmissionProvenance,
+  verifiedSolProModelSelection,
+} from "./_submissionProvenanceFixture.js";
 
 // GET /ready: layered, fail-closed per-worker readiness (probed directly,
 // never through the router LB which masks per-worker truth).
@@ -398,7 +404,15 @@ describe("GET /ready", () => {
           manualLoginProfileDir: profileDir,
         },
         {
-          runBrowser: async () => MINIMAL_RESULT,
+          runBrowser: async (options) => {
+            await emitDurableRecoveryCheckpoint(options, "hold", "ready-finalization");
+            options.log?.(formatCaptureBindingVerifiedLog("message-handle", "abc123"));
+            return {
+              ...MINIMAL_RESULT,
+              submissionProvenance: primarySubmissionProvenance("hold"),
+              modelSelection: verifiedSolProModelSelection(),
+            };
+          },
           beforeFinalizeRun: async ({ result }) => {
             expect(result.answerText).toBe("ok");
             markFinalizeStarted();

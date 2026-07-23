@@ -245,6 +245,8 @@ export async function runBrowserSessionExecution(
         ? {
             prompt: promptArtifacts.fallback.composerText,
             attachments: promptArtifacts.fallback.attachments,
+            reason: promptArtifacts.fallback.reason,
+            authorization: promptArtifacts.fallback.authorization,
           }
         : undefined,
       config: executionBrowserConfig,
@@ -354,6 +356,7 @@ export async function runBrowserSessionExecution(
       tabUrl: browserResult.tabUrl,
       conversationId: browserResult.conversationId,
       promptSubmitted: browserResult.promptSubmitted,
+      submissionProvenance: browserResult.submissionProvenance,
       controllerPid: browserResult.controllerPid ?? process.pid,
     },
     archive: browserResult.archive,

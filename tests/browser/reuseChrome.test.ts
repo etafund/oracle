@@ -54,6 +54,13 @@ describe("maybeReuseRunningChrome", () => {
     const reusePromise = maybeReuseRunningChromeForTest(tmpDir, noopLogger, {
       waitForPortMs: 1000,
       probe,
+      verifyOwner: vi.fn(async () => ({
+        ok: true as const,
+        pid: 12345,
+        port,
+        processStartToken: "test:1",
+        source: "record" as const,
+      })),
     });
 
     const reused = await reusePromise;
@@ -74,6 +81,56 @@ describe("maybeReuseRunningChrome", () => {
     expect(probe).not.toHaveBeenCalled();
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
+
+  test.each(reusePaths)(
+    "refuses a reachable stale port for %s when Chrome ownership is not proven",
+    async (_label, maybeReuse) => {
+      const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-chrome-reuse-owner-"));
+      try {
+        await fs.writeFile(path.join(tmpDir, "DevToolsActivePort"), "9222\n/devtools/browser");
+        const probe = vi.fn(async () => ({ ok: true as const }));
+        const reused = await maybeReuse(tmpDir, vi.fn<(message: string) => void>(), {
+          probe,
+          verifyOwner: vi.fn(async () => ({
+            ok: false as const,
+            reason: "owner-process-generation-mismatch" as const,
+          })),
+        });
+        expect(reused).toBeNull();
+        expect(probe).not.toHaveBeenCalled();
+      } finally {
+        await fs.rm(tmpDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.each(reusePaths)(
+    "switches %s from a stale recorded port only after exact owner resolution",
+    async (_label, maybeReuse) => {
+      const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-chrome-reuse-port-"));
+      try {
+        await fs.writeFile(path.join(tmpDir, "DevToolsActivePort"), "9222\n/devtools/browser");
+        const probe = vi.fn(async () => ({ ok: true as const }));
+        const reused = await maybeReuse(tmpDir, vi.fn<(message: string) => void>(), {
+          probe,
+          verifyOwner: vi.fn(async () => ({
+            ok: true as const,
+            pid: process.pid,
+            port: 9333,
+            processStartToken: "test:2",
+            source: "process-discovery" as const,
+          })),
+        });
+        expect(reused?.port).toBe(9333);
+        expect(probe).toHaveBeenCalledWith({ port: 9333 });
+        await expect(fs.readFile(path.join(tmpDir, "DevToolsActivePort"), "utf8")).resolves.toMatch(
+          /^9333\n/u,
+        );
+      } finally {
+        await fs.rm(tmpDir, { recursive: true, force: true });
+      }
+    },
+  );
 
   test.each(reusePaths)(
     "cleans stale locks for %s when a recorded Chrome pid is dead and no DevTools target is reachable",

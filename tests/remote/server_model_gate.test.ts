@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "vitest";
+import { createHash } from "node:crypto";
 import http from "node:http";
 import { spawnSync } from "node:child_process";
 import {
@@ -12,17 +13,20 @@ import {
   REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
   REMOTE_BROWSER_RUN_PATH,
 } from "../../src/remote/types.js";
+import {
+  primarySubmissionProvenance,
+  verifiedSolProModelSelection,
+} from "./_submissionProvenanceFixture.js";
 
 // FLEET TRUST BOUNDARY: the serve /runs handler validates the effective desired
 // model label BEFORE staging attachments or flipping `busy`, so a disallowed
 // model is refused (422 model_not_allowed) without consuming a browser slot or
 // touching the filesystem. The browser fleet serves ONLY GPT-5.6 Sol + Pro:
-// up-to-date clients send the model label "GPT-5.6 Sol"; the ChatGPT baseline
-// desiredModel is the bare mode label "Pro" (both denote the same served
-// target). Every legacy Pro label (e.g. "GPT-5.5 Pro") fails closed. No silent
-// remap/alias — the requested label is never rewritten. The allow-list is
-// baseline-derived (so a future non-ChatGPT worker enforces its own baseline
-// without a code change) and overridable via ORACLE_SERVE_ALLOWED_MODEL_LABELS.
+// up-to-date clients send the model label "GPT-5.6 Sol". An absent label or
+// the historical bare baseline "Pro" is canonicalized to that exact model,
+// select strategy, and extended/Pro thinking before browser execution. Every
+// legacy versioned Pro label fails closed, and an environment override cannot
+// expand this fixed fleet contract.
 
 const CAN_LISTEN_LOCALHOST =
   spawnSync(
@@ -45,6 +49,8 @@ const MINIMAL_RESULT: BrowserRunResult = {
   tookMs: 1,
   answerTokens: 1,
   answerChars: 2,
+  submissionProvenance: primarySubmissionProvenance("p"),
+  modelSelection: verifiedSolProModelSelection(),
 };
 
 describe("serve model-label allow-list helpers", () => {
@@ -54,7 +60,7 @@ describe("serve model-label allow-list helpers", () => {
     expect(resolveServeAllowedModelLabels(undefined, {})).toEqual([]);
   });
 
-  test("ORACLE_SERVE_ALLOWED_MODEL_LABELS overrides with exact, trimmed labels", () => {
+  test("the environment parser returns exact, trimmed labels for startup validation", () => {
     expect(
       resolveServeAllowedModelLabels("Pro", {
         ORACLE_SERVE_ALLOWED_MODEL_LABELS: "GPT-5.5 Pro, GPT-5.5 ,  ",
@@ -78,7 +84,7 @@ describe("serve model-label allow-list helpers", () => {
     expect(isServeModelLabelAllowed("", ["Pro"])).toBe(false);
   });
 
-  test("an env override admits its exact labels (Sol still admitted as the fleet floor)", () => {
+  test("the low-level matcher recognizes parsed labels while Sol remains the fleet floor", () => {
     const allowed = ["GPT-5.5 Pro"];
     expect(isServeModelLabelAllowed("GPT-5.5 Pro", allowed)).toBe(true);
     expect(isServeModelLabelAllowed("GPT-5.6 Sol", allowed)).toBe(true);
@@ -113,12 +119,16 @@ afterEach(() => {
   }
 });
 
-async function startServer(runs: { count: number }) {
+async function startServer(
+  runs: { count: number },
+  seenConfigs: Array<Record<string, unknown>> = [],
+) {
   return await createRemoteServer(
     { host: "127.0.0.1", port: 0, token: "secret", logger: () => {}, attachOnly: false },
     {
-      runBrowser: async () => {
+      runBrowser: async (options) => {
         runs.count += 1;
+        seenConfigs.push({ ...(options.config as Record<string, unknown>) });
         return MINIMAL_RESULT;
       },
     },
@@ -127,10 +137,11 @@ async function startServer(runs: { count: number }) {
 
 describe("serve model gate (/runs admission)", () => {
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
-    "admits the served Sol label and the baseline fallback",
+    "canonicalizes the served Sol label, an absent label, and bare Pro to the fixed route",
     async () => {
       const runs = { count: 0 };
-      const server = await startServer(runs);
+      const seenConfigs: Array<Record<string, unknown>> = [];
+      const server = await startServer(runs, seenConfigs);
       try {
         const sol = await sendRun(server.port, "secret", {
           prompt: "p",
@@ -141,7 +152,7 @@ describe("serve model gate (/runs admission)", () => {
         expect(sol.statusCode).toBe(200);
         expect(runs.count).toBe(1);
 
-        // No desiredModel -> falls back to the worker baseline ("Pro"), admitted.
+        // No desiredModel -> canonical fixed-fleet route.
         const baseline = await sendRun(server.port, "secret", {
           prompt: "p",
           attachments: [],
@@ -150,6 +161,22 @@ describe("serve model gate (/runs admission)", () => {
         });
         expect(baseline.statusCode).toBe(200);
         expect(runs.count).toBe(2);
+
+        const barePro = await sendRun(server.port, "secret", {
+          prompt: "p",
+          attachments: [],
+          browserConfig: { desiredModel: "Pro" },
+          options: {},
+        });
+        expect(barePro.statusCode).toBe(200);
+        expect(runs.count).toBe(3);
+        for (const config of seenConfigs) {
+          expect(config).toMatchObject({
+            desiredModel: "GPT-5.6 Sol",
+            modelStrategy: "select",
+            thinkingTime: "extended",
+          });
+        }
       } finally {
         await server.close();
       }
@@ -224,18 +251,19 @@ describe("serve model gate (/runs admission)", () => {
     const runs = { count: 0 };
     const server = await startServer(runs);
     try {
-      // A disallowed model PLUS a deliberately size-mismatched attachment
-      // (which staging would reject with attachment_size_mismatch/400). If the
-      // model gate runs first, the response is model_not_allowed/422 instead —
-      // proving no attachment is staged for a disallowed model.
+      // A disallowed model plus a valid attachment must still be rejected at
+      // the model gate before staging or browser execution.
+      const content = Buffer.from("valid attachment bytes");
       const refused = await sendRun(server.port, "secret", {
         prompt: "p",
         attachments: [
           {
             fileName: "notes.txt",
             displayPath: "notes.txt",
-            sizeBytes: 5, // deliberately wrong
-            contentBase64: Buffer.from("many more than five bytes").toString("base64"),
+            sizeBytes: content.length,
+            sha256: createHash("sha256").update(content).digest("hex"),
+            generatedBundle: false,
+            contentBase64: content.toString("base64"),
           },
         ],
         browserConfig: { desiredModel: "GPT-5.5 Pro" },
@@ -260,44 +288,14 @@ describe("serve model gate (/runs admission)", () => {
   });
 
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
-    "ORACLE_SERVE_ALLOWED_MODEL_LABELS override is honored at admission",
+    "refuses an environment override that would widen the fixed fleet",
     async () => {
       process.env.ORACLE_SERVE_ALLOWED_MODEL_LABELS = "GPT-5.5 Pro";
       const runs = { count: 0 };
-      const server = await startServer(runs);
-      try {
-        // The override admits its listed label...
-        const overridden = await sendRun(server.port, "secret", {
-          prompt: "p",
-          attachments: [],
-          browserConfig: { desiredModel: "GPT-5.5 Pro" },
-          options: {},
-        });
-        expect(overridden.statusCode).toBe(200);
-        expect(runs.count).toBe(1);
-
-        // ...the served Sol label remains admitted...
-        const sol = await sendRun(server.port, "secret", {
-          prompt: "p",
-          attachments: [],
-          browserConfig: { desiredModel: "GPT-5.6 Sol" },
-          options: {},
-        });
-        expect(sol.statusCode).toBe(200);
-        expect(runs.count).toBe(2);
-
-        // ...but a label outside the override is still refused.
-        const refused = await sendRun(server.port, "secret", {
-          prompt: "p",
-          attachments: [],
-          browserConfig: { desiredModel: "GPT-5.5" },
-          options: {},
-        });
-        expect(refused.statusCode).toBe(422);
-        expect(runs.count).toBe(2);
-      } finally {
-        await server.close();
-      }
+      await expect(startServer(runs)).rejects.toThrow(
+        /only supports GPT-5\.6 Sol \+ Pro.*GPT-5\.5 Pro/i,
+      );
+      expect(runs.count).toBe(0);
     },
   );
 });
@@ -403,18 +401,19 @@ describe("serve model-strategy gate (/runs admission)", () => {
       const runs = { count: 0 };
       const server = await startServer(runs);
       try {
-        // A disallowed strategy PLUS a deliberately size-mismatched attachment
-        // (which staging would reject with attachment_size_mismatch/400). The
-        // strategy gate runs first, so the response is
-        // model_strategy_not_allowed/422 — proving no attachment is staged.
+        // A disallowed strategy plus a valid attachment must still be rejected
+        // at the strategy gate before staging or browser execution.
+        const content = Buffer.from("valid attachment bytes");
         const refused = await sendRun(server.port, "secret", {
           prompt: "p",
           attachments: [
             {
               fileName: "notes.txt",
               displayPath: "notes.txt",
-              sizeBytes: 5, // deliberately wrong
-              contentBase64: Buffer.from("many more than five bytes").toString("base64"),
+              sizeBytes: content.length,
+              sha256: createHash("sha256").update(content).digest("hex"),
+              generatedBundle: false,
+              contentBase64: content.toString("base64"),
             },
           ],
           browserConfig: { desiredModel: "Pro", modelStrategy: "ignore" },

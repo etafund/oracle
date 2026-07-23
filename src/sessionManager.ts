@@ -10,6 +10,7 @@ import type {
   BrowserCloseOwnedRunTargetPolicy,
   BrowserModelStrategy,
   BrowserResearchMode,
+  BrowserSubmissionProvenance,
   CookieParam,
 } from "./browser/types.js";
 import type {
@@ -116,6 +117,8 @@ export interface BrowserRuntimeMetadata {
   conversationId?: string;
   /** True after Oracle has submitted the prompt to ChatGPT. */
   promptSubmitted?: boolean;
+  /** Branch evidence persisted before the first submission-capable input event. */
+  submissionProvenance?: BrowserSubmissionProvenance;
   /** PID of the controller process that launched this browser run. Helps detect orphaned sessions. */
   controllerPid?: number;
 }
@@ -188,6 +191,7 @@ export interface BrowserRemoteRunProvenance {
   captureBindingVerified: boolean | null;
   captureBindingQuality: "message-handle" | "guessed" | "conversation-only" | null;
   challengeClean: boolean | null;
+  submission: BrowserSubmissionProvenance | null;
 }
 
 /** Authoritative remote terminal-event evidence persisted with the client session. */

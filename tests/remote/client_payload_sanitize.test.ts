@@ -10,7 +10,10 @@ import {
   sanitizeRemoteBrowserRecoveryRequestForHost,
 } from "../../src/remote/payload_sanitize.js";
 import { buildRemoteRunRecoveryHint } from "../../src/remote/recovery.js";
-import type { RemoteBrowserRecoveryRequest } from "../../src/remote/types.js";
+import {
+  REMOTE_BROWSER_RECOVERY_PROTOCOL,
+  type RemoteBrowserRecoveryRequest,
+} from "../../src/remote/types.js";
 import {
   PROMPT_DOM_IDENTITY_ALGORITHM,
   PROMPT_RECOVERY_PREVIEW_ALGORITHM,
@@ -68,7 +71,7 @@ describe("remote client payload sanitizer", () => {
       heartbeatIntervalMs: 5000,
       verbose: true,
       sessionId: "client-payload-sanitize",
-      followUpPrompts: ["safe follow-up", 42 as unknown as string],
+      followUpPrompts: ["safe follow-up"],
       log: () => {},
     }).catch(() => {});
 
@@ -119,6 +122,24 @@ describe("remote client payload sanitizer", () => {
       sessionId: "client-payload-sanitize",
       followUpPrompts: ["safe follow-up"],
     });
+  });
+
+  test("rejects malformed run options before writing the request", async () => {
+    const { requestFn, body } = captureSerializedBodyRequest();
+    const exec = createRemoteBrowserExecutor({
+      host: "localhost:9222",
+      token: "remote-client-token",
+      requestFn,
+    });
+
+    await expect(
+      exec({
+        prompt: "CHECK_CLIENT_SANITIZE",
+        config: {},
+        followUpPrompts: ["safe follow-up", 42 as unknown as string],
+      }),
+    ).rejects.toThrow(/follow-up prompt 1/i);
+    expect(body()).toBeNull();
   });
 
   test("rejects unsafe resumeConversationUrl before writing the request", async () => {
@@ -321,7 +342,7 @@ function recoveryRequest(browserConfig: BrowserSessionConfig): RemoteBrowserReco
     throw new Error("failed to build recovery client fixture");
   }
   return {
-    schema: "remote-browser-recovery.v2",
+    schema: REMOTE_BROWSER_RECOVERY_PROTOCOL,
     recovery: { ...recovery, stage: "assistant-recheck" },
     promptPreview,
     browserConfig,

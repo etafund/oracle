@@ -737,6 +737,110 @@ describe("promptComposer", () => {
     expect(input.dispatchKeyEvent).not.toHaveBeenCalled();
   });
 
+  test("exact fallback rechecks the focused composer after asynchronous preflight", async () => {
+    const beforeDispatch = vi.fn().mockResolvedValue(undefined);
+    const onDispatchAttempt = vi.fn();
+    const input = { dispatchMouseEvent: vi.fn(), dispatchKeyEvent: vi.fn() };
+    const runtime = {
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({ result: { value: { status: "point", x: 10, y: 20 } } })
+        .mockResolvedValueOnce({
+          result: {
+            value: {
+              sendTarget: { status: "point", x: 10, y: 20 },
+              composerProof: {
+                activeVisible: true,
+                activeFocused: true,
+                promptMatches: false,
+                observedLength: 9,
+                inputFileCount: 0,
+                residualAttachmentCount: 0,
+              },
+            },
+          },
+        }),
+    };
+
+    await expect(
+      promptComposer.attemptSendButton(
+        runtime as never,
+        input as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        beforeDispatch,
+        onDispatchAttempt,
+        "complete expected prompt",
+      ),
+    ).rejects.toMatchObject({
+      details: {
+        code: "prompt-inline-fallback-mismatch",
+        retryable: true,
+        observedLength: 9,
+      },
+    });
+
+    const finalExpression = runtime.evaluate.mock.calls[1]?.[0].expression as string;
+    expect(finalExpression).toContain("sendTarget:");
+    expect(finalExpression).toContain("composerProof:");
+    expect(finalExpression).toContain("residualAttachmentCount");
+    expect(beforeDispatch).toHaveBeenCalledOnce();
+    expect(input.dispatchMouseEvent).not.toHaveBeenCalled();
+    expect(input.dispatchKeyEvent).not.toHaveBeenCalled();
+    expect(onDispatchAttempt).not.toHaveBeenCalled();
+  });
+
+  test("exact fallback refuses residual attachment state at the final send boundary", async () => {
+    const input = { dispatchMouseEvent: vi.fn(), dispatchKeyEvent: vi.fn() };
+    const runtime = {
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({ result: { value: { status: "point", x: 10, y: 20 } } })
+        .mockResolvedValueOnce({
+          result: {
+            value: {
+              sendTarget: { status: "point", x: 10, y: 20 },
+              composerProof: {
+                activeVisible: true,
+                activeFocused: true,
+                promptMatches: true,
+                observedLength: 24,
+                inputFileCount: 0,
+                residualAttachmentCount: 1,
+                residualAttachmentKinds: ["attachment-preview"],
+              },
+            },
+          },
+        }),
+    };
+
+    await expect(
+      promptComposer.attemptSendButton(
+        runtime as never,
+        input as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        vi.fn().mockResolvedValue(undefined),
+        undefined,
+        "complete expected prompt",
+      ),
+    ).rejects.toMatchObject({
+      details: {
+        code: "prompt-inline-fallback-residual-attachment",
+        retryable: true,
+        residualAttachmentCount: 1,
+        residualAttachmentKinds: ["attachment-preview"],
+      },
+    });
+
+    expect(input.dispatchMouseEvent).not.toHaveBeenCalled();
+    expect(input.dispatchKeyEvent).not.toHaveBeenCalled();
+  });
+
   test("a terminal binding authorizes exactly one protected dispatch report", async () => {
     const harness = makeTerminalGuardRuntime("allowed");
     const onDispatchAttempt = vi.fn();
@@ -770,11 +874,15 @@ describe("promptComposer", () => {
     expect(harness.detach).toHaveBeenCalledTimes(1);
   });
 
-  test("a terminal blocked verdict dispatches protocol events but never marks submitted", async () => {
+  test("a terminal blocked verdict still records dispatch-start before protocol events", async () => {
     const harness = makeTerminalGuardRuntime("blocked");
-    const onDispatchAttempt = vi.fn();
+    const order: string[] = [];
+    const onDispatchAttempt = vi.fn(async () => {
+      order.push("dispatch-start");
+    });
     const input = {
       dispatchMouseEvent: vi.fn(async ({ type }: { type: string }) => {
+        order.push(type);
         if (type === "mousePressed") harness.emit("blocked");
       }),
     };
@@ -795,8 +903,109 @@ describe("promptComposer", () => {
     });
 
     expect(input.dispatchMouseEvent).toHaveBeenCalledTimes(3);
-    expect(onDispatchAttempt).not.toHaveBeenCalled();
+    expect(onDispatchAttempt).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(["mouseMoved", "dispatch-start", "mousePressed", "mouseReleased"]);
     expect(harness.detach).toHaveBeenCalledTimes(1);
+  });
+
+  test("a rejected durable dispatch marker prevents mouse press and key input", async () => {
+    const harness = makeTerminalGuardRuntime("armed");
+    const persistenceFailure = new Error("runtime ledger unavailable");
+    const onDispatchAttempt = vi.fn(async () => {
+      throw persistenceFailure;
+    });
+    const input = {
+      dispatchMouseEvent: vi.fn(),
+      dispatchKeyEvent: vi.fn(),
+    };
+
+    await expect(
+      promptComposer.attemptSendButton(
+        harness.runtime as never,
+        input as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        vi.fn().mockResolvedValue(makeTerminalGuard()),
+        onDispatchAttempt,
+      ),
+    ).rejects.toBe(persistenceFailure);
+
+    expect(onDispatchAttempt).toHaveBeenCalledTimes(1);
+    expect(input.dispatchMouseEvent).toHaveBeenCalledTimes(1);
+    expect(input.dispatchMouseEvent).toHaveBeenCalledWith({
+      type: "mouseMoved",
+      x: 10,
+      y: 20,
+    });
+    expect(input.dispatchKeyEvent).not.toHaveBeenCalled();
+  });
+
+  test("rechecks an expiring page guard after durable persistence and before mouse press", async () => {
+    const terminalGuard = makeTerminalGuard();
+    const guard = {
+      ...terminalGuard,
+      immediatelyBeforeDispatchExpression: "(() => globalThis.__oracle_guard_status)()",
+      assertImmediatelyBeforeDispatchResult(value: unknown): void {
+        if ((value as { status?: unknown } | null)?.status === "armed") return;
+        throw new BrowserAutomationError("Dispatch guard expired.", {
+          stage: "model-selection",
+          code: "protected-dispatch-guard-not-armed",
+          retryable: true,
+        });
+      },
+    };
+    const runtime = {
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({ result: { value: { status: "point", x: 10, y: 20 } } })
+        .mockResolvedValueOnce({
+          result: {
+            value: {
+              sendTarget: { status: "point", x: 10, y: 20 },
+              routeProof: { installed: true },
+            },
+          },
+        })
+        .mockResolvedValueOnce({ result: { value: { status: "armed" } } })
+        .mockResolvedValueOnce({ result: { value: { status: "armed" } } })
+        .mockResolvedValueOnce({
+          result: { value: { status: "blocked", reason: "dispatch-guard-expired" } },
+        })
+        .mockResolvedValueOnce({
+          result: { value: { status: "blocked", reason: "dispatch-guard-expired" } },
+        }),
+      bindingCalled: vi.fn(() => vi.fn()),
+      addBinding: vi.fn().mockResolvedValue(undefined),
+      removeBinding: vi.fn().mockResolvedValue(undefined),
+    };
+    const onDispatchAttempt = vi.fn();
+    const input = { dispatchMouseEvent: vi.fn(), dispatchKeyEvent: vi.fn() };
+
+    await expect(
+      promptComposer.attemptSendButton(
+        runtime as never,
+        input as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        vi.fn().mockResolvedValue(guard),
+        onDispatchAttempt,
+      ),
+    ).rejects.toMatchObject({
+      details: { code: "protected-dispatch-guard-not-armed", retryable: true },
+    });
+
+    expect(onDispatchAttempt).toHaveBeenCalledTimes(1);
+    expect(input.dispatchMouseEvent).toHaveBeenCalledTimes(1);
+    expect(input.dispatchMouseEvent).toHaveBeenCalledWith({
+      type: "mouseMoved",
+      x: 10,
+      y: 20,
+    });
+    expect(input.dispatchKeyEvent).not.toHaveBeenCalled();
   });
 
   test("protected dispatch refuses the untrusted DOM click fallback before submission", async () => {
@@ -883,7 +1092,7 @@ describe("promptComposer", () => {
     expect(harness.detach).toHaveBeenCalledTimes(1);
   });
 
-  test("press-start uncertainty marks submitted unless a terminal verdict proves blocking", async () => {
+  test("press-start uncertainty records dispatch-start even when the page guard later blocks", async () => {
     for (const blocked of [false, true]) {
       const harness = makeTerminalGuardRuntime(blocked ? "blocked" : "armed");
       const onDispatchAttempt = vi.fn();
@@ -910,7 +1119,7 @@ describe("promptComposer", () => {
         await expect(result).rejects.toMatchObject({
           details: { code: "protected-route-dispatch-blocked" },
         });
-        expect(onDispatchAttempt).not.toHaveBeenCalled();
+        expect(onDispatchAttempt).toHaveBeenCalledTimes(1);
       } else {
         await expect(result).rejects.toBe(pressFailure);
         expect(onDispatchAttempt).toHaveBeenCalledTimes(1);
@@ -1022,7 +1231,159 @@ describe("promptComposer", () => {
     expect(onPromptSubmitted).not.toHaveBeenCalled();
   });
 
-  test("Enter fallback does not mark submitted when the submission-capable keyDown fails", async () => {
+  test("exact inline fallback mismatch refuses before any dispatch hook", async () => {
+    vi.useFakeTimers();
+    try {
+      const beforePromptSubmit = vi.fn();
+      const onPromptSubmitted = vi.fn();
+      const runtime = {
+        evaluate: vi.fn(async ({ expression }: { expression: string }) => {
+          if (expression.includes("document.readyState")) {
+            return { result: { value: { ready: true, composer: true, fileInput: false } } };
+          }
+          if (expression.includes("dispatchClickSequence")) {
+            return { result: { value: { focused: true } } };
+          }
+          if (expression.includes("editorText")) {
+            return {
+              result: {
+                value: {
+                  editorText: "complete prompt truncated",
+                  fallbackValue: "",
+                  activeValue: "complete prompt truncated",
+                  activeVisible: true,
+                  activeFocused: true,
+                },
+              },
+            };
+          }
+          throw new Error("unexpected evaluation");
+        }),
+      };
+      const input = {
+        insertText: vi.fn(),
+        dispatchKeyEvent: vi.fn(),
+        dispatchMouseEvent: vi.fn(),
+      };
+      const logger = Object.assign(vi.fn(), { verbose: false });
+
+      const submission = submitPrompt(
+        {
+          runtime: runtime as never,
+          input: input as never,
+          baselineTurns: 0,
+          requireExactPromptRoundTrip: true,
+          beforePromptSubmit,
+          onPromptSubmitted,
+        },
+        "complete prompt truncated before the missing suffix",
+        logger as never,
+      );
+      const assertion = expect(submission).rejects.toMatchObject({
+        details: {
+          stage: "submit-prompt",
+          code: "prompt-inline-fallback-mismatch",
+          retryable: true,
+        },
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      await assertion;
+
+      expect(beforePromptSubmit).not.toHaveBeenCalled();
+      expect(onPromptSubmitted).not.toHaveBeenCalled();
+      expect(input.dispatchKeyEvent).not.toHaveBeenCalled();
+      expect(input.dispatchMouseEvent).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test.each([
+    {
+      label: "Markdown link destinations differ",
+      prompt: "Read [docs](https://expected.example/path)",
+      editorText: "Read [docs](https://expected.example/path)",
+      activeValue: "Read [docs](https://different.example/path)",
+      activeFocused: true,
+    },
+    {
+      label: "a hidden composer is complete but the active composer is truncated",
+      prompt: "complete prompt with required suffix",
+      editorText: "complete prompt with required suffix",
+      activeValue: "complete prompt",
+      activeFocused: true,
+    },
+    {
+      label: "matching text belongs to a visible but unfocused composer",
+      prompt: "complete prompt",
+      editorText: "complete prompt",
+      activeValue: "complete prompt",
+      activeFocused: false,
+    },
+  ])(
+    "strict inline fallback proof rejects when $label",
+    async ({ prompt, editorText, activeValue, activeFocused }) => {
+      vi.useFakeTimers();
+      try {
+        const beforePromptSubmit = vi.fn();
+        const runtime = {
+          evaluate: vi.fn(async ({ expression }: { expression: string }) => {
+            if (expression.includes("document.readyState")) {
+              return { result: { value: { ready: true, composer: true, fileInput: false } } };
+            }
+            if (expression.includes("dispatchClickSequence")) {
+              return { result: { value: { focused: true } } };
+            }
+            if (expression.includes("editorText")) {
+              return {
+                result: {
+                  value: {
+                    editorText,
+                    fallbackValue: "",
+                    activeValue,
+                    activeVisible: true,
+                    activeFocused,
+                  },
+                },
+              };
+            }
+            throw new Error("unexpected evaluation");
+          }),
+        };
+        const input = {
+          insertText: vi.fn(),
+          dispatchKeyEvent: vi.fn(),
+          dispatchMouseEvent: vi.fn(),
+        };
+        const logger = Object.assign(vi.fn(), { verbose: false });
+
+        const submission = submitPrompt(
+          {
+            runtime: runtime as never,
+            input: input as never,
+            baselineTurns: 0,
+            requireExactPromptRoundTrip: true,
+            beforePromptSubmit,
+          },
+          prompt,
+          logger as never,
+        );
+        const assertion = expect(submission).rejects.toMatchObject({
+          details: { code: "prompt-inline-fallback-mismatch", retryable: true },
+        });
+        await vi.advanceTimersByTimeAsync(1_000);
+        await assertion;
+
+        expect(beforePromptSubmit).not.toHaveBeenCalled();
+        expect(input.dispatchKeyEvent).not.toHaveBeenCalled();
+        expect(input.dispatchMouseEvent).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  test("Enter fallback records dispatch-start before a submission-capable keyDown", async () => {
     vi.useFakeTimers();
     try {
       const onPromptSubmitted = vi.fn();
@@ -1069,13 +1430,14 @@ describe("promptComposer", () => {
       await assertion;
 
       expect(input.dispatchKeyEvent).toHaveBeenCalledTimes(1);
-      expect(onPromptSubmitted).not.toHaveBeenCalled();
+      expect(onPromptSubmitted).toHaveBeenCalledTimes(1);
+      expect(onPromptSubmitted).toHaveBeenCalledWith("hello");
     } finally {
       vi.useRealTimers();
     }
   });
 
-  test("marks prompt submitted before commit verification finishes", async () => {
+  test("accepts a strict active-composer round trip before marking prompt submitted", async () => {
     const onPromptSubmitted = vi.fn();
     const onPromptBound = vi.fn();
     const runtime = {
@@ -1088,7 +1450,15 @@ describe("promptComposer", () => {
         }
         if (expression.includes("editorText")) {
           return {
-            result: { value: { editorText: "hello", fallbackValue: "", activeValue: "hello" } },
+            result: {
+              value: {
+                editorText: "hello",
+                fallbackValue: "",
+                activeValue: "hello",
+                activeVisible: true,
+                activeFocused: true,
+              },
+            },
           };
         }
         if (expression.includes("button.scrollIntoView")) {
@@ -1137,6 +1507,7 @@ describe("promptComposer", () => {
         runtime: runtime as never,
         input: input as never,
         baselineTurns: 0,
+        requireExactPromptRoundTrip: true,
         onPromptSubmitted,
         onPromptBound,
       },

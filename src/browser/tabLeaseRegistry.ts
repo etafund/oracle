@@ -52,6 +52,8 @@ const DEFERRED_RELEASE_MAX_RETRY_MS = 30_000;
 export interface BrowserTabLeaseRecord {
   id: string;
   pid: number;
+  /** Linux /proc process generation discriminator; absent/null stays fail-closed. */
+  startTicks?: string | null;
   sessionId?: string;
   chromeHost?: string;
   chromePort?: number;
@@ -64,8 +66,13 @@ export interface BrowserTabLeaseRecord {
 interface BrowserTabLeaseIdentity {
   id: string;
   pid: number;
+  startTicks?: string | null;
   createdAt: string;
 }
+
+export type BrowserTabLeasePatch = Partial<
+  Omit<BrowserTabLeaseRecord, "id" | "pid" | "startTicks" | "createdAt" | "updatedAt">
+>;
 
 interface DeferredBrowserTabLeaseRelease {
   identity: BrowserTabLeaseIdentity;
@@ -97,7 +104,7 @@ export interface BrowserTabLease {
     /** Called if a failed synchronous release is later repaired in the background. */
     onDeferredRelease?: () => void;
   }) => Promise<void>;
-  update: (patch: Partial<BrowserTabLeaseRecord>) => Promise<void>;
+  update: (patch: BrowserTabLeasePatch) => Promise<void>;
 }
 
 interface BrowserTabLeaseDeps {
@@ -106,6 +113,8 @@ interface BrowserTabLeaseDeps {
   monotonicNow?: () => number;
   pid?: number;
   isProcessAlive?: (pid: number) => boolean;
+  /** Test seam for the Linux PID-generation discriminator. */
+  readProcessStartTicks?: (pid: number) => string | null;
   /** Test seam for the lock-free DevTools target snapshot used by reclamation. */
   listChromeTargetIds?: (options: {
     chromeHost: string;
@@ -354,6 +363,7 @@ export async function acquireBrowserTabLease(
   const monotonicNow = deps.monotonicNow ?? defaultMonotonicNow;
   const pid = deps.pid ?? process.pid;
   const alive = deps.isProcessAlive ?? isProcessAlive;
+  const readStartTicks = deps.readProcessStartTicks ?? readProcessStartTicks;
   const leaseId = randomUUID();
   const startedAt = monotonicNow();
   let warned = false;
@@ -425,7 +435,12 @@ export async function acquireBrowserTabLease(
             // free slot, so refuse with a typed error instead of assuming free.
             throw new TabLeaseRegistryUnreadableError(profileDir, outcome.reason, outcome.cause);
           }
-          const pruneOptions = { nowMs: wallNow(), staleMs, isProcessAlive: alive };
+          const pruneOptions = {
+            nowMs: wallNow(),
+            staleMs,
+            isProcessAlive: alive,
+            readProcessStartTicks: readStartTicks,
+          };
           const activeValid = pruneStaleLeases(outcome.valid, pruneOptions);
           const activeOpaque = pruneOpaqueRecords(outcome.opaque, pruneOptions);
           const timestamp = new Date(wallNow()).toISOString();
@@ -469,6 +484,7 @@ export async function acquireBrowserTabLease(
           const lease: BrowserTabLeaseRecord = {
             id: leaseId,
             pid,
+            startTicks: readStartTicks(pid),
             sessionId: options.sessionId,
             chromeHost: options.chromeHost,
             chromePort: options.chromePort,
@@ -786,7 +802,7 @@ async function listChromeTargetIdsOverHttp(options: {
 export async function updateBrowserTabLease(
   profileDir: string,
   leaseId: string,
-  patch: Partial<BrowserTabLeaseRecord>,
+  patch: BrowserTabLeasePatch,
   logger?: BrowserLogger,
 ): Promise<void> {
   await withRegistryLock(
@@ -802,9 +818,17 @@ export async function updateBrowserTabLease(
         );
         return;
       }
+      const mutablePatch = { ...patch } as Partial<BrowserTabLeaseRecord>;
+      // Defense in depth for untyped/JavaScript callers: owner identity and
+      // process generation are immutable after acquisition.
+      delete mutablePatch.id;
+      delete mutablePatch.pid;
+      delete mutablePatch.startTicks;
+      delete mutablePatch.createdAt;
+      delete mutablePatch.updatedAt;
       const leases = outcome.valid.map((lease) =>
         lease.id === leaseId
-          ? { ...lease, ...patch, id: lease.id, updatedAt: new Date().toISOString() }
+          ? { ...lease, ...mutablePatch, id: lease.id, updatedAt: new Date().toISOString() }
           : lease,
       );
       await writeRegistry(profileDir, {
@@ -821,11 +845,24 @@ function browserTabLeaseIdentitiesEqual(
   left: BrowserTabLeaseIdentity,
   right: BrowserTabLeaseIdentity,
 ): boolean {
-  return left.id === right.id && left.pid === right.pid && left.createdAt === right.createdAt;
+  const bothCarryGeneration =
+    Object.prototype.hasOwnProperty.call(left, "startTicks") &&
+    Object.prototype.hasOwnProperty.call(right, "startTicks");
+  return (
+    left.id === right.id &&
+    left.pid === right.pid &&
+    (!bothCarryGeneration || left.startTicks === right.startTicks) &&
+    left.createdAt === right.createdAt
+  );
 }
 
 function browserTabLeaseIdentity(record: BrowserTabLeaseRecord): BrowserTabLeaseIdentity {
-  return { id: record.id, pid: record.pid, createdAt: record.createdAt };
+  return {
+    id: record.id,
+    pid: record.pid,
+    startTicks: record.startTicks,
+    createdAt: record.createdAt,
+  };
 }
 
 async function readBrowserTabLeaseIdentity(
@@ -1056,7 +1093,8 @@ export async function releaseBrowserTabLease(
     /** Notification hook for a later successful self-heal. */
     onDeferredRelease?: () => void;
     /** Exact immutable identity captured by an acquired lease handle. */
-    expectedIdentity?: Pick<BrowserTabLeaseRecord, "id" | "pid" | "createdAt">;
+    expectedIdentity?: Pick<BrowserTabLeaseRecord, "id" | "pid" | "createdAt"> &
+      Partial<Pick<BrowserTabLeaseRecord, "startTicks">>;
     /** Test seam for deterministic lock-wait recovery coverage. */
     registryLockOptions?: Pick<
       RegistryLockWaitOptions,
@@ -2309,12 +2347,26 @@ function registryPath(profileDir: string): string {
 
 function pruneStaleLeases(
   leases: BrowserTabLeaseRecord[],
-  options: { nowMs: number; staleMs: number; isProcessAlive: (pid: number) => boolean },
+  options: {
+    nowMs: number;
+    staleMs: number;
+    isProcessAlive: (pid: number) => boolean;
+    readProcessStartTicks?: (pid: number) => string | null;
+  },
 ): BrowserTabLeaseRecord[] {
   return leases.filter((lease) => {
     if (!options.isProcessAlive(lease.pid)) {
       // Provably-dead owner: reclaim the slot immediately.
       return false;
+    }
+    const recordedStartTicks = lease.startTicks;
+    if (typeof recordedStartTicks === "string" && recordedStartTicks.length > 0) {
+      const currentStartTicks = (options.readProcessStartTicks ?? readProcessStartTicks)(lease.pid);
+      if (currentStartTicks !== null && currentStartTicks !== recordedStartTicks) {
+        // The numeric PID is live, but belongs to a different process
+        // generation. This is positive proof that the lease owner died.
+        return false;
+      }
     }
     // A live process can be paused by SIGSTOP, a debugger, VM suspension, or a
     // long host sleep. Reclaiming solely because its wall-clock heartbeat is
