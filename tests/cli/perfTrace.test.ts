@@ -8,6 +8,7 @@ import { describe, expect, test } from "vitest";
 import {
   buildDetachedPerfTraceEnv,
   deriveDetachedPerfTraceEnv,
+  isTraceValueFlag,
   resolveDetachedPerfTraceEnv,
   sanitizeTraceArgv,
 } from "../../src/cli/perfTrace.js";
@@ -20,6 +21,10 @@ const TSX_LOADER = pathToFileURL(
 const CLI_TIMEOUT = 15_000;
 
 describe("CLI performance traces", () => {
+  test("treats browser queue timeout as a value-taking flag", () => {
+    expect(isTraceValueFlag("--browser-queue-timeout")).toBe(true);
+  });
+
   test("redacts prompt and token arguments", () => {
     expect(
       sanitizeTraceArgv([

@@ -4,6 +4,11 @@ import { buildConversationUrl } from "../browser/reattachHelpers.js";
 import { resolveRecoveryUrl } from "../browser/recoverConversation.js";
 import { isRecoverableChatGptConversationUrl } from "../browser/reattachability.js";
 import { normalizeChatGptConversationId } from "../browser/conversationIdentity.js";
+import {
+  buildImportedBrowserSessionConfig,
+  hasImportedChatgptConversationClaim,
+  parsePureImportedChatgptConversationSession,
+} from "../browser/importedConversation.js";
 import { DEFAULT_MODEL } from "../oracle/config.js";
 import type { ModelName, RunOracleOptions } from "../oracle/types.js";
 import {
@@ -19,6 +24,8 @@ export interface BrowserFollowupResolution {
   browserConfig: BrowserSessionConfig;
   /** The lane the referenced session actually ran under, if recorded (e.g. "chatgpt-pro"). */
   lane?: string;
+  /** Metadata-only manual import; never a reviewed/account-bound parent run. */
+  importedUntrusted?: true;
 }
 
 export interface FollowupSessionReader {
@@ -87,6 +94,9 @@ export async function resolveBrowserFollowupReference(
   if (!metadata) {
     return null;
   }
+  if (hasImportedChatgptConversationClaim(metadata)) {
+    return resolveImportedBrowserFollowup(metadata, trimmed);
+  }
   const mode = metadata.mode ?? metadata.options?.mode;
   const hasBrowserMetadata = Boolean(
     metadata.browser?.runtime || metadata.browser?.config || metadata.options?.browserConfig,
@@ -132,6 +142,115 @@ export async function resolveBrowserFollowupReference(
       archiveConversations: "never",
     },
     lane: metadata.lane ?? metadata.options?.lane,
+  };
+}
+
+function resolveImportedBrowserFollowup(
+  metadata: SessionMetadata,
+  requestedId: string,
+): BrowserFollowupResolution {
+  const imported = parsePureImportedChatgptConversationSession(metadata, requestedId);
+  if (!imported) {
+    throw new Error(
+      `Session ${requestedId} mixes an untrusted import with model, lane, account, capture, or inconsistent conversation state; refusing to treat it as a follow-up parent.`,
+    );
+  }
+
+  return {
+    sessionId: metadata.id,
+    resumeConversationUrl: imported.conversationUrl,
+    // Compatibility bookkeeping only. desiredModel remains null and the
+    // current-model strategy prevents this label from becoming selection
+    // evidence or a reviewed Sol+Pro claim.
+    model: DEFAULT_MODEL,
+    browserConfig: {
+      ...buildImportedBrowserSessionConfig(),
+      resumeConversationUrl: imported.conversationUrl,
+    },
+    importedUntrusted: true,
+  };
+}
+
+export function assertImportedBrowserFollowupCompatibility({
+  followup,
+  explicitBrowserEngine,
+  explicitRemoteBrowserOff,
+  resolvedLane,
+  remoteHost,
+  remoteChrome,
+  explicitModel,
+  explicitModelStrategy,
+  explicitThinkingTime,
+  explicitBrowserTab,
+}: {
+  followup: BrowserFollowupResolution;
+  explicitBrowserEngine: boolean;
+  explicitRemoteBrowserOff: boolean;
+  resolvedLane: { lane: string; engine: string } | null;
+  remoteHost?: string;
+  remoteChrome?: string;
+  explicitModel?: string;
+  explicitModelStrategy?: string;
+  explicitThinkingTime?: string;
+  explicitBrowserTab?: string;
+}): void {
+  if (!followup.importedUntrusted) {
+    return;
+  }
+  if (resolvedLane) {
+    throw new Error(
+      `Imported conversation ${followup.sessionId} is untrusted and lane-unbound; it is never eligible for reviewed --lane ${resolvedLane.lane}. Use the explicit compatibility route instead.`,
+    );
+  }
+  if (!explicitBrowserEngine) {
+    throw new Error(
+      `Imported conversation ${followup.sessionId} requires an explicit compatibility route: --engine browser --remote-browser off.`,
+    );
+  }
+  if (remoteHost || remoteChrome || explicitBrowserTab) {
+    throw new Error(
+      `Imported conversation ${followup.sessionId} is account-unbound; remote/account-affine browser routing is refused. Use --remote-browser off and a local browser profile you select explicitly.`,
+    );
+  }
+  if (!explicitRemoteBrowserOff) {
+    throw new Error(
+      `Imported conversation ${followup.sessionId} requires an explicit local route; pass --remote-browser off so no configured or environment-provided remote account is selected.`,
+    );
+  }
+  if (explicitModel) {
+    throw new Error(
+      `Imported conversation ${followup.sessionId} has no trusted model binding; drop --model and keep the conversation's current model.`,
+    );
+  }
+  if (explicitModelStrategy !== "current") {
+    throw new Error(
+      `Imported conversation ${followup.sessionId} requires the explicit --browser-model-strategy current compatibility route; model selection cannot be asserted for an imported thread.`,
+    );
+  }
+  if (explicitThinkingTime) {
+    throw new Error(
+      `Imported conversation ${followup.sessionId} has no trusted mode binding; drop --browser-thinking-time so no Pro/effort proof is asserted.`,
+    );
+  }
+}
+
+export function buildImportedBrowserFollowupConfig(
+  base: BrowserSessionConfig,
+  resumeConversationUrl: string,
+): BrowserSessionConfig {
+  return {
+    ...base,
+    attachRunning: base.attachRunning,
+    browserTabRef: null,
+    remoteChrome: null,
+    remoteChromeBrowserWSEndpoint: null,
+    remoteChromeProfileRoot: null,
+    desiredModel: null,
+    modelStrategy: "current",
+    thinkingTime: undefined,
+    resumeConversationUrl,
+    researchMode: "off",
+    archiveConversations: "never",
   };
 }
 

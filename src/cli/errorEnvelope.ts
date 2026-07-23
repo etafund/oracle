@@ -215,6 +215,8 @@ function normalizeTopLevelError(error: unknown): NormalizedTopLevelError {
     stringFromRecord(userDetails, "next_command") ?? stringFromRecord(userDetails, "nextCommand");
   const detailFixCommand =
     stringFromRecord(userDetails, "fix_command") ?? stringFromRecord(userDetails, "fixCommand");
+  const detailCode =
+    stringFromRecord(userDetails, "code") ?? stringFromRecord(userDetails, "error_code");
 
   if (userError) {
     const nextCommand = detailNextCommand ?? reuseProfileHint;
@@ -225,7 +227,11 @@ function normalizeTopLevelError(error: unknown): NormalizedTopLevelError {
     // stable stage code (lane routes, prompt guards), and only as a last resort
     // fall back to the closed category code — never leak the free-form
     // `category` string as the machine-readable code.
-    const code = errorClass ?? userStage ?? USER_ERROR_CATEGORY_CODES[userError.category];
+    const code =
+      errorClass ??
+      (userDetails?.retryable === false ? detailCode : null) ??
+      userStage ??
+      USER_ERROR_CATEGORY_CODES[userError.category];
     return {
       code,
       message: userError.message,
@@ -255,7 +261,14 @@ function normalizeTopLevelError(error: unknown): NormalizedTopLevelError {
   }
 
   const record = isRecord(error) ? error : undefined;
-  const code = stringFromRecord(record, "code") ?? "top_level_error";
+  // Generic typed errors (notably RemoteRunFailedError) still participate in
+  // the same duck-typed taxonomy as the top-level exit-code resolver. Without
+  // this classification, a retryable pre-submit remote refusal exited 4 while
+  // its JSON envelope contradicted that verdict with top_level_error / false.
+  // classifyOracleErrorClass also honors an explicit retryable:false, so an
+  // already-submitted recovery failure remains fail-closed here as well.
+  const errorClass = classifyOracleErrorClass(error);
+  const code = errorClass ?? stringFromRecord(record, "code") ?? "top_level_error";
   const message =
     error instanceof Error ? error.message : typeof error === "string" ? error : String(error);
   const commanderHelp = code.startsWith("commander.") ? "Run `oracle --help` for usage." : null;
@@ -266,7 +279,7 @@ function normalizeTopLevelError(error: unknown): NormalizedTopLevelError {
     details: record ? { code } : undefined,
     nextCommand: commanderHelp ? "oracle --help" : null,
     fixCommand: null,
-    retrySafe: false,
+    retrySafe: errorClass ? isRetrySafeErrorClass(errorClass) : false,
   };
 }
 

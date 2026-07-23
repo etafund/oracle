@@ -4,17 +4,26 @@ import { MODEL_CONFIGS } from "../oracle.js";
 import type { SessionMetadata } from "../sessionStore.js";
 import { estimateUsdCost } from "tokentally";
 import { formatSessionExecutionLabel } from "./sessionLifecycle.js";
+import { resolveSessionBrowserModelDisplayName } from "../browser/modelDisplay.js";
 
 const isRich = (rich?: boolean): boolean =>
   rich ?? Boolean(process.stdout.isTTY && chalk.level > 0);
 const dim = (text: string, rich: boolean): string => (rich ? kleur.dim(text) : text);
 
 export const STATUS_PAD = 9;
-export const MODEL_PAD = 13;
+export const MODEL_PAD = 20;
 export const MODE_PAD = 7;
 export const TIMESTAMP_PAD = 19;
 export const CHARS_PAD = 5;
 export const COST_PAD = 7;
+
+function formatFixedWidthCell(value: string, width: number): string {
+  const characters = Array.from(value);
+  if (characters.length > width) {
+    return `${characters.slice(0, width - 1).join("")}…`;
+  }
+  return `${value}${" ".repeat(width - characters.length)}`;
+}
 
 interface FormatSessionTableRowOptions {
   rich?: boolean;
@@ -34,7 +43,11 @@ export function formatSessionTableRow(
 ): string {
   const rich = isRich(options?.rich);
   const status = colorStatus(meta.status ?? "unknown", rich);
-  const modelLabel = (meta.model ?? "n/a").padEnd(MODEL_PAD);
+  const displayModel =
+    (meta.mode ?? meta.options?.mode) === "browser"
+      ? resolveSessionBrowserModelDisplayName(meta)
+      : (meta.model ?? "n/a");
+  const modelLabel = formatFixedWidthCell(displayModel, MODEL_PAD);
   const model = rich ? chalk.white(modelLabel) : modelLabel;
   const modeLabel = formatSessionExecutionLabel(meta).padEnd(MODE_PAD);
   const mode = rich ? chalk.gray(modeLabel) : modeLabel;
@@ -113,6 +126,8 @@ function colorStatus(status: string, rich: boolean): string {
       return chalk.red(padded);
     case "running":
       return chalk.yellow(padded);
+    case "imported":
+      return chalk.cyan(padded);
     default:
       return padded;
   }

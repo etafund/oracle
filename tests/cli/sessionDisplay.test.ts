@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { buildImportedChatgptConversationSessionMetadata } from "../../src/browser/importedConversation.ts";
 import type { SessionMetadata } from "../../src/sessionManager.ts";
 import {
   buildReattachLine,
@@ -121,11 +122,20 @@ describe("formatBrowserEvidence", () => {
       id: "sess",
       createdAt: new Date().toISOString(),
       status: "completed",
+      model: "gpt-5.6-sol",
+      mode: "browser",
       options: {},
       browser: {
         modelSelection: {
-          requestedModel: "GPT-5.5 Pro",
-          resolvedLabel: "Pro",
+          requestedModel: "GPT-5.6 Sol",
+          requestedModelLabel: "GPT-5.6 Sol",
+          resolvedLabel: "GPT-5.6 Sol + Pro",
+          resolvedModelLabel: "GPT-5.6 Sol",
+          modelVerified: true,
+          requestedMode: "Pro",
+          resolvedModeLabel: "Pro",
+          modeVerified: true,
+          verifiedBeforePromptSubmit: true,
           strategy: "select",
           status: "already-selected",
           verified: true,
@@ -143,9 +153,28 @@ describe("formatBrowserEvidence", () => {
     };
 
     expect(formatBrowserEvidence(metadata)).toEqual([
-      "model requested=GPT-5.5 Pro; resolved=Pro; status=already-selected; strategy=select; verified=yes",
+      "model requestedKey=gpt-5.6-sol; target=GPT-5.6 Sol; observedModel=GPT-5.6 Sol; modelVerified=yes; requestedMode=Pro; observedMode=Pro; modeVerified=yes; verifiedBeforePromptSubmit=yes; trustedDisplay=GPT-5.6 Sol + Pro; status=already-selected; strategy=select; aggregateVerified=yes; source=chatgpt-model-picker; capturedAt=2026-05-13T00:00:00.000Z",
       "warning browser-pro-fast-large-run: Large browser Pro run completed quickly.",
     ]);
+
+    const legacyEvidence = formatBrowserEvidence({
+      ...metadata,
+      model: "gpt-5.5-pro",
+      browser: {
+        modelSelection: {
+          requestedModel: "GPT-5.5 Pro",
+          resolvedLabel: "Pro",
+          strategy: "select",
+          status: "already-selected",
+          verified: true,
+          source: "chatgpt-model-picker",
+          capturedAt: "2026-05-13T00:00:00.000Z",
+        },
+      },
+    })?.join("\n");
+    expect(legacyEvidence).toContain("target=GPT-5.5 Pro");
+    expect(legacyEvidence).toContain("trustedDisplay=(unverified)");
+    expect(legacyEvidence).not.toContain("observedModel=Pro");
   });
 });
 
@@ -368,6 +397,80 @@ describe("attachSession rendering", () => {
 
     expect(logSpy).toHaveBeenCalledWith("Execution: api/bg (detached)");
     expect(logSpy).toHaveBeenCalledWith("Reattach: oracle session sess");
+  });
+
+  test("renders an imported reference distinctly without reading a synthetic prompt or output", async () => {
+    const importedMeta = buildImportedChatgptConversationSessionMetadata({
+      sessionId: "sess",
+      conversationUrl: "https://chatgpt.com/c/imported-thread",
+      conversationId: "imported-thread",
+      cwd: "/tmp/imported-thread",
+      importedAt: "2026-07-01T00:00:00.000Z",
+    });
+    readSessionMetadataMock.mockResolvedValue(importedMeta);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await attachSession("sess", { renderMarkdown: true });
+
+    expect(logSpy).toHaveBeenCalledWith("Status: imported");
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "Import: untrusted; account=unbound; lane=unbound; answerCaptured=no",
+      ),
+    );
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining("No Oracle prompt, model run, harvest, or answer was captured"),
+    );
+    expect(readSessionRequestMock).not.toHaveBeenCalled();
+    expect(readSessionLogMock).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["missing marker", { ...baseMeta, status: "imported", mode: "browser" }],
+    [
+      "null marker",
+      {
+        ...baseMeta,
+        status: "imported",
+        mode: "browser",
+        browser: { importedConversation: null },
+      },
+    ],
+    [
+      "mixed captured state",
+      {
+        ...buildImportedChatgptConversationSessionMetadata({
+          sessionId: "sess",
+          conversationUrl: "https://chatgpt.com/c/mixed-import",
+          conversationId: "mixed-import",
+          cwd: "/tmp/mixed-import",
+          importedAt: "2026-07-01T00:00:00.000Z",
+        }),
+        lane: "chatgpt-pro",
+      },
+    ],
+    [
+      "marker on completed state",
+      {
+        ...baseMeta,
+        status: "completed",
+        browser: { importedConversation: { schema: "malformed-import-claim" } },
+      },
+    ],
+  ])("fails closed in human display for invalid imported metadata: %s", async (_label, raw) => {
+    const invalid = raw as unknown as SessionMetadata;
+    readSessionMetadataMock.mockResolvedValue(invalid);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await attachSession("sess", { renderMarkdown: true });
+
+    expect(logSpy).toHaveBeenCalledWith("Status: error");
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("invalid_imported_session"));
+    expect(process.exitCode).toBe(1);
+    expect(readSessionRequestMock).not.toHaveBeenCalled();
+    expect(readSessionLogMock).not.toHaveBeenCalled();
+    process.exitCode = undefined;
   });
 
   test("prints chain metadata for follow-up sessions", async () => {

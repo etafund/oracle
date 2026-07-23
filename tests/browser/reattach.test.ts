@@ -2,10 +2,16 @@ import { describe, expect, test, vi } from "vitest";
 import {
   resumeBrowserSession,
   resumeBrowserSessionInIsolatedFleetTab,
+  type IsolatedFleetRecoveryOptions,
   __test__,
 } from "../../src/browser/reattach.js";
 import type { BrowserLogger, ChromeClient } from "../../src/browser/types.js";
 import { BrowserAutomationError } from "../../src/oracle/errors.js";
+import {
+  OrphanedBrowserTabLeaseError,
+  type BrowserTabLease,
+} from "../../src/browser/tabLeaseRegistry.js";
+import { clearBrowserCleanupTaint, getBrowserCleanupTaint } from "../../src/browser/index.js";
 
 type FakeTarget = { id?: string; targetId?: string; type?: string; url?: string };
 type FakeClient = {
@@ -627,8 +633,22 @@ describe("isolated fleet recovery target ownership", () => {
     promptSubmitted: true as const,
   };
 
-  function createHarness(recoveryError: unknown, headless = false) {
-    const release = vi.fn(async () => {});
+  function createHarness(
+    recoveryError: unknown,
+    headless = false,
+    queue?: {
+      queueTimeoutMs?: number;
+      leaseTimeoutMs?: number;
+      configQueueTimeoutMs?: number;
+    },
+    acquisitionError?: unknown,
+    overrides: {
+      connectWithNewTabFn?: NonNullable<IsolatedFleetRecoveryOptions["connectWithNewTabFn"]>;
+      release?: BrowserTabLease["release"];
+      timeoutMs?: number;
+    } = {},
+  ) {
+    const release = vi.fn(overrides.release ?? (async () => {}));
     const update = vi.fn(async () => {});
     const closeRemoteChromeTargetFn = vi.fn(async () => true);
     const closeClient = vi.fn(async () => {});
@@ -662,11 +682,23 @@ describe("isolated fleet recovery target ownership", () => {
     const resumeBrowserSessionFn = vi.fn(async () => {
       throw recoveryError;
     }) as unknown as typeof resumeBrowserSession;
+    const acquireBrowserTabLeaseFn = vi.fn(async () => {
+      if (acquisitionError) throw acquisitionError;
+      return {
+        id: "lease-recovery-1",
+        release,
+        update,
+      };
+    });
 
     const run = () =>
       resumeBrowserSessionInIsolatedFleetTab({
         runtime,
-        config: { headless, timeoutMs: 2_000 },
+        config: {
+          headless,
+          timeoutMs: overrides.timeoutMs ?? 2_000,
+          queueTimeoutMs: queue?.configQueueTimeoutMs,
+        },
         logger: vi.fn() as BrowserLogger,
         chromeHost: "127.0.0.1",
         chromePort: 9222,
@@ -674,21 +706,54 @@ describe("isolated fleet recovery target ownership", () => {
         promptPreview: "saved recovery prompt",
         promptDomSha256: "a".repeat(64),
         accountId: `isolated-recovery-test-${process.pid}`,
-        connectWithNewTabFn: vi.fn(async () => ({
-          client,
-          targetId: "recovery-target-1",
-        })),
-        acquireBrowserTabLeaseFn: vi.fn(async () => ({
-          id: "lease-recovery-1",
-          release,
-          update,
-        })),
+        queueTimeoutMs: queue?.queueTimeoutMs,
+        leaseTimeoutMs: queue?.leaseTimeoutMs,
+        connectWithNewTabFn:
+          overrides.connectWithNewTabFn ??
+          vi.fn(async () => ({
+            client,
+            targetId: "recovery-target-1",
+          })),
+        acquireBrowserTabLeaseFn,
         closeRemoteChromeTargetFn,
         resumeBrowserSessionFn,
       });
 
-    return { closeClient, closeRemoteChromeTargetFn, release, run, update };
+    return {
+      acquireBrowserTabLeaseFn,
+      closeClient,
+      closeRemoteChromeTargetFn,
+      client,
+      release,
+      run,
+      update,
+    };
   }
+
+  test.each([
+    {
+      label: "new explicit queue timeout",
+      queue: { queueTimeoutMs: 111, leaseTimeoutMs: 222, configQueueTimeoutMs: 333 },
+      expected: 111,
+    },
+    {
+      label: "legacy lease-timeout fallback",
+      queue: { leaseTimeoutMs: 222, configQueueTimeoutMs: 333 },
+      expected: 222,
+    },
+    {
+      label: "stored config fallback",
+      queue: { configQueueTimeoutMs: 333 },
+      expected: 333,
+    },
+  ])("uses $label for isolated recovery admission", async ({ queue, expected }) => {
+    const harness = createHarness(new Error("stop after admission"), false, queue);
+    await expect(harness.run()).rejects.toThrow("stop after admission");
+    expect(harness.acquireBrowserTabLeaseFn).toHaveBeenCalledWith(
+      "/profiles/account-one",
+      expect.objectContaining({ timeoutMs: expected, promptSubmitted: true }),
+    );
+  });
 
   test.each([
     { stage: "cloudflare-challenge" },
@@ -736,6 +801,129 @@ describe("isolated fleet recovery target ownership", () => {
     expect(harness.closeRemoteChromeTargetFn.mock.invocationCallOrder[0]).toBeLessThan(
       harness.release.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
     );
+  });
+
+  test("an orphaned recovery acquisition rolls back its exact lease and self-clears its own taint", async () => {
+    clearBrowserCleanupTaint();
+    let onDeferredRelease: (() => void) | undefined;
+    const orphanRelease = vi.fn(async (options?: { onDeferredRelease?: () => void }) => {
+      onDeferredRelease = options?.onDeferredRelease;
+      throw new Error("registry lock unavailable");
+    });
+    const orphanLease = {
+      id: "lease-recovery-orphan",
+      release: orphanRelease,
+      update: vi.fn(),
+    } as never;
+    const orphanError = new OrphanedBrowserTabLeaseError(
+      orphanLease,
+      new Error("post-commit unlock failed"),
+    );
+    const harness = createHarness(
+      new Error("recovery should not start"),
+      false,
+      undefined,
+      orphanError,
+    );
+
+    try {
+      await expect(harness.run()).rejects.toBe(orphanError);
+      expect(orphanRelease).toHaveBeenCalledOnce();
+      expect(getBrowserCleanupTaint()?.reason).toContain("lease-recovery-orphan");
+
+      onDeferredRelease?.();
+      expect(getBrowserCleanupTaint()).toBeNull();
+    } finally {
+      clearBrowserCleanupTaint();
+    }
+  });
+
+  test("final recovery lease cleanup clears only its release taint after deferred repair", async () => {
+    clearBrowserCleanupTaint();
+    let onDeferredRelease: (() => void) | undefined;
+    const harness = createHarness(
+      new Error("ordinary recovery failure"),
+      false,
+      undefined,
+      undefined,
+      {
+        release: async (options) => {
+          onDeferredRelease = options?.onDeferredRelease;
+          throw new Error("registry lock unavailable");
+        },
+      },
+    );
+
+    try {
+      await expect(harness.run()).rejects.toThrow("ordinary recovery failure");
+      expect(getBrowserCleanupTaint()?.reason).toContain("isolated recovery cleanup");
+
+      onDeferredRelease?.();
+      expect(getBrowserCleanupTaint()).toBeNull();
+    } finally {
+      clearBrowserCleanupTaint();
+    }
+  });
+
+  test("late target cleanup clears its connect-timeout taint only after deferred lease repair", async () => {
+    vi.useFakeTimers();
+    clearBrowserCleanupTaint();
+    let resolveConnect!: (value: { client: ChromeClient; targetId: string }) => void;
+    const lateConnect = new Promise<{ client: ChromeClient; targetId: string }>((resolve) => {
+      resolveConnect = resolve;
+    });
+    let onDeferredRelease: (() => void) | undefined;
+    let markReleaseCalled!: () => void;
+    const releaseCalled = new Promise<void>((resolve) => {
+      markReleaseCalled = resolve;
+    });
+    const harness = createHarness(
+      new Error("recovery should not start"),
+      false,
+      undefined,
+      undefined,
+      {
+        connectWithNewTabFn: vi.fn(() => lateConnect) as never,
+        release: async (options) => {
+          onDeferredRelease = options?.onDeferredRelease;
+          markReleaseCalled();
+          throw new Error("late release registry contention");
+        },
+        timeoutMs: 1_000,
+      },
+    );
+
+    try {
+      const run = harness.run();
+      const runResult = run.then(
+        () => null,
+        (error: unknown) => error,
+      );
+      await vi.advanceTimersByTimeAsync(1_000);
+      const connectError = await runResult;
+      expect(connectError).toBeInstanceOf(Error);
+      expect((connectError as Error).message).toMatch(/timed out/u);
+      expect(getBrowserCleanupTaint()?.reason).toContain("target creation timed out");
+
+      vi.useRealTimers();
+      resolveConnect({ client: harness.client, targetId: "late-recovery-target" });
+      await releaseCalled;
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(harness.closeRemoteChromeTargetFn).toHaveBeenCalledWith(
+        "127.0.0.1",
+        9222,
+        "late-recovery-target",
+        expect.any(Function),
+      );
+      expect(getBrowserCleanupTaint()?.reason).toContain("late release registry contention");
+
+      onDeferredRelease?.();
+      expect(getBrowserCleanupTaint()).toBeNull();
+    } finally {
+      vi.useRealTimers();
+      clearBrowserCleanupTaint();
+    }
   });
 
   test("does not preserve a headless challenge target that a human cannot inspect", async () => {

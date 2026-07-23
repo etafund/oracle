@@ -29,7 +29,7 @@
 import { describe, expect, test, vi } from "vitest";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, mkdtemp, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 
 const raceHooks = vi.hoisted(() => ({
   beforeStealRename: null as (() => Promise<void>) | null,
@@ -45,11 +45,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       // Fires on the identity-pinning open(dirPath, "r") call inside
       // openDirIdentityHandle — used to inject a directory swap at that
       // exact point, one step earlier than the beforeStealRename hook below.
-      if (
-        raceHooks.beforeIdentityPinOpen &&
-        typeof filePath === "string" &&
-        flags === "r"
-      ) {
+      if (raceHooks.beforeIdentityPinOpen && typeof filePath === "string" && flags === "r") {
         const hook = raceHooks.beforeIdentityPinOpen;
         raceHooks.beforeIdentityPinOpen = null;
         await hook();
@@ -90,6 +86,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 import {
   TabLeaseRegistryLockCollisionError,
   TabLeaseRegistryLockOwnershipLostError,
+  TabLeaseRegistryPostCommitUnlockError,
   acquireBrowserTabLease,
   countActiveBrowserTabLeases,
   stealRegistryLockFromDeadOwnerForTest,
@@ -264,7 +261,12 @@ describe("tab-lease registry: lock-steal self-ownership (1fy)", () => {
       // resolving as if nothing had gone wrong. Fixed behavior: self-
       // ownership verification (inode comparison) detects the swap and
       // throws instead of tearing down someone else's critical section.
-      await expect(run).rejects.toBeInstanceOf(TabLeaseRegistryLockOwnershipLostError);
+      const releaseError = await run.catch((error: unknown) => error);
+      expect(releaseError).toBeInstanceOf(TabLeaseRegistryPostCommitUnlockError);
+      expect((releaseError as Error).cause).toBeInstanceOf(TabLeaseRegistryLockOwnershipLostError);
+      expect((releaseError as TabLeaseRegistryPostCommitUnlockError).committedResult).toBe(
+        "callback-completed",
+      );
 
       const peerLockStillThere = await stat(lockDir).catch(() => null);
       expect(peerLockStillThere).not.toBeNull();
@@ -306,20 +308,48 @@ describe("tab-lease registry: lock-free census must never mutate the file (e3x)"
     }
   });
 
-  test("[regression e3x] a LOCKED caller still recovers the same corrupt registry", async () => {
+  test("[regression e3x] a LOCKED caller preserves pidless corrupt bytes fail-closed", async () => {
     const dir = await makeProfileDir();
     const registryFile = path.join(dir, REGISTRY_FILENAME);
     try {
-      await writeFile(registryFile, "%%% not json, no pid, corrupt %%%", "utf8");
+      const corrupt = "%%% not json, no pid, corrupt %%%";
+      await writeFile(registryFile, corrupt, "utf8");
       await backdate(registryFile, CORRUPT_RECOVERY_QUIET_MS + 60_000);
 
-      // A locked operation (acquire) is entitled to attempt bounded
-      // quarantine recovery and should succeed in granting a slot afterward.
-      const lease = await acquireBrowserTabLease(dir, {
-        maxConcurrentTabs: 1,
-        pollMs: 25,
-        timeoutMs: 1_000,
-      });
+      // Corruption with no positive death evidence may still represent a live
+      // owner's damaged lease. A locked caller must not age it out and admit a
+      // second browser driver merely because the bytes have been quiet.
+      await expect(
+        acquireBrowserTabLease(dir, {
+          maxConcurrentTabs: 1,
+          pollMs: 25,
+          timeoutMs: 250,
+        }),
+      ).rejects.toThrow(/unreadable|corrupt/iu);
+      expect(await readFile(registryFile, "utf8")).toBe(corrupt);
+      const entries = await readdir(dir);
+      expect(entries.some((name) => name.includes(".corrupt-"))).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("[regression e3x] a LOCKED caller recovers corrupt bytes with positive death evidence", async () => {
+    const dir = await makeProfileDir();
+    const registryFile = path.join(dir, REGISTRY_FILENAME);
+    try {
+      await writeFile(registryFile, '{"pid":424242,%%% corrupt %%%}', "utf8");
+      await backdate(registryFile, CORRUPT_RECOVERY_QUIET_MS + 60_000);
+
+      const lease = await acquireBrowserTabLease(
+        dir,
+        {
+          maxConcurrentTabs: 1,
+          pollMs: 25,
+          timeoutMs: 1_000,
+        },
+        { isProcessAlive: () => false },
+      );
       const entries = await readdir(dir);
       expect(entries.some((name) => name.includes(".corrupt-"))).toBe(true);
       await lease.release();

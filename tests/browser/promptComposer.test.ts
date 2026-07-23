@@ -9,8 +9,81 @@ import {
   CONVERSATION_TURN_SELECTOR,
 } from "../../src/browser/constants.js";
 import { computeRenderedPromptDomSha256 } from "../../src/browser/promptDomMatch.js";
+import { BrowserAutomationError } from "../../src/oracle/errors.js";
 
 describe("promptComposer", () => {
+  function makeTerminalGuard() {
+    return {
+      expression: "(() => ({ installed: true }))()",
+      assertResult: vi.fn(),
+      verdictBinding: {
+        name: "__oracle_test_terminal_verdict",
+        parsePayload: (payload: string): unknown | undefined => {
+          try {
+            return JSON.parse(payload);
+          } catch {
+            return undefined;
+          }
+        },
+      },
+      afterDispatchExpression: "(() => globalThis.__oracle_test_page_verdict)()",
+      assertAfterDispatchResult(value: unknown): void {
+        const status =
+          value && typeof value === "object" ? (value as { status?: unknown }).status : null;
+        if (status === "allowed") return;
+        throw new BrowserAutomationError("Protected dispatch was not allowed.", {
+          stage: "model-selection",
+          code:
+            status === "blocked"
+              ? "protected-route-dispatch-blocked"
+              : "protected-route-dispatch-unproven",
+          retryable: false,
+        });
+      },
+      isDispatchDefinitelyBlocked: (value: unknown): boolean =>
+        Boolean(
+          value &&
+          typeof value === "object" &&
+          (value as { status?: unknown }).status === "blocked",
+        ),
+    };
+  }
+
+  function makeTerminalGuardRuntime(pageStatus: "allowed" | "armed" | "blocked") {
+    let bindingListener: ((event: { name: string; payload: string }) => void) | undefined;
+    const detach = vi.fn();
+    const runtime = {
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({ result: { value: { status: "point", x: 10, y: 20 } } })
+        .mockResolvedValueOnce({
+          result: {
+            value: {
+              sendTarget: { status: "point", x: 10, y: 20 },
+              routeProof: { installed: true },
+            },
+          },
+        })
+        .mockResolvedValueOnce({ result: { value: { status: pageStatus, lastEvent: "click" } } }),
+      bindingCalled: vi.fn((listener: (event: { name: string; payload: string }) => void) => {
+        bindingListener = listener;
+        return detach;
+      }),
+      addBinding: vi.fn().mockResolvedValue(undefined),
+      removeBinding: vi.fn().mockResolvedValue(undefined),
+    };
+    return {
+      detach,
+      emit(status: "allowed" | "blocked"): void {
+        bindingListener?.({
+          name: "__oracle_test_terminal_verdict",
+          payload: JSON.stringify({ status, lastEvent: "click" }),
+        });
+      },
+      runtime,
+    };
+  }
+
   test("fails composer clearing when stale text remains", async () => {
     const runtime = {
       evaluate: vi.fn().mockResolvedValue({
@@ -620,6 +693,267 @@ describe("promptComposer", () => {
     expect(input.dispatchKeyEvent).not.toHaveBeenCalled();
   });
 
+  test("a final route-label guard shares the send-target evaluation and can veto dispatch", async () => {
+    const routeChanged = new Error("protected route changed after preflight");
+    const assertResult = vi.fn(() => {
+      throw routeChanged;
+    });
+    const input = { dispatchMouseEvent: vi.fn(), dispatchKeyEvent: vi.fn() };
+    const runtime = {
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({ result: { value: { status: "point", x: 10, y: 20 } } })
+        .mockResolvedValueOnce({
+          result: {
+            value: {
+              sendTarget: { status: "point", x: 10, y: 20 },
+              routeProof: { model: "GPT-5.6 Sol", mode: "Standard" },
+            },
+          },
+        }),
+    };
+
+    await expect(
+      promptComposer.attemptSendButton(
+        runtime as never,
+        input as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        vi.fn().mockResolvedValue({
+          expression: "(() => ({ model: 'GPT-5.6 Sol', mode: 'Standard' }))()",
+          assertResult,
+        }),
+      ),
+    ).rejects.toBe(routeChanged);
+
+    const finalExpression = runtime.evaluate.mock.calls[1]?.[0].expression as string;
+    expect(finalExpression).toContain("sendTarget:");
+    expect(finalExpression).toContain("routeProof:");
+    expect(finalExpression).toContain("data-oracle-send-binding");
+    expect(assertResult).toHaveBeenCalledWith({ model: "GPT-5.6 Sol", mode: "Standard" });
+    expect(input.dispatchMouseEvent).not.toHaveBeenCalled();
+    expect(input.dispatchKeyEvent).not.toHaveBeenCalled();
+  });
+
+  test("a terminal binding authorizes exactly one protected dispatch report", async () => {
+    const harness = makeTerminalGuardRuntime("allowed");
+    const onDispatchAttempt = vi.fn();
+    const input = {
+      dispatchMouseEvent: vi.fn(async ({ type }: { type: string }) => {
+        if (type === "mouseReleased") harness.emit("allowed");
+      }),
+    };
+
+    await expect(
+      promptComposer.attemptSendButton(
+        harness.runtime as never,
+        input as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        vi.fn().mockResolvedValue(makeTerminalGuard()),
+        onDispatchAttempt,
+      ),
+    ).resolves.toBe(true);
+
+    expect(onDispatchAttempt).toHaveBeenCalledTimes(1);
+    expect(input.dispatchMouseEvent).toHaveBeenCalledTimes(3);
+    expect(harness.runtime.addBinding).toHaveBeenCalledWith({
+      name: "__oracle_test_terminal_verdict",
+    });
+    expect(harness.runtime.removeBinding).toHaveBeenCalledWith({
+      name: "__oracle_test_terminal_verdict",
+    });
+    expect(harness.detach).toHaveBeenCalledTimes(1);
+  });
+
+  test("a terminal blocked verdict dispatches protocol events but never marks submitted", async () => {
+    const harness = makeTerminalGuardRuntime("blocked");
+    const onDispatchAttempt = vi.fn();
+    const input = {
+      dispatchMouseEvent: vi.fn(async ({ type }: { type: string }) => {
+        if (type === "mousePressed") harness.emit("blocked");
+      }),
+    };
+
+    await expect(
+      promptComposer.attemptSendButton(
+        harness.runtime as never,
+        input as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        vi.fn().mockResolvedValue(makeTerminalGuard()),
+        onDispatchAttempt,
+      ),
+    ).rejects.toMatchObject({
+      details: { code: "protected-route-dispatch-blocked", retryable: false },
+    });
+
+    expect(input.dispatchMouseEvent).toHaveBeenCalledTimes(3);
+    expect(onDispatchAttempt).not.toHaveBeenCalled();
+    expect(harness.detach).toHaveBeenCalledTimes(1);
+  });
+
+  test("protected dispatch refuses the untrusted DOM click fallback before submission", async () => {
+    const harness = makeTerminalGuardRuntime("armed");
+    const onDispatchAttempt = vi.fn();
+
+    await expect(
+      promptComposer.attemptSendButton(
+        harness.runtime as never,
+        {} as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        vi.fn().mockResolvedValue(makeTerminalGuard()),
+        onDispatchAttempt,
+      ),
+    ).rejects.toMatchObject({
+      details: { code: "protected-trusted-input-unavailable", retryable: false },
+    });
+
+    expect(onDispatchAttempt).not.toHaveBeenCalled();
+    expect(harness.runtime.removeBinding).toHaveBeenCalledTimes(1);
+  });
+
+  test("a failed Runtime binding arm detaches and attempts idempotent binding cleanup", async () => {
+    const harness = makeTerminalGuardRuntime("armed");
+    harness.runtime.evaluate.mockReset();
+    harness.runtime.evaluate
+      .mockResolvedValueOnce({ result: { value: { status: "point", x: 10, y: 20 } } })
+      .mockResolvedValueOnce({ result: { value: { status: "missing" } } });
+    harness.runtime.addBinding.mockRejectedValueOnce(new Error("binding unavailable"));
+    const onDispatchAttempt = vi.fn();
+    const input = { dispatchMouseEvent: vi.fn() };
+
+    await expect(
+      promptComposer.attemptSendButton(
+        harness.runtime as never,
+        input as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        vi.fn().mockResolvedValue(makeTerminalGuard()),
+        onDispatchAttempt,
+      ),
+    ).rejects.toMatchObject({
+      details: { code: "protected-dispatch-binding-arm-failed", retryable: false },
+    });
+
+    expect(input.dispatchMouseEvent).not.toHaveBeenCalled();
+    expect(onDispatchAttempt).not.toHaveBeenCalled();
+    expect(harness.detach).toHaveBeenCalledTimes(1);
+    expect(harness.runtime.removeBinding).toHaveBeenCalledWith({
+      name: "__oracle_test_terminal_verdict",
+    });
+  });
+
+  test("a pre-press input failure stays pre-submit and still cleans the guard", async () => {
+    const harness = makeTerminalGuardRuntime("armed");
+    const onDispatchAttempt = vi.fn();
+    const moveFailure = new Error("mouse move failed");
+    const input = {
+      dispatchMouseEvent: vi.fn(async ({ type }: { type: string }) => {
+        if (type === "mouseMoved") throw moveFailure;
+      }),
+    };
+
+    await expect(
+      promptComposer.attemptSendButton(
+        harness.runtime as never,
+        input as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        vi.fn().mockResolvedValue(makeTerminalGuard()),
+        onDispatchAttempt,
+      ),
+    ).rejects.toBe(moveFailure);
+
+    expect(onDispatchAttempt).not.toHaveBeenCalled();
+    expect(harness.runtime.removeBinding).toHaveBeenCalledTimes(1);
+    expect(harness.detach).toHaveBeenCalledTimes(1);
+  });
+
+  test("press-start uncertainty marks submitted unless a terminal verdict proves blocking", async () => {
+    for (const blocked of [false, true]) {
+      const harness = makeTerminalGuardRuntime(blocked ? "blocked" : "armed");
+      const onDispatchAttempt = vi.fn();
+      const pressFailure = new Error("mouse press response lost");
+      const input = {
+        dispatchMouseEvent: vi.fn(async ({ type }: { type: string }) => {
+          if (type !== "mousePressed") return;
+          if (blocked) harness.emit("blocked");
+          throw pressFailure;
+        }),
+      };
+
+      const result = promptComposer.attemptSendButton(
+        harness.runtime as never,
+        input as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        vi.fn().mockResolvedValue(makeTerminalGuard()),
+        onDispatchAttempt,
+      );
+      if (blocked) {
+        await expect(result).rejects.toMatchObject({
+          details: { code: "protected-route-dispatch-blocked" },
+        });
+        expect(onDispatchAttempt).not.toHaveBeenCalled();
+      } else {
+        await expect(result).rejects.toBe(pressFailure);
+        expect(onDispatchAttempt).toHaveBeenCalledTimes(1);
+      }
+    }
+  });
+
+  test("an allowed binding survives page-verdict cleanup failure", async () => {
+    const harness = makeTerminalGuardRuntime("allowed");
+    harness.runtime.evaluate.mockReset();
+    harness.runtime.evaluate
+      .mockResolvedValueOnce({ result: { value: { status: "point", x: 10, y: 20 } } })
+      .mockResolvedValueOnce({
+        result: {
+          value: {
+            sendTarget: { status: "point", x: 10, y: 20 },
+            routeProof: { installed: true },
+          },
+        },
+      })
+      .mockRejectedValueOnce(new Error("execution context destroyed"));
+    const onDispatchAttempt = vi.fn();
+    const input = {
+      dispatchMouseEvent: vi.fn(async ({ type }: { type: string }) => {
+        if (type === "mouseReleased") harness.emit("allowed");
+      }),
+    };
+
+    await expect(
+      promptComposer.attemptSendButton(
+        harness.runtime as never,
+        input as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        vi.fn().mockResolvedValue(makeTerminalGuard()),
+        onDispatchAttempt,
+      ),
+    ).resolves.toBe(true);
+    expect(onDispatchAttempt).toHaveBeenCalledTimes(1);
+  });
+
   test("DOM click fallback must prove dispatch instead of reporting fake success", async () => {
     const runtime = {
       evaluate: vi
@@ -686,6 +1020,59 @@ describe("promptComposer", () => {
     expect(input.dispatchMouseEvent).not.toHaveBeenCalled();
     expect(beforePromptSubmit).not.toHaveBeenCalled();
     expect(onPromptSubmitted).not.toHaveBeenCalled();
+  });
+
+  test("Enter fallback does not mark submitted when the submission-capable keyDown fails", async () => {
+    vi.useFakeTimers();
+    try {
+      const onPromptSubmitted = vi.fn();
+      const keyFailure = new Error("key dispatch failed");
+      const runtime = {
+        evaluate: vi.fn(async ({ expression }: { expression: string }) => {
+          if (expression.includes("document.readyState")) {
+            return { result: { value: { ready: true, composer: true, fileInput: false } } };
+          }
+          if (expression.includes("dispatchClickSequence")) {
+            return { result: { value: { focused: true } } };
+          }
+          if (expression.includes("editorText")) {
+            return {
+              result: { value: { editorText: "hello", fallbackValue: "", activeValue: "hello" } },
+            };
+          }
+          if (expression.includes("button.scrollIntoView")) {
+            return { result: { value: { status: "missing", reason: "send-button-missing" } } };
+          }
+          throw new Error("unexpected evaluation");
+        }),
+      };
+      const input = {
+        insertText: vi.fn(),
+        dispatchKeyEvent: vi.fn(async () => {
+          throw keyFailure;
+        }),
+      };
+      const logger = Object.assign(vi.fn(), { verbose: false });
+
+      const submission = submitPrompt(
+        {
+          runtime: runtime as never,
+          input: input as never,
+          baselineTurns: 0,
+          onPromptSubmitted,
+        },
+        "hello",
+        logger as never,
+      );
+      const assertion = expect(submission).rejects.toBe(keyFailure);
+      await vi.advanceTimersByTimeAsync(25_000);
+      await assertion;
+
+      expect(input.dispatchKeyEvent).toHaveBeenCalledTimes(1);
+      expect(onPromptSubmitted).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("marks prompt submitted before commit verification finishes", async () => {

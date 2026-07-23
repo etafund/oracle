@@ -25,6 +25,7 @@ export const SESSION_STATUS_VALUES = [
   "partial",
   "error",
   "cancelled",
+  "imported",
 ] as const satisfies readonly SessionStatus[];
 
 // Compile-time exhaustiveness guard: if `SessionStatus` ever grows a value
@@ -35,12 +36,13 @@ type _StatusExhaustive = SessionStatus extends (typeof SESSION_STATUS_VALUES)[nu
 const _statusExhaustive: _StatusExhaustive = true;
 void _statusExhaustive;
 
-/** Statuses a session can no longer leave — the run has finished (well or badly). */
+/** Statuses a record can no longer leave — including metadata-only imports. */
 export const TERMINAL_SESSION_STATUSES = [
   "completed",
   "partial",
   "error",
   "cancelled",
+  "imported",
 ] as const satisfies readonly SessionStatus[];
 
 /** Statuses that mean the run is still in flight (or about to start). */
@@ -64,12 +66,29 @@ export function coerceSessionStatus(value: string): SessionStatus {
   return (STATUS_SET.has(value) ? value : "error") as SessionStatus;
 }
 
+/**
+ * Coerce a stored status after the caller has validated any imported-session
+ * claim. A bare `status: "imported"` is not sufficient evidence: only the
+ * exact metadata-only shape written by the strict importer may retain that
+ * status on user- and agent-facing surfaces. Invalid imported records fail
+ * closed as a terminal error.
+ */
+export function coerceValidatedSessionStatus(
+  value: string,
+  importedSessionIsPure: boolean,
+): SessionStatus {
+  if (value === "imported" && !importedSessionIsPure) {
+    return "error";
+  }
+  return coerceSessionStatus(value);
+}
+
 /** True when `status` is a terminal state (`oracle wait` stops on these). */
 export function isTerminalSessionStatus(status: string): boolean {
   return TERMINAL_SET.has(status);
 }
 
-/** True when a terminal status represents a successful run (agent-facing exit 0). */
+/** True only when a terminal status represents a successful model run. */
 export function isSuccessTerminalStatus(status: string): boolean {
   return status === "completed" || status === "partial";
 }

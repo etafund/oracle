@@ -1,5 +1,6 @@
 export {
   chatgptDomProvider,
+  buildGpt56SolProFinalDispatchGuard,
   readGpt56SolProRouteReadOnly,
   type Gpt56SolProReadOnlyRouteEvidence,
 } from "./chatgptDomProvider.js";

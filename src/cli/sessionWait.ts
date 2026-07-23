@@ -9,7 +9,8 @@
 // the session reaches a terminal state OR the --timeout-seconds deadline
 // passes, and exits with a code an agent can branch on:
 //
-//   * 0                              — terminal success (completed/partial)
+//   * 0                              — terminal run success (completed/partial)
+//                                      or a valid metadata-only import
 //   * 3/4/5/6 (failure taxonomy)     — terminal failure, classified
 //   * 1                              — terminal failure (generic) / cancelled
 //   * 7 (ORACLE_WAIT_TIMEOUT_EXIT_CODE) — deadline hit, still in flight
@@ -28,6 +29,7 @@ import {
   buildSessionJsonEnvelope,
   buildSessionNotFoundEnvelope,
   resolveSessionExitCode,
+  resolveValidatedSessionStatus,
 } from "./sessionJson.js";
 import { isTerminalSessionStatus } from "./sessionStatus.js";
 
@@ -87,7 +89,7 @@ export async function runWaitLoop(
       metadata = fresh;
     }
     deps.onObserve?.(metadata);
-    if (isTerminalSessionStatus(metadata.status)) {
+    if (isTerminalSessionStatus(resolveValidatedSessionStatus(metadata))) {
       return { outcome: "terminal", metadata, exitCode: resolveSessionExitCode(metadata) ?? 0 };
     }
     if (deadline != null) {
@@ -148,9 +150,10 @@ export async function runWaitCommand(
     initialPollMs: io.deps?.initialPollMs,
     maxPollMs: io.deps?.maxPollMs,
     onObserve: (metadata) => {
-      if (metadata.status !== lastStatus) {
-        lastStatus = metadata.status;
-        progress(`  session ${sessionId} status: ${metadata.status}`);
+      const status = resolveValidatedSessionStatus(metadata);
+      if (status !== lastStatus) {
+        lastStatus = status;
+        progress(`  session ${sessionId} status: ${status}`);
       }
       io.deps?.onObserve?.(metadata);
     },
@@ -166,6 +169,7 @@ export async function runWaitCommand(
   }
 
   const metadata = result.metadata as SessionMetadata;
+  const status = resolveValidatedSessionStatus(metadata);
   if (jsonMode) {
     const paths = await sessionStore.getPaths(sessionId).catch(() => null);
     const { envelope } = buildSessionJsonEnvelope(metadata, {
@@ -178,12 +182,10 @@ export async function runWaitCommand(
 
   if (result.outcome === "timeout") {
     progress(
-      `Timed out after ${timeoutLabel}; session ${sessionId} is still ${metadata.status}. Exit ${result.exitCode} (wait_timeout).`,
+      `Timed out after ${timeoutLabel}; session ${sessionId} is still ${status}. Exit ${result.exitCode} (wait_timeout).`,
     );
   } else {
-    progress(
-      `Session ${sessionId} finished with status ${metadata.status}. Exit ${result.exitCode}.`,
-    );
+    progress(`Session ${sessionId} finished with status ${status}. Exit ${result.exitCode}.`);
   }
   return result.exitCode;
 }

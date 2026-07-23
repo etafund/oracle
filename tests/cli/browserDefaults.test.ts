@@ -59,6 +59,7 @@ describe("applyBrowserDefaultsFromConfig", () => {
         inputTimeoutMs: 15_000,
         attachmentTimeoutMs: 90_000,
         profileLockTimeoutMs: 90_000,
+        queueTimeoutMs: 1_200_000,
         maxConcurrentTabs: 4,
         cookieSyncWaitMs: 4_000,
         headless: true,
@@ -76,6 +77,7 @@ describe("applyBrowserDefaultsFromConfig", () => {
     expect(options.browserInputTimeout).toBe("15000");
     expect(options.browserAttachmentTimeout).toBe("90000");
     expect(options.browserProfileLockTimeout).toBe("90000");
+    expect(options.browserQueueTimeout).toBe("1200000");
     expect(options.browserMaxConcurrentTabs).toBe("4");
     expect(options.browserCookieWait).toBe("4000");
     expect(options.browserHeadless).toBe(true);

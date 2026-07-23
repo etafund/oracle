@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import { buildImportedChatgptConversationSessionMetadata } from "../../src/browser/importedConversation.ts";
 import type { SessionMetadata } from "../../src/sessionManager.ts";
 
 const sessionStoreMock = vi.hoisted(() => ({
@@ -23,6 +24,16 @@ function meta(overrides: Partial<SessionMetadata> = {}): SessionMetadata {
     options: {} as SessionMetadata["options"],
     ...overrides,
   } as SessionMetadata;
+}
+
+function importedMeta(): SessionMetadata {
+  return buildImportedChatgptConversationSessionMetadata({
+    sessionId: "sess-1",
+    conversationUrl: "https://chatgpt.com/c/wait-import",
+    conversationId: "wait-import",
+    cwd: "/tmp/wait-import",
+    importedAt: "2026-07-01T00:00:00.000Z",
+  });
 }
 
 /** A virtual clock: sleep() advances `now` so timeouts are deterministic. */
@@ -78,6 +89,22 @@ describe("runWaitLoop", () => {
     const result = await runWaitLoop("sess-1", {}, deps(readSession));
     expect(result.outcome).toBe("terminal");
     expect(result.exitCode).toBe(5);
+  });
+
+  test("returns exit 0 only for an exact pure imported reference", async () => {
+    const result = await runWaitLoop("sess-1", {}, deps(vi.fn(async () => importedMeta())));
+    expect(result.outcome).toBe("terminal");
+    expect(result.exitCode).toBe(0);
+  });
+
+  test("fails a raw imported status closed with exit 1", async () => {
+    const result = await runWaitLoop(
+      "sess-1",
+      {},
+      deps(vi.fn(async () => meta({ status: "imported" }))),
+    );
+    expect(result.outcome).toBe("terminal");
+    expect(result.exitCode).toBe(1);
   });
 
   test("returns wait_timeout (exit 7) when the deadline passes while still running", async () => {
@@ -171,5 +198,26 @@ describe("runWaitCommand", () => {
     );
     expect(exitCode).toBe(ORACLE_WAIT_TIMEOUT_EXIT_CODE);
     expect(stdout.join("")).toContain("wait_timeout");
+  });
+
+  test("invalid imported metadata is reported as error and exits nonzero", async () => {
+    sessionStoreMock.getPaths.mockResolvedValue({ dir: "/d", log: "/d/output.log" });
+    const stdout: string[] = [];
+    const exitCode = await runWaitCommand(
+      "sess-1",
+      { json: false },
+      {
+        stdout: (text) => stdout.push(text),
+        stderr: () => undefined,
+        deps: {
+          readSession: vi.fn(async () => meta({ status: "imported" })),
+          sleep: vi.fn(async () => undefined),
+          now: () => 0,
+        },
+      },
+    );
+    expect(exitCode).toBe(1);
+    expect(stdout.join("")).toContain("status: error");
+    expect(stdout.join("")).toContain("finished with status error. Exit 1");
   });
 });

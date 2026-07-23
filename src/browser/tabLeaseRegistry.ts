@@ -1,8 +1,10 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { link, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
+import { performance } from "node:perf_hooks";
 import type { BrowserLogger } from "./types.js";
+import { BrowserAutomationError } from "../oracle/errors.js";
 import { isProcessAlive } from "./profileState.js";
 import { delay } from "./utils.js";
 
@@ -10,9 +12,23 @@ export const DEFAULT_MAX_CONCURRENT_CHATGPT_TABS = 3;
 const REGISTRY_FILENAME = "oracle-tab-leases.json";
 const REGISTRY_LOCK_DIRNAME = "oracle-tab-leases.lock";
 const REGISTRY_LOCK_OWNER_FILENAME = "owner.json";
+const REGISTRY_LOCK_ABANDONED_FILENAME = "abandoned.json";
 const DEFAULT_POLL_MS = 1000;
 const DEFAULT_STALE_MS = 6 * 60 * 60 * 1000;
+// Waiters heartbeat on every poll and own no browser state. A stopped waiter
+// may safely lose its place and rejoin when it resumes; keeping an orphaned
+// waiter for the lease's six-hour safety window would unnecessarily wedge the
+// whole FIFO behind a still-live long-running serve PID.
+const DEFAULT_WAITER_STALE_MS = 2 * 60 * 1000;
+const MAX_WAITER_FUTURE_SKEW_MS = 5 * 60 * 1000;
 const REGISTRY_LOCK_TIMEOUT_MS = 10_000;
+/**
+ * Windows can briefly report a just-released lock directory as busy or
+ * inaccessible while filesystem handles drain. Retry only these known
+ * transient codes, and only for a small bounded window; EEXIST continues to
+ * use the owner-aware lock path below.
+ */
+const WINDOWS_LOCK_TRANSIENT_RETRY_MS = 500;
 // Leave a margin after the dead-owner steal threshold so bounded mutation
 // waits get one real reclamation attempt before their own deadline wins.
 const REGISTRY_MUTATION_LOCK_TIMEOUT_MS = REGISTRY_LOCK_TIMEOUT_MS + 1_000;
@@ -25,11 +41,13 @@ const REGISTRY_MUTATION_LOCK_TIMEOUT_MS = REGISTRY_LOCK_TIMEOUT_MS + 1_000;
 const OWNERLESS_LOCK_STEAL_AGE_MS = 60_000;
 /**
  * Bounded ASSUME-ACTIVE recovery for a corrupt registry file: quarantine and
- * restart empty only when no PID mentioned in the corrupt bytes is alive AND
- * the file has been quiet for this long. Keeps a single corrupt write from
- * deadlocking the fleet forever without ever racing a live writer.
+ * restart empty only when at least one PID remains extractable, every such
+ * PID is provably dead, and the file has been quiet for this long. Corruption
+ * without owner evidence remains fail-closed for manual repair.
  */
 const CORRUPT_REGISTRY_RECOVERY_QUIET_MS = 15 * 60 * 1000;
+const DEFERRED_RELEASE_INITIAL_RETRY_MS = 250;
+const DEFERRED_RELEASE_MAX_RETRY_MS = 30_000;
 
 export interface BrowserTabLeaseRecord {
   id: string;
@@ -43,16 +61,49 @@ export interface BrowserTabLeaseRecord {
   updatedAt: string;
 }
 
+interface BrowserTabLeaseIdentity {
+  id: string;
+  pid: number;
+  createdAt: string;
+}
+
+interface DeferredBrowserTabLeaseRelease {
+  identity: BrowserTabLeaseIdentity;
+  /** The original release mutation committed; only lock recovery remains. */
+  committedReleaseResult?: DeferredReleaseRepairResult;
+  attempt: number;
+  initialDelayMs: number;
+  timer: ReturnType<typeof setTimeout> | null;
+  completion: Promise<void>;
+  resolveCompletion: () => void;
+  onRelease?: (context: { isLastLease: boolean }) => Promise<void>;
+  onRecovered: Set<() => void>;
+}
+
+const deferredBrowserTabLeaseReleases = new Map<string, DeferredBrowserTabLeaseRelease>();
+
+interface BrowserTabWaiterRecord {
+  id: string;
+  pid: number;
+  sessionId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface BrowserTabLease {
   id: string;
   release: (options?: {
     onRelease?: (context: { isLastLease: boolean }) => Promise<void>;
+    /** Called if a failed synchronous release is later repaired in the background. */
+    onDeferredRelease?: () => void;
   }) => Promise<void>;
   update: (patch: Partial<BrowserTabLeaseRecord>) => Promise<void>;
 }
 
 interface BrowserTabLeaseDeps {
   now?: () => number;
+  /** Monotonic clock for in-process budgets; wall time remains `now`. */
+  monotonicNow?: () => number;
   pid?: number;
   isProcessAlive?: (pid: number) => boolean;
   /** Test seam for the lock-free DevTools target snapshot used by reclamation. */
@@ -61,10 +112,23 @@ interface BrowserTabLeaseDeps {
     chromePort: number;
     signal?: AbortSignal;
   }) => Promise<readonly string[]>;
+  /** Test seam for lock-publication/release fault injection. */
+  registryLockOptions?: Pick<
+    RegistryLockWaitOptions,
+    "beforeOwnerPublish" | "platform" | "releaseRetryMs" | "rmLockDir"
+  >;
 }
 
 const TARGET_RECLAIM_PROBE_TIMEOUT_MS = 1_500;
 const TARGET_RECLAIM_PROBE_INTERVAL_MS = 5_000;
+
+function defaultMonotonicNow(): number {
+  return performance.now();
+}
+
+function elapsedMonotonicMs(startedAt: number, monotonicNow: () => number): number {
+  return Math.max(0, monotonicNow() - startedAt);
+}
 
 /**
  * Fail-closed read outcome. `readable: false` means the registry exists but
@@ -73,7 +137,13 @@ const TARGET_RECLAIM_PROBE_INTERVAL_MS = 5_000;
  * never as an empty registry.
  */
 type RegistryReadOutcome =
-  | { readable: true; valid: BrowserTabLeaseRecord[]; opaque: unknown[] }
+  | {
+      readable: true;
+      valid: BrowserTabLeaseRecord[];
+      opaque: unknown[];
+      /** FIFO order, including malformed entries retained fail-closed. */
+      waiters: unknown[];
+    }
   | { readable: false; reason: string; cause?: unknown; corruptRaw?: string };
 
 /** Typed refusal for the lease-grant path when the registry is unverifiable. */
@@ -98,11 +168,12 @@ export class TabLeaseRegistryUnreadableError extends Error {
  * abandoning it.
  */
 export class TabLeaseRegistryLockOwnershipLostError extends Error {
-  constructor(lockDir: string) {
+  constructor(lockDir: string, options?: ErrorOptions) {
     super(
       `Tab-lease registry lock at ${lockDir} was reclaimed by another process while this process held it; ` +
         "refusing to release a lock that is no longer ours. Treat the operation just performed under this " +
         "lock as unverified, not successful.",
+      options,
     );
     this.name = "TabLeaseRegistryLockOwnershipLostError";
   }
@@ -127,9 +198,40 @@ export class TabLeaseRegistryLockCollisionError extends Error {
 }
 
 export class TabLeaseRegistryLockWaitError extends Error {
+  readonly reason: "aborted" | "timed out";
+
   constructor(lockDir: string, reason: "aborted" | "timed out") {
     super(`Tab-lease registry lock wait ${reason} at ${lockDir}.`);
     this.name = "TabLeaseRegistryLockWaitError";
+    this.reason = reason;
+  }
+}
+
+export class TabLeaseRegistryLockReleaseError extends Error {
+  constructor(lockDir: string, cause?: unknown) {
+    super(
+      `Tab-lease registry lock at ${lockDir} could not be proved removed; retaining fail-closed lock state.`,
+      cause === undefined ? undefined : { cause },
+    );
+    this.name = "TabLeaseRegistryLockReleaseError";
+  }
+}
+
+/**
+ * The callback committed successfully, but publishing unlock could not be
+ * proved. Callers must treat `committedResult` as durable ownership evidence,
+ * not retry the mutation as though it never happened.
+ */
+export class TabLeaseRegistryPostCommitUnlockError extends Error {
+  readonly committedResult: unknown;
+
+  constructor(committedResult: unknown, releaseError: unknown) {
+    super(
+      "Tab-lease registry mutation committed, but lock release could not be proved; the committed result remains authoritative.",
+      { cause: releaseError },
+    );
+    this.name = "TabLeaseRegistryPostCommitUnlockError";
+    this.committedResult = committedResult;
   }
 }
 
@@ -138,11 +240,81 @@ export class OrphanedBrowserTabLeaseError extends Error {
 
   constructor(lease: BrowserTabLease, cause: unknown) {
     super(
-      `Caller aborted after browser tab lease ${lease.id} was written, and rollback could not be proved; the lease remains active fail-closed.`,
+      `Browser tab lease ${lease.id} was durably written, but acquisition could not prove a safely unlocked hand-off; the lease remains active fail-closed.`,
       { cause },
     );
     this.name = "OrphanedBrowserTabLeaseError";
     this.lease = lease;
+  }
+}
+
+export class OrphanedBrowserTabWaiterError extends Error {
+  constructor(waiterId: string, acquisitionCause: unknown, cleanupCause: unknown) {
+    const acquisitionMessage =
+      acquisitionCause instanceof Error ? acquisitionCause.message : String(acquisitionCause);
+    super(
+      `${acquisitionMessage} Waiter ${waiterId} cleanup could not be proved; it remains queued fail-closed until stale/dead-owner pruning.`,
+      { cause: new AggregateError([acquisitionCause, cleanupCause]) },
+    );
+    this.name = "OrphanedBrowserTabWaiterError";
+  }
+}
+
+/**
+ * Stable refusal when FIFO browser capacity cannot be obtained within the
+ * caller's independent queue budget. A new admission is retry-safe and
+ * pre-submit; recovery of an already-submitted run is explicitly not.
+ */
+export class BrowserTabLeaseQueueTimeoutError extends BrowserAutomationError {
+  constructor(
+    elapsedMs: number,
+    maxConcurrentTabs: number,
+    cause?: unknown,
+    promptSubmitted = false,
+  ) {
+    super(
+      `Timed out waiting for ChatGPT browser slot after ${Math.round(elapsedMs / 1000)}s (${maxConcurrentTabs} max).`,
+      {
+        stage: "browser-queue",
+        code: "browser_lock_timeout",
+        error_code: "browser_lock_timeout",
+        oracleErrorClass: "capacity_busy",
+        // A normal admission wait happens before dispatch and is safely
+        // retryable. Recovery admission, however, belongs to an already-
+        // submitted session: never let a generic retry wrapper interpret that
+        // session as safe to replay merely because this particular wait was
+        // pre-capture.
+        retryable: !promptSubmitted,
+        runtime: { promptSubmitted },
+      },
+      cause,
+    );
+    this.name = "BrowserTabLeaseQueueTimeoutError";
+  }
+}
+
+/**
+ * The FIFO queue budget expired while contending for the registry mutex,
+ * before capacity could even be inspected. Keep the closed v18
+ * `browser_lock_timeout` code, but expose a distinct stage/subtype so this is
+ * not diagnosed as a full tab-capacity queue.
+ */
+export class BrowserTabLeaseRegistryLockTimeoutError extends BrowserAutomationError {
+  constructor(elapsedMs: number, cause?: unknown, promptSubmitted = false) {
+    super(
+      `Timed out waiting for the ChatGPT tab-lease registry lock after ${Math.round(elapsedMs / 1000)}s.`,
+      {
+        stage: "browser-registry-lock",
+        subtype: "registry_mutex",
+        code: "browser_lock_timeout",
+        error_code: "browser_lock_timeout",
+        oracleErrorClass: "capacity_busy",
+        retryable: !promptSubmitted,
+        runtime: { promptSubmitted },
+      },
+      cause,
+    );
+    this.name = "BrowserTabLeaseRegistryLockTimeoutError";
   }
 }
 
@@ -168,6 +340,8 @@ export async function acquireBrowserTabLease(
     chromeHost?: string;
     chromePort?: number;
     staleMs?: number;
+    /** True when admission belongs to recovery of an already-submitted run. */
+    promptSubmitted?: boolean;
     signal?: AbortSignal;
   },
   deps: BrowserTabLeaseDeps = {},
@@ -176,18 +350,25 @@ export async function acquireBrowserTabLease(
   const pollMs = Math.max(50, options.pollMs ?? DEFAULT_POLL_MS);
   const timeoutMs = Math.max(0, options.timeoutMs ?? 0);
   const staleMs = Math.max(60_000, options.staleMs ?? DEFAULT_STALE_MS);
-  const now = deps.now ?? Date.now;
+  const wallNow = deps.now ?? Date.now;
+  const monotonicNow = deps.monotonicNow ?? defaultMonotonicNow;
   const pid = deps.pid ?? process.pid;
   const alive = deps.isProcessAlive ?? isProcessAlive;
   const leaseId = randomUUID();
-  const startedAt = now();
+  const startedAt = monotonicNow();
   let warned = false;
   let lastHeartbeatAt = 0;
   let lastTargetReclaimProbeAt = Number.NEGATIVE_INFINITY;
+  let waiterMayExist = false;
+  let leaseAcquired = false;
+  let acquiredIdentity: BrowserTabLeaseIdentity | null = null;
   const createLeaseHandle = (): BrowserTabLease => ({
     id: leaseId,
     release: async (releaseOptions) =>
-      releaseBrowserTabLease(profileDir, leaseId, options.logger, releaseOptions),
+      releaseBrowserTabLease(profileDir, leaseId, options.logger, {
+        ...releaseOptions,
+        expectedIdentity: acquiredIdentity ?? undefined,
+      }),
     update: async (patch) => updateBrowserTabLease(profileDir, leaseId, patch, options.logger),
   });
 
@@ -197,119 +378,196 @@ export async function acquireBrowserTabLease(
     }
   };
 
-  for (;;) {
-    throwIfAborted();
-    // A headful challenge intentionally preserves both its exact target and
-    // capacity lease so a human can clear the wall. Once the human closes
-    // that tab, however, the live serve PID would otherwise keep the lease
-    // occupied until the six-hour heartbeat bound. Reconcile that state
-    // before granting capacity. The DevTools read is deliberately OUTSIDE the
-    // registry lock; reclaimMissingBrowserTabLeasesForClosedTargets performs
-    // a second, locked compare-and-remove against the exact snapshot record.
-    if (
-      typeof options.chromeHost === "string" &&
-      options.chromeHost.length > 0 &&
-      typeof options.chromePort === "number" &&
-      Number.isInteger(options.chromePort) &&
-      options.chromePort > 0 &&
-      Date.now() - lastTargetReclaimProbeAt >= TARGET_RECLAIM_PROBE_INTERVAL_MS
-    ) {
-      lastTargetReclaimProbeAt = Date.now();
-      await reclaimMissingBrowserTabLeasesForClosedTargets(
-        profileDir,
-        {
-          chromeHost: options.chromeHost,
-          chromePort: options.chromePort,
-          logger: options.logger,
-          signal: options.signal,
-        },
-        { listChromeTargetIds: deps.listChromeTargetIds },
-      ).catch((error) => {
-        // Probe/read/lock ambiguity fails closed: retain every lease and let
-        // the normal capacity path decide whether to wait. A caller abort is
-        // surfaced by throwIfAborted immediately below.
-        options.logger?.(
-          `[browser] Could not reconcile closed-target tab leases: ${error instanceof Error ? error.message : String(error)}; retaining them fail-closed.`,
-        );
-      });
+  try {
+    for (;;) {
       throwIfAborted();
-    }
-    const acquired = await withRegistryLock(
-      profileDir,
-      async () => {
-        const outcome = await readRegistryOutcomeLocked(profileDir, options.logger);
-        if (!outcome.readable) {
-          // Fail-closed grant path: an unverifiable registry cannot prove a
-          // free slot, so refuse with a typed error instead of assuming free.
-          throw new TabLeaseRegistryUnreadableError(profileDir, outcome.reason, outcome.cause);
-        }
-        const pruneOptions = { nowMs: now(), staleMs, isProcessAlive: alive };
-        const activeValid = pruneStaleLeases(outcome.valid, pruneOptions);
-        const activeOpaque = pruneOpaqueRecords(outcome.opaque, pruneOptions);
-        const occupied = activeValid.length + activeOpaque.length;
-        if (occupied >= maxConcurrentTabs) {
-          if (occupied !== outcome.valid.length + outcome.opaque.length) {
-            await writeRegistry(profileDir, [...activeValid, ...activeOpaque]);
-          }
-          return null;
-        }
-        const timestamp = new Date(now()).toISOString();
-        const lease: BrowserTabLeaseRecord = {
-          id: leaseId,
-          pid,
-          sessionId: options.sessionId,
-          chromeHost: options.chromeHost,
-          chromePort: options.chromePort,
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        };
-        await writeRegistry(profileDir, [...activeValid, lease, ...activeOpaque]);
-        return lease;
-      },
-      options.logger,
-      {
-        signal: options.signal,
-        deadlineMs:
-          timeoutMs > 0 ? Date.now() + Math.max(0, timeoutMs - (now() - startedAt)) : undefined,
-      },
-    );
-
-    if (acquired) {
-      const leaseHandle = createLeaseHandle();
-      if (options.signal?.aborted) {
-        // The abort may race the registry write. Remove the just-created
-        // record before surfacing it so a vanished caller cannot leave an
-        // orphan capacity claim without ever receiving a lease handle.
-        try {
-          await leaseHandle.release();
-        } catch (error) {
-          throw new OrphanedBrowserTabLeaseError(leaseHandle, error);
-        }
+      // A headful challenge intentionally preserves both its exact target and
+      // capacity lease so a human can clear the wall. Once the human closes
+      // that tab, however, the live serve PID would otherwise keep the lease
+      // occupied until the six-hour heartbeat bound. Reconcile that state
+      // before granting capacity. The DevTools read is deliberately OUTSIDE the
+      // registry lock; reclaimMissingBrowserTabLeasesForClosedTargets performs
+      // a second, locked compare-and-remove against the exact snapshot record.
+      if (
+        typeof options.chromeHost === "string" &&
+        options.chromeHost.length > 0 &&
+        typeof options.chromePort === "number" &&
+        Number.isInteger(options.chromePort) &&
+        options.chromePort > 0 &&
+        monotonicNow() - lastTargetReclaimProbeAt >= TARGET_RECLAIM_PROBE_INTERVAL_MS
+      ) {
+        lastTargetReclaimProbeAt = monotonicNow();
+        await reclaimMissingBrowserTabLeasesForClosedTargets(
+          profileDir,
+          {
+            chromeHost: options.chromeHost,
+            chromePort: options.chromePort,
+            logger: options.logger,
+            signal: options.signal,
+          },
+          { listChromeTargetIds: deps.listChromeTargetIds },
+        ).catch((error) => {
+          // Probe/read/lock ambiguity fails closed: retain every lease and let
+          // the normal capacity path decide whether to wait. A caller abort is
+          // surfaced by throwIfAborted immediately below.
+          options.logger?.(
+            `[browser] Could not reconcile closed-target tab leases: ${error instanceof Error ? error.message : String(error)}; retaining them fail-closed.`,
+          );
+        });
         throwIfAborted();
       }
-      options.logger?.(
-        `[browser] Acquired ChatGPT browser slot ${leaseId.slice(0, 8)} (${maxConcurrentTabs} max).`,
-      );
-      return leaseHandle;
-    }
+      const acquired = await withRegistryLock(
+        profileDir,
+        async () => {
+          const outcome = await readRegistryOutcomeLocked(profileDir, options.logger);
+          if (!outcome.readable) {
+            // Fail-closed grant path: an unverifiable registry cannot prove a
+            // free slot, so refuse with a typed error instead of assuming free.
+            throw new TabLeaseRegistryUnreadableError(profileDir, outcome.reason, outcome.cause);
+          }
+          const pruneOptions = { nowMs: wallNow(), staleMs, isProcessAlive: alive };
+          const activeValid = pruneStaleLeases(outcome.valid, pruneOptions);
+          const activeOpaque = pruneOpaqueRecords(outcome.opaque, pruneOptions);
+          const timestamp = new Date(wallNow()).toISOString();
+          let activeWaiters = pruneStaleWaiters(outcome.waiters, {
+            ...pruneOptions,
+            staleMs: Math.min(staleMs, DEFAULT_WAITER_STALE_MS),
+          });
+          const existingWaiterIndex = activeWaiters.findIndex(
+            (waiter) => isWaiterRecord(waiter) && waiter.id === leaseId,
+          );
+          if (existingWaiterIndex >= 0) {
+            activeWaiters = activeWaiters.map((waiter, index) =>
+              index === existingWaiterIndex && isWaiterRecord(waiter)
+                ? { ...waiter, updatedAt: timestamp }
+                : waiter,
+            );
+          } else {
+            activeWaiters.push({
+              id: leaseId,
+              pid,
+              sessionId: options.sessionId,
+              createdAt: timestamp,
+              updatedAt: timestamp,
+            } satisfies BrowserTabWaiterRecord);
+          }
 
-    const elapsed = now() - startedAt;
-    if (!warned || now() - lastHeartbeatAt >= 30_000) {
-      options.logger?.(
-        `[browser] Waiting for ChatGPT browser slot (${maxConcurrentTabs} max, ${Math.round(elapsed / 1000)}s elapsed).`,
+          const occupied = activeValid.length + activeOpaque.length;
+          const availableSlots = Math.max(0, maxConcurrentTabs - occupied);
+          const queuePosition = activeWaiters.findIndex(
+            (waiter) => isWaiterRecord(waiter) && waiter.id === leaseId,
+          );
+          if (queuePosition < 0 || queuePosition >= availableSlots) {
+            await writeRegistry(profileDir, {
+              leases: [...activeValid, ...activeOpaque],
+              waiters: activeWaiters,
+            });
+            waiterMayExist = true;
+            return null;
+          }
+
+          const lease: BrowserTabLeaseRecord = {
+            id: leaseId,
+            pid,
+            sessionId: options.sessionId,
+            chromeHost: options.chromeHost,
+            chromePort: options.chromePort,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          };
+          await writeRegistry(profileDir, {
+            leases: [...activeValid, lease, ...activeOpaque],
+            waiters: activeWaiters.filter(
+              (waiter) => !(isWaiterRecord(waiter) && waiter.id === leaseId),
+            ),
+          });
+          waiterMayExist = false;
+          return lease;
+        },
+        options.logger,
+        {
+          ...deps.registryLockOptions,
+          signal: options.signal,
+          timeoutMs:
+            timeoutMs > 0
+              ? Math.max(0, timeoutMs - elapsedMonotonicMs(startedAt, monotonicNow))
+              : undefined,
+          monotonicNow,
+        },
       );
-      warned = true;
-      lastHeartbeatAt = now();
-    }
-    if (timeoutMs > 0 && elapsed >= timeoutMs) {
-      throw new Error(
-        `Timed out waiting for ChatGPT browser slot after ${Math.round(elapsed / 1000)}s (${maxConcurrentTabs} max).`,
+
+      if (acquired) {
+        leaseAcquired = true;
+        acquiredIdentity = browserTabLeaseIdentity(acquired);
+        const leaseHandle = createLeaseHandle();
+        if (options.signal?.aborted) {
+          // The abort may race the registry write. Remove the just-created
+          // record before surfacing it so a vanished caller cannot leave an
+          // orphan capacity claim without ever receiving a lease handle.
+          try {
+            await leaseHandle.release();
+          } catch (error) {
+            throw new OrphanedBrowserTabLeaseError(leaseHandle, error);
+          }
+          throwIfAborted();
+        }
+        options.logger?.(
+          `[browser] Acquired ChatGPT browser slot ${leaseId.slice(0, 8)} (${maxConcurrentTabs} max).`,
+        );
+        return leaseHandle;
+      }
+
+      const elapsed = elapsedMonotonicMs(startedAt, monotonicNow);
+      const heartbeatNow = monotonicNow();
+      if (!warned || heartbeatNow - lastHeartbeatAt >= 30_000) {
+        options.logger?.(
+          `[browser] Waiting for ChatGPT browser slot (${maxConcurrentTabs} max, ${Math.round(elapsed / 1000)}s elapsed).`,
+        );
+        warned = true;
+        lastHeartbeatAt = heartbeatNow;
+      }
+      if (timeoutMs > 0 && elapsed >= timeoutMs) {
+        throw new BrowserTabLeaseQueueTimeoutError(
+          elapsed,
+          maxConcurrentTabs,
+          undefined,
+          options.promptSubmitted === true,
+        );
+      }
+      await delayWithAbort(
+        timeoutMs > 0 ? Math.min(pollMs, timeoutMs - elapsed) : pollMs,
+        options.signal,
       );
     }
-    await delayWithAbort(
-      timeoutMs > 0 ? Math.min(pollMs, timeoutMs - elapsed) : pollMs,
-      options.signal,
-    );
+  } catch (error) {
+    if (
+      error instanceof TabLeaseRegistryPostCommitUnlockError &&
+      isLeaseRecord(error.committedResult) &&
+      error.committedResult.id === leaseId
+    ) {
+      // The whole-document rename landed before unlock failed. Preserve the
+      // resulting lease as an explicit orphan handle so no caller can replay
+      // acquisition while the durable capacity claim is forgotten.
+      leaseAcquired = true;
+      acquiredIdentity = browserTabLeaseIdentity(error.committedResult);
+      throw new OrphanedBrowserTabLeaseError(createLeaseHandle(), error);
+    }
+    const acquisitionError =
+      error instanceof TabLeaseRegistryLockWaitError && error.reason === "timed out"
+        ? new BrowserTabLeaseRegistryLockTimeoutError(
+            elapsedMonotonicMs(startedAt, monotonicNow),
+            error,
+            options.promptSubmitted === true,
+          )
+        : error;
+    if (!leaseAcquired && waiterMayExist) {
+      try {
+        await removeBrowserTabWaiter(profileDir, leaseId, options.logger);
+      } catch (cleanupError) {
+        throw new OrphanedBrowserTabWaiterError(leaseId, acquisitionError, cleanupError);
+      }
+    }
+    throw acquisitionError;
   }
 }
 
@@ -334,6 +592,35 @@ async function delayWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
     };
     signal.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+/** Remove a queued acquisition only after an atomic, locked registry rewrite. */
+async function removeBrowserTabWaiter(
+  profileDir: string,
+  waiterId: string,
+  logger?: BrowserLogger,
+): Promise<void> {
+  await withRegistryLock(
+    profileDir,
+    async () => {
+      const outcome = await readRegistryOutcomeLocked(profileDir, logger);
+      if (!outcome.readable) {
+        throw new TabLeaseRegistryUnreadableError(profileDir, outcome.reason, outcome.cause);
+      }
+      const waiters = outcome.waiters.filter(
+        (waiter) => !(isWaiterRecord(waiter) && waiter.id === waiterId),
+      );
+      if (waiters.length === outcome.waiters.length) {
+        return;
+      }
+      await writeRegistry(profileDir, {
+        leases: [...outcome.valid, ...outcome.opaque],
+        waiters,
+      });
+    },
+    logger,
+    { timeoutMs: REGISTRY_MUTATION_LOCK_TIMEOUT_MS },
+  );
 }
 
 interface ClosedTargetLeaseReclaimDeps {
@@ -433,7 +720,10 @@ export async function reclaimMissingBrowserTabLeasesForClosedTargets(
         return true;
       });
       if (removed.length > 0) {
-        await writeRegistry(profileDir, [...remaining, ...current.opaque]);
+        await writeRegistry(profileDir, {
+          leases: [...remaining, ...current.opaque],
+          waiters: current.waiters,
+        });
       }
       return removed;
     },
@@ -517,50 +807,406 @@ export async function updateBrowserTabLease(
           ? { ...lease, ...patch, id: lease.id, updatedAt: new Date().toISOString() }
           : lease,
       );
-      await writeRegistry(profileDir, [...leases, ...outcome.opaque]);
+      await writeRegistry(profileDir, {
+        leases: [...leases, ...outcome.opaque],
+        waiters: outcome.waiters,
+      });
     },
     logger,
     { timeoutMs: REGISTRY_MUTATION_LOCK_TIMEOUT_MS },
   );
 }
 
-export async function releaseBrowserTabLease(
+function browserTabLeaseIdentitiesEqual(
+  left: BrowserTabLeaseIdentity,
+  right: BrowserTabLeaseIdentity,
+): boolean {
+  return left.id === right.id && left.pid === right.pid && left.createdAt === right.createdAt;
+}
+
+function browserTabLeaseIdentity(record: BrowserTabLeaseRecord): BrowserTabLeaseIdentity {
+  return { id: record.id, pid: record.pid, createdAt: record.createdAt };
+}
+
+async function readBrowserTabLeaseIdentity(
   profileDir: string,
   leaseId: string,
+): Promise<BrowserTabLeaseIdentity | "absent"> {
+  const outcome = await readRegistryOutcome(profileDir);
+  if (!outcome.readable) {
+    throw new TabLeaseRegistryUnreadableError(profileDir, outcome.reason, outcome.cause);
+  }
+  const matches = outcome.valid.filter((lease) => lease.id === leaseId);
+  if (matches.length === 0) return "absent";
+  if (matches.length !== 1) {
+    throw new Error(
+      `Tab-lease identity lookup for ${leaseId} found duplicate records; retaining them fail-closed.`,
+    );
+  }
+  return browserTabLeaseIdentity(matches[0]!);
+}
+
+type DeferredReleaseRepairResult = "removed" | "already-gone-or-replaced";
+
+function isDeferredReleaseRepairResult(value: unknown): value is DeferredReleaseRepairResult {
+  return value === "removed" || value === "already-gone-or-replaced";
+}
+
+async function repairDeferredBrowserTabLeaseRelease(
+  profileDir: string,
+  expected: BrowserTabLeaseIdentity,
   logger?: BrowserLogger,
-  options: { onRelease?: (context: { isLastLease: boolean }) => Promise<void> } = {},
-): Promise<void> {
-  await withRegistryLock(
+  onRelease?: (context: { isLastLease: boolean }) => Promise<void>,
+  committedReleaseResult?: DeferredReleaseRepairResult,
+  registryLockOptions?: Pick<
+    RegistryLockWaitOptions,
+    "mkdirLockDir" | "monotonicNow" | "platform" | "releaseRetryMs" | "rmLockDir" | "timeoutMs"
+  >,
+): Promise<DeferredReleaseRepairResult> {
+  return await withRegistryLock(
     profileDir,
     async () => {
       const outcome = await readRegistryOutcomeLocked(profileDir, logger);
       if (!outcome.readable) {
-        // Truthful release: we cannot prove the record was removed from an
-        // unverifiable registry, so surface the fault instead of pretending.
         throw new TabLeaseRegistryUnreadableError(profileDir, outcome.reason, outcome.cause);
       }
-      const pruneOptions = {
-        nowMs: Date.now(),
-        staleMs: DEFAULT_STALE_MS,
-        isProcessAlive,
-      };
-      const activeValid = pruneStaleLeases(outcome.valid, pruneOptions);
-      const activeOpaque = pruneOpaqueRecords(outcome.opaque, pruneOptions);
-      const ownsLease = activeValid.some((lease) => lease.id === leaseId);
-      const remaining = activeValid.filter((lease) => lease.id !== leaseId);
-      if (ownsLease) {
-        // Keep the lease advertised while the registry lock blocks new
-        // acquisitions. Publish its removal only after the cleanup callback
-        // succeeds; callback failure therefore retains capacity fail-closed.
-        await options.onRelease?.({
-          isLastLease: remaining.length === 0 && activeOpaque.length === 0,
-        });
+      const matchingIndexes = outcome.valid.flatMap((lease, index) =>
+        browserTabLeaseIdentitiesEqual(browserTabLeaseIdentity(lease), expected) ? [index] : [],
+      );
+      if (committedReleaseResult) {
+        // The first callback returned only after writeRegistry completed, so
+        // its exact record must already be absent. Reclaim/unlock the token-
+        // abandoned mutex without replaying onRelease or deleting anything.
+        // A contradictory exact identity is ownership ambiguity and remains
+        // fail-closed rather than trusting the stale committed result blindly.
+        if (matchingIndexes.length !== 0) {
+          throw new Error(
+            `Committed tab-lease release recovery for ${expected.id} found its exact identity still present; retaining state fail-closed.`,
+          );
+        }
+        return committedReleaseResult;
       }
-      await writeRegistry(profileDir, [...remaining, ...activeOpaque]);
+      if (matchingIndexes.length === 0) {
+        // The original record was already removed or replaced. Never use
+        // the stale release intent to remove a newer record with the same
+        // id but a different owner/creation identity.
+        return "already-gone-or-replaced" as const;
+      }
+      if (matchingIndexes.length !== 1) {
+        throw new Error(
+          `Deferred tab-lease release for ${expected.id} found duplicate exact identities; retaining them fail-closed.`,
+        );
+      }
+      const removeIndex = matchingIndexes[0]!;
+      const remainingValid = outcome.valid.filter((_lease, index) => index !== removeIndex);
+      await onRelease?.({
+        isLastLease:
+          remainingValid.length === 0 &&
+          outcome.opaque.length === 0 &&
+          outcome.waiters.length === 0,
+      });
+      await writeRegistry(profileDir, {
+        leases: [...remainingValid, ...outcome.opaque],
+        waiters: outcome.waiters,
+      });
+      return "removed" as const;
     },
     logger,
-    { timeoutMs: REGISTRY_MUTATION_LOCK_TIMEOUT_MS },
+    {
+      timeoutMs: REGISTRY_MUTATION_LOCK_TIMEOUT_MS,
+      ...registryLockOptions,
+    },
   );
+}
+
+function deferredBrowserTabLeaseReleaseKey(
+  profileDir: string,
+  identity: BrowserTabLeaseIdentity,
+): string {
+  return `${path.resolve(profileDir)}\0${identity.id}\0${identity.pid}\0${identity.createdAt}`;
+}
+
+function scheduleDeferredBrowserTabLeaseRelease(
+  profileDir: string,
+  identity: BrowserTabLeaseIdentity,
+  logger: BrowserLogger | undefined,
+  options: {
+    initialDelayMs?: number;
+    onRelease?: (context: { isLastLease: boolean }) => Promise<void>;
+    onRecovered?: () => void;
+    committedReleaseResult?: DeferredReleaseRepairResult;
+  },
+): void {
+  const key = deferredBrowserTabLeaseReleaseKey(profileDir, identity);
+  const existing = deferredBrowserTabLeaseReleases.get(key);
+  if (existing) {
+    if (options.committedReleaseResult) {
+      // A committed removal supersedes an older not-yet-run removal intent.
+      // Its onRelease callback already ran before the durable registry write.
+      existing.committedReleaseResult = options.committedReleaseResult;
+      existing.onRelease = undefined;
+    } else if (!existing.committedReleaseResult) {
+      existing.onRelease ??= options.onRelease;
+    }
+    if (options.onRecovered) existing.onRecovered.add(options.onRecovered);
+    return;
+  }
+
+  let resolveCompletion!: () => void;
+  const completion = new Promise<void>((resolve) => {
+    resolveCompletion = resolve;
+  });
+  const entry: DeferredBrowserTabLeaseRelease = {
+    identity,
+    committedReleaseResult: options.committedReleaseResult,
+    attempt: 0,
+    initialDelayMs: Math.max(1, options.initialDelayMs ?? DEFERRED_RELEASE_INITIAL_RETRY_MS),
+    timer: null,
+    completion,
+    resolveCompletion,
+    onRelease: options.onRelease,
+    onRecovered: new Set(options.onRecovered ? [options.onRecovered] : []),
+  };
+  deferredBrowserTabLeaseReleases.set(key, entry);
+
+  const finish = (): void => {
+    if (deferredBrowserTabLeaseReleases.get(key) !== entry) return;
+    deferredBrowserTabLeaseReleases.delete(key);
+    for (const callback of entry.onRecovered) {
+      try {
+        callback();
+      } catch (error) {
+        logger?.(
+          `[browser] Deferred tab-lease recovery callback failed for ${identity.id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    entry.resolveCompletion();
+  };
+  const arm = (delayMs: number): void => {
+    entry.timer = setTimeout(() => {
+      entry.timer = null;
+      void repairDeferredBrowserTabLeaseRelease(
+        profileDir,
+        identity,
+        logger,
+        entry.onRelease,
+        entry.committedReleaseResult,
+      ).then(
+        (result) => {
+          logger?.(
+            result === "removed"
+              ? `[browser] Deferred self-heal released ChatGPT browser slot ${identity.id.slice(0, 8)} after registry contention cleared.`
+              : `[browser] Deferred self-heal found ChatGPT browser slot ${identity.id.slice(0, 8)} already removed or replaced; leaving current state untouched.`,
+          );
+          finish();
+        },
+        (error: unknown) => {
+          if (deferredBrowserTabLeaseReleases.get(key) !== entry) return;
+          entry.attempt += 1;
+          const retryMs = Math.min(
+            DEFERRED_RELEASE_MAX_RETRY_MS,
+            entry.initialDelayMs * 2 ** Math.min(entry.attempt, 16),
+          );
+          logger?.(
+            `[browser] Deferred tab-lease self-heal for ${identity.id.slice(0, 8)} is still blocked (${error instanceof Error ? error.message : String(error)}); retrying in ${retryMs}ms.`,
+          );
+          arm(retryMs);
+        },
+      );
+    }, delayMs);
+    entry.timer.unref?.();
+  };
+  arm(entry.initialDelayMs);
+}
+
+/** @internal Test-only completion handle for deterministic deferred-release coverage. */
+export function deferredBrowserTabLeaseReleaseCompletionForTest(
+  profileDir: string,
+  leaseId: string,
+): Promise<void> | null {
+  const resolvedProfileDir = path.resolve(profileDir);
+  const completions = [...deferredBrowserTabLeaseReleases.entries()]
+    .filter(
+      ([key, entry]) => key.startsWith(`${resolvedProfileDir}\0`) && entry.identity.id === leaseId,
+    )
+    .map(([, entry]) => entry.completion);
+  if (completions.length === 0) return null;
+  return Promise.all(completions).then(() => undefined);
+}
+
+function containsRegistryLockOwnershipLoss(error: unknown, seen = new Set<unknown>()): boolean {
+  if (error instanceof TabLeaseRegistryLockOwnershipLostError) return true;
+  if (!error || typeof error !== "object" || seen.has(error)) return false;
+  seen.add(error);
+  if (error instanceof AggregateError) {
+    for (const nested of error.errors) {
+      if (containsRegistryLockOwnershipLoss(nested, seen)) return true;
+    }
+  }
+  return containsRegistryLockOwnershipLoss((error as { cause?: unknown }).cause, seen);
+}
+
+export async function releaseBrowserTabLease(
+  profileDir: string,
+  leaseId: string,
+  logger?: BrowserLogger,
+  options: {
+    onRelease?: (context: { isLastLease: boolean }) => Promise<void>;
+    /** Notification hook for a later successful self-heal. */
+    onDeferredRelease?: () => void;
+    /** Exact immutable identity captured by an acquired lease handle. */
+    expectedIdentity?: Pick<BrowserTabLeaseRecord, "id" | "pid" | "createdAt">;
+    /** Test seam for deterministic lock-wait recovery coverage. */
+    registryLockOptions?: Pick<
+      RegistryLockWaitOptions,
+      "mkdirLockDir" | "monotonicNow" | "platform" | "releaseRetryMs" | "rmLockDir" | "timeoutMs"
+    >;
+    /** Total bounded lock-acquire attempts; production defaults to two. */
+    lockRetryAttempts?: number;
+    /** Test seam for the small inter-attempt backoff. */
+    lockRetryDelayMs?: number;
+    /** Test seam for the first unref'd deferred self-heal attempt. */
+    deferredReleaseInitialDelayMs?: number;
+  } = {},
+): Promise<void> {
+  const resolvedIdentity =
+    options.expectedIdentity ?? (await readBrowserTabLeaseIdentity(profileDir, leaseId));
+  if (resolvedIdentity === "absent") {
+    logger?.(`[browser] ChatGPT browser slot ${leaseId.slice(0, 8)} was already released.`);
+    return;
+  }
+  const expectedIdentity: BrowserTabLeaseIdentity = resolvedIdentity;
+  if (expectedIdentity.id !== leaseId) {
+    throw new Error(
+      `Tab-lease release identity mismatch: requested ${leaseId}, received ${expectedIdentity.id}; retaining state fail-closed.`,
+    );
+  }
+  const lockRetryAttempts = Math.max(1, Math.trunc(options.lockRetryAttempts ?? 2));
+  const lockRetryDelayMs = Math.max(0, options.lockRetryDelayMs ?? 50);
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await withRegistryLock(
+        profileDir,
+        async () => {
+          const outcome = await readRegistryOutcomeLocked(profileDir, logger);
+          if (!outcome.readable) {
+            // Truthful release: we cannot prove the record was removed from an
+            // unverifiable registry, so surface the fault instead of pretending.
+            throw new TabLeaseRegistryUnreadableError(profileDir, outcome.reason, outcome.cause);
+          }
+          const pruneOptions = {
+            nowMs: Date.now(),
+            staleMs: DEFAULT_STALE_MS,
+            isProcessAlive,
+          };
+          const activeValid = pruneStaleLeases(outcome.valid, pruneOptions);
+          const activeOpaque = pruneOpaqueRecords(outcome.opaque, pruneOptions);
+          const activeWaiters = pruneStaleWaiters(outcome.waiters, pruneOptions);
+          const matchingIndexes = activeValid.flatMap((lease, index) =>
+            browserTabLeaseIdentitiesEqual(browserTabLeaseIdentity(lease), expectedIdentity)
+              ? [index]
+              : [],
+          );
+          if (matchingIndexes.length > 1) {
+            throw new Error(
+              `Tab-lease release for ${leaseId} found duplicate matching identities; retaining them fail-closed.`,
+            );
+          }
+          const removeIndex = matchingIndexes[0] ?? -1;
+          const remaining = activeValid.filter((_lease, index) => index !== removeIndex);
+          const committedResult: DeferredReleaseRepairResult =
+            removeIndex >= 0 ? "removed" : "already-gone-or-replaced";
+          if (removeIndex >= 0) {
+            // Keep the lease advertised while the registry lock blocks new
+            // acquisitions. Publish its removal only after the cleanup callback
+            // succeeds; callback failure therefore retains capacity fail-closed.
+            await options.onRelease?.({
+              isLastLease:
+                remaining.length === 0 && activeOpaque.length === 0 && activeWaiters.length === 0,
+            });
+          }
+          await writeRegistry(profileDir, {
+            leases: [...remaining, ...activeOpaque],
+            waiters: activeWaiters,
+          });
+          return committedResult;
+        },
+        logger,
+        {
+          timeoutMs: REGISTRY_MUTATION_LOCK_TIMEOUT_MS,
+          ...options.registryLockOptions,
+        },
+      );
+      break;
+    } catch (error) {
+      const retryableLockWait =
+        error instanceof TabLeaseRegistryLockWaitError && error.reason === "timed out";
+      const committedReleaseResult =
+        error instanceof TabLeaseRegistryPostCommitUnlockError &&
+        isDeferredReleaseRepairResult(error.committedResult)
+          ? error.committedResult
+          : null;
+      if (committedReleaseResult) {
+        const lockDir = path.join(profileDir, REGISTRY_LOCK_DIRNAME);
+        const safeToRecover =
+          !containsRegistryLockOwnershipLoss(error) &&
+          (await isRegistryLockExplicitlyAbandoned(lockDir));
+        if (safeToRecover) {
+          try {
+            // The removal is authoritative, but readiness is not clean until
+            // the exact token-abandoned mutex is reclaimed and a new no-op
+            // critical section unlocks normally. Never replay onRelease.
+            await repairDeferredBrowserTabLeaseRelease(
+              profileDir,
+              expectedIdentity,
+              logger,
+              undefined,
+              committedReleaseResult,
+              options.registryLockOptions,
+            );
+            logger?.(
+              `[browser] Recovered the abandoned registry mutex after committed release of tab lease ${leaseId.slice(0, 8)}.`,
+            );
+            break;
+          } catch (recoveryError) {
+            const stillSafelyAbandoned =
+              !containsRegistryLockOwnershipLoss(recoveryError) &&
+              (await isRegistryLockExplicitlyAbandoned(lockDir));
+            if (stillSafelyAbandoned) {
+              scheduleDeferredBrowserTabLeaseRelease(profileDir, expectedIdentity, logger, {
+                initialDelayMs: options.deferredReleaseInitialDelayMs,
+                committedReleaseResult,
+                onRecovered: options.onDeferredRelease,
+              });
+            }
+            logger?.(
+              `[browser] Committed tab-lease removal for ${leaseId.slice(0, 8)} could not yet prove a clean registry unlock: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}.`,
+            );
+          }
+        }
+        // The record removal is durable, but absent a clean unlock or an exact
+        // token-bound abandonment proof readiness remains tainted fail-closed.
+        throw error;
+      }
+      if (!retryableLockWait || attempt >= lockRetryAttempts) {
+        if (retryableLockWait && expectedIdentity) {
+          scheduleDeferredBrowserTabLeaseRelease(profileDir, expectedIdentity, logger, {
+            initialDelayMs: options.deferredReleaseInitialDelayMs,
+            onRelease: options.onRelease,
+            onRecovered: options.onDeferredRelease,
+          });
+        }
+        throw error;
+      }
+      logger?.(
+        `[browser] Tab-lease release for ${leaseId.slice(0, 8)} could not acquire the registry lock; retrying the identity-safe removal (${attempt + 1}/${lockRetryAttempts}).`,
+      );
+      if (lockRetryDelayMs > 0) {
+        await delay(lockRetryDelayMs);
+      }
+    }
+  }
   // Only report success after the lease record was actually removed and the
   // registry rewritten; lock/read/write failures propagate to the caller.
   logger?.(`[browser] Released ChatGPT browser slot ${leaseId.slice(0, 8)}.`);
@@ -633,15 +1279,23 @@ export async function hasOtherActiveBrowserTabLeases(
       };
       const activeValid = pruneStaleLeases(outcome.valid, pruneOptions);
       const activeOpaque = pruneOpaqueRecords(outcome.opaque, pruneOptions);
+      const activeWaiters = pruneStaleWaiters(outcome.waiters, pruneOptions);
       if (
-        activeValid.length + activeOpaque.length !==
-        outcome.valid.length + outcome.opaque.length
+        activeValid.length + activeOpaque.length !== outcome.valid.length + outcome.opaque.length ||
+        activeWaiters.length !== outcome.waiters.length
       ) {
         // Best-effort persistence of the prune; the computed answer below is
         // valid regardless of whether this write lands.
-        await writeRegistry(profileDir, [...activeValid, ...activeOpaque]).catch(() => undefined);
+        await writeRegistry(profileDir, {
+          leases: [...activeValid, ...activeOpaque],
+          waiters: activeWaiters,
+        }).catch(() => undefined);
       }
-      return activeOpaque.length > 0 || activeValid.some((lease) => lease.id !== leaseId);
+      return (
+        activeWaiters.length > 0 ||
+        activeOpaque.length > 0 ||
+        activeValid.some((lease) => lease.id !== leaseId)
+      );
     },
     options.logger,
   );
@@ -700,16 +1354,20 @@ export async function listOtherActiveBrowserTabLeaseTargetIds(
       };
       const activeValid = pruneStaleLeases(outcome.valid, pruneOptions);
       const activeOpaque = pruneOpaqueRecords(outcome.opaque, pruneOptions);
+      const activeWaiters = pruneStaleWaiters(outcome.waiters, pruneOptions);
       if (
-        activeValid.length + activeOpaque.length !==
-        outcome.valid.length + outcome.opaque.length
+        activeValid.length + activeOpaque.length !== outcome.valid.length + outcome.opaque.length ||
+        activeWaiters.length !== outcome.waiters.length
       ) {
         // Best-effort persistence of the prune; the computed answer below is
         // valid regardless of whether this write lands.
-        await writeRegistry(profileDir, [...activeValid, ...activeOpaque]).catch(() => undefined);
+        await writeRegistry(profileDir, {
+          leases: [...activeValid, ...activeOpaque],
+          waiters: activeWaiters,
+        }).catch(() => undefined);
       }
       const targetIds = new Set<string>();
-      let unattributedCount = activeOpaque.length;
+      let unattributedCount = activeOpaque.length + activeWaiters.length;
       for (const lease of activeValid) {
         if (lease.id === leaseId) {
           continue;
@@ -733,12 +1391,30 @@ interface RegistryLockOwner {
   token?: string;
 }
 
+interface RegistryLockAbandonment {
+  token: string;
+  abandonedAt: string;
+  reason: "post-commit-unlock-failed";
+}
+
 interface RegistryLockWaitOptions {
   signal?: AbortSignal;
-  /** Absolute wall-clock deadline. */
+  /** Absolute deadline on `monotonicNow`'s time base. */
   deadlineMs?: number;
-  /** Relative wall-clock bound, ignored when deadlineMs is supplied. */
+  /** Relative monotonic bound, ignored when deadlineMs is supplied. */
   timeoutMs?: number;
+  /** Test seam; production uses `performance.now()`. */
+  monotonicNow?: () => number;
+  /** Test seam for deterministic filesystem-error injection. */
+  mkdirLockDir?: (lockDir: string) => Promise<void>;
+  /** Test seam; production always uses process.platform. */
+  platform?: NodeJS.Platform;
+  /** Test seam for deterministic lock-release filesystem errors. */
+  rmLockDir?: (lockDir: string) => Promise<void>;
+  /** Test seam for the bounded Windows release-retry window. */
+  releaseRetryMs?: number;
+  /** Test seam that pauses after mkdir but before atomic owner publication. */
+  beforeOwnerPublish?: (lockDir: string) => Promise<void>;
 }
 
 async function withRegistryLock<T>(
@@ -749,13 +1425,20 @@ async function withRegistryLock<T>(
 ): Promise<T> {
   const lockDir = path.join(profileDir, REGISTRY_LOCK_DIRNAME);
   const ownerPath = path.join(lockDir, REGISTRY_LOCK_OWNER_FILENAME);
-  const startedAt = Date.now();
+  const monotonicNow = options.monotonicNow ?? defaultMonotonicNow;
+  const startedAt = monotonicNow();
   const deadlineMs =
     options.deadlineMs ??
     (options.timeoutMs !== undefined
       ? startedAt + Math.max(0, options.timeoutMs)
       : Number.POSITIVE_INFINITY);
-  let lastWaitLogAt = 0;
+  const mkdirLockDir =
+    options.mkdirLockDir ??
+    (async (target: string) => {
+      await mkdir(target, { recursive: false });
+    });
+  const platform = options.platform ?? process.platform;
+  let lastWaitLogAt = Number.NEGATIVE_INFINITY;
   for (;;) {
     if (options.signal?.aborted) {
       throw new TabLeaseRegistryLockWaitError(lockDir, "aborted");
@@ -766,34 +1449,58 @@ async function withRegistryLock<T>(
       // such as tab-slot acquisition must get to observe capacity and report
       // their own domain-specific timeout. The deadline applies only once an
       // existing lock would make us wait.
-      await mkdir(lockDir, { recursive: false });
+      await mkdirLockDir(lockDir);
       break;
     } catch (error) {
-      if ((error as { code?: string }).code !== "EEXIST") {
+      const code = (error as { code?: string }).code;
+      const windowsTransient = platform === "win32" && (code === "EPERM" || code === "EBUSY");
+      if (code !== "EEXIST" && !windowsTransient) {
         throw error;
       }
-      if (Date.now() >= deadlineMs) {
+      if (windowsTransient) {
+        const currentMonotonic = monotonicNow();
+        const elapsed = Math.max(0, currentMonotonic - startedAt);
+        if (elapsed >= WINDOWS_LOCK_TRANSIENT_RETRY_MS || currentMonotonic >= deadlineMs) {
+          throw error;
+        }
+        try {
+          await delayWithAbort(
+            Math.min(50, WINDOWS_LOCK_TRANSIENT_RETRY_MS - elapsed, deadlineMs - currentMonotonic),
+            options.signal,
+          );
+        } catch (delayError) {
+          if (options.signal?.aborted) {
+            throw new TabLeaseRegistryLockWaitError(lockDir, "aborted");
+          }
+          throw delayError;
+        }
+        continue;
+      }
+      const currentMonotonic = monotonicNow();
+      if (currentMonotonic >= deadlineMs) {
         throw new TabLeaseRegistryLockWaitError(lockDir, "timed out");
       }
-      if (Date.now() - startedAt > REGISTRY_LOCK_TIMEOUT_MS) {
+      const explicitlyAbandoned = await isRegistryLockExplicitlyAbandoned(lockDir);
+      if (explicitlyAbandoned || currentMonotonic - startedAt > REGISTRY_LOCK_TIMEOUT_MS) {
         // Owner-aware steal: the lock is reclaimed only from a provably-dead
-        // owner (or a bounded-stale ownerless legacy lock). A lock whose
-        // owner is alive is NEVER stolen — we keep waiting instead.
+        // owner, an explicitly post-commit-abandoned owner, or a bounded-stale
+        // ownerless legacy lock. A live owner without a matching abandonment
+        // marker is NEVER stolen — we keep waiting instead.
         const stolen = await stealRegistryLockFromDeadOwner(lockDir, logger);
         if (stolen) {
           continue;
         }
-        if (Date.now() - lastWaitLogAt >= 30_000) {
-          lastWaitLogAt = Date.now();
+        if (currentMonotonic - lastWaitLogAt >= 30_000) {
+          lastWaitLogAt = currentMonotonic;
           logger?.(
-            `[browser] Tab-lease registry lock at ${lockDir} is held by a live owner; waiting (${Math.round((Date.now() - startedAt) / 1000)}s elapsed).`,
+            `[browser] Tab-lease registry lock at ${lockDir} is held by a live owner; waiting (${Math.round((currentMonotonic - startedAt) / 1000)}s elapsed).`,
           );
         }
       }
       if (options.signal?.aborted) {
         throw new TabLeaseRegistryLockWaitError(lockDir, "aborted");
       }
-      const remainingMs = deadlineMs - Date.now();
+      const remainingMs = deadlineMs - monotonicNow();
       if (remainingMs <= 0) {
         throw new TabLeaseRegistryLockWaitError(lockDir, "timed out");
       }
@@ -807,16 +1514,36 @@ async function withRegistryLock<T>(
       }
     }
   }
-  // Record our identity inside the lock so peers can verify owner liveness.
-  // Best-effort: if this write fails, peers fall back to the bounded
-  // ownerless-stale reclamation path instead of stealing immediately.
+  // Publish our identity with a create-if-absent hard link. A plain write to
+  // owner.json leaves a mkdir -> write gap: if this process is paused there,
+  // an ownerless-lock reclaimer can replace the directory and this process
+  // can resume by writing into the replacement, giving two callbacks the same
+  // lock pathname. The prewritten claim plus link() makes owner publication a
+  // single no-overwrite operation. If the directory was replaced, exactly one
+  // contender can publish its token; every loser refuses before its callback.
+  const ownerToken = randomUUID();
   const owner: RegistryLockOwner = {
     pid: process.pid,
     startTicks: readProcessStartTicks(process.pid),
     createdAt: new Date().toISOString(),
-    token: randomUUID(),
+    token: ownerToken,
   };
-  await writeFile(ownerPath, `${JSON.stringify(owner)}\n`, "utf8").catch(() => undefined);
+  const ownerClaimPath = `${lockDir}.owner-${ownerToken}.claim`;
+  const ownerClaimHandle = await open(ownerClaimPath, "wx");
+  try {
+    await ownerClaimHandle.writeFile(`${JSON.stringify(owner)}\n`, "utf8");
+    await ownerClaimHandle.sync();
+  } finally {
+    await ownerClaimHandle.close();
+  }
+  try {
+    await options.beforeOwnerPublish?.(lockDir);
+    await link(ownerClaimPath, ownerPath);
+  } catch (error) {
+    throw new TabLeaseRegistryLockOwnershipLostError(lockDir, { cause: error });
+  } finally {
+    await rm(ownerClaimPath, { force: true }).catch(() => undefined);
+  }
   // Hold an open handle on the directory we just created so release-time can
   // prove it is still the SAME directory (see releaseRegistryLockIfOwned): a
   // peer's dead-owner reclamation replaces `lockDir` with a brand-new
@@ -829,12 +1556,50 @@ async function withRegistryLock<T>(
   // prevents the kernel from recycling its inode for anything else in the
   // meantime, which is what makes the dev/ino comparison at release time a
   // real proof of identity rather than a coincidence.
-  const myLockHandle = await openDirIdentityHandle(lockDir);
-  try {
-    return await callback();
-  } finally {
-    await releaseRegistryLockIfOwned(lockDir, myLockHandle, logger);
+  const myLockHandle = await openOwnedLockDirIdentityHandle(lockDir, ownerToken, monotonicNow);
+  if (!myLockHandle) {
+    throw new TabLeaseRegistryLockOwnershipLostError(lockDir);
   }
+
+  let callbackResult: T;
+  try {
+    callbackResult = await callback();
+  } catch (callbackError) {
+    try {
+      await releaseRegistryLockIfOwned(lockDir, myLockHandle, logger, {
+        platform,
+        rmLockDir: options.rmLockDir,
+        retryMs: options.releaseRetryMs,
+        monotonicNow,
+      });
+    } catch (releaseError) {
+      // Preserve the primary callback type/taxonomy while attaching the
+      // independently important cleanup failure for diagnostics.
+      logger?.(
+        `[browser] ERROR: registry callback failed and its lock also could not be released: ${releaseError instanceof Error ? releaseError.message : String(releaseError)}`,
+      );
+      if (callbackError && typeof callbackError === "object") {
+        Object.defineProperty(callbackError, "registryLockReleaseError", {
+          configurable: true,
+          enumerable: false,
+          value: releaseError,
+        });
+      }
+    }
+    throw callbackError;
+  }
+  try {
+    await releaseRegistryLockIfOwned(lockDir, myLockHandle, logger, {
+      platform,
+      rmLockDir: options.rmLockDir,
+      retryMs: options.releaseRetryMs,
+      monotonicNow,
+      abandonOnFailure: true,
+    });
+  } catch (releaseError) {
+    throw new TabLeaseRegistryPostCommitUnlockError(callbackResult, releaseError);
+  }
+  return callbackResult;
 }
 
 /**
@@ -847,6 +1612,7 @@ async function withRegistryLock<T>(
 interface DirIdentityHandle {
   dev: number;
   ino: number;
+  token?: string;
   close: () => Promise<void>;
 }
 
@@ -876,6 +1642,49 @@ async function openDirIdentityHandle(dirPath: string): Promise<DirIdentityHandle
   }
 }
 
+/** Pin only a directory whose published owner token is exactly ours. */
+async function openOwnedLockDirIdentityHandle(
+  lockDir: string,
+  token: string,
+  monotonicNow: () => number,
+): Promise<DirIdentityHandle | null> {
+  // A concurrent stale-owner check may have the directory briefly renamed to
+  // a tombstone before detecting that owner publication won the race and
+  // giving it back. Retry that bounded transitional absence; never accept a
+  // different token.
+  const deadline = monotonicNow() + WINDOWS_LOCK_TRANSIENT_RETRY_MS;
+  for (;;) {
+    const handle = await openDirIdentityHandle(lockDir);
+    if (handle) {
+      const [current, raw] = await Promise.all([
+        stat(lockDir).catch(() => null),
+        readFile(path.join(lockDir, REGISTRY_LOCK_OWNER_FILENAME), "utf8").catch(() => null),
+      ]);
+      let observedToken: string | null = null;
+      if (raw !== null) {
+        try {
+          const parsed = JSON.parse(raw) as { token?: unknown };
+          observedToken = typeof parsed.token === "string" ? parsed.token : null;
+        } catch {
+          observedToken = null;
+        }
+      }
+      if (
+        current !== null &&
+        current.dev === handle.dev &&
+        current.ino === handle.ino &&
+        observedToken === token
+      ) {
+        return { ...handle, token };
+      }
+      await handle.close().catch(() => undefined);
+      if (observedToken !== null && observedToken !== token) return null;
+    }
+    if (monotonicNow() >= deadline) return null;
+    await delay(10);
+  }
+}
+
 /**
  * Release the registry lock directory, but only after proving it is still
  * the exact directory this process created (via the held-open identity
@@ -890,22 +1699,90 @@ async function releaseRegistryLockIfOwned(
   lockDir: string,
   myLockHandle: DirIdentityHandle | null,
   logger?: BrowserLogger,
+  options: {
+    platform?: NodeJS.Platform;
+    rmLockDir?: (lockDir: string) => Promise<void>;
+    retryMs?: number;
+    monotonicNow?: () => number;
+    /** Publish an atomic recovery marker only after a committed callback. */
+    abandonOnFailure?: boolean;
+  } = {},
 ): Promise<void> {
+  const platform = options.platform ?? process.platform;
+  const rmLockDir =
+    options.rmLockDir ??
+    (async (target: string) => {
+      await rm(target, { recursive: true, force: true });
+    });
+  const retryMs = Math.max(0, options.retryMs ?? WINDOWS_LOCK_TRANSIENT_RETRY_MS);
+  const monotonicNow = options.monotonicNow ?? defaultMonotonicNow;
+  const startedAt = monotonicNow();
   try {
-    const current = await stat(lockDir).catch(() => null);
-    const sameDir =
-      myLockHandle !== null &&
-      current !== null &&
-      current.dev === myLockHandle.dev &&
-      current.ino === myLockHandle.ino;
-    if (!sameDir) {
-      logger?.(
-        `[browser] ERROR: tab-lease registry lock at ${lockDir} no longer matches the directory this ` +
-          "process acquired; refusing to release it (it may belong to another owner now).",
-      );
-      throw new TabLeaseRegistryLockOwnershipLostError(lockDir);
+    for (;;) {
+      // Re-prove identity before EVERY removal attempt. A peer may replace the
+      // path while a transient Windows error is backing off; retrying a bare
+      // rm() would otherwise delete that peer's fresh lock.
+      const current = await stat(lockDir).catch(() => null);
+      const currentOwnerToken = await readRegistryLockOwnerToken(lockDir);
+      const sameDir =
+        myLockHandle !== null &&
+        current !== null &&
+        current.dev === myLockHandle.dev &&
+        current.ino === myLockHandle.ino &&
+        typeof myLockHandle.token === "string" &&
+        currentOwnerToken === myLockHandle.token;
+      if (!sameDir) {
+        logger?.(
+          `[browser] ERROR: tab-lease registry lock at ${lockDir} no longer matches the directory this ` +
+            "process acquired; refusing to release it (it may belong to another owner now).",
+        );
+        throw new TabLeaseRegistryLockOwnershipLostError(lockDir);
+      }
+      try {
+        await rmLockDir(lockDir);
+        const remaining = await stat(lockDir).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return null;
+          throw error;
+        });
+        if (remaining === null) return;
+        if (
+          myLockHandle !== null &&
+          (remaining.dev !== myLockHandle.dev || remaining.ino !== myLockHandle.ino)
+        ) {
+          // Our exact directory is gone and a peer acquired the path after
+          // removal. That is a successful hand-off, not a release failure.
+          return;
+        }
+        throw new TabLeaseRegistryLockReleaseError(lockDir);
+      } catch (error) {
+        if (error instanceof TabLeaseRegistryLockReleaseError) throw error;
+        const code = (error as NodeJS.ErrnoException).code;
+        const windowsTransient = platform === "win32" && (code === "EPERM" || code === "EBUSY");
+        const elapsed = elapsedMonotonicMs(startedAt, monotonicNow);
+        if (!windowsTransient || elapsed >= retryMs) {
+          throw new TabLeaseRegistryLockReleaseError(lockDir, error);
+        }
+        await delay(Math.min(50, Math.max(1, retryMs - elapsed)));
+      }
     }
-    await rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
+  } catch (error) {
+    if (options.abandonOnFailure && !(error instanceof TabLeaseRegistryLockOwnershipLostError)) {
+      try {
+        await publishRegistryLockAbandonment(lockDir, myLockHandle);
+        logger?.(
+          `[browser] Marked committed tab-lease registry lock at ${lockDir} explicitly abandoned after unlock failed; a later acquirer may reclaim it safely.`,
+        );
+      } catch (abandonmentError) {
+        logger?.(
+          `[browser] ERROR: could not publish the post-commit abandonment marker for registry lock at ${lockDir}: ${abandonmentError instanceof Error ? abandonmentError.message : String(abandonmentError)}`,
+        );
+        throw new TabLeaseRegistryLockReleaseError(
+          lockDir,
+          new AggregateError([error, abandonmentError]),
+        );
+      }
+    }
+    throw error;
   } finally {
     if (myLockHandle) {
       await myLockHandle.close().catch(() => undefined);
@@ -913,11 +1790,118 @@ async function releaseRegistryLockIfOwned(
   }
 }
 
+async function readRegistryLockOwnerToken(lockDir: string): Promise<string | null> {
+  try {
+    const raw = await readFile(path.join(lockDir, REGISTRY_LOCK_OWNER_FILENAME), "utf8");
+    const parsed = JSON.parse(raw) as { token?: unknown };
+    return typeof parsed.token === "string" ? parsed.token : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readRegistryLockAbandonment(
+  lockDir: string,
+): Promise<{ raw: string; value: RegistryLockAbandonment } | null> {
+  try {
+    const raw = await readFile(path.join(lockDir, REGISTRY_LOCK_ABANDONED_FILENAME), "utf8");
+    const parsed = JSON.parse(raw) as Partial<RegistryLockAbandonment>;
+    if (
+      typeof parsed.token !== "string" ||
+      typeof parsed.abandonedAt !== "string" ||
+      parsed.reason !== "post-commit-unlock-failed"
+    ) {
+      return null;
+    }
+    return { raw, value: parsed as RegistryLockAbandonment };
+  } catch {
+    return null;
+  }
+}
+
+async function isRegistryLockExplicitlyAbandoned(lockDir: string): Promise<boolean> {
+  const [ownerToken, abandonment] = await Promise.all([
+    readRegistryLockOwnerToken(lockDir),
+    readRegistryLockAbandonment(lockDir),
+  ]);
+  return ownerToken !== null && abandonment?.value.token === ownerToken;
+}
+
+/**
+ * Atomically publish that a committed callback has stopped holding the
+ * critical section even though its directory removal failed. The marker is a
+ * token-bound hard link, never an overwrite: if the path was replaced, the
+ * new owner's distinct token cannot be made reclaimable by this marker.
+ */
+async function publishRegistryLockAbandonment(
+  lockDir: string,
+  myLockHandle: DirIdentityHandle | null,
+): Promise<void> {
+  if (!myLockHandle || typeof myLockHandle.token !== "string") {
+    throw new TabLeaseRegistryLockOwnershipLostError(lockDir);
+  }
+  const token = myLockHandle.token;
+  const marker: RegistryLockAbandonment = {
+    token,
+    abandonedAt: new Date().toISOString(),
+    reason: "post-commit-unlock-failed",
+  };
+  const claimPath = `${lockDir}.abandoned-${token}-${randomUUID().slice(0, 8)}.claim`;
+  const markerPath = path.join(lockDir, REGISTRY_LOCK_ABANDONED_FILENAME);
+  const claimHandle = await open(claimPath, "wx");
+  try {
+    await claimHandle.writeFile(`${JSON.stringify(marker)}\n`, "utf8");
+    await claimHandle.sync();
+  } finally {
+    await claimHandle.close();
+  }
+  try {
+    await link(claimPath, markerPath);
+  } catch (error) {
+    const existing = await readRegistryLockAbandonment(lockDir);
+    if (existing?.value.token !== token) {
+      throw new TabLeaseRegistryLockOwnershipLostError(lockDir, { cause: error });
+    }
+  } finally {
+    await rm(claimPath, { force: true }).catch(() => undefined);
+  }
+
+  const [current, ownerToken, abandonment] = await Promise.all([
+    stat(lockDir).catch(() => null),
+    readRegistryLockOwnerToken(lockDir),
+    readRegistryLockAbandonment(lockDir),
+  ]);
+  if (
+    current === null ||
+    current.dev !== myLockHandle.dev ||
+    current.ino !== myLockHandle.ino ||
+    ownerToken !== token ||
+    abandonment?.value.token !== token
+  ) {
+    throw new TabLeaseRegistryLockOwnershipLostError(lockDir);
+  }
+
+  // Best-effort durability for the hard-link publication. If the machine
+  // crashes before it reaches storage, the owner process also dies and the
+  // ordinary dead-owner proof remains available.
+  try {
+    const dirHandle = await open(lockDir, "r");
+    try {
+      await dirHandle.sync();
+    } finally {
+      await dirHandle.close();
+    }
+  } catch {
+    // Directory fsync is not supported on every platform.
+  }
+}
+
 /**
  * Attempt to reclaim the registry lock. Returns true when the lock directory
- * was removed (provably-dead owner or bounded-stale ownerless lock) and the
- * caller may retry mkdir(); returns false when the owner is (or may be)
- * alive, or another process raced us.
+ * was removed (provably-dead owner, token-matched post-commit abandonment, or
+ * bounded-stale ownerless lock) and the caller may retry mkdir(); returns
+ * false when the owner is (or may be) actively holding it, or another process
+ * raced us.
  */
 async function stealRegistryLockFromDeadOwner(
   lockDir: string,
@@ -948,6 +1932,8 @@ async function stealRegistryLockFromDeadOwner(
   const preStealHandle = await openDirIdentityHandle(lockDir);
   let ownerRaw: string | null = null;
   let owner: RegistryLockOwner | null = null;
+  let abandonmentRaw: string | null = null;
+  let abandonment: RegistryLockAbandonment | null = null;
   try {
     ownerRaw = await readFile(ownerPath, "utf8");
     const parsed = JSON.parse(ownerRaw) as unknown;
@@ -961,9 +1947,26 @@ async function stealRegistryLockFromDeadOwner(
   } catch {
     owner = null;
   }
+  try {
+    abandonmentRaw = await readFile(path.join(lockDir, REGISTRY_LOCK_ABANDONED_FILENAME), "utf8");
+    const parsed = JSON.parse(abandonmentRaw) as Partial<RegistryLockAbandonment>;
+    if (
+      typeof parsed.token === "string" &&
+      typeof parsed.abandonedAt === "string" &&
+      parsed.reason === "post-commit-unlock-failed"
+    ) {
+      abandonment = parsed as RegistryLockAbandonment;
+    }
+  } catch {
+    abandonment = null;
+  }
+  const explicitlyAbandoned =
+    owner !== null && typeof owner.token === "string" && abandonment?.token === owner.token;
   if (owner) {
-    if (isLockOwnerAlive(owner)) {
-      // Live owner: never steal, no matter how long the lock has been held.
+    if (isLockOwnerAlive(owner) && !explicitlyAbandoned) {
+      // A live owner is stealable only after its exact owner token atomically
+      // published a post-commit abandonment marker. Without that proof, never
+      // steal no matter how long the lock has been held.
       if (preStealHandle) await preStealHandle.close().catch(() => undefined);
       return false;
     }
@@ -992,10 +1995,16 @@ async function stealRegistryLockFromDeadOwner(
   }
   const postStealStats = await stat(tomb).catch(() => null);
   let tombRaw: string | null = null;
+  let tombAbandonmentRaw: string | null = null;
   try {
     tombRaw = await readFile(path.join(tomb, REGISTRY_LOCK_OWNER_FILENAME), "utf8");
   } catch {
     tombRaw = null;
+  }
+  try {
+    tombAbandonmentRaw = await readFile(path.join(tomb, REGISTRY_LOCK_ABANDONED_FILENAME), "utf8");
+  } catch {
+    tombAbandonmentRaw = null;
   }
   // Same-lock proof requires BOTH signals to agree. Requiring the identity
   // match (rather than trusting content alone) is what prevents a false
@@ -1006,7 +2015,8 @@ async function stealRegistryLockFromDeadOwner(
     postStealStats !== null &&
     postStealStats.dev === preStealHandle.dev &&
     postStealStats.ino === preStealHandle.ino &&
-    tombRaw === ownerRaw;
+    tombRaw === ownerRaw &&
+    tombAbandonmentRaw === abandonmentRaw;
   if (preStealHandle) await preStealHandle.close().catch(() => undefined);
   if (!sameLock) {
     try {
@@ -1027,9 +2037,11 @@ async function stealRegistryLockFromDeadOwner(
     }
   }
   await rm(tomb, { recursive: true, force: true }).catch(() => undefined);
-  const detail = owner
-    ? `provably dead owner pid ${owner.pid}`
-    : `ownerless lock older than ${Math.round(OWNERLESS_LOCK_STEAL_AGE_MS / 1000)}s`;
+  const detail = explicitlyAbandoned
+    ? `explicitly abandoned post-commit owner pid ${owner?.pid ?? "unknown"}`
+    : owner
+      ? `provably dead owner pid ${owner.pid}`
+      : `ownerless lock older than ${Math.round(OWNERLESS_LOCK_STEAL_AGE_MS / 1000)}s`;
   logger?.(`[browser] Reclaimed tab-lease registry lock at ${lockDir} from ${detail}.`);
   return true;
 }
@@ -1117,7 +2129,7 @@ async function readRegistryOutcome(profileDir: string): Promise<RegistryReadOutc
     if ((error as { code?: string }).code === "ENOENT") {
       // A missing registry provably has no leases; only unreadable or corrupt
       // registries are ASSUME-ACTIVE.
-      return { readable: true, valid: [], opaque: [] };
+      return { readable: true, valid: [], opaque: [], waiters: [] };
     }
     const message = error instanceof Error ? error.message : String(error);
     return { readable: false, reason: `read failed: ${message}`, cause: error };
@@ -1133,16 +2145,25 @@ async function readRegistryOutcome(profileDir: string): Promise<RegistryReadOutc
       corruptRaw: raw,
     };
   }
-  if (
-    !parsed ||
-    typeof parsed !== "object" ||
-    !Array.isArray((parsed as { leases?: unknown }).leases)
-  ) {
+  if (!parsed || typeof parsed !== "object") {
+    return { readable: false, reason: "wrong document shape", corruptRaw: raw };
+  }
+  const document = parsed as { version?: unknown; leases?: unknown; waiters?: unknown };
+  if (document.version !== undefined && document.version !== 1 && document.version !== 2) {
+    // A future writer may attach semantics this binary does not understand.
+    // This is not corrupt/torn input and must never enter the timed corruption
+    // quarantine path, which would silently replace it with an empty v2 file.
+    return { readable: false, reason: `unsupported registry version ${String(document.version)}` };
+  }
+  const legacyWithoutWaiters =
+    (document.version === undefined || document.version === 1) && document.waiters === undefined;
+  const currentDocument = document.version === 2 && Array.isArray(document.waiters);
+  if (!Array.isArray(document.leases) || (!legacyWithoutWaiters && !currentDocument)) {
     return { readable: false, reason: "wrong document shape", corruptRaw: raw };
   }
   const valid: BrowserTabLeaseRecord[] = [];
   const opaque: unknown[] = [];
-  for (const record of (parsed as { leases: unknown[] }).leases) {
+  for (const record of document.leases) {
     if (isLeaseRecord(record)) {
       valid.push(record);
     } else {
@@ -1152,7 +2173,12 @@ async function readRegistryOutcome(profileDir: string): Promise<RegistryReadOutc
       opaque.push(record);
     }
   }
-  return { readable: true, valid, opaque };
+  return {
+    readable: true,
+    valid,
+    opaque,
+    waiters: Array.isArray(document.waiters) ? document.waiters : [],
+  };
 }
 
 /**
@@ -1183,11 +2209,13 @@ async function readRegistryOutcomeLocked(
 }
 
 /**
- * Bounded ASSUME-ACTIVE recovery so a corrupt registry cannot deadlock the
- * fleet forever: quarantine (rename, never delete) and restart empty only
- * when (a) no PID mentioned anywhere in the corrupt bytes is alive and
- * (b) the file has been quiet for CORRUPT_REGISTRY_RECOVERY_QUIET_MS.
- * Otherwise the registry stays unverifiable and every caller fails closed.
+ * Bounded ASSUME-ACTIVE recovery for corrupt bytes that still contain
+ * positive owner evidence: quarantine (rename, never delete) and restart
+ * empty only when (a) at least one PID is extractable, (b) every extracted
+ * PID is provably dead, and (c) the file has been quiet for
+ * CORRUPT_REGISTRY_RECOVERY_QUIET_MS. PID-less/indeterminate corruption stays
+ * fail-closed indefinitely; manual repair is safer than double-driving an
+ * active browser whose lease record was damaged.
  */
 async function maybeRecoverCorruptRegistry(
   profileDir: string,
@@ -1197,8 +2225,10 @@ async function maybeRecoverCorruptRegistry(
   logger?: BrowserLogger,
 ): Promise<RegistryReadOutcome> {
   const file = registryPath(profileDir);
-  const anyCandidateAlive = extractPidCandidates(raw).some((pid) => isProcessAlive(pid));
-  if (!anyCandidateAlive) {
+  const candidatePids = extractPidCandidates(raw);
+  const allCandidateOwnersDead =
+    candidatePids.length > 0 && candidatePids.every((pid) => !isProcessAlive(pid));
+  if (allCandidateOwnersDead) {
     try {
       const stats = await stat(file);
       if (Date.now() - stats.mtimeMs >= CORRUPT_REGISTRY_RECOVERY_QUIET_MS) {
@@ -1207,7 +2237,7 @@ async function maybeRecoverCorruptRegistry(
         logger?.(
           `[browser] Quarantined corrupt tab-lease registry (${reason}) to ${quarantine}; no referenced process is alive and the file was quiet for ${Math.round(CORRUPT_REGISTRY_RECOVERY_QUIET_MS / 60000)}m. Restarting with an empty registry.`,
         );
-        return { readable: true, valid: [], opaque: [] };
+        return { readable: true, valid: [], opaque: [], waiters: [] };
       }
     } catch {
       // Quarantine failed or the file vanished mid-check: fall through to the
@@ -1233,10 +2263,13 @@ function extractPidCandidates(raw: string): number[] {
   return [...pids];
 }
 
-async function writeRegistry(profileDir: string, leases: readonly unknown[]): Promise<void> {
+async function writeRegistry(
+  profileDir: string,
+  registry: { leases: readonly unknown[]; waiters: readonly unknown[] },
+): Promise<void> {
   await mkdir(profileDir, { recursive: true });
   const finalPath = registryPath(profileDir);
-  const payload = `${JSON.stringify({ version: 1, leases }, null, 2)}\n`;
+  const payload = `${JSON.stringify({ version: 2, ...registry }, null, 2)}\n`;
   // Atomic publish: write + fsync a same-directory temp file, then rename()
   // over the registry so a concurrent reader can never observe a torn
   // document.
@@ -1283,21 +2316,54 @@ function pruneStaleLeases(
       // Provably-dead owner: reclaim the slot immediately.
       return false;
     }
-    const updatedAt = Date.parse(lease.updatedAt);
-    if (Number.isFinite(updatedAt) && options.nowMs - updatedAt > options.staleMs) {
-      // Stale heartbeat despite an "alive" PID: bounded recovery for PID
-      // reuse, where kill(0) keeps answering for an unrelated process.
-      return false;
-    }
+    // A live process can be paused by SIGSTOP, a debugger, VM suspension, or a
+    // long host sleep. Reclaiming solely because its wall-clock heartbeat is
+    // old would let a second controller acquire capacity; the first could then
+    // resume and mutate the same browser without a fencing token. Preserve the
+    // lease fail-closed until the owner is provably dead or its exact recorded
+    // Chrome target is proved gone by the separate target-reconciliation path.
     return true;
   });
 }
 
 /**
- * Malformed lease records count as occupants (assume-active). They are pruned
- * only with evidence: a coercible PID that is provably dead, or a parseable
- * heartbeat older than the stale window (bounded recovery for PID-less
- * garbage). Records with neither stay occupied rather than silently vanish.
+ * Preserve FIFO order while pruning only waiters proven abandoned. Unlike a
+ * lease, a waiter owns no browser state, so any parseable heartbeat outside
+ * its bounded stale/future window is enough to make the record rejoin-safe.
+ * Malformed records without a parseable heartbeat remain fail-closed.
+ */
+function pruneStaleWaiters(
+  waiters: unknown[],
+  options: { nowMs: number; staleMs: number; isProcessAlive: (pid: number) => boolean },
+): unknown[] {
+  return waiters.filter((waiter) => {
+    if (!isWaiterRecord(waiter)) {
+      const updatedAt = coerceTimestamp(waiter);
+      if (updatedAt === null) return true;
+      if (updatedAt - options.nowMs > MAX_WAITER_FUTURE_SKEW_MS) return false;
+      if (options.nowMs - updatedAt > options.staleMs) return false;
+      const pid = coercePid(waiter);
+      return pid === null || options.isProcessAlive(pid);
+    }
+    if (!options.isProcessAlive(waiter.pid)) {
+      return false;
+    }
+    const updatedAt = Date.parse(waiter.updatedAt);
+    if (!Number.isFinite(updatedAt)) return true;
+    // Invalid future timestamps must not become immortal FIFO blockers after
+    // a host clock correction. Dropping a waiter is safe: it owns no browser
+    // state and a live caller simply rejoins on its next poll.
+    if (updatedAt - options.nowMs > MAX_WAITER_FUTURE_SKEW_MS) return false;
+    return options.nowMs - updatedAt <= options.staleMs;
+  });
+}
+
+/**
+ * Malformed lease records count as occupants (assume-active). A coercible PID
+ * that is provably dead is the only safe pruning evidence: timestamps cannot
+ * fence a paused or suspended live owner, and a PID-less record may be the
+ * damaged remnant of an active browser controller. Availability requires
+ * manual repair when positive death cannot be established.
  */
 function pruneOpaqueRecords(
   records: unknown[],
@@ -1307,10 +2373,6 @@ function pruneOpaqueRecords(
     const pid = coercePid(record);
     if (pid !== null) {
       return options.isProcessAlive(pid);
-    }
-    const updatedAt = coerceTimestamp(record);
-    if (updatedAt !== null && options.nowMs - updatedAt > options.staleMs) {
-      return false;
     }
     return true;
   });
@@ -1337,17 +2399,29 @@ function coerceTimestamp(record: unknown): number | null {
   if (!record || typeof record !== "object") {
     return null;
   }
-  const value = (record as { updatedAt?: unknown }).updatedAt;
-  if (typeof value !== "string") {
-    return null;
+  const candidate = record as { createdAt?: unknown; updatedAt?: unknown };
+  for (const value of [candidate.updatedAt, candidate.createdAt]) {
+    if (typeof value !== "string") continue;
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
   }
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : null;
+  return null;
 }
 
 function isLeaseRecord(value: unknown): value is BrowserTabLeaseRecord {
   if (!value || typeof value !== "object") return false;
   const record = value as BrowserTabLeaseRecord;
+  return (
+    typeof record.id === "string" &&
+    typeof record.pid === "number" &&
+    typeof record.createdAt === "string" &&
+    typeof record.updatedAt === "string"
+  );
+}
+
+function isWaiterRecord(value: unknown): value is BrowserTabWaiterRecord {
+  if (!value || typeof value !== "object") return false;
+  const record = value as BrowserTabWaiterRecord;
   return (
     typeof record.id === "string" &&
     typeof record.pid === "number" &&

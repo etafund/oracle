@@ -317,11 +317,13 @@ describe("tab-lease registry: fail-closed fault isolation (red harness)", () => 
   test("[red] R3b the lock must NOT be stolen while its owner process is alive (multi-process)", async () => {
     const dir = await makeProfileDir();
     const lockDir = path.join(dir, LOCK_DIRNAME);
+    const controller = new AbortController();
     // A real, live process represents the lock owner mid-critical-section.
     const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"], {
       stdio: "ignore",
     });
     let stolenLeaseRelease: (() => Promise<void>) | null = null;
+    let acquirePromise: ReturnType<typeof acquireBrowserTabLease> | null = null;
     try {
       if (!child.pid) throw new Error("premise failure: could not spawn lock-owner process");
       await mkdir(lockDir, { recursive: false });
@@ -333,10 +335,11 @@ describe("tab-lease registry: fail-closed fault isolation (red harness)", () => 
         "utf8",
       );
 
-      const acquirePromise = acquireBrowserTabLease(dir, {
+      acquirePromise = acquireBrowserTabLease(dir, {
         maxConcurrentTabs: 1,
         pollMs: 100,
         timeoutMs: 0,
+        signal: controller.signal,
       });
       acquirePromise.catch(() => undefined);
 
@@ -359,6 +362,12 @@ describe("tab-lease registry: fail-closed fault isolation (red harness)", () => 
       expect(outcome.stolen).toBe(false);
     } finally {
       await stopChild(child);
+      // Stop and settle the intentionally unbounded acquisition before
+      // removing its profile directory. Without this, it can observe the
+      // owner's death, steal the lock, and write while rm() is traversing,
+      // making the test itself race with ENOTEMPTY.
+      controller.abort();
+      await acquirePromise?.catch(() => undefined);
       if (stolenLeaseRelease) await stolenLeaseRelease().catch(() => undefined);
       await rm(dir, { recursive: true, force: true });
     }

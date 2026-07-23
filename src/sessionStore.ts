@@ -177,6 +177,7 @@ export type {
   ClaudeCodeArtifactPaths,
   ClaudeCodeModelVerificationStatus,
 } from "./sessionManager.js";
+export type { ImportedChatgptConversationMetadata } from "./browser/importedConversation.js";
 
 export async function pruneOldSessions(
   hours?: number,

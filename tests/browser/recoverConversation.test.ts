@@ -97,6 +97,36 @@ describe("resolveRecoveryUrl", () => {
   test("ignores empty browser metadata", () => {
     expect(resolveRecoveryUrl({ id: "x" } as unknown as SessionMetadata)).toBeNull();
   });
+
+  test.each([
+    ["null", null],
+    ["malformed", { schema: "wrong", imported: false }],
+  ])("denies recovery when importedConversation is %s", (_label, marker) => {
+    const metadata = metaWith(
+      { tabUrl: "https://chatgpt.com/c/must-not-recover" },
+      { url: "https://chatgpt.com/c/must-not-harvest" },
+    );
+    const claimed = {
+      ...metadata,
+      browser: {
+        ...metadata.browser,
+        importedConversation: marker,
+      },
+    } as unknown as SessionMetadata;
+    expect(resolveRecoveryUrl(claimed)).toBeNull();
+  });
+
+  test("denies recovery for raw imported status when the marker is missing", () => {
+    const metadata = {
+      ...metaWith(
+        { tabUrl: "https://chatgpt.com/c/must-not-recover" },
+        { url: "https://chatgpt.com/c/must-not-harvest" },
+      ),
+      status: "imported",
+    } as SessionMetadata;
+    expect(metadata.browser?.importedConversation).toBeUndefined();
+    expect(resolveRecoveryUrl(metadata)).toBeNull();
+  });
 });
 
 describe("isRecoveredConversationHarvestReady", () => {

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { SessionMetadata } from "../../src/sessionManager.ts";
+import { buildImportedChatgptConversationSessionMetadata } from "../../src/browser/importedConversation.ts";
 
 const sessionStoreMock = vi.hoisted(() => ({
   readSession: vi.fn(),
@@ -35,6 +36,16 @@ function meta(overrides: Partial<SessionMetadata> = {}): SessionMetadata {
   } as SessionMetadata;
 }
 
+function importedMeta(): SessionMetadata {
+  return buildImportedChatgptConversationSessionMetadata({
+    sessionId: "sess-1",
+    conversationUrl: "https://chatgpt.com/c/imported-session",
+    conversationId: "imported-session",
+    cwd: "/tmp/imported-session",
+    importedAt: "2026-07-01T00:00:00.000Z",
+  });
+}
+
 const PATHS = {
   sessionDir: "/tmp/.oracle/sessions/sess-1",
   outputFile: "/tmp/.oracle/sessions/sess-1/output.log",
@@ -59,6 +70,14 @@ describe("resolveSessionExitCode", () => {
 
   test("1 for cancelled", () => {
     expect(resolveSessionExitCode(meta({ status: "cancelled" }))).toBe(1);
+  });
+
+  test("0 for a valid imported reference without treating it as a consult success", () => {
+    expect(resolveSessionExitCode(importedMeta())).toBe(0);
+  });
+
+  test("1 for a raw imported status that fails exact pure-shape validation", () => {
+    expect(resolveSessionExitCode(meta({ status: "imported" }))).toBe(1);
   });
 
   test("maps classified failures onto the taxonomy (timeout -> 5)", () => {
@@ -184,6 +203,46 @@ describe("buildSessionJsonPayload", () => {
       "/tmp/.oracle/sessions/sess-1/artifacts/claude-code-final.md",
     );
   });
+
+  test("an imported reference exposes no synthetic output or completion timestamp", () => {
+    const payload = buildSessionJsonPayload(importedMeta(), PATHS);
+    expect(payload.status).toBe("imported");
+    expect(payload.terminal).toBe(true);
+    expect(payload.exit_code).toBe(0);
+    expect(payload.completed_at).toBeNull();
+    expect(payload.output_file).toBeNull();
+  });
+
+  test.each([
+    ["missing marker", meta({ status: "imported" })],
+    [
+      "null marker",
+      meta({
+        status: "imported",
+        browser: { importedConversation: null } as unknown as SessionMetadata["browser"],
+      }),
+    ],
+    [
+      "marker on completed record",
+      meta({
+        status: "completed",
+        browser: {
+          importedConversation: { schema: "malformed-import-claim" },
+        } as unknown as SessionMetadata["browser"],
+      }),
+    ],
+    ["mixed record", { ...importedMeta(), lane: "chatgpt-pro" } as SessionMetadata],
+  ])("fails closed for an invalid imported record: %s", (_label, metadata) => {
+    const payload = buildSessionJsonPayload(metadata, PATHS);
+    expect(payload.status).toBe("error");
+    expect(payload.terminal).toBe(true);
+    expect(payload.exit_code).toBe(1);
+    expect(payload.output_file).toBe(PATHS.outputFile);
+    expect(payload.error).toEqual({
+      code: "invalid_imported_session",
+      message: expect.stringContaining("does not match Oracle's exact metadata-only"),
+    });
+  });
 });
 
 describe("buildSessionJsonEnvelope — json_envelope.v1 conformance", () => {
@@ -212,6 +271,25 @@ describe("buildSessionJsonEnvelope — json_envelope.v1 conformance", () => {
     );
     expect(envelope.retry_safe).toBe(true);
     expect(envelope.next_command).toBe("oracle session sess-1 --artifacts --json");
+  });
+
+  test("an imported reference points only to the explicit compatibility follow-up", () => {
+    const { envelope } = buildSessionJsonEnvelope(importedMeta(), PATHS);
+    expect(envelope.next_command).toBe(
+      'oracle --engine browser --remote-browser off --browser-model-strategy current --followup sess-1 -p "..."',
+    );
+    expect(envelope.commands).toEqual({
+      session_json: "oracle session sess-1 --json",
+      followup_compatibility:
+        'oracle --engine browser --remote-browser off --browser-model-strategy current --followup sess-1 -p "..."',
+    });
+  });
+
+  test("an invalid imported record has no compatibility follow-up command", () => {
+    const { envelope } = buildSessionJsonEnvelope(meta({ status: "imported" }), PATHS);
+    expect(envelope.next_command).toBe("oracle session sess-1 --artifacts --json");
+    expect(envelope.commands).not.toHaveProperty("followup_compatibility");
+    expect(envelope.retry_safe).toBe(false);
   });
 });
 

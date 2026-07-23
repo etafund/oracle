@@ -20,6 +20,7 @@ import type { BrowserSessionConfig } from "../sessionStore.js";
 import { buildTokenEstimateSuffix, formatAttachmentLabel } from "../browser/promptSummary.js";
 import { buildCookiePlan } from "../browser/policies.js";
 import { describeBrowserControlPlan, formatBrowserControlPlan } from "../browser/controlPlan.js";
+import { formatBrowserModelTarget } from "../browser/modelDisplay.js";
 import {
   DEFAULT_CLAUDE_CODE_SYSTEM_PROMPT,
   buildClaudeCodeCommand,
@@ -205,7 +206,12 @@ async function runBrowserDryRun(
   const assemblePromptImpl = deps.assembleBrowserPromptImpl ?? assembleBrowserPrompt;
   const artifacts = await assemblePromptImpl(runOptions, { cwd });
   const suffix = buildTokenEstimateSuffix(artifacts);
-  const headerLine = `[dry-run] Oracle (${version}) would launch browser mode (${runOptions.model}) with ~${artifacts.estimatedInputTokens.toLocaleString()} tokens${suffix}.`;
+  const displayModel = formatBrowserModelTarget({
+    model: runOptions.model,
+    desiredModel: browserConfig?.desiredModel,
+    modelStrategy: browserConfig?.modelStrategy,
+  });
+  const headerLine = `[dry-run] Oracle (${version}) would launch browser mode (${displayModel}) with ~${artifacts.estimatedInputTokens.toLocaleString()} tokens${suffix}.`;
   log(styleLine(headerLine, "cyan"));
   logLaneRunEstimate("browser", runOptions.model, log, "dry-run");
   logDryRunPlan({ engine: "browser", runOptions, browserConfig, log });
@@ -301,7 +307,12 @@ export async function runBrowserPreview(
   const assemblePromptImpl = deps.assembleBrowserPromptImpl ?? assembleBrowserPrompt;
   const artifacts = await assemblePromptImpl(runOptions, { cwd });
   const suffix = buildTokenEstimateSuffix(artifacts);
-  const headerLine = `[preview] Oracle (${version}) browser mode (${runOptions.model}) with ~${artifacts.estimatedInputTokens.toLocaleString()} tokens${suffix}.`;
+  const displayModel = formatBrowserModelTarget({
+    model: runOptions.model,
+    desiredModel: browserConfig?.desiredModel,
+    modelStrategy: browserConfig?.modelStrategy,
+  });
+  const headerLine = `[preview] Oracle (${version}) browser mode (${displayModel}) with ~${artifacts.estimatedInputTokens.toLocaleString()} tokens${suffix}.`;
   log(styleLine(headerLine, "cyan"));
   const laneEstimate = logLaneRunEstimate("browser", runOptions.model, log, "preview");
   logDryRunPlan({ engine: "browser", runOptions, browserConfig, log, label: "preview" });

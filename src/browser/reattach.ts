@@ -60,7 +60,13 @@ import {
   type BrowserTabLease,
 } from "./tabLeaseRegistry.js";
 import { BrowserAutomationError } from "../oracle/errors.js";
-import { closeOwnedTargetWithDeadline, latchBrowserCleanupTaint } from "./index.js";
+import {
+  clearBrowserCleanupTaintGeneration,
+  closeOwnedTargetWithDeadline,
+  latchBrowserCleanupTaint,
+  releaseBrowserTabLeaseOrTaint,
+  rollbackOrphanedBrowserTabLeaseAcquisition,
+} from "./index.js";
 import {
   assertCapturedAssistantResponseBound,
   registerSubmittedUserMessage,
@@ -632,6 +638,9 @@ export interface IsolatedFleetRecoveryOptions {
   promptDomSha256: string;
   sessionId?: string;
   maxConcurrentTabs?: number;
+  /** Independent FIFO browser-capacity wait budget; 0 waits forever locally. */
+  queueTimeoutMs?: number;
+  /** @deprecated Use queueTimeoutMs. Retained for older reattach callers. */
   leaseTimeoutMs?: number;
   signal?: AbortSignal;
   accountId?: string;
@@ -731,6 +740,7 @@ export async function resumeBrowserSessionInIsolatedFleetTab(
     promptDomSha256,
     sessionId,
     maxConcurrentTabs,
+    queueTimeoutMs,
     leaseTimeoutMs,
     signal,
     accountId,
@@ -779,24 +789,27 @@ export async function resumeBrowserSessionInIsolatedFleetTab(
     try {
       lease = await acquireBrowserTabLeaseFn(profileDir, {
         maxConcurrentTabs,
-        timeoutMs: leaseTimeoutMs,
+        timeoutMs: queueTimeoutMs ?? leaseTimeoutMs ?? config?.queueTimeoutMs,
         logger,
         sessionId,
         chromeHost,
         chromePort,
+        // This queue wait belongs to capture-only recovery of a prompt that is
+        // already known submitted. Preserve that fact in any timeout envelope
+        // so generic retry logic can never replay the originating consult.
+        promptSubmitted: true,
         signal,
       });
     } catch (error) {
       if (error instanceof OrphanedBrowserTabLeaseError) {
-        latchBrowserCleanupTaint(error.message, logger);
-        // Keep ownership reachable and make one independently bounded retry;
-        // the record remains fail-closed if the registry is still locked.
-        void error.lease.release().catch((retryError) => {
-          latchBrowserCleanupTaint(
-            `orphaned recovery lease rollback retry failed (${error.lease.id}): ${retryError instanceof Error ? retryError.message : String(retryError)}`,
-            logger,
-          );
-        });
+        // Keep ownership reachable and synchronously start the bounded,
+        // identity-safe rollback. A failed release taints readiness, and its
+        // deferred self-heal clears only that exact taint generation.
+        await rollbackOrphanedBrowserTabLeaseAcquisition(
+          error,
+          logger,
+          "orphaned recovery acquisition rollback",
+        );
       }
       throw error;
     }
@@ -827,8 +840,38 @@ export async function resumeBrowserSessionInIsolatedFleetTab(
     } catch (error) {
       if (error instanceof IndeterminateRecoveryTargetConnectError) {
         deferredConnectCleanup = true;
-        latchBrowserCleanupTaint(error.message, logger);
+        const connectCleanupTaintReason = error.message;
+        const connectCleanupTaintGeneration = latchBrowserCleanupTaint(
+          connectCleanupTaintReason,
+          logger,
+        );
         const lateLease = lease;
+        const clearConnectCleanupTaint = (): void => {
+          if (
+            clearBrowserCleanupTaintGeneration(
+              connectCleanupTaintGeneration,
+              connectCleanupTaintReason,
+            )
+          ) {
+            logger(
+              `[browser] Cleared isolated recovery connect-timeout taint after late target and lease cleanup completed.`,
+            );
+          }
+        };
+        const releaseLateLease = async (): Promise<void> => {
+          if (!lateLease) {
+            throw new Error("Late isolated recovery cleanup lost its tab-lease handle.");
+          }
+          const released = await releaseBrowserTabLeaseOrTaint(
+            lateLease,
+            logger,
+            "late isolated recovery cleanup",
+            { onDeferredRelease: clearConnectCleanupTaint },
+          );
+          if (released) {
+            clearConnectCleanupTaint();
+          }
+        };
         // Do not abandon the in-flight CDP operation. If it ever settles,
         // close any target it created before releasing the capacity lease.
         // If it never settles, the fail-closed lease and cleanup taint remain.
@@ -849,7 +892,7 @@ export async function resumeBrowserSessionInIsolatedFleetTab(
                   );
                 }
               }
-              await lateLease?.release();
+              await releaseLateLease();
             },
             async (lateError) => {
               if (lateError instanceof OrphanedChromeTargetError) {
@@ -860,7 +903,7 @@ export async function resumeBrowserSessionInIsolatedFleetTab(
                 );
                 if (!closed) throw lateError;
               }
-              await lateLease?.release();
+              await releaseLateLease();
             },
           )
           .catch((lateCleanupError) => {
@@ -1011,16 +1054,16 @@ export async function resumeBrowserSessionInIsolatedFleetTab(
         `[browser] Keeping isolated recovery lease ${lease.id.slice(0, 8)} active for preserved challenge target ${isolated?.targetId ?? "unknown"}.`,
       );
     } else {
-      await lease.release().catch((error) => {
-        cleanupError ??= error;
-        latchBrowserCleanupTaint(
-          `isolated recovery lease release failed (${lease?.id ?? "unknown"}): ${error instanceof Error ? error.message : String(error)}`,
-          logger,
+      const released = await releaseBrowserTabLeaseOrTaint(
+        lease,
+        logger,
+        "isolated recovery cleanup",
+      );
+      if (!released) {
+        cleanupError ??= new Error(
+          `Failed to release isolated recovery tab lease ${lease.id}; readiness remains cleanup-tainted until identity-safe self-heal completes.`,
         );
-        logger(
-          `Failed to release isolated recovery tab lease: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      });
+      }
     }
   } else if (lease && (cleanupError || deferredConnectCleanup)) {
     logger(

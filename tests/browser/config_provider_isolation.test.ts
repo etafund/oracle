@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import { DEFAULT_CHATGPT_COOKIE_NAMES, resolveBrowserConfig } from "../../src/browser/config.js";
 import {
+  DEFAULT_GEMINI_BROWSER_CONFIG,
   DEFAULT_GEMINI_COOKIE_NAMES,
   GEMINI_APP_URL,
   normalizeGeminiUrl,
@@ -29,6 +30,16 @@ describe("browser config provider isolation", () => {
     expect(resolved.url).toBe("https://gemini.google.com/app");
     expect(resolved.chatgptUrl).toBeNull();
     expect(resolved.cookieNames).toEqual(DEFAULT_GEMINI_COOKIE_NAMES);
+  });
+
+  test("Gemini queue timeout keeps local zero but rejects non-finite and negative values", () => {
+    expect(resolveGeminiBrowserConfig({ queueTimeoutMs: 0 }).queueTimeoutMs).toBe(0);
+
+    for (const queueTimeoutMs of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(resolveGeminiBrowserConfig({ queueTimeoutMs }).queueTimeoutMs).toBe(
+        DEFAULT_GEMINI_BROWSER_CONFIG.queueTimeoutMs,
+      );
+    }
   });
 
   test("Gemini config rejects non-Gemini hosts, including ChatGPT hosts", () => {

@@ -48,6 +48,7 @@ describe("remote payload sanitization", () => {
       desiredModel: "gpt-5.5-pro",
       modelStrategy: "select",
       timeoutMs: 90_000,
+      queueTimeoutMs: 75_000,
       thinkingTime: "heavy",
       resumeConversationUrl: "https://chatgpt.com/c/safe-resume-id",
     });
@@ -122,6 +123,7 @@ describe("remote payload sanitization", () => {
         desiredModel: "gpt-5.5-pro",
         modelStrategy: "select",
         timeoutMs: 90_000,
+        queueTimeoutMs: 75_000,
         thinkingTime: "heavy",
         resumeConversationUrl: "https://chatgpt.com/c/safe-resume-id",
         cookieSync: true,
@@ -153,6 +155,7 @@ function maliciousPayload(): RemoteRunPayload {
       desiredModel: "gpt-5.5-pro",
       modelStrategy: "select",
       timeoutMs: 90_000,
+      queueTimeoutMs: 75_000,
       thinkingTime: "heavy",
       resumeConversationUrl: "https://chatgpt.com/c/safe-resume-id",
       inlineCookies: [

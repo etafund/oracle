@@ -53,6 +53,7 @@ const VALUE_FLAGS = new Set([
   "--browser-model-strategy",
   "--browser-port",
   "--browser-profile-lock-timeout",
+  "--browser-queue-timeout",
   "--browser-recheck-delay",
   "--browser-recheck-timeout",
   "--browser-research",

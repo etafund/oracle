@@ -106,6 +106,7 @@ import {
 import {
   acquireBrowserTabLease,
   hasOtherActiveBrowserTabLeases,
+  OrphanedBrowserTabLeaseError,
   type BrowserTabLease,
 } from "./tabLeaseRegistry.js";
 import {
@@ -116,7 +117,11 @@ import {
 import { collectGeneratedImageArtifacts } from "./chatgptImages.js";
 import { collectChatGptFileArtifacts } from "./chatgptFiles.js";
 import { runProviderSubmissionFlow } from "./providerDomFlow.js";
-import { chatgptDomProvider, readGpt56SolProRouteReadOnly } from "./providers/index.js";
+import {
+  buildGpt56SolProFinalDispatchGuard,
+  chatgptDomProvider,
+  readGpt56SolProRouteReadOnly,
+} from "./providers/index.js";
 import { resolveAttachRunningConnection } from "./attachRunning.js";
 import { connectToExistingChatGptTab } from "./liveTabs.js";
 import { captureBrowserDiagnostics } from "./domDebug.js";
@@ -1139,38 +1144,95 @@ export interface BrowserCleanupTaint {
   reason: string;
 }
 
-let lastBrowserCleanupTaint: BrowserCleanupTaint | null = null;
+interface BrowserCleanupTaintEntry {
+  generation: number;
+  taint: BrowserCleanupTaint;
+}
+
+let browserCleanupTaints: BrowserCleanupTaintEntry[] = [];
+let browserCleanupTaintGeneration = 0;
 
 /** Latched cleanup-failure flag; consumed by /ready as cleanup-taint (§14.13). */
 export function getBrowserCleanupTaint(): BrowserCleanupTaint | null {
-  return lastBrowserCleanupTaint;
+  return browserCleanupTaints.at(-1)?.taint ?? null;
 }
 
 export function clearBrowserCleanupTaint(): void {
-  lastBrowserCleanupTaint = null;
+  browserCleanupTaints = [];
+  browserCleanupTaintGeneration += 1;
 }
 
-export function latchBrowserCleanupTaint(reason: string, logger?: BrowserLogger): void {
-  lastBrowserCleanupTaint = { at: new Date().toISOString(), reason };
+/** Remove only the taint generation owned by one asynchronous cleanup. */
+export function clearBrowserCleanupTaintGeneration(generation: number, reason: string): boolean {
+  const index = browserCleanupTaints.findIndex(
+    (entry) => entry.generation === generation && entry.taint.reason === reason,
+  );
+  if (index < 0) return false;
+  browserCleanupTaints.splice(index, 1);
+  return true;
+}
+
+export function latchBrowserCleanupTaint(reason: string, logger?: BrowserLogger): number {
+  browserCleanupTaintGeneration += 1;
+  browserCleanupTaints.push({
+    generation: browserCleanupTaintGeneration,
+    taint: { at: new Date().toISOString(), reason },
+  });
   logger?.(`[browser] CLEANUP-TAINT: ${reason}`);
+  return browserCleanupTaintGeneration;
 }
 
-async function releaseBrowserTabLeaseOrTaint(
+export async function releaseBrowserTabLeaseOrTaint(
   lease: BrowserTabLease,
   logger: BrowserLogger,
   context: string,
   releaseOptions?: Parameters<BrowserTabLease["release"]>[0],
 ): Promise<boolean> {
+  let releaseTaintGeneration: number | null = null;
+  let releaseTaintReason: string | null = null;
+  let deferredReleaseRecovered = false;
+  const clearOwnRecoveredTaint = (): void => {
+    if (releaseTaintGeneration === null || releaseTaintReason === null) return;
+    if (clearBrowserCleanupTaintGeneration(releaseTaintGeneration, releaseTaintReason)) {
+      logger(
+        `[browser] Cleared cleanup-taint after deferred release repaired tab lease ${lease.id}.`,
+      );
+    }
+  };
+  const callerOnDeferredRelease = releaseOptions?.onDeferredRelease;
   try {
-    await lease.release(releaseOptions);
+    await lease.release({
+      ...releaseOptions,
+      onDeferredRelease: () => {
+        deferredReleaseRecovered = true;
+        clearOwnRecoveredTaint();
+        callerOnDeferredRelease?.();
+      },
+    });
     return true;
   } catch (error) {
-    latchBrowserCleanupTaint(
-      `${context} tab-lease release failed (${lease.id}): ${error instanceof Error ? error.message : String(error)}`,
-      logger,
-    );
+    releaseTaintReason = `${context} tab-lease release failed (${lease.id}): ${error instanceof Error ? error.message : String(error)}`;
+    releaseTaintGeneration = latchBrowserCleanupTaint(releaseTaintReason, logger);
+    if (deferredReleaseRecovered) clearOwnRecoveredTaint();
     return false;
   }
+}
+
+/**
+ * Acquisition can fail after its lease record was durably committed. Roll
+ * that exact lease handle back before propagating the acquisition failure so
+ * a long-lived serve PID cannot keep an unreachable capacity claim alive.
+ */
+export async function rollbackOrphanedBrowserTabLeaseAcquisition(
+  error: unknown,
+  logger: BrowserLogger,
+  context: string,
+): Promise<boolean> {
+  if (!(error instanceof OrphanedBrowserTabLeaseError)) return false;
+  logger(
+    `[browser] Rolling back durably committed tab lease ${error.lease.id.slice(0, 8)} after acquisition hand-off failed.`,
+  );
+  return releaseBrowserTabLeaseOrTaint(error.lease, logger, context);
 }
 
 type OwnedTargetCloseOutcome =
@@ -1214,7 +1276,7 @@ export async function closeOwnedTargetWithDeadline(
   }
   if (outcome.kind === "timeout") {
     const reason = `owned-target close timed out after ${timeoutMs}ms (target=${context.targetId ?? "unknown"})`;
-    lastBrowserCleanupTaint = { at: new Date().toISOString(), reason };
+    latchBrowserCleanupTaint(reason);
     logger(
       `[browser] CLEANUP-TAINT: ${reason}; continuing cleanup so the worker is not pinned busy (§14.13 account-scoped taint is a handoff concern).`,
     );
@@ -1399,7 +1461,7 @@ async function assertProtectedSolProSelectionReadOnlyBeforeSubmit({
   logger: BrowserLogger;
   attachmentBindingToken?: string;
   composerBindingToken?: string;
-}): Promise<void> {
+}): Promise<ReturnType<typeof buildGpt56SolProFinalDispatchGuard> | void> {
   if (!isDesiredGpt56SolModel(desiredModel)) return;
   const evidence = await readGpt56SolProRouteReadOnly(
     runtime,
@@ -1421,6 +1483,7 @@ async function assertProtectedSolProSelectionReadOnlyBeforeSubmit({
     );
   }
   logger("Protected route: GPT-5.6 Sol + Pro verified read-only at the dispatch boundary");
+  return buildGpt56SolProFinalDispatchGuard(attachmentBindingToken, composerBindingToken);
 }
 
 async function prepareSubmissionComposerWithProtectedRoute({
@@ -1778,13 +1841,22 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
   }
 
   if (manualLogin) {
-    tabLease = await acquireBrowserTabLease(userDataDir, {
-      maxConcurrentTabs: config.maxConcurrentTabs,
-      timeoutMs: config.timeoutMs,
-      logger,
-      sessionId: options.sessionId,
-      signal: options.signal,
-    });
+    try {
+      tabLease = await acquireBrowserTabLease(userDataDir, {
+        maxConcurrentTabs: config.maxConcurrentTabs,
+        timeoutMs: config.queueTimeoutMs,
+        logger,
+        sessionId: options.sessionId,
+        signal: options.signal,
+      });
+    } catch (error) {
+      await rollbackOrphanedBrowserTabLeaseAcquisition(
+        error,
+        logger,
+        "local browser acquisition rollback",
+      );
+      throw error;
+    }
   }
 
   let acquiredChrome: { chrome: BrowserChrome; reusedChrome: LaunchedChrome | null };
@@ -1815,12 +1887,6 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
   }
   const { chrome, reusedChrome } = acquiredChrome;
   const chromeHost = (chrome as unknown as { host?: string }).host ?? "127.0.0.1";
-  if (tabLease) {
-    await tabLease.update({
-      chromeHost,
-      chromePort: chrome.port,
-    });
-  }
   let removeTerminationHooks: (() => void) | null = null;
   try {
     removeTerminationHooks = registerTerminationHooks(
@@ -1857,6 +1923,12 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
   let ownedTargetCleanupProved = true;
 
   try {
+    if (tabLease) {
+      await tabLease.update({
+        chromeHost,
+        chromePort: chrome.port,
+      });
+    }
     try {
       if (config.browserTabRef) {
         const attached = await connectToExistingChatGptTab({
@@ -4232,15 +4304,24 @@ async function runRemoteBrowserMode(
       : resolveRemoteTabLeaseProfileDir(config);
     if (remoteLeaseProfileDir) {
       await mkdir(remoteLeaseProfileDir, { recursive: true });
-      tabLease = await acquireBrowserTabLease(remoteLeaseProfileDir, {
-        maxConcurrentTabs: config.maxConcurrentTabs,
-        timeoutMs: config.timeoutMs,
-        logger,
-        sessionId: options.sessionId,
-        chromeHost: host,
-        chromePort: port,
-        signal: options.signal,
-      });
+      try {
+        tabLease = await acquireBrowserTabLease(remoteLeaseProfileDir, {
+          maxConcurrentTabs: config.maxConcurrentTabs,
+          timeoutMs: config.queueTimeoutMs,
+          logger,
+          sessionId: options.sessionId,
+          chromeHost: host,
+          chromePort: port,
+          signal: options.signal,
+        });
+      } catch (error) {
+        await rollbackOrphanedBrowserTabLeaseAcquisition(
+          error,
+          logger,
+          "remote browser acquisition rollback",
+        );
+        throw error;
+      }
     }
     if (config.browserTabRef) {
       const attached = await connectToExistingChatGptTab({

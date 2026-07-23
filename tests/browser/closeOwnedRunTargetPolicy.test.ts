@@ -15,8 +15,12 @@ import type { BrowserLogger } from "../../src/browser/types.js";
 import {
   __test__,
   clearBrowserCleanupTaint,
+  clearBrowserCleanupTaintGeneration,
   getBrowserCleanupTaint,
+  latchBrowserCleanupTaint,
+  rollbackOrphanedBrowserTabLeaseAcquisition,
 } from "../../src/browser/index.js";
+import { OrphanedBrowserTabLeaseError } from "../../src/browser/tabLeaseRegistry.js";
 
 const {
   closeOwnedTargetWithDeadline,
@@ -187,6 +191,169 @@ describe("releaseBrowserTabLeaseOrTaint", () => {
         "browser run cleanup",
       ),
     ).resolves.toBe(true);
+    expect(getBrowserCleanupTaint()).toBeNull();
+  });
+
+  test("deferred release clears only the cleanup-taint created by its failed lease", async () => {
+    const { logger } = makeLogger();
+    let onDeferredRelease: (() => void) | undefined;
+    const release = vi.fn(async (options?: { onDeferredRelease?: () => void }) => {
+      onDeferredRelease = options?.onDeferredRelease;
+      throw new Error("registry lock unavailable");
+    });
+
+    await expect(
+      releaseBrowserTabLeaseOrTaint(
+        { id: "lease-deferred-repair", release, update: vi.fn() } as never,
+        logger,
+        "browser run cleanup",
+      ),
+    ).resolves.toBe(false);
+    expect(getBrowserCleanupTaint()?.reason).toContain("lease-deferred-repair");
+
+    onDeferredRelease?.();
+    expect(getBrowserCleanupTaint()).toBeNull();
+  });
+
+  test("deferred release cannot clear a newer unrelated cleanup-taint", async () => {
+    const { logger } = makeLogger();
+    let onDeferredRelease: (() => void) | undefined;
+    const release = vi.fn(async (options?: { onDeferredRelease?: () => void }) => {
+      onDeferredRelease = options?.onDeferredRelease;
+      throw new Error("registry lock unavailable");
+    });
+
+    await releaseBrowserTabLeaseOrTaint(
+      { id: "lease-old-failure", release, update: vi.fn() } as never,
+      logger,
+      "browser run cleanup",
+    );
+    latchBrowserCleanupTaint("newer owned-target close failure", logger);
+
+    onDeferredRelease?.();
+    expect(getBrowserCleanupTaint()?.reason).toBe("newer owned-target close failure");
+  });
+
+  test("deferred release reveals a pre-existing unrelated taint after repairing its own", async () => {
+    const { logger } = makeLogger();
+    latchBrowserCleanupTaint("pre-existing owned-target close failure", logger);
+    let onDeferredRelease: (() => void) | undefined;
+    const release = vi.fn(async (options?: { onDeferredRelease?: () => void }) => {
+      onDeferredRelease = options?.onDeferredRelease;
+      throw new Error("registry lock unavailable");
+    });
+
+    await releaseBrowserTabLeaseOrTaint(
+      { id: "lease-later-failure", release, update: vi.fn() } as never,
+      logger,
+      "browser run cleanup",
+    );
+    expect(getBrowserCleanupTaint()?.reason).toContain("lease-later-failure");
+
+    onDeferredRelease?.();
+    expect(getBrowserCleanupTaint()?.reason).toBe("pre-existing owned-target close failure");
+  });
+
+  test("an early deferred callback cannot erase an intervening unrelated taint", async () => {
+    const { logger } = makeLogger();
+    const release = vi.fn(async (options?: { onDeferredRelease?: () => void }) => {
+      options?.onDeferredRelease?.();
+      latchBrowserCleanupTaint("intervening owned-target close failure", logger);
+      throw new Error("late registry lock failure");
+    });
+
+    await releaseBrowserTabLeaseOrTaint(
+      { id: "lease-early-repair", release, update: vi.fn() } as never,
+      logger,
+      "browser run cleanup",
+    );
+    expect(getBrowserCleanupTaint()?.reason).toBe("intervening owned-target close failure");
+  });
+
+  test("a synchronous successful release leaves a pre-existing taint untouched", async () => {
+    const { logger } = makeLogger();
+    latchBrowserCleanupTaint("pre-existing connection close failure", logger);
+    const release = vi.fn(async () => undefined);
+
+    await expect(
+      releaseBrowserTabLeaseOrTaint(
+        { id: "lease-clean-release", release, update: vi.fn() } as never,
+        logger,
+        "browser run cleanup",
+      ),
+    ).resolves.toBe(true);
+    expect(getBrowserCleanupTaint()?.reason).toBe("pre-existing connection close failure");
+  });
+});
+
+describe("rollbackOrphanedBrowserTabLeaseAcquisition", () => {
+  test("releases the exact durable lease handle before the acquisition error propagates", async () => {
+    const { logger } = makeLogger();
+    const release = vi.fn(async () => undefined);
+    const lease = { id: "lease-orphan-rollback", release, update: vi.fn() } as never;
+    const error = new OrphanedBrowserTabLeaseError(lease, new Error("unlock failed"));
+
+    await expect(
+      rollbackOrphanedBrowserTabLeaseAcquisition(
+        error,
+        logger,
+        "local browser acquisition rollback",
+      ),
+    ).resolves.toBe(true);
+
+    expect(release).toHaveBeenCalledOnce();
+    expect(getBrowserCleanupTaint()).toBeNull();
+  });
+
+  test("a deferred orphan rollback clears only its own release-failure taint", async () => {
+    const { logger } = makeLogger();
+    let onDeferredRelease: (() => void) | undefined;
+    const release = vi.fn(async (options?: { onDeferredRelease?: () => void }) => {
+      onDeferredRelease = options?.onDeferredRelease;
+      throw new Error("registry lock unavailable");
+    });
+    const lease = { id: "lease-orphan-deferred", release, update: vi.fn() } as never;
+    const error = new OrphanedBrowserTabLeaseError(lease, new Error("unlock failed"));
+
+    await expect(
+      rollbackOrphanedBrowserTabLeaseAcquisition(
+        error,
+        logger,
+        "remote browser acquisition rollback",
+      ),
+    ).resolves.toBe(false);
+    expect(getBrowserCleanupTaint()?.reason).toContain("lease-orphan-deferred");
+
+    onDeferredRelease?.();
+    expect(getBrowserCleanupTaint()).toBeNull();
+  });
+
+  test("ignores acquisition failures that do not carry a committed lease", async () => {
+    const { logger } = makeLogger();
+
+    await expect(
+      rollbackOrphanedBrowserTabLeaseAcquisition(
+        new Error("ordinary queue timeout"),
+        logger,
+        "local browser acquisition rollback",
+      ),
+    ).resolves.toBe(false);
+    expect(getBrowserCleanupTaint()).toBeNull();
+  });
+});
+
+describe("cleanup-taint generation ownership", () => {
+  test("clears only the exact generation even when reasons are identical", () => {
+    const { logger } = makeLogger();
+    const first = latchBrowserCleanupTaint("same cleanup reason", logger);
+    const second = latchBrowserCleanupTaint("same cleanup reason", logger);
+
+    expect(clearBrowserCleanupTaintGeneration(first, "same cleanup reason")).toBe(true);
+    expect(getBrowserCleanupTaint()?.reason).toBe("same cleanup reason");
+    expect(clearBrowserCleanupTaintGeneration(first, "same cleanup reason")).toBe(false);
+    expect(clearBrowserCleanupTaintGeneration(second, "different reason")).toBe(false);
+    expect(getBrowserCleanupTaint()?.reason).toBe("same cleanup reason");
+    expect(clearBrowserCleanupTaintGeneration(second, "same cleanup reason")).toBe(true);
     expect(getBrowserCleanupTaint()).toBeNull();
   });
 });

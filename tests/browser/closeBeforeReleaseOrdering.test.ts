@@ -40,7 +40,8 @@ const SRC_ROOT = fileURLToPath(new URL("../../src", import.meta.url));
 // Anchors are compared on whitespace-normalized source so formatting-only
 // changes cannot skew the ordering measurement.
 const INDEX_RELEASE_ANCHOR = "awaitreleaseBrowserTabLeaseOrTaint(handle,logger,";
-const PROJECT_RELEASE_ANCHOR = "tabLease=null;awaithandle.release().catch(()=>undefined);";
+const PROJECT_RELEASE_ANCHOR =
+  'tabLease=null;awaitreleaseBrowserTabLeaseOrTaint(handle,logger,"ProjectSourcescleanup");';
 const REMOTE_CLOSE_ANCHOR =
   "ownedTargetCleanupProved=awaitcloseOwnedTargetWithDeadline(closeOwnedRemoteTarget(),logger,{targetId:ownedRemoteTargetId},);";
 // No `.catch(...)` tail: runBrowserMode()'s close now returns the boolean
@@ -48,7 +49,7 @@ const REMOTE_CLOSE_ANCHOR =
 // while projectSourcesRunner still swallows; the anchor is the shared prefix.
 const LOCAL_CLOSE_ANCHOR = "awaitcloseTab(chrome.port,isolatedTargetId,logger,chromeHost)";
 const RECOVERY_CLOSE_ANCHOR = "awaitcloseOwned();";
-const RECOVERY_RELEASE_ANCHOR = "awaitlease.release().catch(";
+const RECOVERY_RELEASE_ANCHOR = "awaitreleaseBrowserTabLeaseOrTaint(";
 
 async function readSource(relative: string): Promise<string> {
   return readFile(path.join(SRC_ROOT, relative), "utf8");

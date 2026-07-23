@@ -41,6 +41,27 @@ export interface AttachmentReadyExpectation {
 
 type AttachmentReadyInput = string | AttachmentReadyExpectation;
 
+/**
+ * A synchronous DOM proof that must be evaluated in the same browser task as
+ * the final send-target check. `assertResult` runs in Node on the returned
+ * value and must throw when the proof no longer holds.
+ */
+export interface FinalPreDispatchDomGuard {
+  expression: string;
+  assertResult: (value: unknown) => void;
+  verdictBinding?: {
+    name: string;
+    parsePayload: (payload: string) => unknown | undefined;
+  };
+  afterDispatchExpression?: string;
+  assertAfterDispatchResult?: (value: unknown) => void;
+  isDispatchDefinitelyBlocked?: (value: unknown) => boolean;
+}
+
+type BeforePromptSubmit = (
+  composerBindingToken?: string,
+) => Promise<FinalPreDispatchDomGuard | void> | FinalPreDispatchDomGuard | void;
+
 export async function submitPrompt(
   deps: {
     runtime: ChromeClient["Runtime"];
@@ -50,7 +71,7 @@ export async function submitPrompt(
     baselineTurns?: number | null;
     inputTimeoutMs?: number | null;
     attachmentTimeoutMs?: number | null;
-    beforePromptSubmit?: (composerBindingToken?: string) => Promise<void> | void;
+    beforePromptSubmit?: BeforePromptSubmit;
     requireBoundSendTarget?: boolean;
     onPromptSubmitted?: (submittedPrompt: string) => Promise<void> | void;
     onPromptBound?: (
@@ -236,6 +257,7 @@ export async function submitPrompt(
     deps?.attachmentTimeoutMs,
     deps?.attachmentBindingToken,
     deps.beforePromptSubmit,
+    () => deps.onPromptSubmitted?.(prompt),
   );
   if (!clicked) {
     if (deps.requireBoundSendTarget) {
@@ -256,6 +278,7 @@ export async function submitPrompt(
       text: ENTER_KEY_TEXT,
       unmodifiedText: ENTER_KEY_TEXT,
     });
+    await deps.onPromptSubmitted?.(prompt);
     await input.dispatchKeyEvent({
       type: "keyUp",
       ...ENTER_KEY_EVENT,
@@ -274,8 +297,6 @@ export async function submitPrompt(
     // ends of the remote stream, but name the event truthfully.
     logger("Clicked send button (dispatch attempted; awaiting prompt commit proof)");
   }
-  await deps.onPromptSubmitted?.(prompt);
-
   const commitTimeoutMs = Math.max(60_000, deps.inputTimeoutMs ?? 0);
   const submittedAttachmentNames = (deps.attachmentNames ?? [])
     .map((attachment) => (typeof attachment === "string" ? attachment : attachment.name))
@@ -915,6 +936,133 @@ export function buildSendButtonTargetExpressionForTest(
   return buildSendButtonTargetExpression(attachmentBindingToken, sendBindingToken, bindSendTarget);
 }
 
+interface ArmedFinalDispatchGuard {
+  terminalVerdict: unknown | undefined;
+  unsubscribe?: () => void;
+}
+
+function buildOwnedSendBindingCleanupExpression(sendBindingToken: string): string {
+  const tokenLiteral = JSON.stringify(sendBindingToken);
+  return `(() => {
+    const TOKEN = ${tokenLiteral};
+    let removed = 0;
+    for (const node of Array.from(document.querySelectorAll('[data-oracle-send-binding]'))) {
+      if (node?.getAttribute?.('data-oracle-send-binding') !== TOKEN) continue;
+      try { node.removeAttribute?.('data-oracle-send-binding'); removed += 1; } catch {}
+    }
+    for (const node of Array.from(document.querySelectorAll('[data-oracle-send-composer-binding]'))) {
+      if (node?.getAttribute?.('data-oracle-send-composer-binding') !== TOKEN) continue;
+      try { node.removeAttribute?.('data-oracle-send-composer-binding'); removed += 1; } catch {}
+    }
+    return { removed };
+  })()`;
+}
+
+async function armFinalDispatchGuard(
+  Runtime: ChromeClient["Runtime"],
+  guard: FinalPreDispatchDomGuard,
+): Promise<ArmedFinalDispatchGuard> {
+  const armed: ArmedFinalDispatchGuard = {
+    terminalVerdict: undefined,
+  };
+  const binding = guard.verdictBinding;
+  if (!binding) return armed;
+  if (
+    typeof Runtime.addBinding !== "function" ||
+    typeof Runtime.removeBinding !== "function" ||
+    typeof Runtime.bindingCalled !== "function"
+  ) {
+    throw new BrowserAutomationError(
+      "Protected dispatch requires a Runtime binding for its terminal click verdict.",
+      {
+        stage: "model-selection",
+        code: "protected-dispatch-binding-unavailable",
+        retryable: false,
+      },
+    );
+  }
+  try {
+    const detach = Runtime.bindingCalled((event) => {
+      if (event.name !== binding.name || armed.terminalVerdict !== undefined) return;
+      const parsed = binding.parsePayload(event.payload);
+      if (parsed !== undefined) armed.terminalVerdict = parsed;
+    });
+    armed.unsubscribe = () => {
+      try {
+        detach();
+      } catch {}
+    };
+    await Runtime.addBinding({ name: binding.name });
+    return armed;
+  } catch (error) {
+    armed.unsubscribe?.();
+    throw new BrowserAutomationError(
+      "Could not arm the protected dispatch verdict binding; refusing to click.",
+      {
+        stage: "model-selection",
+        code: "protected-dispatch-binding-arm-failed",
+        retryable: false,
+      },
+      error,
+    );
+  }
+}
+
+async function cleanupFinalDispatchGuard(
+  Runtime: ChromeClient["Runtime"],
+  guard: FinalPreDispatchDomGuard | void,
+  armed: ArmedFinalDispatchGuard | undefined,
+  sendBindingToken: string,
+): Promise<{ pageVerdict: unknown | undefined; cleanupError: unknown | undefined }> {
+  let pageVerdict: unknown | undefined;
+  let cleanupError: unknown | undefined;
+  try {
+    const expression =
+      guard?.afterDispatchExpression ?? buildOwnedSendBindingCleanupExpression(sendBindingToken);
+    const outcome = await Runtime.evaluate({ expression, returnByValue: true });
+    if (guard?.afterDispatchExpression) pageVerdict = outcome.result?.value;
+  } catch (error) {
+    cleanupError = error;
+  } finally {
+    armed?.unsubscribe?.();
+    if (guard?.verdictBinding) {
+      try {
+        await Runtime.removeBinding({ name: guard.verdictBinding.name });
+      } catch (error) {
+        cleanupError ??= error;
+      }
+    }
+  }
+  return { pageVerdict, cleanupError };
+}
+
+function dispatchGuardStatus(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  return typeof (value as { status?: unknown }).status === "string"
+    ? ((value as { status: string }).status ?? null)
+    : null;
+}
+
+function reconcileDispatchGuardVerdicts(
+  bindingVerdict: unknown | undefined,
+  pageVerdict: unknown | undefined,
+): unknown | undefined {
+  if (bindingVerdict === undefined) return pageVerdict;
+  const bindingStatus = dispatchGuardStatus(bindingVerdict);
+  const pageStatus = dispatchGuardStatus(pageVerdict);
+  if (pageStatus === "allowed" || pageStatus === "blocked") {
+    if (bindingStatus !== pageStatus) {
+      return {
+        status: "conflict",
+        reason: "binding-page-verdict-conflict",
+        bindingStatus,
+        pageStatus,
+      };
+    }
+  }
+  return bindingVerdict;
+}
+
 async function attemptSendButton(
   Runtime: ChromeClient["Runtime"],
   Input: ChromeClient["Input"],
@@ -922,7 +1070,8 @@ async function attemptSendButton(
   attachmentNames?: AttachmentReadyInput[],
   attachmentTimeoutMs?: number | null,
   attachmentBindingToken?: string,
-  beforeDispatch?: (composerBindingToken?: string) => Promise<void> | void,
+  beforeDispatch?: BeforePromptSubmit,
+  onDispatchAttempt?: () => Promise<void> | void,
 ): Promise<boolean> {
   const needAttachment = Array.isArray(attachmentNames) && attachmentNames.length > 0;
   if (needAttachment && !attachmentBindingToken) {
@@ -936,6 +1085,12 @@ async function attemptSendButton(
     );
   }
   const sendBindingToken = beforeDispatch ? randomUUID() : undefined;
+  let dispatchAttemptReported = false;
+  const reportDispatchAttempt = async (): Promise<void> => {
+    if (dispatchAttemptReported) return;
+    dispatchAttemptReported = true;
+    await onDispatchAttempt?.();
+  };
   const script = buildSendButtonTargetExpression(
     attachmentBindingToken,
     sendBindingToken,
@@ -984,61 +1139,158 @@ async function attemptSendButton(
       typeof value.x === "number" &&
       typeof value.y === "number"
     ) {
-      if (beforeDispatch) {
-        // Run account + protected-route proof only after attachments and an
-        // exact hit-tested send target are ready. Then require the same marked
-        // DOM button/controller to survive that asynchronous proof.
-        await beforeDispatch(sendBindingToken);
-        if (needAttachment) {
-          const ready = await Runtime.evaluate({
-            expression: buildAttachmentReadyExpression(attachmentNames, attachmentBindingToken),
+      let finalDomGuard: FinalPreDispatchDomGuard | void = undefined;
+      let armedGuard: ArmedFinalDispatchGuard | undefined;
+      let primaryError: unknown;
+      let pageVerdict: unknown | undefined;
+      let cleanupError: unknown | undefined;
+      let pressStarted = false;
+      let dispatched = false;
+      try {
+        if (beforeDispatch) {
+          // Run account + protected-route proof only after attachments and an
+          // exact hit-tested send target are ready. Then require the same marked
+          // DOM button/controller to survive that asynchronous proof.
+          finalDomGuard = await beforeDispatch(sendBindingToken);
+          if (finalDomGuard) armedGuard = await armFinalDispatchGuard(Runtime, finalDomGuard);
+          if (needAttachment) {
+            const ready = await Runtime.evaluate({
+              expression: buildAttachmentReadyExpression(attachmentNames, attachmentBindingToken),
+              returnByValue: true,
+            });
+            if (!ready?.result?.value) {
+              throw new BrowserAutomationError(
+                "Attachment state changed after protected preflight; refusing to dispatch.",
+                {
+                  stage: "submit-prompt",
+                  code: "attachment-state-changed-after-preflight",
+                },
+              );
+            }
+          }
+          const finalExpression = finalDomGuard
+            ? `(() => ({
+                sendTarget: (${postPreflightScript}),
+                routeProof: (${finalDomGuard.expression})
+              }))()`
+            : postPreflightScript;
+          const verified = await Runtime.evaluate({
+            expression: finalExpression,
             returnByValue: true,
           });
-          if (!ready?.result?.value) {
+          const finalValue = verified.result?.value as
+            | { sendTarget?: unknown; routeProof?: unknown }
+            | undefined;
+          const verifiedValue = (finalDomGuard ? finalValue?.sendTarget : finalValue) as
+            | { status?: string; reason?: string; x?: number; y?: number }
+            | undefined;
+          finalDomGuard?.assertResult(finalValue?.routeProof);
+          if (
+            verifiedValue?.status !== "point" ||
+            typeof verifiedValue.x !== "number" ||
+            typeof verifiedValue.y !== "number"
+          ) {
             throw new BrowserAutomationError(
-              "Attachment state changed after protected preflight; refusing to dispatch.",
+              "Send target changed after protected preflight; refusing to dispatch.",
               {
                 stage: "submit-prompt",
-                code: "attachment-state-changed-after-preflight",
+                code: "send-target-changed-after-preflight",
+                sendTargetStatus: verifiedValue?.status ?? null,
+                sendTargetReason: verifiedValue?.reason ?? null,
               },
             );
           }
+          value.x = verifiedValue.x;
+          value.y = verifiedValue.y;
         }
-        const verified = await Runtime.evaluate({
-          expression: postPreflightScript,
-          returnByValue: true,
-        });
-        const verifiedValue = verified.result?.value as
-          | { status?: string; reason?: string; x?: number; y?: number }
-          | undefined;
-        if (
-          verifiedValue?.status !== "point" ||
-          typeof verifiedValue.x !== "number" ||
-          typeof verifiedValue.y !== "number"
-        ) {
-          throw new BrowserAutomationError(
-            "Send target changed after protected preflight; refusing to dispatch.",
-            {
-              stage: "submit-prompt",
-              code: "send-target-changed-after-preflight",
-              sendTargetStatus: verifiedValue?.status ?? null,
-              sendTargetReason: verifiedValue?.reason ?? null,
-            },
+
+        if (finalDomGuard) {
+          if (!Input || typeof Input.dispatchMouseEvent !== "function") {
+            throw new BrowserAutomationError(
+              "Protected dispatch requires trusted CDP mouse input; refusing DOM click fallback.",
+              {
+                stage: "submit-prompt",
+                code: "protected-trusted-input-unavailable",
+                retryable: false,
+              },
+            );
+          }
+          await Input.dispatchMouseEvent({ type: "mouseMoved", x: value.x, y: value.y });
+          // The browser might process mousePressed even if the CDP response is
+          // lost. From this line onward, only a terminal blocked verdict proves
+          // that the application could not observe a submission-capable event.
+          pressStarted = true;
+          await Input.dispatchMouseEvent({
+            type: "mousePressed",
+            x: value.x,
+            y: value.y,
+            button: "left",
+            clickCount: 1,
+          });
+          await Input.dispatchMouseEvent({
+            type: "mouseReleased",
+            x: value.x,
+            y: value.y,
+            button: "left",
+            clickCount: 1,
+          });
+          dispatched = true;
+        } else {
+          dispatched = await clickTrustedPoint(Runtime, Input, value.x, value.y);
+        }
+      } catch (error) {
+        primaryError = error;
+      } finally {
+        if (sendBindingToken) {
+          const cleanup = await cleanupFinalDispatchGuard(
+            Runtime,
+            finalDomGuard,
+            armedGuard,
+            sendBindingToken,
           );
+          pageVerdict = cleanup.pageVerdict;
+          cleanupError = cleanup.cleanupError;
         }
-        value.x = verifiedValue.x;
-        value.y = verifiedValue.y;
       }
-      const dispatched = await clickTrustedPoint(Runtime, Input, value.x, value.y);
+
+      const terminalVerdict = finalDomGuard
+        ? reconcileDispatchGuardVerdicts(armedGuard?.terminalVerdict, pageVerdict)
+        : undefined;
+      let verdictError: unknown;
+      if (finalDomGuard && (pressStarted || dispatched || primaryError === undefined)) {
+        try {
+          finalDomGuard.assertAfterDispatchResult?.(terminalVerdict);
+        } catch (error) {
+          verdictError = error;
+        }
+      }
+      const definitelyBlocked = Boolean(
+        verdictError && finalDomGuard?.isDispatchDefinitelyBlocked?.(terminalVerdict),
+      );
+
+      if (primaryError !== undefined) {
+        if (pressStarted && !definitelyBlocked) await reportDispatchAttempt();
+        if (definitelyBlocked && verdictError !== undefined) throw verdictError;
+        throw primaryError;
+      }
       if (!dispatched) {
         throw new BrowserAutomationError(
           "Send target disappeared before dispatch; refusing to report a click.",
           { stage: "submit-prompt", code: "send-target-disappeared-before-dispatch" },
         );
       }
+      if (verdictError !== undefined) {
+        if (!definitelyBlocked) await reportDispatchAttempt();
+        throw verdictError;
+      }
+      await reportDispatchAttempt();
+      if (cleanupError !== undefined && !finalDomGuard && logger?.verbose) {
+        logger("Send binding cleanup could not be confirmed after dispatch.");
+      }
       return true;
     }
     if (status === "clicked" && !beforeDispatch) {
+      await reportDispatchAttempt();
       return true;
     }
     if ((status === "missing" || status === "binding-missing") && !needAttachment) {

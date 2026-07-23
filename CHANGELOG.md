@@ -2,6 +2,10 @@
 
 ## 0.16.1 — Unreleased
 
+### Added
+
+- CLI: add `oracle import-chatgpt-url` for registering a manually started ChatGPT conversation as an explicitly untrusted, local-only follow-up reference. Imports carry no answer, model/mode, lane, account, harvest, or recovery proof; `--force` can replace only another structurally pure import. Thanks @mustafa0x!
+
 ### Fixed
 
 - Gemini: type `.mp4`, `.mov` and `.webm` uploads as video instead of sending them as
@@ -13,6 +17,12 @@
 - CLI: avoid inheriting `browser.thinkingTime` from config when `--browser-model-strategy current` is explicit, while preserving an explicit `--browser-thinking-time` override. Thanks @jung0han!
 - Browser/Serve: keep the authenticated manual-login Chrome process alive while closing each successfully captured service-owned run tab, preventing renderer and memory accumulation across repeated remote consultations without changing explicit `--browser-keep-browser`, attached-tab, or incomplete-run recovery behavior. Thanks @rtl-ai!
 - Browser: treat WSL's systemd-resolved loopback DNS stub as localhost when connecting to a freshly launched Chrome DevTools endpoint.
+- Browser/Remote: persist shared-profile browser-slot waiters in FIFO order and give capacity admission its own `--browser-queue-timeout`/`ORACLE_BROWSER_QUEUE_TIMEOUT` budget (20m default), independent of response and profile-lock deadlines. New-run queue expiry is a typed retryable pre-submit refusal, while recovery/reattach expiry preserves the already-submitted run state and remains non-retryable; abandoned waiters are removed atomically, remote values are bounded, live owners are never evicted by wall-clock age alone, and registry-lock ownership is identity-checked across acquisition and release. Thanks @pdurlej!
+- Browser/CLI: report an observed ChatGPT model and mode only from structured, independently verified picker evidence, keeping requested targets, effort-only labels, legacy synthetic labels, and combined Sol/Pro text from being presented as selected fact. Thanks @DragonFSKY!
+- Browser: bind the final GPT-5.6 Sol + Pro proof, exact composer/controller, hit-tested send target, and trusted primary click into one fail-closed dispatch guard. Model/mode drift, React remounts, overlays, disabled controls, untrusted events, and indeterminate post-press failures can no longer be reported as a clean pre-submit refusal or recovered through a DOM-click fallback.
+- Browser: preserve whitespace and digit regex escapes in the generated thinking gate so completed “Thought for …” summaries are not mistaken for an active Pro-thinking status.
+- Browser/Remote: retain and identity-safely roll back a tab lease when acquisition commits but registry unlock cannot be proved, then clear only that failure's readiness taint after deferred self-healing. This prevents a rare post-commit lock fault from consuming shared-browser capacity indefinitely or hiding a separate cleanup failure.
+- CLI/Remote: keep JSON error envelopes consistent with process exit codes for generic remote capacity failures: proven pre-submit refusals now report `retryable_backoff` with `retry_safe=true`, while already-submitted recovery refusals remain non-retryable.
 
 ## 0.16.0 — 2026-07-12
 

@@ -4,6 +4,7 @@ import {
   SESSION_STATUS_VALUES,
   TERMINAL_SESSION_STATUSES,
   coerceSessionStatus,
+  coerceValidatedSessionStatus,
   isSuccessTerminalStatus,
   isTerminalSessionStatus,
 } from "../../src/cli/sessionStatus.ts";
@@ -17,6 +18,7 @@ describe("SESSION_STATUS_VALUES", () => {
       "partial",
       "error",
       "cancelled",
+      "imported",
     ]);
   });
 
@@ -49,6 +51,7 @@ describe("isSuccessTerminalStatus", () => {
     expect(isSuccessTerminalStatus("partial")).toBe(true);
     expect(isSuccessTerminalStatus("error")).toBe(false);
     expect(isSuccessTerminalStatus("cancelled")).toBe(false);
+    expect(isSuccessTerminalStatus("imported")).toBe(false);
     expect(isSuccessTerminalStatus("running")).toBe(false);
   });
 });
@@ -63,5 +66,17 @@ describe("coerceSessionStatus", () => {
   test("falls back to error for an off-contract string (never leaks an unknown value)", () => {
     expect(coerceSessionStatus("weird")).toBe("error");
     expect(coerceSessionStatus("")).toBe("error");
+  });
+});
+
+describe("coerceValidatedSessionStatus", () => {
+  test("retains imported only after exact import-shape validation", () => {
+    expect(coerceValidatedSessionStatus("imported", true)).toBe("imported");
+    expect(coerceValidatedSessionStatus("imported", false)).toBe("error");
+  });
+
+  test("does not alter ordinary statuses", () => {
+    expect(coerceValidatedSessionStatus("completed", false)).toBe("completed");
+    expect(coerceValidatedSessionStatus("running", false)).toBe("running");
   });
 });

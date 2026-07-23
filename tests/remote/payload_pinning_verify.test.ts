@@ -34,11 +34,14 @@ import {
 //   timeoutMs                 ALLOW + CLAMP. Bounded to
 //                             [REMOTE_RUN_TIMEOUT_MS_MIN..MAX] on the host;
 //                             non-finite or <= 0 (documented disable
-//                             sentinel: unbounded tab-lease wait) is DROPPED
+//                             sentinel: unbounded response wait) is DROPPED
 //                             so the server default wins. Prevents both the
 //                             sentinel and a caller pinning a lane for hours.
 //   inputTimeoutMs            ALLOW + CLAMP. Same bounds/drop rules
 //                             (composer-readiness wait).
+//   queueTimeoutMs            ALLOW + CLAMP. Independent FIFO browser-slot
+//                             budget; remote 0 is dropped and positive values
+//                             are clamped to 1s..75m.
 //   assistantRecheckDelayMs   ALLOW + CLAMP [0..MAX]; negative/non-number
 //                             dropped. 0 is a legitimate default.
 //   assistantRecheckTimeoutMs ALLOW + CLAMP [0..MAX]; as above.
@@ -173,6 +176,7 @@ function hostilePayload(): Record<string, unknown> {
       // Sentinel/pinning attempts on allowlisted keys.
       timeoutMs: 0,
       inputTimeoutMs: -1,
+      queueTimeoutMs: 0,
       // Cookie-material injection attempts.
       cookieSync: false,
       inlineCookies: [{ name: "stolen", value: "cookie", domain: "chatgpt.com" }],
@@ -183,7 +187,7 @@ function hostilePayload(): Record<string, unknown> {
 }
 
 describe("host-side browserConfig timing clamps", () => {
-  test("timeoutMs/inputTimeoutMs: sentinel and nonsense dropped, extremes clamped", () => {
+  test("hard timeouts: sentinels and nonsense dropped, extremes clamped", () => {
     const sanitize = (browserConfig: Record<string, unknown>) =>
       sanitizeRemoteRunPayloadForHost({
         prompt: "x",
@@ -197,19 +201,27 @@ describe("host-side browserConfig timing clamps", () => {
     expect(sanitize({ timeoutMs: -1 }).timeoutMs).toBeUndefined();
     expect(sanitize({ inputTimeoutMs: 0 }).inputTimeoutMs).toBeUndefined();
     expect(sanitize({ inputTimeoutMs: -5 }).inputTimeoutMs).toBeUndefined();
+    expect(sanitize({ queueTimeoutMs: 0 }).queueTimeoutMs).toBeUndefined();
+    expect(sanitize({ queueTimeoutMs: -5 }).queueTimeoutMs).toBeUndefined();
     // Non-numbers are dropped, not coerced.
     expect(sanitize({ timeoutMs: "60000" }).timeoutMs).toBeUndefined();
     expect(sanitize({ timeoutMs: Number.NaN }).timeoutMs).toBeUndefined();
     expect(sanitize({ timeoutMs: Number.POSITIVE_INFINITY }).timeoutMs).toBeUndefined();
+    expect(sanitize({ queueTimeoutMs: "60000" }).queueTimeoutMs).toBeUndefined();
     // Extremes are clamped to the shared bounds.
     expect(sanitize({ timeoutMs: 10 * 60 * 60 * 1000 }).timeoutMs).toBe(REMOTE_RUN_TIMEOUT_MS_MAX);
     expect(sanitize({ timeoutMs: 500 }).timeoutMs).toBe(REMOTE_RUN_TIMEOUT_MS_MIN);
     expect(sanitize({ inputTimeoutMs: 10 * 60 * 60 * 1000 }).inputTimeoutMs).toBe(
       REMOTE_RUN_TIMEOUT_MS_MAX,
     );
+    expect(sanitize({ queueTimeoutMs: 10 * 60 * 60 * 1000 }).queueTimeoutMs).toBe(
+      REMOTE_RUN_TIMEOUT_MS_MAX,
+    );
+    expect(sanitize({ queueTimeoutMs: 500 }).queueTimeoutMs).toBe(REMOTE_RUN_TIMEOUT_MS_MIN);
     // Legitimate values pass through untouched.
     expect(sanitize({ timeoutMs: 90_000 }).timeoutMs).toBe(90_000);
     expect(sanitize({ inputTimeoutMs: 30_000 }).inputTimeoutMs).toBe(30_000);
+    expect(sanitize({ queueTimeoutMs: 30_000 }).queueTimeoutMs).toBe(30_000);
   });
 
   test("auxiliary waits: negatives/non-numbers dropped, zero kept, upper bound applied", () => {
@@ -303,6 +315,7 @@ describe("sanitizer is the single choke point between payloads and runBrowser", 
         // Sentinel attempts on allowlisted timings never arrive.
         expect(config.timeoutMs).toBeUndefined();
         expect(config.inputTimeoutMs).toBeUndefined();
+        expect(config.queueTimeoutMs).toBeUndefined();
       } finally {
         await server.close();
       }

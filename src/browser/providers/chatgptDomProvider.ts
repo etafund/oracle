@@ -1,8 +1,14 @@
+import { randomUUID } from "node:crypto";
 import type { BrowserLogger, ChromeClient } from "../types.js";
 import type { ProviderDomAdapter, ProviderDomFlowContext } from "../providerDomFlow.js";
+import { SEND_BUTTON_SELECTORS } from "../constants.js";
 import { ensurePromptReady } from "../actions/navigation.js";
 import { assertPreRunAccessState } from "../actions/challengeDetection.js";
-import { submitPrompt, type AttachmentReadyExpectation } from "../actions/promptComposer.js";
+import {
+  submitPrompt,
+  type AttachmentReadyExpectation,
+  type FinalPreDispatchDomGuard,
+} from "../actions/promptComposer.js";
 // Capture must flow through the pageActions facade so the structural
 // run-binding validation (captureBinding.ts) covers this provider path too.
 import { waitForAssistantResponse } from "../pageActions.js";
@@ -55,6 +61,7 @@ export {
   type SelectorConfidence,
 } from "../selectors/chatgpt/index.js";
 import type { SubmittedUserMessageBinding } from "../actions/captureBinding.js";
+import { BrowserAutomationError } from "../../oracle/errors.js";
 
 interface ChatgptDomProviderState {
   runtime: ChromeClient["Runtime"];
@@ -67,7 +74,9 @@ interface ChatgptDomProviderState {
   attachmentNames?: AttachmentReadyExpectation[];
   attachmentBindingToken?: string;
   committedTurns?: number | null;
-  beforePromptSubmit?: (composerBindingToken?: string) => Promise<void> | void;
+  beforePromptSubmit?: (
+    composerBindingToken?: string,
+  ) => Promise<FinalPreDispatchDomGuard | void> | FinalPreDispatchDomGuard | void;
   requireBoundSendTarget?: boolean;
   onPromptSubmitted?: (submittedPrompt: string) => Promise<void> | void;
   onPromptBound?: (
@@ -155,7 +164,7 @@ async function submitPromptViaAdapter(ctx: ProviderDomFlowContext): Promise<void
         await assertPreRunAccessState(state.runtime, state.logger, {
           quarantine: { accountId: state.accountId },
         });
-        await state.beforePromptSubmit?.(composerBindingToken);
+        return await state.beforePromptSubmit?.(composerBindingToken);
       },
       requireBoundSendTarget: state.requireBoundSendTarget,
       onPromptSubmitted: state.onPromptSubmitted,
@@ -329,7 +338,10 @@ async function readChatGptProDomProbe(
     awaitPromise: true,
     returnByValue: true,
   });
-  const value = result.result?.value;
+  return parseChatGptProDomProbe(result.result?.value);
+}
+
+function parseChatGptProDomProbe(value: unknown): ChatGptProDomProbe | null {
   if (!value || typeof value !== "object") return null;
   const probe = value as Partial<ChatGptProDomProbe>;
   return {
@@ -659,6 +671,482 @@ export async function readGpt56SolProRouteReadOnly(
     };
   }
   return classifyGpt56SolProRouteProbe(probe);
+}
+
+const PROTECTED_DISPATCH_GUARD_REGISTRY = "__oracleProtectedDispatchGuardsV2";
+const PROTECTED_DISPATCH_GUARD_TTL_MS = 15_000;
+
+function buildProtectedDispatchGuardInstallExpression(
+  attachmentBindingToken?: string,
+  composerBindingToken?: string,
+  verdictBindingName?: string,
+  verdictNonce?: string,
+): string {
+  const routeProbeExpression = buildChatGptProDomProbeExpression(
+    attachmentBindingToken,
+    composerBindingToken,
+  );
+  const tokenLiteral = JSON.stringify(composerBindingToken ?? "");
+  const bindingNameLiteral = JSON.stringify(verdictBindingName ?? "");
+  const nonceLiteral = JSON.stringify(verdictNonce ?? "");
+  const registryLiteral = JSON.stringify(PROTECTED_DISPATCH_GUARD_REGISTRY);
+  const sendSelectorsLiteral = JSON.stringify(SEND_BUTTON_SELECTORS);
+  const ttlLiteral = JSON.stringify(PROTECTED_DISPATCH_GUARD_TTL_MS);
+  return `(() => {
+    const TOKEN = ${tokenLiteral};
+    const BINDING_NAME = ${bindingNameLiteral};
+    const NONCE = ${nonceLiteral};
+    const REGISTRY_KEY = ${registryLiteral};
+    const SEND_SELECTORS = ${sendSelectorsLiteral};
+    const TTL_MS = ${ttlLiteral};
+    const EVENT_TYPES = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+    const normalize = (value) => String(value || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .replace(/\\s+/g, ' ')
+      .trim();
+    const readRoute = () => (${routeProbeExpression});
+    const classifyRoute = (probe) => {
+      const modelSignals = Array.from(new Set(
+        (Array.isArray(probe?.routeModelSignals) ? probe.routeModelSignals : [])
+          .map(normalize)
+          .filter(Boolean)
+      ));
+      const modeSignals = Array.from(new Set([
+        ...(Array.isArray(probe?.routeModeSignals) ? probe.routeModeSignals : [])
+          .map(normalize)
+          .filter(Boolean),
+        ...(probe?.hasProPill === true ? ['pro'] : []),
+      ]));
+      const composerBindingVerified = probe?.composerBindingVerified === true;
+      const modelVerified =
+        composerBindingVerified &&
+        modelSignals.length > 0 &&
+        modelSignals.every((label) => label === 'gpt 5 6 sol');
+      const modeVerified =
+        composerBindingVerified &&
+        modeSignals.length > 0 &&
+        modeSignals.every((label) => label === 'pro');
+      return {
+        verified: composerBindingVerified && modelVerified && modeVerified,
+        composerBindingVerified,
+        modelVerified,
+        modeVerified,
+        modelSignals,
+        modeSignals,
+      };
+    };
+    const isVisible = (node) => {
+      if (!node || node.isConnected === false || typeof node.getBoundingClientRect !== 'function') {
+        return false;
+      }
+      const rect = node.getBoundingClientRect();
+      if (!(rect.width > 0 && rect.height > 0)) return false;
+      const style = window.getComputedStyle?.(node);
+      return !style || !(
+        style.display === 'none' ||
+        style.visibility === 'hidden' ||
+        style.visibility === 'collapse'
+      );
+    };
+    const isEnabled = (node) => {
+      if (!node) return false;
+      const style = window.getComputedStyle?.(node);
+      return !(
+        node.hasAttribute?.('disabled') ||
+        node.getAttribute?.('aria-disabled') === 'true' ||
+        node.getAttribute?.('data-disabled') === 'true' ||
+        style?.pointerEvents === 'none' ||
+        style?.display === 'none'
+      );
+    };
+    const findExactBoundTarget = () => {
+      const buttons = Array.from(document.querySelectorAll('[data-oracle-send-binding]'))
+        .filter((node) => node?.getAttribute?.('data-oracle-send-binding') === TOKEN);
+      const composers = Array.from(document.querySelectorAll('[data-oracle-send-composer-binding]'))
+        .filter((node) => node?.getAttribute?.('data-oracle-send-composer-binding') === TOKEN);
+      const button = buttons.length === 1 ? buttons[0] : null;
+      const composer = composers.length === 1 ? composers[0] : null;
+      const currentCandidates = [];
+      if (composer) {
+        for (const selector of SEND_SELECTORS) {
+          currentCandidates.push(...Array.from(composer.querySelectorAll(selector)));
+        }
+      }
+      const currentButton = currentCandidates.find(
+        (candidate) => isVisible(candidate) && isEnabled(candidate)
+      ) || null;
+      const verified = Boolean(
+        button &&
+        composer &&
+        button.isConnected !== false &&
+        composer.isConnected !== false &&
+        typeof composer.contains === 'function' &&
+        composer.contains(button) &&
+        isVisible(button) &&
+        isEnabled(button) &&
+        currentButton === button
+      );
+      return { verified, button, composer, currentButton };
+    };
+    const inspect = () => {
+      let probe = null;
+      try {
+        probe = readRoute();
+      } catch {}
+      const route = classifyRoute(probe);
+      const target = findExactBoundTarget();
+      return {
+        ok: Boolean(TOKEN && route.verified && target.verified),
+        reason: !TOKEN
+          ? 'guard-token-missing'
+          : !route.verified
+            ? 'protected-route-changed'
+            : !target.verified
+              ? 'bound-send-target-changed'
+              : null,
+        probe,
+        route,
+        button: target.button,
+        composer: target.composer,
+      };
+    };
+    const removeOwnedAttributes = () => {
+      for (const node of Array.from(document.querySelectorAll('[data-oracle-send-binding]'))) {
+        if (node?.getAttribute?.('data-oracle-send-binding') === TOKEN) {
+          try { node.removeAttribute?.('data-oracle-send-binding'); } catch {}
+        }
+      }
+      for (const node of Array.from(document.querySelectorAll('[data-oracle-send-composer-binding]'))) {
+        if (node?.getAttribute?.('data-oracle-send-composer-binding') === TOKEN) {
+          try { node.removeAttribute?.('data-oracle-send-composer-binding'); } catch {}
+        }
+      }
+    };
+    const initial = inspect();
+    const root = window;
+    if (
+      !initial.ok ||
+      !BINDING_NAME ||
+      !NONCE ||
+      typeof root[BINDING_NAME] !== 'function' ||
+      typeof root.addEventListener !== 'function' ||
+      typeof document.addEventListener !== 'function' ||
+      typeof initial.button?.addEventListener !== 'function'
+    ) {
+      removeOwnedAttributes();
+      try { delete root[BINDING_NAME]; } catch {}
+      return {
+        installed: false,
+        status: 'blocked',
+        reason: initial.reason ||
+          (typeof root[BINDING_NAME] !== 'function'
+            ? 'verdict-binding-unavailable'
+            : 'event-guard-unavailable'),
+        routeProof: initial.probe,
+      };
+    }
+    let registry = root[REGISTRY_KEY];
+    if (!(registry instanceof Map)) {
+      registry = new Map();
+      root[REGISTRY_KEY] = registry;
+    }
+    if (root[REGISTRY_KEY] !== registry) {
+      removeOwnedAttributes();
+      try { delete root[BINDING_NAME]; } catch {}
+      return {
+        installed: false,
+        status: 'blocked',
+        reason: 'guard-registry-unavailable',
+        routeProof: initial.probe,
+      };
+    }
+    for (const previous of Array.from(registry.values())) {
+      try { previous?.cleanup?.('superseded'); } catch {}
+    }
+    registry = new Map();
+    root[REGISTRY_KEY] = registry;
+    const state = {
+      status: 'armed',
+      reason: null,
+      lastEvent: null,
+      reported: false,
+      cleaned: false,
+      expiryId: null,
+      cleanup: null,
+    };
+    const terminalPayload = () => JSON.stringify({
+      version: 1,
+      nonce: NONCE,
+      token: TOKEN,
+      status: state.status,
+      reason: state.reason,
+      lastEvent: state.lastEvent,
+    });
+    const reportTerminal = () => {
+      if (state.reported) return true;
+      try {
+        const binding = root[BINDING_NAME];
+        if (typeof binding !== 'function') return false;
+        binding(terminalPayload());
+        state.reported = true;
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const cancel = (event, reason) => {
+      state.status = 'blocked';
+      state.reason = state.reason || reason;
+      state.lastEvent = event?.type || state.lastEvent;
+      reportTerminal();
+      try { event?.preventDefault?.(); } catch {}
+      try { event?.stopImmediatePropagation?.(); } catch {}
+      try { event?.stopPropagation?.(); } catch {}
+    };
+    const listener = (event) => {
+      if (state.status === 'blocked') {
+        cancel(event, state.reason || 'dispatch-guard-already-blocked');
+        return;
+      }
+      if (state.status === 'allowed') {
+        cancel(event, 'duplicate-trusted-dispatch-event');
+        return;
+      }
+      if (event?.isTrusted !== true) {
+        cancel(event, 'untrusted-dispatch-event');
+        return;
+      }
+      if (
+        (typeof event.button === 'number' && event.button !== 0) ||
+        (typeof event.pointerType === 'string' && event.pointerType && event.pointerType !== 'mouse')
+      ) {
+        cancel(event, 'non-primary-dispatch-event');
+        return;
+      }
+      const current = inspect();
+      const eventTarget = event?.target;
+      const eventPath = typeof event?.composedPath === 'function' ? event.composedPath() : [];
+      const targetMatches = Boolean(
+        current.button &&
+        eventTarget &&
+        (eventTarget === current.button || current.button.contains?.(eventTarget)) &&
+        (eventPath.length === 0 || eventPath.includes(current.button))
+      );
+      const hit =
+        Number.isFinite(event?.clientX) && Number.isFinite(event?.clientY)
+          ? document.elementFromPoint?.(event.clientX, event.clientY)
+          : null;
+      const hitMatches = Boolean(
+        current.button && hit && (hit === current.button || current.button.contains?.(hit))
+      );
+      if (
+        !current.ok ||
+        current.button !== initial.button ||
+        current.composer !== initial.composer ||
+        !targetMatches ||
+        !hitMatches
+      ) {
+        cancel(event, current.reason || 'trusted-event-target-changed');
+        return;
+      }
+      state.lastEvent = event.type;
+      if (event.type !== 'click') {
+        // Keep pointer/mouse precursor handlers from observing a possible send.
+        // Deliberately preserve the browser default so Chrome can still synthesize
+        // the final trusted click, which is the sole application-visible event.
+        if (event.currentTarget === root) {
+          try { event.stopImmediatePropagation?.(); } catch {}
+          try { event.stopPropagation?.(); } catch {}
+        }
+        return;
+      }
+      if (event.currentTarget !== initial.button) return;
+      state.status = 'allowed';
+      if (!reportTerminal()) {
+        state.status = 'blocked';
+        state.reason = 'verdict-binding-call-failed';
+        cancel(event, state.reason);
+      }
+    };
+    const cleanup = () => {
+      if (state.cleaned) return;
+      state.cleaned = true;
+      try { if (state.expiryId != null) root.clearTimeout?.(state.expiryId); } catch {}
+      for (const type of EVENT_TYPES) {
+        try { root.removeEventListener(type, listener, true); } catch {}
+        try { document.removeEventListener(type, listener, true); } catch {}
+        try { initial.button?.removeEventListener?.(type, listener, true); } catch {}
+      }
+      removeOwnedAttributes();
+      try { registry.delete(TOKEN); } catch {}
+      try { if (registry.size === 0) delete root[REGISTRY_KEY]; } catch {}
+      try { delete root[BINDING_NAME]; } catch {}
+    };
+    state.cleanup = cleanup;
+    for (const type of EVENT_TYPES) {
+      root.addEventListener(type, listener, { capture: true, passive: false });
+      document.addEventListener(type, listener, { capture: true, passive: false });
+      initial.button.addEventListener(type, listener, { capture: true, passive: false });
+    }
+    registry.set(TOKEN, state);
+    if (typeof root.setTimeout === 'function') {
+      state.expiryId = root.setTimeout(() => {
+        if (state.status === 'armed') {
+          state.status = 'blocked';
+          state.reason = 'dispatch-guard-expired';
+          state.lastEvent = state.lastEvent || 'timeout';
+          reportTerminal();
+        }
+        cleanup();
+      }, TTL_MS);
+    }
+    return {
+      installed: true,
+      status: state.status,
+      reason: null,
+      routeProof: initial.probe,
+    };
+  })()`;
+}
+
+function buildProtectedDispatchGuardVerdictExpression(
+  composerBindingToken?: string,
+  verdictBindingName?: string,
+): string {
+  const tokenLiteral = JSON.stringify(composerBindingToken ?? "");
+  const bindingNameLiteral = JSON.stringify(verdictBindingName ?? "");
+  const registryLiteral = JSON.stringify(PROTECTED_DISPATCH_GUARD_REGISTRY);
+  return `(() => {
+    const TOKEN = ${tokenLiteral};
+    const BINDING_NAME = ${bindingNameLiteral};
+    const root = window;
+    const registry = root[${registryLiteral}];
+    const state = registry instanceof Map ? registry.get(TOKEN) : null;
+    if (!state) {
+      for (const node of Array.from(document.querySelectorAll('[data-oracle-send-binding]'))) {
+        if (node?.getAttribute?.('data-oracle-send-binding') === TOKEN) {
+          try { node.removeAttribute?.('data-oracle-send-binding'); } catch {}
+        }
+      }
+      for (const node of Array.from(document.querySelectorAll('[data-oracle-send-composer-binding]'))) {
+        if (node?.getAttribute?.('data-oracle-send-composer-binding') === TOKEN) {
+          try { node.removeAttribute?.('data-oracle-send-composer-binding'); } catch {}
+        }
+      }
+      try { delete root[BINDING_NAME]; } catch {}
+      return { status: 'missing', reason: 'dispatch-guard-missing', lastEvent: null };
+    }
+    const verdict = {
+      status: state.status,
+      reason: state.reason || null,
+      lastEvent: state.lastEvent || null,
+    };
+    try { state.cleanup?.(); } catch {}
+    return verdict;
+  })()`;
+}
+
+/**
+ * Build the read-only route probe for the final, synchronous dispatch-boundary
+ * evaluation. The caller combines this with the bound send-target check in one
+ * Runtime.evaluate task so React cannot change model/mode labels between the
+ * two observations.
+ */
+export function buildGpt56SolProFinalDispatchGuard(
+  attachmentBindingToken?: string,
+  composerBindingToken?: string,
+): FinalPreDispatchDomGuard {
+  const verdictBindingName = `__oracleProtectedDispatchVerdict_${randomUUID().replaceAll("-", "")}`;
+  const verdictNonce = randomUUID();
+  const evidenceFromInstallResult = (value: unknown): Gpt56SolProReadOnlyRouteEvidence | null => {
+    if (!value || typeof value !== "object") return null;
+    const result = value as { routeProof?: unknown };
+    const probe = parseChatGptProDomProbe(result.routeProof);
+    return probe ? classifyGpt56SolProRouteProbe(probe) : null;
+  };
+  return {
+    expression: buildProtectedDispatchGuardInstallExpression(
+      attachmentBindingToken,
+      composerBindingToken,
+      verdictBindingName,
+      verdictNonce,
+    ),
+    verdictBinding: {
+      name: verdictBindingName,
+      parsePayload(payload: string): unknown | undefined {
+        try {
+          const value = JSON.parse(payload) as Record<string, unknown>;
+          if (
+            value.version !== 1 ||
+            value.nonce !== verdictNonce ||
+            value.token !== (composerBindingToken ?? "") ||
+            (value.status !== "allowed" && value.status !== "blocked")
+          ) {
+            return undefined;
+          }
+          return value;
+        } catch {
+          return undefined;
+        }
+      },
+    },
+    assertResult(value: unknown): void {
+      const result =
+        value && typeof value === "object"
+          ? (value as { installed?: unknown; status?: unknown; reason?: unknown })
+          : null;
+      const evidence = evidenceFromInstallResult(value);
+      if (result?.installed === true && result.status === "armed" && evidence?.verified) return;
+      throw new BrowserAutomationError(
+        "GPT-5.6 Sol + Pro changed after protected preflight; refusing to dispatch.",
+        {
+          stage: "model-selection",
+          code: "protected-route-changed-after-preflight",
+          composerBindingVerified: evidence?.composerBindingVerified === true,
+          modelVerified: evidence?.modelVerified === true,
+          modeVerified: evidence?.modeVerified === true,
+          modelSignals: evidence?.modelSignals ?? [],
+          modeSignals: evidence?.modeSignals ?? [],
+          guardInstalled: result?.installed === true,
+          guardStatus: typeof result?.status === "string" ? result.status : null,
+          guardReason: typeof result?.reason === "string" ? result.reason : null,
+        },
+      );
+    },
+    afterDispatchExpression: buildProtectedDispatchGuardVerdictExpression(
+      composerBindingToken,
+      verdictBindingName,
+    ),
+    assertAfterDispatchResult(value: unknown): void {
+      const result =
+        value && typeof value === "object"
+          ? (value as { status?: unknown; reason?: unknown; lastEvent?: unknown })
+          : null;
+      if (result?.status === "allowed" && result.lastEvent === "click") return;
+      throw new BrowserAutomationError(
+        result?.status === "blocked"
+          ? "GPT-5.6 Sol + Pro changed during trusted dispatch; the click was blocked."
+          : "Protected dispatch could not prove that its page guard observed the trusted click.",
+        {
+          stage: "model-selection",
+          code:
+            result?.status === "blocked"
+              ? "protected-route-dispatch-blocked"
+              : "protected-route-dispatch-unproven",
+          retryable: false,
+          dispatchGuardStatus: typeof result?.status === "string" ? result.status : null,
+          dispatchGuardReason: typeof result?.reason === "string" ? result.reason : null,
+          dispatchGuardLastEvent: typeof result?.lastEvent === "string" ? result.lastEvent : null,
+        },
+      );
+    },
+    isDispatchDefinitelyBlocked(value: unknown): boolean {
+      return Boolean(
+        value && typeof value === "object" && (value as { status?: unknown }).status === "blocked",
+      );
+    },
+  };
 }
 
 export function classifyGpt56SolProRouteProbeForTest(args: {

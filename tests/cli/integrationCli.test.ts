@@ -536,7 +536,7 @@ module.exports = () => ({
       );
 
       expect(stdout).toContain("[preview] Oracle");
-      expect(stdout).toContain("browser mode (gemini-3.1-pro)");
+      expect(stdout).toContain("browser mode (target=Gemini 3.1 Pro; requested=gemini-3.1-pro)");
 
       await rm(oracleHome, { recursive: true, force: true });
     },
@@ -584,7 +584,7 @@ module.exports = () => ({
       );
 
       expect(stdout).toContain("[preview] Oracle");
-      expect(stdout).toContain("browser mode (gpt-5.1)");
+      expect(stdout).toContain("browser mode (target=GPT-5.2; requested=gpt-5.1)");
       expect(stdout).not.toContain("Provider: Azure OpenAI");
 
       await rm(oracleHome, { recursive: true, force: true });
@@ -631,7 +631,7 @@ module.exports = () => ({
       );
 
       expect(stdout).toContain("[preview] Oracle");
-      expect(stdout).toContain("browser mode (gpt-5.1)");
+      expect(stdout).toContain("browser mode (target=GPT-5.2; requested=gpt-5.1)");
       expect(stdout).not.toContain("Provider: Azure OpenAI");
 
       await rm(oracleHome, { recursive: true, force: true });

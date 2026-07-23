@@ -51,13 +51,16 @@ describe("bin/oracle-cli hidden command/flag surface (agent-ergonomics Stage 5)"
     expect(commandsSection.length).toBeGreaterThan(0);
 
     for (const name of CORE_TOP_LEVEL_COMMANDS) {
-      expect(commandsSection).toMatch(new RegExp(`^\\s*${name}\\b`, "m"));
+      expect(commandsSection).toMatch(new RegExp(`^ {2}${name}\\b`, "m"));
     }
     for (const name of AGENT_SELFDOC_COMMANDS) {
-      expect(commandsSection).toMatch(new RegExp(`^\\s*${name}\\b`, "m"));
+      expect(commandsSection).toMatch(new RegExp(`^ {2}${name}\\b`, "m"));
     }
     for (const name of HIDDEN_TOP_LEVEL_COMMANDS) {
-      expect(commandsSection).not.toMatch(new RegExp(`^\\s*${name}\\b`, "m"));
+      // Commander command rows begin with exactly two spaces. Description
+      // continuations are much more deeply indented and may legitimately
+      // begin with a hidden command's name (for example "follow-up reference").
+      expect(commandsSection).not.toMatch(new RegExp(`^ {2}${name}\\b`, "m"));
     }
   });
 
@@ -68,12 +71,12 @@ describe("bin/oracle-cli hidden command/flag surface (agent-ergonomics Stage 5)"
 
     const hiddenSection = output.slice(output.indexOf("Hidden commands"));
     for (const name of HIDDEN_TOP_LEVEL_COMMANDS) {
-      expect(hiddenSection).toMatch(new RegExp(`^\\s*${name}\\b`, "m"));
+      expect(hiddenSection).toMatch(new RegExp(`^ {2}${name}\\b`, "m"));
     }
     // capabilities/robot-docs are visible in default --help now, so the
     // verbose "hidden commands" reveal must NOT list them a second time.
     for (const name of AGENT_SELFDOC_COMMANDS) {
-      expect(hiddenSection).not.toMatch(new RegExp(`^\\s*${name}\\b`, "m"));
+      expect(hiddenSection).not.toMatch(new RegExp(`^ {2}${name}\\b`, "m"));
     }
   });
 
@@ -119,6 +122,14 @@ describe("bin/oracle-cli hidden command/flag surface (agent-ergonomics Stage 5)"
     const { stdout, stderr } = await runOracle(["--help"]);
     const output = `${stdout}\n${stderr}`;
     expect(output).toContain("--browser-thinking-time");
+  });
+
+  test("--browser-queue-timeout is discoverable in default --help", async () => {
+    const { stdout, stderr } = await runOracle(["--help"]);
+    const output = `${stdout}\n${stderr}`;
+
+    expect(output).toContain("--browser-queue-timeout <ms|s|m|h>");
+    expect(output).toMatch(/Independent wait for a shared browser tab\s+slot/u);
   });
 
   test("--browser-thinking-time still parses and is still accepted as a real run option", async () => {

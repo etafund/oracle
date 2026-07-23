@@ -250,5 +250,50 @@ describe("sessionDisplay helpers", () => {
     const summary = formatCompletionSummary(summaryMeta, { includeSlug: true });
     expect(summary).toContain("↑10 ↓20 ↻0 Δ30");
     expect(summary).toContain("slug=s2");
+
+    const verifiedBrowserMeta: SessionMetadata = {
+      ...summaryMeta,
+      id: "browser-verified",
+      model: "gpt-5.6-sol",
+      mode: "browser",
+      browser: {
+        modelSelection: {
+          requestedModel: "GPT-5.6 Sol",
+          requestedModelLabel: "GPT-5.6 Sol",
+          resolvedLabel: "GPT-5.6 Sol + Pro",
+          resolvedModelLabel: "GPT-5.6 Sol",
+          modelVerified: true,
+          requestedMode: "Pro",
+          resolvedModeLabel: "Pro",
+          modeVerified: true,
+          verifiedBeforePromptSubmit: true,
+          strategy: "select",
+          status: "already-selected",
+          verified: true,
+          source: "chatgpt-model-picker",
+          capturedAt: "2026-07-23T00:00:00.000Z",
+        },
+      },
+    };
+    expect(formatCompletionSummary(verifiedBrowserMeta)).toContain("GPT-5.6 Sol + Pro[browser]");
+
+    const legacyBrowserMeta: SessionMetadata = {
+      ...verifiedBrowserMeta,
+      id: "browser-legacy",
+      browser: {
+        modelSelection: {
+          requestedModel: "GPT-5.6 Sol",
+          resolvedLabel: "Synthetic GPT-5.6 Sol + Pro",
+          strategy: "select",
+          status: "already-selected",
+          verified: true,
+          source: "chatgpt-model-picker",
+          capturedAt: "2026-07-23T00:00:00.000Z",
+        },
+      },
+    };
+    const legacySummary = formatCompletionSummary(legacyBrowserMeta);
+    expect(legacySummary).toContain("gpt-5.6-sol[browser]");
+    expect(legacySummary).not.toContain("Synthetic");
   });
 });

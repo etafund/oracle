@@ -42,6 +42,15 @@ describe("remote failure exit-code taxonomy", () => {
     expect(exitCodeFor(error)).toBe(4);
   });
 
+  test("an explicit non-retryable capacity verdict never maps to retryable exit 4", () => {
+    const error = new RemoteRunFailedError("recovery capacity wait expired", {
+      errorClass: "capacity_busy",
+      retryable: false,
+    });
+    expect(classifyOracleErrorClass(error)).toBeNull();
+    expect(exitCodeFor(error)).toBe(1);
+  });
+
   test.each([
     "transport_interrupted_after_submit",
     "integrity_binding_failed",

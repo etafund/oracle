@@ -16,6 +16,7 @@ This is the curated cheatsheet. The authoritative source is always `oracle --hel
 | `oracle wait <id>`                                 | Block until a session is terminal; `--timeout-seconds <n>` bounds it (exit 7 = still running). `--json` emits `oracle_session.v1`.                                                                                                                |
 | `oracle cancel <id>`                               | Abort an in-flight/detached run (stops the controller, releases its lease, marks it `cancelled`). Idempotent; exit 0 on terminal.                                                                                                                 |
 | `oracle restart <id>`                              | Re-run the same prompt + files for API sessions or typed retryable pre-submit browser failures. Submitted/unknown browser and Fable sessions are refused. `--json` emits one `oracle_session_action.v1` launch receipt; progress moves to stderr. |
+| `oracle import-chatgpt-url <url>`                  | Register a manual ChatGPT URL as an untrusted, local-compatibility-only follow-up reference. No answer/model/lane/account proof is recorded.                                                                                                      |
 | `oracle docs check`                                | Check documented flags against CLI help metadata.                                                                                                                                                                                                 |
 | `oracle doctor lanes --json`                       | Print the reviewed lane policy without launching browsers or models.                                                                                                                                                                              |
 | `oracle doctor fable --caam-profile <name> --json` | Check one local Claude/CAAM profile, base, auth, ownership, and fail-closed readiness without launching a model.                                                                                                                                  |
@@ -92,6 +93,18 @@ MCP `consult` already recognizes `lane:"fable-local"` and `engine:"claude-code"`
 | `--followup <id\|slug\|resp_…>` | Continue a saved ChatGPT browser, same-profile Fable/Claude Code, or OpenAI/Azure Responses API session. |
 | `--followup-model <model>`      | Pick API lineage when the parent used `--models`.                                                        |
 
+To continue a conversation that started manually in ChatGPT, first register its URL:
+
+```bash
+oracle import-chatgpt-url "https://chatgpt.com/c/<conversation-id>" \
+  --slug "manual design review"
+oracle --engine browser --remote-browser off \
+  --browser-model-strategy current \
+  --followup manual-design-review -p "Continue with this new constraint."
+```
+
+The import is metadata-only and explicitly untrusted. It does not capture an answer, identify the model or Pro mode, bind a ChatGPT account/router lane, or create protected-lane evidence. Consequently `--lane chatgpt-pro`, remote/account-affine routing, `session --harvest`, and `session --live` are refused for imports. `--force` atomically replaces only another pure import with the same slug; it never overwrites an Oracle-produced run. That replacement requires descriptor-rooted filesystem operations and is unavailable on Windows; choose a new slug there. It can also fail closed on another platform or filesystem when Oracle cannot descriptor-root the pinned session directory.
+
 ## Run control
 
 | Flag                                       | Purpose                                                                                                                                 |
@@ -135,29 +148,30 @@ See [OpenAI / Azure / OpenRouter](openai-endpoints.md) and [OpenRouter](openrout
 
 ## Browser mode
 
-| Flag                                                                           | Purpose                                                      |
-| ------------------------------------------------------------------------------ | ------------------------------------------------------------ |
-| `--chatgpt-url <url>`                                                          | Target a ChatGPT workspace / project folder.                 |
-| `--browser-model-strategy <select\|current\|ignore>`                           | Control ChatGPT model picker.                                |
-| `--browser-manual-login`                                                       | Use persistent profile + manual login (no Keychain).         |
-| `--browser-attach-running`                                                     | Attach to your already-running Chrome via DevTools.          |
-| `--browser-tab <ref>`                                                          | Reuse an existing tab (`current`, id, URL, title substring). |
-| `--browser-thinking-time <light\|standard\|extended\|heavy>`                   | Pro / Thinking model intensity.                              |
-| `--browser-research deep`                                                      | Activate Deep Research mode.                                 |
-| `--browser-follow-up <prompt>`                                                 | Multi-turn in the same ChatGPT conversation.                 |
-| `--browser-port <port>`                                                        | Pin Chrome DevTools port.                                    |
-| `--browser-inline-cookies[(-file)] <…>`                                        | Supply cookies inline (no Keychain / Chrome).                |
-| `--browser-timeout`, `--browser-input-timeout`, `--browser-attachment-timeout` | Overall / input / attachment readiness timeouts (h/m/s/ms).  |
-| `--browser-recheck-delay`, `--browser-recheck-timeout`                         | Delayed retry after a timeout.                               |
-| `--browser-auto-reattach-delay/-interval/-timeout`                             | Poll the existing tab when ChatGPT redirects mid-load.       |
-| `--browser-reuse-wait`                                                         | Wait for shared Chrome profile before launching.             |
-| `--browser-profile-lock-timeout`                                               | Wait for the manual-login profile lock.                      |
-| `--browser-max-concurrent-tabs`                                                | Soft limit for shared-profile parallel runs (default 3).     |
-| `--browser-keep-browser`                                                       | Keep the browser open after the run.                         |
-| `--browser-headless`, `--browser-hide-window`                                  | Visibility controls.                                         |
-| `--browser-attachments <auto\|never\|always>`                                  | Attach files inline vs upload.                               |
-| `--browser-bundle-files`, `--browser-bundle-format <auto\|text\|zip>`          | Bundle browser uploads as text or byte-preserving ZIP.       |
-| `--browser-chrome-path`, `--browser-cookie-path`                               | Override Chrome / cookie store discovery (Linux / Windows).  |
+| Flag                                                                           | Purpose                                                                |
+| ------------------------------------------------------------------------------ | ---------------------------------------------------------------------- |
+| `--chatgpt-url <url>`                                                          | Target a ChatGPT workspace / project folder.                           |
+| `--browser-model-strategy <select\|current\|ignore>`                           | Control ChatGPT model picker.                                          |
+| `--browser-manual-login`                                                       | Use persistent profile + manual login (no Keychain).                   |
+| `--browser-attach-running`                                                     | Attach to your already-running Chrome via DevTools.                    |
+| `--browser-tab <ref>`                                                          | Reuse an existing tab (`current`, id, URL, title substring).           |
+| `--browser-thinking-time <light\|standard\|extended\|heavy>`                   | Pro / Thinking model intensity.                                        |
+| `--browser-research deep`                                                      | Activate Deep Research mode.                                           |
+| `--browser-follow-up <prompt>`                                                 | Multi-turn in the same ChatGPT conversation.                           |
+| `--browser-port <port>`                                                        | Pin Chrome DevTools port.                                              |
+| `--browser-inline-cookies[(-file)] <…>`                                        | Supply cookies inline (no Keychain / Chrome).                          |
+| `--browser-timeout`, `--browser-input-timeout`, `--browser-attachment-timeout` | Overall / input / attachment readiness timeouts (h/m/s/ms).            |
+| `--browser-recheck-delay`, `--browser-recheck-timeout`                         | Delayed retry after a timeout.                                         |
+| `--browser-auto-reattach-delay/-interval/-timeout`                             | Poll the existing tab when ChatGPT redirects mid-load.                 |
+| `--browser-reuse-wait`                                                         | Wait for shared Chrome profile before launching.                       |
+| `--browser-profile-lock-timeout`                                               | Wait for the manual-login profile lock.                                |
+| `--browser-queue-timeout`                                                      | FIFO wait for shared tab capacity (default 20m; local 0 is unlimited). |
+| `--browser-max-concurrent-tabs`                                                | Soft limit for shared-profile parallel runs (default 3).               |
+| `--browser-keep-browser`                                                       | Keep the browser open after the run.                                   |
+| `--browser-headless`, `--browser-hide-window`                                  | Visibility controls.                                                   |
+| `--browser-attachments <auto\|never\|always>`                                  | Attach files inline vs upload.                                         |
+| `--browser-bundle-files`, `--browser-bundle-format <auto\|text\|zip>`          | Bundle browser uploads as text or byte-preserving ZIP.                 |
+| `--browser-chrome-path`, `--browser-cookie-path`                               | Override Chrome / cookie store discovery (Linux / Windows).            |
 
 See [Browser Mode](browser-mode.md) for usage.
 
@@ -199,6 +213,7 @@ See [Browser Mode](browser-mode.md) for usage.
 | `ORACLE_BROWSER_COOKIES_JSON`                 | Inline ChatGPT cookies (JSON / base64).                                                                                                                                                  |
 | `ORACLE_BROWSER_COOKIES_FILE`                 | Path to cookies JSON.                                                                                                                                                                    |
 | `ORACLE_BROWSER_ATTACHMENT_TIMEOUT`           | Attachment upload/readiness timeout for browser mode.                                                                                                                                    |
+| `ORACLE_BROWSER_QUEUE_TIMEOUT`                | Independent FIFO browser-slot wait; invalid values fall back to 20m, and local `0` waits without a deadline.                                                                             |
 | `ORACLE_CHATGPT_ACCOUNT_EMAIL`                | Exact saved account for the Welcome back picker.                                                                                                                                         |
 | `ORACLE_RUN_PROGRESS_JSON`                    | `=1` streams `run_progress.v1` NDJSON progress events on stderr for long browser/API runs (default off).                                                                                 |
 | `ORACLE_CLAUDE_CODE_STREAM_JSON_INPUT`        | `=1`/`true`/`yes`/`on` switches the `fable-local` lane to stream-json stdin (base64 image/PDF blocks; 32 MB encoded budget). Default off keeps the flat-text path.                       |

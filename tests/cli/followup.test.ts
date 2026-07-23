@@ -166,6 +166,42 @@ describe("browser follow-up resolution", () => {
     );
   });
 
+  test("rejects a raw imported status even when no provenance marker is present", async () => {
+    const metadata: SessionMetadata = {
+      ...baseMetadata,
+      id: "raw-imported-status",
+      status: "imported",
+      mode: "browser",
+      browser: {
+        config: { url: "https://chatgpt.com/" },
+        runtime: { conversationId: "must-not-resume" },
+      },
+    };
+    const store = { readSession: vi.fn(async () => metadata) };
+
+    await expect(resolveBrowserFollowupReference(metadata.id, store)).rejects.toThrow(
+      /mixes an untrusted import with model, lane, account, capture/iu,
+    );
+  });
+
+  test.each([
+    ["null", null],
+    ["malformed", { schema: "wrong" }],
+  ])("rejects a %s importedConversation claim", async (_label, marker) => {
+    const metadata = {
+      ...baseMetadata,
+      id: `claimed-import-${_label}`,
+      browser: {
+        importedConversation: marker,
+      },
+    } as unknown as SessionMetadata;
+    const store = { readSession: vi.fn(async () => metadata) };
+
+    await expect(resolveBrowserFollowupReference(metadata.id, store)).rejects.toThrow(
+      /mixes an untrusted import with model, lane, account, capture/iu,
+    );
+  });
+
   test("rejects a Gemini Deep Think session with a lane-correct teach message", async () => {
     const metadata: SessionMetadata = {
       ...baseMetadata,

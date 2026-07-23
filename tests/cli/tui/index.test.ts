@@ -184,4 +184,51 @@ describe("showSessionDetail", () => {
 
     consoleSpy.mockRestore();
   });
+
+  test("shows verified browser identity while retaining the requested key", async () => {
+    const { showSessionDetail } = await import("../../../src/cli/tui/index.ts");
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    promptMock.mockResolvedValueOnce({ next: "back" });
+    readSessionMock.mockResolvedValueOnce({
+      id: "browser-session",
+      createdAt: "2026-07-23T00:00:00Z",
+      status: "completed",
+      model: "gpt-5.6-sol",
+      mode: "browser",
+      options: { prompt: "hi", model: "gpt-5.6-sol", mode: "browser" },
+      browser: {
+        modelSelection: {
+          requestedModel: "GPT-5.6 Sol",
+          requestedModelLabel: "GPT-5.6 Sol",
+          resolvedLabel: "GPT-5.6 Sol + Pro",
+          resolvedModelLabel: "GPT-5.6 Sol",
+          modelVerified: true,
+          requestedMode: "Pro",
+          resolvedModeLabel: "Pro",
+          modeVerified: true,
+          verifiedBeforePromptSubmit: true,
+          strategy: "select",
+          status: "already-selected",
+          verified: true,
+          source: "chatgpt-model-picker",
+          capturedAt: "2026-07-23T00:00:00.000Z",
+        },
+      },
+    });
+    readRequestMock.mockResolvedValueOnce({ prompt: "hi" });
+    readLogMock.mockResolvedValueOnce("Answer: hello");
+    getPathsMock.mockResolvedValueOnce({
+      dir: "/tmp",
+      metadata: "/tmp/meta.json",
+      log: "/tmp/output.log",
+      request: "/tmp/request.json",
+    });
+
+    await showSessionDetail("browser-session");
+
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining("GPT-5.6 Sol + Pro (requested gpt-5.6-sol)"),
+    );
+    consoleSpy.mockRestore();
+  });
 });

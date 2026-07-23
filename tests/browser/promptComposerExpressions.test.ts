@@ -5,10 +5,68 @@ import {
 } from "../../src/browser/actions/promptComposer.ts";
 import {
   buildChatGptProDomProbeExpressionForTest,
+  buildGpt56SolProFinalDispatchGuard,
   classifyGpt56SolProRouteProbeForTest,
 } from "../../src/browser/providers/chatgptDomProvider.ts";
 
-class FakeElement {
+interface FakeDomEvent {
+  type: string;
+  target: FakeElement;
+  currentTarget: unknown;
+  isTrusted: boolean;
+  button: number;
+  pointerType: string;
+  clientX: number;
+  clientY: number;
+  defaultPrevented: boolean;
+  immediatePropagationStopped: boolean;
+  propagationStopped: boolean;
+  composedPath: () => unknown[];
+  preventDefault: () => void;
+  stopImmediatePropagation: () => void;
+  stopPropagation: () => void;
+}
+
+type FakeDomListener = (event: FakeDomEvent) => void;
+
+class FakeEventTarget {
+  private readonly listeners = new Map<string, FakeDomListener[]>();
+
+  addEventListener(
+    type: string,
+    listener: FakeDomListener,
+    _options?: boolean | { capture?: boolean; passive?: boolean },
+  ): void {
+    const listeners = this.listeners.get(type) ?? [];
+    listeners.push(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  removeEventListener(
+    type: string,
+    listener: FakeDomListener,
+    _options?: boolean | { capture?: boolean },
+  ): void {
+    this.listeners.set(
+      type,
+      (this.listeners.get(type) ?? []).filter((candidate) => candidate !== listener),
+    );
+  }
+
+  invokeListeners(event: FakeDomEvent): void {
+    event.currentTarget = this;
+    for (const listener of this.listeners.get(event.type) ?? []) {
+      if (event.immediatePropagationStopped) break;
+      listener(event);
+    }
+  }
+
+  listenerCount(type: string): number {
+    return this.listeners.get(type)?.length ?? 0;
+  }
+}
+
+class FakeElement extends FakeEventTarget {
   parentElement: FakeElement | null = null;
   readonly children: FakeElement[];
   readonly tagName: string;
@@ -17,8 +75,9 @@ class FakeElement {
     tagName: string,
     private readonly attributes: Record<string, string> = {},
     children: FakeElement[] = [],
-    private readonly ownText = "",
+    private ownText = "",
   ) {
+    super();
     this.tagName = tagName.toUpperCase();
     this.children = children;
     for (const child of children) {
@@ -48,6 +107,14 @@ class FakeElement {
 
   setAttribute(name: string, value: string): void {
     this.attributes[name] = value;
+  }
+
+  removeAttribute(name: string): void {
+    delete this.attributes[name];
+  }
+
+  setText(value: string): void {
+    this.ownText = value;
   }
 
   hasAttribute(name: string): boolean {
@@ -95,11 +162,13 @@ class FakeInputElement extends FakeElement {
   }
 }
 
-class FakeDocument {
+class FakeDocument extends FakeEventTarget {
   readonly body: FakeElement;
   readonly documentElement: FakeElement;
+  private hitTarget: FakeElement | null = null;
 
   constructor(children: FakeElement[]) {
+    super();
     this.body = new FakeElement("body", {}, children);
     this.documentElement = this.body;
   }
@@ -114,10 +183,92 @@ class FakeDocument {
 
   elementFromPoint(): FakeElement | null {
     return (
+      this.hitTarget ??
       flattenElements(this.body.children).find(
         (element) => element.getAttribute("data-hit-target") === "true",
-      ) ?? null
+      ) ??
+      null
     );
+  }
+
+  setHitTarget(target: FakeElement | null): void {
+    this.hitTarget = target;
+  }
+}
+
+class FakeWindow extends FakeEventTarget {
+  [key: string]: unknown;
+  readonly location = { href: "https://chatgpt.com/" };
+  private timerCallback: (() => void) | null = null;
+
+  getComputedStyle(node: FakeElement): {
+    display: string;
+    visibility: string;
+    pointerEvents: string;
+  } {
+    return {
+      display: node.hidden ? "none" : (node.getAttribute("data-display") ?? "block"),
+      visibility: node.getAttribute("data-visibility") ?? "visible",
+      pointerEvents: node.getAttribute("data-pointer-events") ?? "auto",
+    };
+  }
+
+  setTimeout(callback: () => void): number {
+    this.timerCallback = callback;
+    return 1;
+  }
+
+  clearTimeout(): void {
+    this.timerCallback = null;
+  }
+
+  expireGuard(): void {
+    const callback = this.timerCallback;
+    this.timerCallback = null;
+    callback?.();
+  }
+
+  dispatchDomEvent(
+    document: FakeDocument,
+    type: string,
+    target: FakeElement,
+    options: { isTrusted?: boolean; button?: number; pointerType?: string } = {},
+  ): FakeDomEvent {
+    const ancestors: FakeElement[] = [];
+    let current: FakeElement | null = target;
+    while (current) {
+      ancestors.push(current);
+      current = current.parentElement;
+    }
+    const path: unknown[] = [...ancestors, document, this];
+    const event: FakeDomEvent = {
+      type,
+      target,
+      currentTarget: null,
+      isTrusted: options.isTrusted ?? true,
+      button: options.button ?? 0,
+      pointerType: options.pointerType ?? "mouse",
+      clientX: 50,
+      clientY: 20,
+      defaultPrevented: false,
+      immediatePropagationStopped: false,
+      propagationStopped: false,
+      composedPath: () => path,
+      preventDefault() {
+        this.defaultPrevented = true;
+      },
+      stopImmediatePropagation() {
+        this.immediatePropagationStopped = true;
+        this.propagationStopped = true;
+      },
+      stopPropagation() {
+        this.propagationStopped = true;
+      },
+    };
+    this.invokeListeners(event);
+    if (!event.propagationStopped) document.invokeListeners(event);
+    if (!event.propagationStopped) target.invokeListeners(event);
+    return event;
   }
 }
 
@@ -1053,5 +1204,240 @@ describe("post-upload protected-route binding", () => {
   test("route probe stays read-only", () => {
     const expression = buildChatGptProDomProbeExpressionForTest(bindingToken);
     expect(expression).not.toMatch(/\.click\(|dispatchClick|dispatchEvent|setAttribute/);
+  });
+
+  function installDispatchGuard() {
+    const composerBindingToken = "dispatch-race-guard-1";
+    const composer = makeRouteComposer({ composerBindingToken, mode: "Pro" });
+    const sendButton = composer.querySelector('[data-testid="send-button"]');
+    const modeButton = composer.querySelector('[data-testid="effort-picker-button"]');
+    expect(sendButton).not.toBeNull();
+    expect(modeButton).not.toBeNull();
+    sendButton!.setAttribute("data-oracle-send-binding", composerBindingToken);
+    const document = new FakeDocument([composer]);
+    document.setHitTarget(sendButton);
+    const windowStub = new FakeWindow();
+    const evaluate = (expression: string): unknown =>
+      new Function("document", "window", `return ${expression};`)(document, windowStub);
+
+    expect(evaluateDispatchBoundRouteProbe(document, composerBindingToken).verified).toBe(true);
+    const guard = buildGpt56SolProFinalDispatchGuard(undefined, composerBindingToken);
+    const bindingPayloads: string[] = [];
+    expect(guard.verdictBinding).toBeDefined();
+    windowStub[guard.verdictBinding!.name] = (payload: string) => bindingPayloads.push(payload);
+    const installed = evaluate(guard.expression);
+    expect((installed as { routeProof?: unknown }).routeProof).toMatchObject({
+      composerBindingVerified: true,
+      routeModelSignals: ["GPT-5.6 Sol"],
+      routeModeSignals: ["Pro"],
+    });
+    expect(installed).toMatchObject({ installed: true, status: "armed", reason: null });
+    expect(() => guard.assertResult(installed)).not.toThrow();
+    return {
+      bindingPayloads,
+      composer,
+      composerBindingToken,
+      document,
+      evaluate,
+      guard,
+      modeButton: modeButton!,
+      sendButton: sendButton!,
+      windowStub,
+    };
+  }
+
+  test("trusted-event guard blocks a same-node route-label change after preflight", () => {
+    const fixture = installDispatchGuard();
+
+    // The exact same selected-mode node changes after the async preflight but
+    // before trusted CDP input reaches the button. The capture listener runs
+    // synchronously inside the event and prevents every dispatch phase.
+    fixture.modeButton.setText("Standard");
+    for (const eventType of ["mousedown", "mouseup", "click"]) {
+      expect(
+        fixture.windowStub.dispatchDomEvent(fixture.document, eventType, fixture.sendButton)
+          .defaultPrevented,
+      ).toBe(true);
+    }
+
+    expect(fixture.bindingPayloads).toHaveLength(1);
+    expect(
+      fixture.guard.verdictBinding?.parsePayload(fixture.bindingPayloads[0] ?? ""),
+    ).toMatchObject({ status: "blocked", reason: "protected-route-changed" });
+    const verdict = fixture.evaluate(fixture.guard.afterDispatchExpression!);
+    expect(fixture.guard.isDispatchDefinitelyBlocked?.(verdict)).toBe(true);
+    let failure: unknown;
+    try {
+      fixture.guard.assertAfterDispatchResult?.(verdict);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
+      name: "BrowserAutomationError",
+      details: { code: "protected-route-dispatch-blocked", retryable: false },
+    });
+    expect(fixture.sendButton.getAttribute("data-oracle-send-binding")).toBeNull();
+    expect(fixture.composer.getAttribute("data-oracle-send-composer-binding")).toBeNull();
+    expect(fixture.document.listenerCount("click")).toBe(0);
+    expect(fixture.windowStub.listenerCount("click")).toBe(0);
+  });
+
+  test("only the final exact trusted click reaches application handlers and authorizes", () => {
+    const fixture = installDispatchGuard();
+    const observedByApplication: string[] = [];
+    fixture.sendButton.addEventListener("mousedown", () => observedByApplication.push("mousedown"));
+    fixture.sendButton.addEventListener("mouseup", () => observedByApplication.push("mouseup"));
+    fixture.sendButton.addEventListener("click", () => {
+      expect(fixture.bindingPayloads).toHaveLength(1);
+      observedByApplication.push("click");
+    });
+
+    for (const eventType of ["pointerdown", "mousedown", "pointerup", "mouseup"]) {
+      const event = fixture.windowStub.dispatchDomEvent(
+        fixture.document,
+        eventType,
+        fixture.sendButton,
+      );
+      expect(event.defaultPrevented).toBe(false);
+      expect(event.propagationStopped).toBe(true);
+    }
+    const click = fixture.windowStub.dispatchDomEvent(
+      fixture.document,
+      "click",
+      fixture.sendButton,
+    );
+    expect(click.defaultPrevented).toBe(false);
+    expect(observedByApplication).toEqual(["click"]);
+
+    const verdict = fixture.evaluate(fixture.guard.afterDispatchExpression!);
+    expect(verdict).toMatchObject({ status: "allowed", lastEvent: "click" });
+    expect(() => fixture.guard.assertAfterDispatchResult?.(verdict)).not.toThrow();
+  });
+
+  test("an untrusted or non-primary click cannot authorize protected dispatch", () => {
+    for (const options of [{ isTrusted: false }, { isTrusted: true, button: 1 }]) {
+      const fixture = installDispatchGuard();
+      const click = fixture.windowStub.dispatchDomEvent(
+        fixture.document,
+        "click",
+        fixture.sendButton,
+        options,
+      );
+      expect(click.defaultPrevented).toBe(true);
+      const verdict = fixture.evaluate(fixture.guard.afterDispatchExpression!);
+      expect(verdict).toMatchObject({ status: "blocked" });
+    }
+  });
+
+  test("a blocked precursor remains latched even when the route label is repaired", () => {
+    const fixture = installDispatchGuard();
+    fixture.modeButton.setText("Standard");
+    expect(
+      fixture.windowStub.dispatchDomEvent(fixture.document, "mousedown", fixture.sendButton)
+        .defaultPrevented,
+    ).toBe(true);
+    fixture.modeButton.setText("Pro");
+    expect(
+      fixture.windowStub.dispatchDomEvent(fixture.document, "click", fixture.sendButton)
+        .defaultPrevented,
+    ).toBe(true);
+    expect(fixture.evaluate(fixture.guard.afterDispatchExpression!)).toMatchObject({
+      status: "blocked",
+      reason: "protected-route-changed",
+    });
+  });
+
+  test("composer, send candidate, and hit-target identity are revalidated at each event", () => {
+    const mutations: Array<(fixture: ReturnType<typeof installDispatchGuard>) => void> = [
+      (fixture) =>
+        fixture.composer.setAttribute("data-oracle-send-composer-binding", "replacement"),
+      (fixture) => fixture.sendButton.setAttribute("aria-disabled", "true"),
+      (fixture) => fixture.document.setHitTarget(new FakeElement("div")),
+      (fixture) => fixture.sendButton.setAttribute("data-oracle-send-binding", "replacement"),
+      (fixture) => {
+        const competingSend = new FakeElement("button", { "data-testid": "send-button" });
+        competingSend.parentElement = fixture.composer;
+        fixture.composer.children.unshift(competingSend);
+      },
+    ];
+    for (const mutate of mutations) {
+      const fixture = installDispatchGuard();
+      mutate(fixture);
+      const event = fixture.windowStub.dispatchDomEvent(
+        fixture.document,
+        "click",
+        fixture.sendButton,
+      );
+      expect(event.defaultPrevented).toBe(true);
+      expect(fixture.evaluate(fixture.guard.afterDispatchExpression!)).toMatchObject({
+        status: "blocked",
+      });
+    }
+  });
+
+  test("moving the same bound button under an exact-label replacement composer is blocked", () => {
+    const fixture = installDispatchGuard();
+    const replacement = makeRouteComposer({
+      composerBindingToken: fixture.composerBindingToken,
+      mode: "Pro",
+    });
+    const replacementSend = replacement.querySelector('[data-testid="send-button"]');
+    expect(replacementSend).not.toBeNull();
+    replacement.children.splice(replacement.children.indexOf(replacementSend!), 1);
+    fixture.composer.children.splice(fixture.composer.children.indexOf(fixture.sendButton), 1);
+    replacement.children.push(fixture.sendButton);
+    fixture.sendButton.parentElement = replacement;
+    fixture.composer.parentElement = null;
+    replacement.parentElement = fixture.document.body;
+    fixture.document.body.children.splice(0, 1, replacement);
+
+    const click = fixture.windowStub.dispatchDomEvent(
+      fixture.document,
+      "click",
+      fixture.sendButton,
+    );
+    expect(click.defaultPrevented).toBe(true);
+    expect(fixture.evaluate(fixture.guard.afterDispatchExpression!)).toMatchObject({
+      status: "blocked",
+    });
+  });
+
+  test("a replacement send button cannot inherit the old binding token", () => {
+    const fixture = installDispatchGuard();
+    const replacement = new FakeElement("button", {
+      "data-testid": "send-button",
+      "data-oracle-send-binding": fixture.composerBindingToken,
+    });
+    const index = fixture.composer.children.indexOf(fixture.sendButton);
+    fixture.composer.children.splice(index, 1, replacement);
+    fixture.sendButton.parentElement = null;
+    replacement.parentElement = fixture.composer;
+    fixture.document.setHitTarget(replacement);
+
+    const click = fixture.windowStub.dispatchDomEvent(fixture.document, "click", replacement);
+    expect(click.defaultPrevented).toBe(true);
+    expect(fixture.evaluate(fixture.guard.afterDispatchExpression!)).toMatchObject({
+      status: "blocked",
+    });
+  });
+
+  test("an abandoned page guard expires and removes every owned page resource", () => {
+    const fixture = installDispatchGuard();
+    expect(fixture.windowStub.listenerCount("click")).toBe(1);
+    expect(fixture.document.listenerCount("click")).toBe(1);
+
+    fixture.windowStub.expireGuard();
+
+    expect(fixture.bindingPayloads).toHaveLength(1);
+    expect(
+      fixture.guard.verdictBinding?.parsePayload(fixture.bindingPayloads[0] ?? ""),
+    ).toMatchObject({ status: "blocked", reason: "dispatch-guard-expired" });
+    expect(fixture.windowStub.listenerCount("click")).toBe(0);
+    expect(fixture.document.listenerCount("click")).toBe(0);
+    expect(fixture.sendButton.getAttribute("data-oracle-send-binding")).toBeNull();
+    expect(fixture.composer.getAttribute("data-oracle-send-composer-binding")).toBeNull();
+    expect(fixture.evaluate(fixture.guard.afterDispatchExpression!)).toMatchObject({
+      status: "missing",
+    });
   });
 });

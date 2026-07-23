@@ -111,6 +111,8 @@ import {
   resolveClaudeCodeFollowupReference,
   assertClaudeCodeFollowupProfileMatchesRun,
   assertFollowupLaneMatchesResolvedLane,
+  assertImportedBrowserFollowupCompatibility,
+  buildImportedBrowserFollowupConfig,
 } from "../src/cli/followup.js";
 import {
   launchDetachedSessionFinalizer,
@@ -198,6 +200,7 @@ interface CliOptions extends OptionValues {
   browserInputTimeout?: string;
   browserAttachmentTimeout?: string;
   browserProfileLockTimeout?: string;
+  browserQueueTimeout?: string;
   browserMaxConcurrentTabs?: string;
   browserCookieWait?: string;
   browserNoCookieSync?: boolean;
@@ -999,6 +1002,12 @@ program
   )
   .addOption(
     new Option(
+      "--browser-queue-timeout <ms|s|m|h>",
+      "Independent wait for a shared browser tab slot (default 20m; local 0 waits forever).",
+    ),
+  )
+  .addOption(
+    new Option(
       "--browser-max-concurrent-tabs <n>",
       "Soft limit for concurrent ChatGPT tabs sharing one manual-login profile (default 3).",
     ).hideHelp(),
@@ -1317,6 +1326,7 @@ function addProjectSourcesCommonOptions(command: Command): Command {
     .option("--browser-timeout <duration>", "Overall browser timeout (e.g. 10m, 1h).")
     .option("--browser-input-timeout <duration>", "Timeout waiting for the Project Sources UI.")
     .option("--browser-profile-lock-timeout <duration>", "Timeout waiting for profile launch lock.")
+    .option("--browser-queue-timeout <duration>", "Timeout waiting for a shared browser tab slot.")
     .option("--browser-reuse-wait <duration>", "Wait for an existing shared Chrome to appear.")
     .option("--browser-max-concurrent-tabs <n>", "Concurrent tabs allowed for the shared profile.")
     .option("--browser-cookie-wait <duration>", "Wait before retrying cookie sync.")
@@ -1564,6 +1574,31 @@ docsCommand
       printDocsCheckResult(result);
     }
     process.exitCode = result.issues.length > 0 ? 1 : 0;
+  });
+
+program
+  .command("import-chatgpt-url <url>")
+  .description(
+    "Register a manual ChatGPT conversation URL as an untrusted, compatibility-only follow-up reference.",
+  )
+  .option("-s, --slug <words>", "Custom session slug (3-5 words).")
+  .option(
+    "--force",
+    "Atomically replace an existing pure import with the same slug (requires descriptor-rooted filesystem operations; unavailable on Windows—use a new slug).",
+    false,
+  )
+  .action(async function (this: Command, url: string) {
+    // Root options can consume same-named flags even when they appear after a
+    // subcommand, so merge both scopes instead of reading only the child.
+    const options = this.optsWithGlobals<{ slug?: string; force?: boolean }>();
+    const { runImportChatgptConversation } =
+      await import("../src/cli/importChatgptConversation.js");
+    await runImportChatgptConversation({
+      url,
+      slug: options.slug,
+      force: options.force,
+      cwd: process.cwd(),
+    });
   });
 
 program
@@ -3047,6 +3082,21 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     }
     browserFollowup = await resolveBrowserFollowupReference(options.followup, sessionStore);
     if (browserFollowup) {
+      assertImportedBrowserFollowupCompatibility({
+        followup: browserFollowup,
+        explicitBrowserEngine: options.engine === "browser" && getSource("engine") === "cli",
+        explicitRemoteBrowserOff:
+          options.remoteBrowser === "off" && getSource("remoteBrowser") === "cli",
+        resolvedLane,
+        remoteHost: remoteBrowserHostForRun,
+        remoteChrome: options.remoteChrome,
+        explicitModel: getSource("model") === "cli" ? options.model : undefined,
+        explicitModelStrategy:
+          getSource("browserModelStrategy") === "cli" ? options.browserModelStrategy : undefined,
+        explicitThinkingTime:
+          getSource("browserThinkingTime") === "cli" ? options.browserThinkingTime : undefined,
+        explicitBrowserTab: getSource("browserTab") === "cli" ? options.browserTab : undefined,
+      });
       // A --lane was already validated and applied by `resolveLanePolicy`
       // above (`resolvedLane`); resolving --followup independently of that
       // lane must not silently reroute engine/model away from what lane
@@ -3160,6 +3210,21 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   const browserConfig = await (async (): Promise<BrowserSessionConfig | undefined> => {
     if (sessionMode !== "browser") return undefined;
     if (browserFollowup) {
+      if (browserFollowup.importedUntrusted) {
+        const { buildBrowserConfig, resolveBrowserModelLabel } =
+          await import("../src/cli/browserConfig.js");
+        const compatibilityConfig = await buildBrowserConfig({
+          ...options,
+          remoteHost: undefined,
+          remoteChrome: undefined,
+          model: activeModel,
+          browserModelLabel: resolveBrowserModelLabel(undefined, activeModel),
+        });
+        return buildImportedBrowserFollowupConfig(
+          compatibilityConfig,
+          browserFollowup.resumeConversationUrl,
+        );
+      }
       return browserFollowup.browserConfig;
     }
     const { buildBrowserConfig, resolveBrowserModelLabel } =

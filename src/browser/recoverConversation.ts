@@ -5,6 +5,7 @@ import { isAnswerNowPlaceholderText } from "./actions/assistantResponse.js";
 import { resolveBrowserConfig } from "./config.js";
 import { acquireManualLoginChromeForRun, isImageOnlyUiChromeText } from "./index.js";
 import { isRecoverableChatGptConversationUrl } from "./reattachability.js";
+import { hasImportedChatgptConversationClaim } from "./importedConversation.js";
 import { harvestChatGptTab, openChatGptTarget } from "./liveTabs.js";
 
 const DEFAULT_READY_TIMEOUT_MS = 30_000;
@@ -35,6 +36,12 @@ export interface RecoveryEndpoint {
  * cannot navigate the persistent signed-in profile to the wrong page.
  */
 export function resolveRecoveryUrl(meta: SessionMetadata): string | null {
+  // A manual URL import has no prompt/capture/account ownership proof. It is
+  // usable only through the explicit compatibility follow-up gate, never the
+  // generic harvest/recovery machinery.
+  if (hasImportedChatgptConversationClaim(meta)) {
+    return null;
+  }
   const harvest = meta?.browser?.harvest ?? {};
   const runtime = meta?.browser?.runtime ?? {};
   for (const candidate of [harvest.url, runtime.tabUrl]) {

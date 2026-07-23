@@ -14,11 +14,17 @@
 // list surface, this describes exactly ONE session: its terminal-or-not
 // status from the closed enum, the exit code an agent waiting on it would
 // receive, usage, timestamps, artifact/output paths, and a structured
-// error when the run failed. `oracle wait` re-uses `resolveSessionExitCode`
+// error when the run failed. Metadata-only imports use `status=imported`
+// and `output_file=null`, never a completed-run representation. `oracle
+// wait` re-uses `resolveSessionExitCode`
 // so the process exit code and the emitted `data.exit_code` never disagree.
 
 import path from "node:path";
 
+import {
+  hasImportedChatgptConversationClaim,
+  parsePureImportedChatgptConversationSession,
+} from "../browser/importedConversation.js";
 import { V18_BUNDLE_VERSION, createEnvelope, type JsonEnvelope } from "../oracle/v18/index.js";
 import type { SessionMetadata, SessionStatus } from "../sessionManager.js";
 import { sessionStore } from "../sessionStore.js";
@@ -29,12 +35,13 @@ import {
   type OracleErrorClass,
 } from "./exitCodes.js";
 import {
-  coerceSessionStatus,
+  coerceValidatedSessionStatus,
   isSuccessTerminalStatus,
   isTerminalSessionStatus,
 } from "./sessionStatus.js";
 
 export const ORACLE_SESSION_SCHEMA_VERSION = "oracle_session.v1" as const;
+export const INVALID_IMPORTED_SESSION_ERROR_CODE = "invalid_imported_session" as const;
 
 /** Token usage summary; each field is a number so the JSON shape is stable. */
 export interface SessionUsageSummary {
@@ -64,7 +71,8 @@ export interface SessionJsonPayload {
   /**
    * The process exit code an agent would receive by waiting on this
    * session: 0 for completed/partial, 3–6 for a classified failure, 1 for
-   * a generic failure or cancellation, and `null` while still in flight.
+   * a generic failure or cancellation, 0 for a valid imported reference,
+   * and `null` while still in flight.
    */
   readonly exit_code: number | null;
   readonly created_at: string;
@@ -76,7 +84,7 @@ export interface SessionJsonPayload {
   /** Directory holding this session's artifacts (meta.json, logs, downloads). */
   readonly artifacts_path: string;
   /** The saved run transcript path. */
-  readonly output_file: string;
+  readonly output_file: string | null;
   /** Final-answer artifact path when the lane produces one (Claude Code), else null. */
   readonly final_answer_path: string | null;
   readonly error: SessionErrorSummary | null;
@@ -116,17 +124,36 @@ export function classifySessionErrorClass(metadata: SessionMetadata): OracleErro
 }
 
 /**
+ * Resolve the status exposed by trusted CLI surfaces. Manual imports retain
+ * `imported` only after the entire record passes the exact pure-shape parser;
+ * a bare or mixed status claim is presented as an error.
+ */
+export function resolveValidatedSessionStatus(metadata: SessionMetadata): SessionStatus {
+  const hasImportedClaim = hasImportedChatgptConversationClaim(metadata);
+  const importedSessionIsPure =
+    hasImportedClaim && parsePureImportedChatgptConversationSession(metadata, metadata.id) !== null;
+  if (hasImportedClaim && !importedSessionIsPure) {
+    return "error";
+  }
+  return coerceValidatedSessionStatus(metadata.status, importedSessionIsPure);
+}
+
+/**
  * The process exit code a caller waiting on this session would receive.
  * `null` while the session is still in flight (non-terminal).
  */
 export function resolveSessionExitCode(metadata: SessionMetadata): number | null {
-  if (!isTerminalSessionStatus(metadata.status)) {
+  const status = resolveValidatedSessionStatus(metadata);
+  if (!isTerminalSessionStatus(status)) {
     return null;
   }
-  if (isSuccessTerminalStatus(metadata.status)) {
+  if (isSuccessTerminalStatus(status)) {
     return 0;
   }
-  if (metadata.status === "cancelled") {
+  if (status === "imported") {
+    return 0;
+  }
+  if (status === "cancelled") {
     return 1;
   }
   const errorClass = classifySessionErrorClass(metadata);
@@ -148,6 +175,16 @@ function buildUsageSummary(metadata: SessionMetadata): SessionUsageSummary | nul
 }
 
 function buildErrorSummary(metadata: SessionMetadata): SessionErrorSummary | null {
+  if (
+    hasImportedChatgptConversationClaim(metadata) &&
+    resolveValidatedSessionStatus(metadata) === "error"
+  ) {
+    return {
+      code: INVALID_IMPORTED_SESSION_ERROR_CODE,
+      message:
+        "Session claims imported ChatGPT metadata but does not match Oracle's exact metadata-only import shape.",
+    };
+  }
   if (metadata.status === "cancelled") {
     return {
       code: "cancelled",
@@ -171,8 +208,10 @@ export function buildSessionJsonPayload(
   metadata: SessionMetadata,
   options: BuildSessionJsonOptions = {},
 ): SessionJsonPayload {
+  const status = resolveValidatedSessionStatus(metadata);
   const sessionDir = options.sessionDir ?? path.join(sessionStore.sessionsDir(), metadata.id);
-  const outputFile = options.outputFile ?? path.join(sessionDir, "output.log");
+  const outputFile =
+    status === "imported" ? null : (options.outputFile ?? path.join(sessionDir, "output.log"));
   const finalAnswerPath =
     metadata.claudeCode?.artifact_paths?.finalAnswerPath ??
     metadata.claudeCode?.final_answer_path ??
@@ -183,8 +222,8 @@ export function buildSessionJsonPayload(
     lane: metadata.lane ?? null,
     model: metadata.model ?? null,
     mode: metadata.mode ?? null,
-    status: coerceSessionStatus(metadata.status),
-    terminal: isTerminalSessionStatus(metadata.status),
+    status,
+    terminal: isTerminalSessionStatus(status),
     exit_code: resolveSessionExitCode(metadata),
     created_at: metadata.createdAt,
     started_at: metadata.startedAt ?? null,
@@ -206,10 +245,27 @@ export function buildSessionJsonEnvelope(
 ): SessionJsonEnvelopeResult {
   const payload = buildSessionJsonPayload(metadata, options);
   const generatedAt = options.generatedAt ?? new Date().toISOString();
+  const invalidImportedSession =
+    hasImportedChatgptConversationClaim(metadata) && payload.status === "error";
   const errorClass = payload.status === "error" ? classifySessionErrorClass(metadata) : null;
-  const nextCommand = payload.terminal
-    ? `oracle session ${payload.id} --artifacts --json`
-    : `oracle wait ${payload.id} --json`;
+  const nextCommand =
+    payload.status === "imported"
+      ? `oracle --engine browser --remote-browser off --browser-model-strategy current --followup ${payload.id} -p "..."`
+      : payload.terminal
+        ? `oracle session ${payload.id} --artifacts --json`
+        : `oracle wait ${payload.id} --json`;
+  const commands =
+    payload.status === "imported"
+      ? {
+          session_json: `oracle session ${payload.id} --json`,
+          followup_compatibility: nextCommand,
+        }
+      : {
+          session_json: `oracle session ${payload.id} --json`,
+          wait_json: `oracle wait ${payload.id} --json`,
+          artifacts_json: `oracle session ${payload.id} --artifacts --json`,
+          cancel: `oracle cancel ${payload.id}`,
+        };
   const envelope = createEnvelope({
     ok: true,
     data: payload as unknown as Record<string, unknown>,
@@ -225,13 +281,12 @@ export function buildSessionJsonEnvelope(
     fix_command: null,
     // Reading a session's status is always safe to repeat; when the run
     // itself failed transiently, advertise that via the class.
-    retry_safe: errorClass ? isRetrySafeErrorClass(errorClass) : true,
-    commands: {
-      session_json: `oracle session ${payload.id} --json`,
-      wait_json: `oracle wait ${payload.id} --json`,
-      artifacts_json: `oracle session ${payload.id} --artifacts --json`,
-      cancel: `oracle cancel ${payload.id}`,
-    },
+    retry_safe: invalidImportedSession
+      ? false
+      : errorClass
+        ? isRetrySafeErrorClass(errorClass)
+        : true,
+    commands,
   });
   return { envelope, payload };
 }

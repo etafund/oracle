@@ -10,6 +10,7 @@ import { logDomFailure } from "../domDebug.js";
 import { buildClickDispatcher } from "./domEvents.js";
 import { delay } from "../utils.js";
 import { BrowserAutomationError } from "../../oracle/errors.js";
+import { MODEL_AXIS_EFFORT_ONLY_LABELS } from "../modelDisplay.js";
 
 const LEGACY_PRO_VERSION_WORD_TOKENS = ["5 4", "5 3", "5 2", "5 1", "5 0", "gpt 5 pro"] as const;
 const LEGACY_PRO_VERSION_COMPACT_TOKENS = ["gpt54", "gpt53", "gpt52", "gpt51", "gpt50"] as const;
@@ -91,17 +92,16 @@ export async function ensureModelSelection(
     case "already-selected":
     case "switched": {
       const observedLabel = result.label?.trim() || null;
-      const label = observedLabel || (strategy === "current" ? null : desiredModel);
       if (strategy !== "current") {
         assertResolvedModelSelection(desiredModel, observedLabel ?? "");
       }
-      logger(`Model picker: ${label ?? "current model (label unavailable)"}`);
-      const modelVerified = strategy !== "current";
+      logger(`Model picker: ${observedLabel ?? "current model (label unavailable)"}`);
+      const modelVerified = strategy !== "current" && observedLabel !== null;
       return {
         requestedModel: desiredModel,
-        resolvedLabel: label,
+        resolvedLabel: observedLabel,
         requestedModelLabel: desiredModel,
-        resolvedModelLabel: label,
+        resolvedModelLabel: observedLabel,
         modelVerified,
         strategy,
         status: result.status,
@@ -225,6 +225,7 @@ function buildModelSelectionExpression(
   const composerIncludesLiteral = JSON.stringify(composerSignalMatchers.includesAny);
   const composerExcludesLiteral = JSON.stringify(composerSignalMatchers.excludesAny);
   const composerAllowBlankLiteral = JSON.stringify(composerSignalMatchers.allowBlank);
+  const effortOnlyModelLabelsLiteral = JSON.stringify(MODEL_AXIS_EFFORT_ONLY_LABELS);
   const menuContainerLiteral = JSON.stringify(
     `${MENU_CONTAINER_SELECTOR}, [role="listbox"], [role="dialog"]`,
   );
@@ -243,6 +244,7 @@ function buildModelSelectionExpression(
     const COMPOSER_SIGNAL_INCLUDES = ${composerIncludesLiteral};
     const COMPOSER_SIGNAL_EXCLUDES = ${composerExcludesLiteral};
     const COMPOSER_SIGNAL_ALLOW_BLANK = ${composerAllowBlankLiteral};
+    const EFFORT_ONLY_MODEL_LABELS = new Set(${effortOnlyModelLabelsLiteral});
     const INITIAL_WAIT_MS = 150;
     const REOPEN_INTERVAL_MS = 400;
     const MAX_WAIT_MS = 20000;
@@ -393,16 +395,7 @@ function buildModelSelectionExpression(
     const getComposerModelLabel = () =>
       (document.querySelector(COMPOSER_MODEL_SIGNAL_SELECTOR)?.textContent ?? '').trim();
     const readComposerModelSignal = () => normalizeText(getComposerModelLabel());
-    const isIntelligenceEffortLabel = (label) =>
-      label === 'instant' ||
-      label === 'medium' ||
-      label === 'high' ||
-      label === 'extra high' ||
-      label === 'pro' ||
-      label === 'extended' ||
-      label === 'standard' ||
-      label === 'heavy' ||
-      label === 'light';
+    const isEffortOnlyLabel = (label) => EFFORT_ONLY_MODEL_LABELS.has(normalizeText(label));
     const formatModelOptionLabel = (label) => {
       const normalized = normalizeText(label ?? '');
       if (normalized === '5 6' || normalized === 'gpt 5 6') return 'GPT-5.6';
@@ -487,7 +480,7 @@ function buildModelSelectionExpression(
       }
       return true;
     };
-    const getResolvedLabel = (fallback) => {
+    const getResolvedLabel = (observedOptionLabel = '') => {
       if (configuredSelectionMatchesTarget()) {
         const variant = getConfiguredVariantLabel();
         const version = formatModelOptionLabel(getConfiguredVersionLabel());
@@ -502,7 +495,7 @@ function buildModelSelectionExpression(
         versionFromLabel(normalizedComposerLabel) === desiredVersion &&
         normalizedComposerLabel.split(' ').includes(desiredModelVariant)
       ) {
-        if (desiredModelVariant === 'sol' && hasProComposerPill()) return PRIMARY_LABEL;
+        if (desiredModelVariant === 'sol' && hasProComposerPill()) return composerLabel;
         return withProPillSignal(composerLabel);
       }
       const buttonLabel = getButtonLabel();
@@ -513,24 +506,23 @@ function buildModelSelectionExpression(
         versionFromLabel(normalizedButton) === desiredVersion &&
         normalizedButton.split(' ').includes(desiredModelVariant)
       ) {
-        if (desiredModelVariant === 'sol' && hasProComposerPill()) return PRIMARY_LABEL;
+        if (desiredModelVariant === 'sol' && hasProComposerPill()) return buttonLabel;
         return withProPillSignal(buttonLabel);
       }
-      const fallbackLabel = formatModelOptionLabel(fallback);
-      const normalizedFallback = normalizeText(fallbackLabel);
-      if (
-        desiredVersion &&
-        desiredModelVariant &&
-        versionFromLabel(normalizedFallback) === desiredVersion &&
-        normalizedFallback.split(' ').includes(desiredModelVariant)
-      ) {
-        return fallbackLabel;
-      }
-      if (composerLabel) return withProPillSignal(composerLabel);
-      if (fallbackLabel && !wantsPro && isIntelligenceEffortLabel(normalizedButton)) {
-        return fallbackLabel;
-      }
-      return withProPillSignal(buttonLabel || fallbackLabel || fallback);
+      const observedLabel = (label) => {
+        const formatted = formatModelOptionLabel(label);
+        // Do not restore the old normalizedFallback.split target-fallback branch here:
+        // this path may return only labels independently observed in the live DOM.
+        return formatted && !isEffortOnlyLabel(normalizeText(formatted))
+          ? withProPillSignal(formatted)
+          : '';
+      };
+      return (
+        observedLabel(observedOptionLabel) ||
+        observedLabel(composerLabel) ||
+        observedLabel(buttonLabel) ||
+        (wantsPro && hasProComposerPill() ? 'Pro' : '')
+      );
     };
     if (MODEL_STRATEGY === 'current') {
       const currentLabel = getResolvedLabel('') || null;
@@ -658,7 +650,7 @@ function buildModelSelectionExpression(
     };
 
     if (activeSelectionMatchesTarget()) {
-      return { status: 'already-selected', label: getResolvedLabel(PRIMARY_LABEL) };
+      return { status: 'already-selected', label: getResolvedLabel() };
     }
 
     let lastPointerClick = 0;

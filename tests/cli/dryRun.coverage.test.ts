@@ -48,6 +48,8 @@ describe("runDryRunSummary", () => {
         version: "0.4.1",
         log,
         browserConfig: {
+          desiredModel: "GPT-5.6 Sol",
+          modelStrategy: "select",
           inlineCookies: [{ name: "a", value: "b", domain: "chatgpt.com" }],
           inlineCookiesSource: "test",
           cookieNames: [],
@@ -57,6 +59,7 @@ describe("runDryRunSummary", () => {
     );
 
     const joined = log.mock.calls.flat().join("\n");
+    expect(joined).toContain("target=GPT-5.6 Sol; requested=gpt-5.2-pro");
     expect(joined).toContain("Bundled upload");
     expect(joined).toContain("bundled 3 files");
     expect(joined).toContain("Cookies: inline payload (1) via test");

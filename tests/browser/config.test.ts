@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import os from "node:os";
 import path from "node:path";
-import { DEFAULT_CHATGPT_COOKIE_NAMES, resolveBrowserConfig } from "../../src/browser/config.js";
+import {
+  DEFAULT_BROWSER_QUEUE_TIMEOUT_MS,
+  DEFAULT_CHATGPT_COOKIE_NAMES,
+  resolveBrowserConfig,
+} from "../../src/browser/config.js";
 import { CHATGPT_URL, DEEP_RESEARCH_DEFAULT_TIMEOUT_MS } from "../../src/browser/constants.js";
 
 describe("resolveBrowserConfig", () => {
@@ -9,12 +13,14 @@ describe("resolveBrowserConfig", () => {
   const originalBrowserPort = process.env.ORACLE_BROWSER_PORT;
   const originalBrowserDebugPort = process.env.ORACLE_BROWSER_DEBUG_PORT;
   const originalMaxTabs = process.env.ORACLE_BROWSER_MAX_CONCURRENT_TABS;
+  const originalQueueTimeout = process.env.ORACLE_BROWSER_QUEUE_TIMEOUT;
 
   beforeEach(() => {
     // Isolate from the caller's environment: a developer/CI export of the max-tabs
     // override must not leak into tests that assert built-in defaults. afterEach
     // below still restores the caller's original value once the suite finishes.
     delete process.env.ORACLE_BROWSER_MAX_CONCURRENT_TABS;
+    delete process.env.ORACLE_BROWSER_QUEUE_TIMEOUT;
   });
 
   afterEach(() => {
@@ -38,6 +44,11 @@ describe("resolveBrowserConfig", () => {
     } else {
       process.env.ORACLE_BROWSER_MAX_CONCURRENT_TABS = originalMaxTabs;
     }
+    if (originalQueueTimeout === undefined) {
+      delete process.env.ORACLE_BROWSER_QUEUE_TIMEOUT;
+    } else {
+      process.env.ORACLE_BROWSER_QUEUE_TIMEOUT = originalQueueTimeout;
+    }
   });
 
   test("returns defaults when config missing", () => {
@@ -49,6 +60,7 @@ describe("resolveBrowserConfig", () => {
     expect(resolved.headless).toBe(false);
     expect(resolved.manualLogin).toBe(isWindows);
     expect(resolved.profileLockTimeoutMs).toBe(300_000);
+    expect(resolved.queueTimeoutMs).toBe(DEFAULT_BROWSER_QUEUE_TIMEOUT_MS);
     expect(resolved.attachmentTimeoutMs).toBe(45_000);
     expect(resolved.maxConcurrentTabs).toBe(3);
     expect(resolved.researchMode).toBe("off");
@@ -69,6 +81,7 @@ describe("resolveBrowserConfig", () => {
       browserTabRef: "current",
       debug: true,
       maxConcurrentTabs: 5,
+      queueTimeoutMs: 7_890,
       researchMode: "deep",
       archiveConversations: "never",
     });
@@ -84,6 +97,7 @@ describe("resolveBrowserConfig", () => {
     expect(resolved.browserTabRef).toBe("current");
     expect(resolved.debug).toBe(true);
     expect(resolved.maxConcurrentTabs).toBe(5);
+    expect(resolved.queueTimeoutMs).toBe(7_890);
     expect(resolved.researchMode).toBe("deep");
     expect(resolved.archiveConversations).toBe("never");
   });
@@ -135,6 +149,17 @@ describe("resolveBrowserConfig", () => {
     for (const malformed of ["5junk", "2.5", "1e2"]) {
       process.env.ORACLE_BROWSER_MAX_CONCURRENT_TABS = malformed;
       expect(resolveBrowserConfig(undefined).maxConcurrentTabs).toBe(3);
+    }
+  });
+
+  test("resolves an independent queue timeout from config, env, and the 20m default", () => {
+    process.env.ORACLE_BROWSER_QUEUE_TIMEOUT = "45s";
+    expect(resolveBrowserConfig({ queueTimeoutMs: 0 }).queueTimeoutMs).toBe(0);
+    expect(resolveBrowserConfig(undefined).queueTimeoutMs).toBe(45_000);
+
+    for (const malformed of ["", "-1", "not-a-duration", "30sjunk", "Infinity"]) {
+      process.env.ORACLE_BROWSER_QUEUE_TIMEOUT = malformed;
+      expect(resolveBrowserConfig(undefined).queueTimeoutMs).toBe(DEFAULT_BROWSER_QUEUE_TIMEOUT_MS);
     }
   });
 

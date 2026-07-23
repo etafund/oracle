@@ -24,6 +24,10 @@ import {
   type BrowserTabLease,
 } from "./tabLeaseRegistry.js";
 import {
+  releaseBrowserTabLeaseOrTaint,
+  rollbackOrphanedBrowserTabLeaseAcquisition,
+} from "./index.js";
+import {
   acquireProfileRunLock,
   cleanupStaleProfileState,
   findRunningChromeDebugTargetForProfile,
@@ -112,12 +116,21 @@ export async function runBrowserProjectSources(
 
   let tabLease: BrowserTabLease | null = null;
   if (manualLogin) {
-    tabLease = await acquireBrowserTabLease(userDataDir, {
-      maxConcurrentTabs: config.maxConcurrentTabs,
-      timeoutMs: config.timeoutMs,
-      logger,
-      sessionId: "project-sources",
-    });
+    try {
+      tabLease = await acquireBrowserTabLease(userDataDir, {
+        maxConcurrentTabs: config.maxConcurrentTabs,
+        timeoutMs: config.queueTimeoutMs,
+        logger,
+        sessionId: "project-sources",
+      });
+    } catch (error) {
+      await rollbackOrphanedBrowserTabLeaseAcquisition(
+        error,
+        logger,
+        "Project Sources acquisition rollback",
+      );
+      throw error;
+    }
   }
 
   let chrome: BrowserChrome | null = null;
@@ -288,7 +301,7 @@ export async function runBrowserProjectSources(
     if (tabLease) {
       const handle = tabLease;
       tabLease = null;
-      await handle.release().catch(() => undefined);
+      await releaseBrowserTabLeaseOrTaint(handle, logger, "Project Sources cleanup");
     }
     if (!keepBrowserOpen && chrome) {
       if (!connectionClosedUnexpectedly) {

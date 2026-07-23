@@ -68,6 +68,8 @@ import {
 } from "./run_event_sink.js";
 import {
   MAX_REMOTE_RECOVERY_REQUEST_BYTES,
+  REMOTE_RUN_TIMEOUT_MS_MAX,
+  REMOTE_RUN_TIMEOUT_MS_MIN,
   sanitizeRemoteBrowserRecoveryRequestForHost,
   sanitizeRemoteRunPayloadForHost,
 } from "./payload_sanitize.js";
@@ -525,6 +527,7 @@ export async function createRemoteServer(
   const effectiveRunConfig = {
     timeoutMs: baselineBrowserConfig.timeoutMs,
     profileLockTimeoutMs: baselineBrowserConfig.profileLockTimeoutMs,
+    queueTimeoutMs: baselineBrowserConfig.queueTimeoutMs,
     maxConcurrentTabs: baselineBrowserConfig.maxConcurrentTabs,
   };
   assertFleetSafeServeBrowserConfig(effectiveRunConfig);
@@ -1523,7 +1526,10 @@ export async function createRemoteServer(
                 promptDomSha256: recoveryRequest.recovery.promptDomSha256,
                 sessionId: payload.options.sessionId,
                 maxConcurrentTabs: effectiveRunConfig.maxConcurrentTabs ?? undefined,
-                leaseTimeoutMs: effectiveRunConfig.profileLockTimeoutMs ?? undefined,
+                queueTimeoutMs:
+                  payload.browserConfig.queueTimeoutMs ??
+                  effectiveRunConfig.queueTimeoutMs ??
+                  undefined,
                 signal: runAbort.signal,
                 accountId,
               };
@@ -1920,7 +1926,7 @@ export async function createRemoteServer(
   // Effective values are non-secret; surfacing them at startup lets fleet
   // tooling confirm every worker runs with safe run-isolation settings.
   logger(
-    `[serve] Effective run config: timeoutMs=${effectiveRunConfig.timeoutMs} profileLockTimeoutMs=${effectiveRunConfig.profileLockTimeoutMs} maxConcurrentTabs=${effectiveRunConfig.maxConcurrentTabs}`,
+    `[serve] Effective run config: timeoutMs=${effectiveRunConfig.timeoutMs} profileLockTimeoutMs=${effectiveRunConfig.profileLockTimeoutMs} queueTimeoutMs=${effectiveRunConfig.queueTimeoutMs} maxConcurrentTabs=${effectiveRunConfig.maxConcurrentTabs}`,
   );
   // Never echo a supplied token: startup logs land in service journals, and a
   // shared bearer secret copied into every journal defeats file permissions
@@ -1979,6 +1985,7 @@ function buildHealthResponse({
   effectiveConfig: {
     timeoutMs: number | null | undefined;
     profileLockTimeoutMs: number | null | undefined;
+    queueTimeoutMs: number | null | undefined;
     maxConcurrentTabs: number | null | undefined;
   };
 }): {
@@ -1993,6 +2000,7 @@ function buildHealthResponse({
   effectiveConfig: {
     timeoutMs: number | null | undefined;
     profileLockTimeoutMs: number | null | undefined;
+    queueTimeoutMs: number | null | undefined;
     maxConcurrentTabs: number | null | undefined;
   };
   error?: string;
@@ -2016,7 +2024,8 @@ function buildHealthResponse({
     capabilities: ARTIFACT_CAPABILITIES,
     // Integration point for the dedicated /ready endpoint: it should surface
     // these exact field names (timeoutMs, profileLockTimeoutMs,
-    // maxConcurrentTabs) so fleet tooling reads one shape everywhere.
+    // queueTimeoutMs, maxConcurrentTabs) so fleet tooling reads one shape
+    // everywhere.
     effectiveConfig,
     ...(activeRun ? { activeRun: serializeActiveRun(activeRun) } : {}),
     ...(unavailable ? { error: "busy" } : {}),
@@ -2476,6 +2485,7 @@ async function readFleetManifestStatus(worker: {
   effectiveConfig: {
     timeoutMs: number | null | undefined;
     profileLockTimeoutMs: number | null | undefined;
+    queueTimeoutMs: number | null | undefined;
     maxConcurrentTabs: number | null | undefined;
   };
 }): Promise<FleetManifestStatus> {
@@ -2526,6 +2536,12 @@ async function readFleetManifestStatus(worker: {
     manifest.profileLockTimeoutMs !== worker.effectiveConfig.profileLockTimeoutMs
   ) {
     mismatches.push("profileLockTimeoutMs");
+  }
+  if (
+    typeof manifest.queueTimeoutMs === "number" &&
+    manifest.queueTimeoutMs !== worker.effectiveConfig.queueTimeoutMs
+  ) {
+    mismatches.push("queueTimeoutMs");
   }
   if (
     typeof manifest.timeoutMs === "number" &&
@@ -2618,6 +2634,7 @@ export function tokenIdForLog(token: string): string {
 export interface FleetSafeServeConfigInput {
   profileLockTimeoutMs?: number | null;
   timeoutMs?: number | null;
+  queueTimeoutMs?: number | null;
   maxConcurrentTabs?: number | null;
 }
 
@@ -2628,8 +2645,9 @@ export interface FleetSafeServeConfigInput {
  *   profile lock, allowing composer cross-talk between concurrent runs
  *   (prompts landing in the wrong conversation — the worst wrong-answer
  *   class);
- * - timeoutMs <= 0 means an unbounded tab-lease wait and a permanently
- *   wedged worker;
+ * - timeoutMs <= 0 disables the overall response deadline;
+ * - queueTimeoutMs outside the remotely supported 1s..75m range either
+ *   creates an unbounded capacity wait or pins a worker excessively;
  * - maxConcurrentTabs outside 1..3 either starves the lane or exceeds the
  *   validated per-account tab budget.
  * A worker with any of these misconfigured must refuse to start rather than
@@ -2646,7 +2664,18 @@ export function assertFleetSafeServeBrowserConfig(effective: FleetSafeServeConfi
   const timeout = effective.timeoutMs;
   if (typeof timeout !== "number" || !Number.isFinite(timeout) || timeout <= 0) {
     problems.push(
-      `timeoutMs=${String(timeout)} (must be > 0; a non-positive value permits an unbounded tab-lease wait)`,
+      `timeoutMs=${String(timeout)} (must be > 0; a non-positive value disables the overall response deadline)`,
+    );
+  }
+  const queueTimeout = effective.queueTimeoutMs;
+  if (
+    typeof queueTimeout !== "number" ||
+    !Number.isFinite(queueTimeout) ||
+    queueTimeout < REMOTE_RUN_TIMEOUT_MS_MIN ||
+    queueTimeout > REMOTE_RUN_TIMEOUT_MS_MAX
+  ) {
+    problems.push(
+      `queueTimeoutMs=${String(queueTimeout)} (must be between ${REMOTE_RUN_TIMEOUT_MS_MIN} and ${REMOTE_RUN_TIMEOUT_MS_MAX} on a remote worker)`,
     );
   }
   const tabs = effective.maxConcurrentTabs;

@@ -25,7 +25,7 @@ const REMOTE_SESSION_RECOVERY_STAGE_SET: ReadonlySet<string> = new Set(
 
 // Hard-bounded timeouts: dropped when not a finite number or <= 0, clamped
 // into [MIN, MAX] otherwise.
-const HOST_CLAMPED_TIMEOUT_KEYS = ["timeoutMs", "inputTimeoutMs"] as const;
+const HOST_CLAMPED_TIMEOUT_KEYS = ["timeoutMs", "inputTimeoutMs", "queueTimeoutMs"] as const;
 
 // Auxiliary waits/delays: 0 is a legitimate value (defaults), negatives and
 // non-numbers are dropped, and the same upper bound applies.
@@ -42,6 +42,7 @@ const SAFE_BROWSER_CONFIG_KEYS = [
   "chatgptUrl",
   "timeoutMs",
   "inputTimeoutMs",
+  "queueTimeoutMs",
   "assistantRecheckDelayMs",
   "assistantRecheckTimeoutMs",
   "autoReattachDelayMs",
@@ -62,6 +63,7 @@ const SAFE_BROWSER_CONFIG_KEY_SET: ReadonlySet<string> = new Set(SAFE_BROWSER_CO
 const SAFE_RECOVERY_BROWSER_CONFIG_KEYS = [
   "timeoutMs",
   "inputTimeoutMs",
+  "queueTimeoutMs",
   "assistantRecheckDelayMs",
   "assistantRecheckTimeoutMs",
   "autoReattachDelayMs",

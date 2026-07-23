@@ -18,6 +18,7 @@ import {
   recoverConversationTab,
 } from "../browser/recoverConversation.js";
 import { normalizeChatGptConversationId } from "../browser/conversationIdentity.js";
+import { hasImportedChatgptConversationClaim } from "../browser/importedConversation.js";
 import { resolveOutputPath } from "./writeOutputPath.js";
 
 const LIVE_POLL_MS = 2000;
@@ -295,6 +296,11 @@ export async function harvestSessionBrowserOutput(
   if (!meta) {
     throw new Error(`No session found with ID ${sessionId}.`);
   }
+  if (hasImportedChatgptConversationClaim(meta)) {
+    throw new Error(
+      `Session ${sessionId} is an untrusted manual conversation import. Refusing --harvest because Oracle did not submit or bind an answer in that thread.`,
+    );
+  }
   if (meta.browser?.remoteRun || meta.browser?.remoteRecovery) {
     throw new Error(
       meta.browser.remoteRecovery
@@ -364,6 +370,11 @@ export async function liveTailSessionBrowserOutput(
   const meta = await sessionStore.readSession(sessionId);
   if (!meta) {
     throw new Error(`No session found with ID ${sessionId}.`);
+  }
+  if (hasImportedChatgptConversationClaim(meta)) {
+    throw new Error(
+      `Session ${sessionId} is an untrusted manual conversation import. Refusing --live because Oracle did not submit or bind an answer in that thread.`,
+    );
   }
   if (meta.browser?.remoteRun || meta.browser?.remoteRecovery) {
     throw new Error(

@@ -1,6 +1,6 @@
 import path from "node:path";
 import fs from "node:fs/promises";
-import { createWriteStream, mkdirSync } from "node:fs";
+import { createWriteStream, mkdirSync, readFileSync } from "node:fs";
 import type { WriteStream } from "node:fs";
 import net from "node:net";
 import { createHash, randomUUID } from "node:crypto";
@@ -22,6 +22,10 @@ import type {
   PartialMode,
   ThinkingTimeLevel,
 } from "./oracle.js";
+import {
+  hasImportedChatgptConversationClaim,
+  type ImportedChatgptConversationMetadata,
+} from "./browser/importedConversation.js";
 import { DEFAULT_MODEL } from "./oracle/config.js";
 import { formatElapsed } from "./oracle/format.js";
 import { safeModelSlug } from "./oracle/modelResolver.js";
@@ -55,6 +59,8 @@ export interface BrowserSessionConfig {
   reuseChromeWaitMs?: number;
   /** Max time to wait for a shared manual-login profile lock (serializes parallel runs). */
   profileLockTimeoutMs?: number;
+  /** Independent time budget for FIFO browser-slot admission; 0 waits forever locally. */
+  queueTimeoutMs?: number;
   /** Soft limit for concurrent ChatGPT tabs sharing one manual-login profile. */
   maxConcurrentTabs?: number;
   /** Delay before starting periodic auto-reattach attempts after a timeout. */
@@ -241,6 +247,11 @@ export interface BrowserRemoteRecoveryCompletionClaim {
 export interface BrowserMetadata {
   config?: BrowserSessionConfig;
   runtime?: BrowserRuntimeMetadata;
+  /**
+   * Present only for a metadata-only manual URL import. This is explicitly
+   * untrusted and carries no account, lane, model, mode, or answer proof.
+   */
+  importedConversation?: ImportedChatgptConversationMetadata;
   /**
    * Normalized ownership preview for the most recently submitted browser
    * prompt. Unlike `options.prompt`, this advances after in-conversation
@@ -564,7 +575,14 @@ export interface SessionMetadata {
   lifecycle?: SessionLifecycleMetadata;
 }
 
-export type SessionStatus = "pending" | "running" | "completed" | "partial" | "error" | "cancelled";
+export type SessionStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "partial"
+  | "error"
+  | "cancelled"
+  | "imported";
 
 export interface SessionLifecycleMetadata {
   engine: "api" | "browser" | "claude-code";
@@ -638,6 +656,7 @@ const TERMINAL_MODEL_RUN_STATUSES = new Set<SessionModelRun["status"]>([
   "partial",
   "error",
   "cancelled",
+  "imported",
 ]);
 const ERROR_MODEL_RUN_STATUSES = new Set<SessionModelRun["status"]>(["error"]);
 const CANCELLED_MODEL_RUN_STATUSES = new Set<SessionModelRun["status"]>(["cancelled"]);
@@ -831,6 +850,12 @@ export async function updateModelRunMetadata(
   // persistSessionMetadata may rewrite (models/*.json), so the
   // read-merge-write must not interleave within this process.
   return withSessionMetadataLock(sessionId, async () => {
+    const sessionMetadata = await readRawSessionMetadata(sessionId);
+    if (hasImportedChatgptConversationClaim(sessionMetadata)) {
+      throw new Error(
+        `Session "${sessionId}" is an imported ChatGPT conversation; model-run updates are refused. Use the strict conversation import command with --force to replace it.`,
+      );
+    }
     await ensureDir(modelsDir(sessionId));
     const existing = (await readModelRunFile(sessionId, model)) ?? {
       model,
@@ -1172,6 +1197,11 @@ export async function updateSessionMetadata(
         (await readModernSessionMetadata(sessionId, { reconcile: false, persist: false })) ??
         (await readLegacySessionMetadata(sessionId, { reconcile: false, persist: false })) ??
         ({ id: sessionId } as SessionMetadata);
+      if (hasImportedChatgptConversationClaim(existing)) {
+        throw new Error(
+          `Session "${sessionId}" is an imported ChatGPT conversation; generic metadata updates are refused. Use the strict conversation import command with --force to replace it.`,
+        );
+      }
       const patch = typeof updates === "function" ? await updates(existing) : updates;
       const next = normalizeTerminalModelRuns({ ...existing, ...patch });
       // Hold the cross-process sentinel across the re-stat + rename so a
@@ -1367,6 +1397,19 @@ async function persistSessionMetadata(
 }
 
 export function createSessionLogWriter(sessionId: string, model?: string): SessionLogWriter {
+  let metadata: SessionMetadata | null = null;
+  try {
+    metadata = JSON.parse(readFileSync(metaPath(sessionId), "utf8")) as SessionMetadata;
+  } catch {
+    // Preserve the historical missing/unreadable-session behavior: the
+    // stream itself reports filesystem failures. Imported records are the
+    // sole fail-closed exception because they must remain metadata-only.
+  }
+  if (hasImportedChatgptConversationClaim(metadata)) {
+    throw new Error(
+      `Session "${sessionId}" is an imported ChatGPT conversation; log writes are refused. Use the strict conversation import command with --force to replace it.`,
+    );
+  }
   const targetPath = model ? modelLogPath(sessionId, model) : logPath(sessionId);
   // createWriteStream opens the underlying fd lazily on first write; if the
   // parent dir does not exist yet (non-init callers: resume/recovery paths)

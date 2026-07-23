@@ -47,6 +47,8 @@ export interface BrowserConfigDefaults {
   reuseChromeWaitMs?: number;
   /** Max time to wait for a shared manual-login profile lock (serializes parallel runs). */
   profileLockTimeoutMs?: number;
+  /** Independent time budget for FIFO browser-slot admission; 0 waits forever for local runs. */
+  queueTimeoutMs?: number;
   /** Soft limit for concurrent ChatGPT tabs sharing one manual-login profile. */
   maxConcurrentTabs?: number;
   /** Delay before starting periodic auto-reattach attempts after a timeout. */
@@ -461,6 +463,7 @@ export function sanitizeProjectConfig(config: UserConfig): UserConfig {
       "assistantRecheckTimeoutMs",
       "reuseChromeWaitMs",
       "profileLockTimeoutMs",
+      "queueTimeoutMs",
       "maxConcurrentTabs",
       "autoReattachDelayMs",
       "autoReattachIntervalMs",

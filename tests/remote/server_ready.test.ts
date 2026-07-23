@@ -128,6 +128,7 @@ describe("GET /ready", () => {
         const effective = body.effectiveConfig as Record<string, number>;
         expect(effective.timeoutMs).toBeGreaterThan(0);
         expect(effective.profileLockTimeoutMs).toBeGreaterThan(0);
+        expect(effective.queueTimeoutMs).toBeGreaterThan(0);
         expect(effective.maxConcurrentTabs).toBeGreaterThanOrEqual(1);
         expect(body.activeLeaseCount).toBe(0);
         expect(body.leaseRegistryReadable).toBe(true);

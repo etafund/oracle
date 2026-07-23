@@ -43,6 +43,23 @@ Oracle creates a child session, reopens the parent's exact ChatGPT conversation,
 
 Browser resume is fail-closed: Oracle refuses to submit if the saved URL is not a recoverable HTTPS ChatGPT conversation, the page has no stable prior turns, or the browser lands on a different conversation.
 
+## Imported manual ChatGPT conversations
+
+If a conversation started outside Oracle, register its URL as an untrusted reference:
+
+```bash
+oracle import-chatgpt-url "https://chatgpt.com/c/<conversation-id>" \
+  --slug "manual design review"
+oracle --engine browser --remote-browser off \
+  --browser-model-strategy current \
+  --followup manual-design-review \
+  -p "Continue with this additional constraint."
+```
+
+Import is metadata-only. Oracle records the validated conversation URL and an explicit `untrusted`, account-unbound, lane-unbound provenance marker. It records no prompt, answer, transcript, model run, harvest, model/Pro-mode evidence, router account, or reviewed lane. The stored reference uses the distinct terminal status `imported` (never `completed`), has no `completedAt` timestamp, and keeps `answerCaptured=false`.
+
+An imported reference therefore requires the explicit local compatibility route shown above. Oracle forces `modelStrategy=current` and leaves the desired model and thinking mode unset. It refuses `--lane chatgpt-pro`, explicit model/thinking selection, remote hosts/CDP targets, `--harvest`, `--live`, and generic recovery. `--force` can atomically replace another pure imported reference with the same slug, but never deletes or overwrites an Oracle-produced session. Replacement requires descriptor-rooted filesystem operations and is unavailable on Windows; choose a new slug there. Oracle also fails closed on any other platform or filesystem where it cannot descriptor-root the pinned session directory.
+
 For a Fable parent, select the exact same CAAM profile and base. Oracle refuses before spawning if either identity differs:
 
 ```bash

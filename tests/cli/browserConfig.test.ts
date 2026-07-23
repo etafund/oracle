@@ -150,6 +150,7 @@ describe("buildBrowserConfig", () => {
       browserInputTimeout: "5s",
       browserAttachmentTimeout: "2m",
       browserProfileLockTimeout: "2m",
+      browserQueueTimeout: "17m",
       browserMaxConcurrentTabs: "5",
       browserCookieWait: "4s",
       browserNoCookieSync: true,
@@ -168,6 +169,7 @@ describe("buildBrowserConfig", () => {
       inputTimeoutMs: 5_000,
       attachmentTimeoutMs: 120_000,
       profileLockTimeoutMs: 120_000,
+      queueTimeoutMs: 1_020_000,
       maxConcurrentTabs: 5,
       cookieSyncWaitMs: 4_000,
       cookieSync: false,
@@ -204,6 +206,18 @@ describe("buildBrowserConfig", () => {
         browserMaxConcurrentTabs: "5abc",
       }),
     ).rejects.toThrow(/max concurrent tabs/i);
+  });
+
+  test("accepts zero as unlimited local queue waiting and rejects invalid queue durations", async () => {
+    await expect(
+      buildBrowserConfig({ model: "gpt-5.1", browserQueueTimeout: "0" }),
+    ).resolves.toMatchObject({ queueTimeoutMs: 0 });
+
+    for (const malformed of ["-1", "30sjunk", "forever", "1.5m"]) {
+      await expect(
+        buildBrowserConfig({ model: "gpt-5.1", browserQueueTimeout: malformed }),
+      ).rejects.toThrow(/invalid browser queue timeout/i);
+    }
   });
 
   test("falls back to canonical label when override matches base model", async () => {

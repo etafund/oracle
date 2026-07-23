@@ -97,6 +97,17 @@ describe("shared thinking-gate predicate", () => {
     );
   });
 
+  test("ignores completed reasoning-duration summaries", () => {
+    expect(runGate({ '[role="status"]': [new FakeNode({ text: "Thought for 12 seconds" })] })).toBe(
+      false,
+    );
+    expect(
+      runGate({
+        '[aria-live="polite"]': [new FakeNode({ text: "Pro thinking Thought for a minute" })],
+      }),
+    ).toBe(false);
+  });
+
   test("treats structural streaming markers as active without any label", () => {
     expect(runGate({ ".result-streaming": [new FakeNode({})] })).toBe(true);
     expect(runGate({ '[data-is-streaming="true"]': [new FakeNode({})] })).toBe(true);

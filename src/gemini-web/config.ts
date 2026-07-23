@@ -54,6 +54,7 @@ export const DEFAULT_GEMINI_BROWSER_CONFIG: ResolvedBrowserConfig = {
   assistantRecheckTimeoutMs: 120_000,
   reuseChromeWaitMs: 10_000,
   profileLockTimeoutMs: 300_000,
+  queueTimeoutMs: 1_200_000,
   maxConcurrentTabs: DEFAULT_MAX_CONCURRENT_GEMINI_TABS,
   autoReattachDelayMs: 0,
   autoReattachIntervalMs: 0,
@@ -125,6 +126,9 @@ export function resolveGeminiBrowserConfig(
     reuseChromeWaitMs: config?.reuseChromeWaitMs ?? DEFAULT_GEMINI_BROWSER_CONFIG.reuseChromeWaitMs,
     profileLockTimeoutMs:
       config?.profileLockTimeoutMs ?? DEFAULT_GEMINI_BROWSER_CONFIG.profileLockTimeoutMs,
+    queueTimeoutMs:
+      normalizeQueueTimeoutMs(config?.queueTimeoutMs) ??
+      DEFAULT_GEMINI_BROWSER_CONFIG.queueTimeoutMs,
     maxConcurrentTabs: normalizeMaxConcurrentTabs(
       config?.maxConcurrentTabs ?? DEFAULT_GEMINI_BROWSER_CONFIG.maxConcurrentTabs,
     ),
@@ -170,6 +174,10 @@ export function resolveGeminiBrowserConfig(
     manualLoginCookieSync:
       config?.manualLoginCookieSync ?? DEFAULT_GEMINI_BROWSER_CONFIG.manualLoginCookieSync,
   };
+}
+
+function normalizeQueueTimeoutMs(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
 export function normalizeGeminiUrl(raw: string | null | undefined, fallback: string): string {

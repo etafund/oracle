@@ -1,17 +1,14 @@
 import { describe, expect, test } from "vitest";
 import http from "node:http";
 import { spawnSync } from "node:child_process";
-import {
-  assertFleetSafeServeBrowserConfig,
-  createRemoteServer,
-} from "../../src/remote/server.js";
+import { assertFleetSafeServeBrowserConfig, createRemoteServer } from "../../src/remote/server.js";
 
 // Fleet-safety config asserts: `<= 0` is a documented disable sentinel for
-// profileLockTimeoutMs (serialized-submit lock) and timeoutMs (tab-lease
-// wait). On a shared serve worker those sentinels mean composer cross-talk
-// and wedged-forever lanes respectively, so serve must refuse to start with
-// them, surface the effective values in the startup log, and expose them for
-// health/readiness probes.
+// profileLockTimeoutMs (serialized-submit lock), timeoutMs (response wait),
+// and queueTimeoutMs (FIFO capacity wait). On a shared serve worker those
+// sentinels mean composer cross-talk or wedged-forever lanes, so serve must
+// refuse to start with them, surface the effective values in the startup log,
+// and expose them for health/readiness probes.
 
 const CAN_LISTEN_LOCALHOST =
   spawnSync(
@@ -28,7 +25,12 @@ const CAN_LISTEN_LOCALHOST =
     { stdio: "ignore" },
   ).status === 0;
 
-const SAFE = { profileLockTimeoutMs: 300_000, timeoutMs: 1_200_000, maxConcurrentTabs: 3 };
+const SAFE = {
+  profileLockTimeoutMs: 300_000,
+  timeoutMs: 1_200_000,
+  queueTimeoutMs: 1_200_000,
+  maxConcurrentTabs: 3,
+};
 
 describe("assertFleetSafeServeBrowserConfig", () => {
   test("accepts safe effective values", () => {
@@ -54,6 +56,14 @@ describe("assertFleetSafeServeBrowserConfig", () => {
     }
   });
 
+  test("rejects queueTimeoutMs outside the remote 1s through 75m bounds", () => {
+    for (const value of [0, 999, -1, 4_500_001, undefined, null, Number.NaN]) {
+      expect(() => assertFleetSafeServeBrowserConfig({ ...SAFE, queueTimeoutMs: value })).toThrow(
+        new RegExp(`queueTimeoutMs=${String(value)}`),
+      );
+    }
+  });
+
   test("rejects out-of-range or non-integer maxConcurrentTabs", () => {
     for (const value of [0, 4, -1, 2.5, undefined, null]) {
       expect(() =>
@@ -67,6 +77,7 @@ describe("assertFleetSafeServeBrowserConfig", () => {
       assertFleetSafeServeBrowserConfig({
         profileLockTimeoutMs: 0,
         timeoutMs: -1,
+        queueTimeoutMs: 0,
         maxConcurrentTabs: 9,
       });
       expect.unreachable("should have thrown");
@@ -75,6 +86,7 @@ describe("assertFleetSafeServeBrowserConfig", () => {
       expect(message).toContain("Refusing to start");
       expect(message).toContain("profileLockTimeoutMs=0");
       expect(message).toContain("timeoutMs=-1");
+      expect(message).toContain("queueTimeoutMs=0");
       expect(message).toContain("maxConcurrentTabs=9");
     }
   });
@@ -98,6 +110,7 @@ describe("serve startup surfaces effective run config", () => {
         expect(configLine).toBeTruthy();
         expect(configLine).toMatch(/timeoutMs=\d+/);
         expect(configLine).toMatch(/profileLockTimeoutMs=\d+/);
+        expect(configLine).toMatch(/queueTimeoutMs=\d+/);
         expect(configLine).toMatch(/maxConcurrentTabs=[123]/);
 
         const health = await getJson(server.port, "/health", "secret");
@@ -107,6 +120,8 @@ describe("serve startup surfaces effective run config", () => {
         expect(effective?.timeoutMs).toBeGreaterThan(0);
         expect(typeof effective?.profileLockTimeoutMs).toBe("number");
         expect(effective?.profileLockTimeoutMs).toBeGreaterThan(0);
+        expect(typeof effective?.queueTimeoutMs).toBe("number");
+        expect(effective?.queueTimeoutMs).toBeGreaterThan(0);
         expect(effective?.maxConcurrentTabs).toBeGreaterThanOrEqual(1);
         expect(effective?.maxConcurrentTabs).toBeLessThanOrEqual(3);
       } finally {

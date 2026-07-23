@@ -20,7 +20,7 @@ import path from "node:path";
 import { V18_BUNDLE_VERSION, createEnvelope, type JsonEnvelope } from "../oracle/v18/index.js";
 import type { SessionMetadata, SessionStatus } from "../sessionManager.js";
 import { sessionStore } from "../sessionStore.js";
-import { coerceSessionStatus } from "./sessionStatus.js";
+import { resolveValidatedSessionStatus } from "./sessionJson.js";
 
 export const ORACLE_SESSION_LIST_SCHEMA_VERSION = "oracle_session_list.v1" as const;
 
@@ -84,7 +84,7 @@ export function buildSessionListEntry(metadata: SessionMetadata): SessionListEnt
     id: metadata.id,
     lane: metadata.lane ?? null,
     model: metadata.model ?? null,
-    status: coerceSessionStatus(metadata.status),
+    status: resolveValidatedSessionStatus(metadata),
     createdAt: metadata.createdAt,
     updatedAt: metadata.completedAt ?? metadata.startedAt ?? metadata.createdAt,
     artifactsPath: path.join(sessionStore.sessionsDir(), metadata.id),

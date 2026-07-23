@@ -431,7 +431,7 @@ function buildThinkingGatePredicateJs(fnName: string): string {
       // Completed reasoning summaries persist after the answer. Long prose can
       // also mention these words, so only compact present-tense status labels
       // count here; Answer-now and structural markers remain authoritative.
-      if (/^(?:(?:reasoning|pro thinking)\s*)?thought for (?:\d|a |an )/.test(label)) {
+      if (/^(?:(?:reasoning|pro thinking)\\s*)?thought for (?:\\d|a |an )/.test(label)) {
         return false;
       }
       if (label.length > 80) return false;

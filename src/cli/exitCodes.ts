@@ -20,7 +20,7 @@ export const ORACLE_EXIT_CODE_DICTIONARY = Object.freeze({
   "1": "user_error — invalid input, a failed validation, a guardrail refusal (e.g. ANTHROPIC_API_KEY present for --lane fable-local, an unsafe local-owner check), or an unrecoverable provider/run error. This is the default bucket: any thrown error without a more specific exit code lands here.",
   "2": "lane_route_blocked — the request violates the reviewed-lane policy (agent_lane_blocked) or a bare positional was refused as a likely mistyped command. The JSON error envelope's blocked_reason/next_command/fix_command name the exact fix; no backend was started.",
   "3": "auth_required — the provider needs a fresh sign-in before it can run (provider_login_required / remote_browser_auth_failed / remote_browser_token_missing). Re-authenticate, then retry.",
-  "4": "retryable_backoff — a transient capacity/lock condition (provider_usage_limit / remote_browser_unavailable / browser_lock_timeout). Retry after a backoff; on the API lane, retrying a request the provider already accepted can re-bill, so back off rather than retry immediately.",
+  "4": "retryable_backoff — a proven pre-submit transient capacity/lock condition (provider_usage_limit / remote_browser_unavailable / browser_lock_timeout). Retry after a backoff; a recovery/reattach lock timeout for an already-submitted browser run remains exit 1 and must not be replayed.",
   "5": "timeout — the run exceeded its deadline or the connection dropped before completion (client-timeout / connection-lost). Usually retry-safe, but on the API lane a timed-out request may have already completed provider-side, so a blind retry can duplicate the provider charge — retry idempotently or verify before re-running.",
   "6": "challenge_or_drift — the automation hit a human-verification challenge or a suspected UI drift (ui_drift_suspected / cloudflare-challenge). Complete the check or re-run; not silently retry-safe.",
   "7": "wait_timeout — `oracle wait <id>` reached its --timeout-seconds deadline before the session became terminal. The run is still in flight (not failed); poll again or wait longer. Safe to retry.",
@@ -143,6 +143,21 @@ function collectErrorTokens(error: unknown): string[] {
 }
 
 /**
+ * Read an explicit retry verdict without allowing a contradictory `true` to
+ * override any fail-closed `false`. Browser recovery errors deliberately reuse
+ * capacity error codes while marking the already-submitted run non-retryable.
+ */
+function explicitRetryableVerdict(error: unknown): boolean | undefined {
+  if (!isRecord(error)) return undefined;
+  const details = isRecord(error.details) ? error.details : undefined;
+  const verdicts = [error.retryable, details?.retryable].filter(
+    (value): value is boolean => typeof value === "boolean",
+  );
+  if (verdicts.includes(false)) return false;
+  return verdicts.includes(true) ? true : undefined;
+}
+
+/**
  * Classify a thrown error into one of the normalized {@link OracleErrorClass}
  * buckets, or `null` when no known recovery signal is present (caller keeps its
  * default). Purely additive: never downgrades an already-classified error.
@@ -151,8 +166,12 @@ export function classifyOracleErrorClass(error: unknown): OracleErrorClass | nul
   const tokens = collectErrorTokens(error);
   if (tokens.length === 0) return null;
   const tokenSet = new Set(tokens);
+  const explicitRetryable = explicitRetryableVerdict(error);
   for (const cls of Object.keys(TOKENS_BY_CLASS) as OracleErrorClass[]) {
     if (TOKENS_BY_CLASS[cls].some((token) => tokenSet.has(token))) {
+      if (explicitRetryable === false && isRetrySafeErrorClass(cls)) {
+        continue;
+      }
       return cls;
     }
   }

@@ -74,6 +74,7 @@ export interface BrowserFlagOptions {
   browserRecheckTimeout?: string;
   browserReuseWait?: string;
   browserProfileLockTimeout?: string;
+  browserQueueTimeout?: string;
   browserMaxConcurrentTabs?: string;
   browserAutoReattachDelay?: string;
   browserAutoReattachInterval?: string;
@@ -238,6 +239,10 @@ export async function buildBrowserConfig(
     profileLockTimeoutMs: options.browserProfileLockTimeout
       ? parseDuration(options.browserProfileLockTimeout, 0)
       : undefined,
+    queueTimeoutMs:
+      options.browserQueueTimeout !== undefined
+        ? parseBrowserQueueTimeout(options.browserQueueTimeout)
+        : undefined,
     maxConcurrentTabs: parseMaxConcurrentTabs(options.browserMaxConcurrentTabs),
     autoReattachDelayMs: options.browserAutoReattachDelay
       ? parseDuration(options.browserAutoReattachDelay, 0)
@@ -274,6 +279,16 @@ export async function buildBrowserConfig(
     researchMode: options.browserResearch === "deep" ? "deep" : "off",
     archiveConversations: options.browserArchive,
   };
+}
+
+function parseBrowserQueueTimeout(raw: string): number {
+  const value = parseDuration(raw, Number.NaN);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(
+      `Invalid browser queue timeout: ${raw}. Expected a non-negative duration (for example 30s, 20m, or 0 for unlimited local waiting).`,
+    );
+  }
+  return value;
 }
 
 function validateAttachRunningOptions(

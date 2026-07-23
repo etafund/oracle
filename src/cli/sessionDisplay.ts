@@ -34,6 +34,11 @@ import {
 } from "./sessionLineage.js";
 import { formatSessionExecutionLabel } from "./sessionLifecycle.js";
 import {
+  formatBrowserModelSelectionEvidence,
+  formatSessionBrowserModelWithRequestedKey,
+  resolveSessionBrowserModelDisplayName,
+} from "../browser/modelDisplay.js";
+import {
   claimRemoteBrowserRecoveryCompletion,
   isFailedRemoteBrowserOrigin,
   isRemoteBrowserRecoveryCompletionPersisted,
@@ -43,6 +48,11 @@ import {
   RemoteBrowserRecoveryUnavailableError,
 } from "../remote/sessionRecovery.js";
 import { deleteRemoteBrowserRecoverySecret } from "../remote/sessionRecoveryStore.js";
+import {
+  hasImportedChatgptConversationClaim,
+  parsePureImportedChatgptConversationSession,
+} from "../browser/importedConversation.js";
+import { isTerminalSessionStatus } from "./sessionStatus.js";
 
 const isTty = (): boolean => Boolean(process.stdout.isTTY);
 const dim = (text: string): string => (isTty() ? kleur.dim(text) : text);
@@ -277,6 +287,23 @@ export async function attachSession(
     if (refreshed) {
       metadata = refreshed;
     }
+  }
+  const hasImportedClaim = hasImportedChatgptConversationClaim(metadata);
+  const importedConversation = hasImportedClaim
+    ? parsePureImportedChatgptConversationSession(metadata, sessionId)
+    : null;
+  if (hasImportedClaim && !importedConversation) {
+    if (!options?.suppressMetadata) {
+      console.log(`Created: ${metadata.createdAt}`);
+      console.log("Status: error");
+    }
+    console.error(
+      chalk.red(
+        `Session ${sessionId} is invalid (invalid_imported_session): claimed import metadata requires Oracle's exact metadata-only ChatGPT import shape. No output or follow-up is trusted.`,
+      ),
+    );
+    process.exitCode = 1;
+    return;
   }
   const normalizedModelFilter = options?.model?.trim().toLowerCase();
   if (normalizedModelFilter) {
@@ -591,6 +618,11 @@ export async function attachSession(
     }
     console.log(`Created: ${metadata.createdAt}`);
     console.log(`Status: ${metadata.status}`);
+    if (metadata.status === "imported" && importedConversation) {
+      console.log(
+        `Import: untrusted; account=${importedConversation.accountBinding}; lane=${importedConversation.laneBinding}; answerCaptured=no`,
+      );
+    }
     if (metadata.lifecycle) {
       const attached = metadata.lifecycle.attached ? "attached" : "detached";
       console.log(`Execution: ${formatSessionExecutionLabel(metadata)} (${attached})`);
@@ -602,10 +634,18 @@ export async function attachSession(
         const usage = run.usage
           ? ` tok=${formatTokenCount(run.usage.outputTokens ?? 0)}/${formatTokenCount(run.usage.totalTokens ?? 0)}`
           : "";
-        console.log(`- ${chalk.cyan(run.model)} — ${run.status}${usage}`);
+        const modelLabel =
+          (metadata.mode ?? metadata.options?.mode) === "browser"
+            ? formatSessionBrowserModelWithRequestedKey(metadata, run.model)
+            : run.model;
+        console.log(`- ${chalk.cyan(modelLabel)} — ${run.status}${usage}`);
       }
     } else if (metadata.model) {
-      console.log(`Model: ${metadata.model}`);
+      const modelLabel =
+        (metadata.mode ?? metadata.options?.mode) === "browser"
+          ? formatSessionBrowserModelWithRequestedKey(metadata)
+          : metadata.model;
+      console.log(`Model: ${modelLabel}`);
     }
     const browserEvidence = formatBrowserEvidence(metadata);
     if (browserEvidence) {
@@ -648,6 +688,18 @@ export async function attachSession(
     if (userErrorSummary) {
       console.log(dim(`User error: ${userErrorSummary}`));
     }
+  }
+
+  if (initialStatus === "imported") {
+    console.log(
+      dim("No Oracle prompt, model run, harvest, or answer was captured for this import."),
+    );
+    console.log(
+      dim(
+        `Follow up: oracle --engine browser --remote-browser off --browser-model-strategy current --followup ${metadata.id} -p "..."`,
+      ),
+    );
+    return;
   }
 
   const shouldTrimIntro =
@@ -786,7 +838,7 @@ export async function attachSession(
     if (!latest) {
       break;
     }
-    if (latest.status === "completed" || latest.status === "partial" || latest.status === "error") {
+    if (isTerminalSessionStatus(latest.status)) {
       await printNew();
       flushRemainder();
       if (!options?.suppressMetadata) {
@@ -873,13 +925,7 @@ export function formatBrowserEvidence(metadata: SessionMetadata): string[] | nul
   const lines: string[] = [];
   const evidence = browser.modelSelection;
   if (evidence) {
-    const requested = evidence.requestedModel ?? "(none)";
-    const resolved = evidence.resolvedLabel ?? "(unavailable)";
-    const strategy = evidence.strategy ?? "(default)";
-    const verified = evidence.verified ? "yes" : "no";
-    lines.push(
-      `model requested=${requested}; resolved=${resolved}; status=${evidence.status}; strategy=${strategy}; verified=${verified}`,
-    );
+    lines.push(`model ${formatBrowserModelSelectionEvidence(evidence, metadata.model)}`);
   }
   for (const warning of browser.warnings ?? []) {
     lines.push(`warning ${warning.code}: ${warning.message}`);
@@ -1206,10 +1252,11 @@ export function formatCompletionSummary(
   if (!metadata.usage || metadata.elapsedMs == null) {
     return null;
   }
+  const mode = metadata.mode ?? metadata.options?.mode;
   const modeLabel =
-    metadata.mode === "browser"
-      ? `${metadata.model ?? "n/a"}[browser]`
-      : metadata.mode === "claude-code"
+    mode === "browser"
+      ? `${resolveSessionBrowserModelDisplayName(metadata)}[browser]`
+      : mode === "claude-code"
         ? `${metadata.model ?? "n/a"}[claude-code]`
         : (metadata.model ?? "n/a");
   const usage = metadata.usage;

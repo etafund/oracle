@@ -247,9 +247,67 @@ describe("runBrowserSessionExecution", () => {
       resolvedLabel: "Pro",
       verified: true,
     });
-    expect(log).toHaveBeenCalledWith(
-      expect.stringContaining("[browser] Model selection evidence: requested=GPT-5.5 Pro"),
+    const messages = log.mock.calls.flat().map(String);
+    const evidenceLine = messages.find((message) =>
+      message.startsWith("[browser] Model selection evidence:"),
     );
+    expect(evidenceLine).toContain("requestedKey=gpt-5.2-pro");
+    expect(evidenceLine).toContain("target=GPT-5.5 Pro");
+    expect(evidenceLine).toContain("trustedDisplay=(unverified)");
+    expect(evidenceLine).not.toContain("observedModel=Pro");
+    expect(messages.at(-1)).toContain("gpt-5.2-pro[browser]");
+  });
+
+  test("prints Sol plus Pro only when all protected-route proofs are present", async () => {
+    const log = vi.fn();
+    await runBrowserSessionExecution(
+      {
+        runOptions: { ...baseRunOptions, model: "gpt-5.6-sol" },
+        browserConfig: { desiredModel: "GPT-5.6 Sol", modelStrategy: "select" },
+        cwd: "/repo",
+        log,
+      },
+      {
+        assemblePrompt: async () => ({
+          markdown: "prompt",
+          composerText: "prompt",
+          estimatedInputTokens: 42,
+          attachments: [],
+          inlineFileCount: 0,
+          tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: "auto",
+          attachmentMode: "inline",
+          fallback: null,
+        }),
+        executeBrowser: vi.fn(async () => ({
+          answerText: "ok",
+          answerMarkdown: "ok",
+          tookMs: 1000,
+          answerTokens: 12,
+          answerChars: 20,
+          modelSelection: {
+            requestedModel: "GPT-5.6 Sol",
+            requestedModelLabel: "GPT-5.6 Sol",
+            resolvedLabel: "GPT-5.6 Sol + Pro",
+            resolvedModelLabel: "GPT-5.6 Sol",
+            modelVerified: true,
+            requestedMode: "Pro",
+            resolvedModeLabel: "Pro",
+            modeVerified: true,
+            verifiedBeforePromptSubmit: true,
+            strategy: "select" as const,
+            status: "already-selected" as const,
+            verified: true,
+            source: "chatgpt-model-picker" as const,
+            capturedAt: "2026-07-23T00:00:00.000Z",
+          },
+        })),
+      },
+    );
+
+    const messages = log.mock.calls.flat().map(String);
+    expect(messages).toContainEqual(expect.stringContaining("trustedDisplay=GPT-5.6 Sol + Pro"));
+    expect(messages.at(-1)).toContain("GPT-5.6 Sol + Pro[browser]");
   });
 
   test("prints model-picker diagnostics without verbose mode", async () => {

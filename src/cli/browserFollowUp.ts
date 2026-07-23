@@ -7,9 +7,9 @@ import { CHATGPT_URL } from "../browser/constants.js";
 import { resolveRecoveryUrl } from "../browser/recoverConversation.js";
 import { launchDetachedSessionFinalizer, launchDetachedSessionRunner } from "./detachedSession.js";
 import { buildSessionLifecycle } from "./sessionLifecycle.js";
+import { isTerminalSessionStatus } from "./sessionStatus.js";
 
 const DEFAULT_FOLLOW_UP_POLL_MS = 2_000;
-const TERMINAL_STATUSES = new Set(["completed", "partial", "error", "cancelled"]);
 
 export interface StartBrowserFollowUpOptions {
   prompt: string;
@@ -207,7 +207,7 @@ export async function waitForFollowUpSession(
       lastStatus = metadata.status;
       options.log?.(`[follow-up] Session ${sessionId} status: ${metadata.status}`);
     }
-    if (TERMINAL_STATUSES.has(metadata.status)) {
+    if (isTerminalSessionStatus(metadata.status)) {
       return metadata;
     }
     await wait(Math.min(pollMs, Math.max(0, deadline - now())));

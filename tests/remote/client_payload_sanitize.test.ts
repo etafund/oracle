@@ -40,6 +40,7 @@ describe("remote client payload sanitizer", () => {
         modelStrategy: "select",
         timeoutMs: 90_000,
         inputTimeoutMs: 12_000,
+        queueTimeoutMs: 75_000,
         researchMode: "deep",
         resumeConversationUrl: "https://chat.openai.com/c/client-safe-resume",
         inlineCookies: [
@@ -92,6 +93,7 @@ describe("remote client payload sanitizer", () => {
       modelStrategy: "select",
       timeoutMs: 90_000,
       inputTimeoutMs: 12_000,
+      queueTimeoutMs: 75_000,
       researchMode: "deep",
       resumeConversationUrl: "https://chat.openai.com/c/client-safe-resume",
     });
@@ -147,6 +149,7 @@ describe("remote client payload sanitizer", () => {
       chatgptUrl: "https://chatgpt.com/",
       timeoutMs: 2_400_000,
       inputTimeoutMs: 45_000,
+      queueTimeoutMs: 360_000,
       assistantRecheckDelayMs: 2_000,
       assistantRecheckTimeoutMs: 120_000,
       autoReattachDelayMs: 3_000,
@@ -209,6 +212,7 @@ describe("remote client payload sanitizer", () => {
     expect(wire.browserConfig).toEqual({
       timeoutMs: 2_400_000,
       inputTimeoutMs: 45_000,
+      queueTimeoutMs: 360_000,
       assistantRecheckDelayMs: 2_000,
       assistantRecheckTimeoutMs: 120_000,
       autoReattachDelayMs: 3_000,

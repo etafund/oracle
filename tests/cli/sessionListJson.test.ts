@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import { buildImportedChatgptConversationSessionMetadata } from "../../src/browser/importedConversation.ts";
 import type { SessionMetadata } from "../../src/sessionManager.ts";
 
 const sessionStoreMock = vi.hoisted(() => ({
@@ -86,6 +87,54 @@ describe("buildSessionListEntry", () => {
     expect(entry.lane).toBeNull();
     expect(entry.model).toBeNull();
     expect(JSON.parse(JSON.stringify(entry))).toEqual(entry);
+  });
+
+  test("advertises imported only for an exact pure imported-session record", () => {
+    const imported = buildImportedChatgptConversationSessionMetadata({
+      sessionId: "pure-import",
+      conversationUrl: "https://chatgpt.com/c/pure-import",
+      conversationId: "pure-import",
+      cwd: "/tmp/pure-import",
+      importedAt: "2026-07-01T00:00:00.000Z",
+    });
+    expect(buildSessionListEntry(imported).status).toBe("imported");
+  });
+
+  test.each([
+    ["missing marker", meta({ id: "raw-import", status: "imported" })],
+    [
+      "null marker",
+      meta({
+        id: "null-import",
+        status: "imported",
+        browser: { importedConversation: null } as unknown as SessionMetadata["browser"],
+      }),
+    ],
+    [
+      "marker on completed record",
+      meta({
+        id: "completed-import-claim",
+        status: "completed",
+        browser: {
+          importedConversation: { schema: "malformed-import-claim" },
+        } as unknown as SessionMetadata["browser"],
+      }),
+    ],
+    [
+      "mixed state",
+      {
+        ...buildImportedChatgptConversationSessionMetadata({
+          sessionId: "mixed-import",
+          conversationUrl: "https://chatgpt.com/c/mixed-import",
+          conversationId: "mixed-import",
+          cwd: "/tmp/mixed-import",
+          importedAt: "2026-07-01T00:00:00.000Z",
+        }),
+        lane: "chatgpt-pro",
+      } as SessionMetadata,
+    ],
+  ])("advertises invalid imported metadata as error: %s", (_label, metadata) => {
+    expect(buildSessionListEntry(metadata).status).toBe("error");
   });
 });
 
@@ -234,6 +283,7 @@ describe("oracle_session_list.v1 payload — schema-pin regression test", () => 
       "partial",
       "error",
       "cancelled",
+      "imported",
     ]);
     // every entry status is a member of the advertised closed set
     const entry = buildSessionListEntry(meta({ id: "a", status: "cancelled" }));

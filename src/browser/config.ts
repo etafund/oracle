@@ -11,8 +11,11 @@ import {
 } from "./tabLeaseRegistry.js";
 import type { BrowserAutomationConfig, ResolvedBrowserConfig } from "./types.js";
 import { normalizeChatgptUrl } from "./utils.js";
+import { parseDuration } from "../duration.js";
 import os from "node:os";
 import path from "node:path";
+
+export const DEFAULT_BROWSER_QUEUE_TIMEOUT_MS = 20 * 60 * 1000;
 
 export const DEFAULT_CHATGPT_COOKIE_NAMES = [
   "__Secure-next-auth.session-token",
@@ -43,6 +46,7 @@ export const DEFAULT_BROWSER_CONFIG: ResolvedBrowserConfig = {
   assistantRecheckTimeoutMs: 120_000,
   reuseChromeWaitMs: 10_000,
   profileLockTimeoutMs: 300_000,
+  queueTimeoutMs: DEFAULT_BROWSER_QUEUE_TIMEOUT_MS,
   maxConcurrentTabs: DEFAULT_MAX_CONCURRENT_CHATGPT_TABS,
   autoReattachDelayMs: 0,
   autoReattachIntervalMs: 0,
@@ -84,6 +88,7 @@ export function resolveBrowserConfig(
   const envMaxConcurrentTabs = parseMaxConcurrentTabs(
     process.env.ORACLE_BROWSER_MAX_CONCURRENT_TABS,
   );
+  const envQueueTimeoutMs = parseQueueTimeoutEnv(process.env.ORACLE_BROWSER_QUEUE_TIMEOUT);
   const rawUrl = config?.chatgptUrl ?? config?.url ?? DEFAULT_BROWSER_CONFIG.url;
   const normalizedUrl = normalizeChatgptUrl(
     rawUrl ?? DEFAULT_BROWSER_CONFIG.url,
@@ -123,6 +128,10 @@ export function resolveBrowserConfig(
     reuseChromeWaitMs: config?.reuseChromeWaitMs ?? DEFAULT_BROWSER_CONFIG.reuseChromeWaitMs,
     profileLockTimeoutMs:
       config?.profileLockTimeoutMs ?? DEFAULT_BROWSER_CONFIG.profileLockTimeoutMs,
+    queueTimeoutMs:
+      normalizeQueueTimeoutMs(config?.queueTimeoutMs) ??
+      envQueueTimeoutMs ??
+      DEFAULT_BROWSER_CONFIG.queueTimeoutMs,
     maxConcurrentTabs: normalizeMaxConcurrentTabs(
       config?.maxConcurrentTabs ?? envMaxConcurrentTabs ?? DEFAULT_BROWSER_CONFIG.maxConcurrentTabs,
     ),
@@ -166,6 +175,15 @@ export function resolveBrowserConfig(
       config?.closeOwnedRunTargetAfterRun,
     ),
   };
+}
+
+function normalizeQueueTimeoutMs(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function parseQueueTimeoutEnv(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  return normalizeQueueTimeoutMs(parseDuration(value, Number.NaN));
 }
 
 function normalizeCloseOwnedRunTargetPolicy(value: unknown): "auto" | "always" | null {
