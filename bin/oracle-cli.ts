@@ -1428,6 +1428,11 @@ function addCodexCommonOptions(command: Command): Command {
     .option("--browser-keep-browser", "Keep Chrome running after completion.", false)
     .option("--browser-hide-window", "Hide Chrome window after launch on macOS.", false)
     .option("--browser-allow-cookie-errors", "Continue when cookie sync fails.", false)
+    .option(
+      "--include-validation-artifact-url",
+      "Include the signed, expiring validation-artifact URL in output (sensitive).",
+      false,
+    )
     .option("--json", "Print structured JSON.", false)
     .option("-v, --verbose", "Enable verbose browser logging.", false);
 }

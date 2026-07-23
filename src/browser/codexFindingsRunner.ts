@@ -5,6 +5,7 @@ import type { LaunchedChrome } from "chrome-launcher";
 import {
   closeTab,
   connectWithNewTab,
+  ensureChromePageTargetAfterClose,
   launchChrome,
   positionChromeWindowOffscreen,
   registerTerminationHooks,
@@ -51,6 +52,7 @@ import {
 } from "./actions/codexFindings.js";
 import { normalizeCodexFindingsUrl, buildFindingDetailUrl } from "../codex/url.js";
 import { aggregateFindingPages, shouldStopPaging } from "../codex/findings.js";
+import { closeOwnedTargetWithDeadline, latchBrowserCleanupTaint } from "./index.js";
 import type {
   CodexFinding,
   CodexFindingsPageCounter,
@@ -120,6 +122,7 @@ export async function runBrowserCodexFindings(
   let removeDialogHandler: (() => void) | null = null;
   let connectionClosedUnexpectedly = false;
   let completed = false;
+  let ownedTargetCleanupProved = true;
 
   try {
     const acquired = manualLogin
@@ -285,8 +288,30 @@ export async function runBrowserCodexFindings(
     } catch {
       // ignore close failures
     }
-    if (completed && isolatedTargetId && chrome?.port) {
-      await closeTab(chrome.port, isolatedTargetId, logger, chromeHost).catch(() => undefined);
+    const preserveOwnedTargetOnError =
+      !completed && manualLogin && effectiveKeepBrowser && Boolean(isolatedTargetId);
+    if (isolatedTargetId && chrome?.port && !preserveOwnedTargetOnError) {
+      const safeToClose =
+        !effectiveKeepBrowser ||
+        Boolean(
+          await ensureChromePageTargetAfterClose(chrome.port, isolatedTargetId, logger, chromeHost),
+        );
+      if (!safeToClose) {
+        ownedTargetCleanupProved = false;
+        logger(
+          "[browser] Leaving the Codex findings tab open because Chrome has no replacement page target.",
+        );
+      } else {
+        ownedTargetCleanupProved = await closeOwnedTargetWithDeadline(
+          closeTab(chrome.port, isolatedTargetId, logger, chromeHost),
+          logger,
+          { targetId: isolatedTargetId },
+        );
+      }
+    } else if (preserveOwnedTargetOnError) {
+      logger(
+        "[browser] Keeping the Codex findings tab and its browser slot for manual inspection.",
+      );
     }
 
     let keepBrowserOpen = effectiveKeepBrowser;
@@ -300,8 +325,9 @@ export async function runBrowserCodexFindings(
           sessionId: "codex-findings",
         }).catch(() => null);
       }
+      // A registry read failure is not proof that the shared browser is idle.
       keepBrowserOpen = await hasOtherActiveBrowserTabLeases(userDataDir, tabLease.id).catch(
-        () => false,
+        () => true,
       );
       if (keepBrowserOpen) {
         logger("[browser] Other ChatGPT tab leases still active; leaving shared Chrome running.");
@@ -310,10 +336,19 @@ export async function runBrowserCodexFindings(
         logger("[browser] Reused shared Chrome; leaving browser process running.");
       }
     }
-    if (tabLease) {
+    if (tabLease && (preserveOwnedTargetOnError || !ownedTargetCleanupProved)) {
+      logger(
+        `[browser] Keeping ChatGPT browser slot ${tabLease.id.slice(0, 8)} active because its owned target remains open or cleanup was not proved.`,
+      );
+    } else if (tabLease) {
       const handle = tabLease;
       tabLease = null;
-      await handle.release().catch(() => undefined);
+      await handle.release().catch((error) => {
+        latchBrowserCleanupTaint(
+          `codex findings tab-lease release failed (${handle.id}): ${error instanceof Error ? error.message : String(error)}`,
+          logger,
+        );
+      });
     }
     if (!keepBrowserOpen && chrome) {
       if (!connectionClosedUnexpectedly) {

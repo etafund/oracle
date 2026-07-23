@@ -12,6 +12,7 @@ export interface CodexFindingsCliOptions extends Partial<BrowserFlagOptions> {
   severity?: string;
   finding?: string;
   limit?: number;
+  includeValidationArtifactUrl?: boolean;
   json?: boolean;
   verbose?: boolean;
 }
@@ -38,7 +39,11 @@ export async function runCodexFindingsCliCommand(options: CodexFindingsCliOption
       }
     },
   });
-  printCodexFindingsResult(result, Boolean(options.json));
+  printCodexFindingsResult(
+    result,
+    Boolean(options.json),
+    Boolean(options.includeValidationArtifactUrl),
+  );
 }
 
 export async function buildCodexFindingsBrowserConfig({
@@ -91,9 +96,31 @@ function removeUndefined<T extends object>(value: T): Partial<T> {
   ) as Partial<T>;
 }
 
-function printCodexFindingsResult(result: CodexFindingsResult, json: boolean): void {
+export function redactCodexValidationArtifact(
+  result: CodexFindingsResult,
+  includeValidationArtifactUrl: boolean,
+): CodexFindingsResult {
+  if (includeValidationArtifactUrl || !result.detail?.validationArtifact) {
+    return result;
+  }
+  return {
+    ...result,
+    detail: {
+      ...result.detail,
+      validationArtifact: null,
+    },
+  };
+}
+
+function printCodexFindingsResult(
+  result: CodexFindingsResult,
+  json: boolean,
+  includeValidationArtifactUrl: boolean,
+): void {
   if (json) {
-    console.log(JSON.stringify(result, null, 2));
+    console.log(
+      JSON.stringify(redactCodexValidationArtifact(result, includeValidationArtifactUrl), null, 2),
+    );
     return;
   }
   if (result.operation === "detail" && result.detail) {
@@ -113,7 +140,11 @@ function printCodexFindingsResult(result: CodexFindingsResult, json: boolean): v
     if (d.validationArtifact) {
       console.log("");
       console.log(chalk.bold("# Validation artifact (signed, expires soon)"));
-      console.log(`  ${d.validationArtifact}`);
+      console.log(
+        includeValidationArtifactUrl
+          ? `  ${d.validationArtifact}`
+          : "  [redacted; pass --include-validation-artifact-url to reveal]",
+      );
     }
     return;
   }
