@@ -14,9 +14,10 @@ describe("gemini-web uploads", () => {
     vi.restoreAllMocks();
   });
 
-  it("sends mime metadata for image and non-image uploads", async () => {
+  it("sends mime metadata for image, video, and non-image uploads", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "oracle-gemini-upload-"));
     const imagePath = path.join(tempDir, "input.png");
+    const videoPath = path.join(tempDir, "clip.mp4");
     const textPath = path.join(tempDir, "notes.txt");
     await writeFile(
       imagePath,
@@ -25,6 +26,7 @@ describe("gemini-web uploads", () => {
         "base64",
       ),
     );
+    await writeFile(videoPath, Buffer.from("synthetic video fixture", "utf8"));
     await writeFile(textPath, "hello from oracle", "utf8");
 
     const uploadBodies: Array<{ name: string; type: string }> = [];
@@ -66,7 +68,7 @@ describe("gemini-web uploads", () => {
     try {
       const result = await runGeminiWebOnce({
         prompt: "Describe the attachments.",
-        files: [imagePath, textPath],
+        files: [imagePath, videoPath, textPath],
         model: "gemini-3.5-flash",
         cookieMap: { sid: "cookie" },
       });
@@ -74,6 +76,7 @@ describe("gemini-web uploads", () => {
       expect(result.text).toBe("Upload ok");
       expect(uploadBodies).toEqual([
         { name: "input.png", type: "image/png" },
+        { name: "clip.mp4", type: "video/mp4" },
         { name: "notes.txt", type: "application/octet-stream" },
       ]);
       expect(requestPayload).toEqual([
@@ -83,7 +86,8 @@ describe("gemini-web uploads", () => {
           null,
           [
             [["upload-1", 1, null, "image/png"], "input.png"],
-            [["upload-2", 1, null, "application/octet-stream"], "notes.txt"],
+            [["upload-2", 1, null, "video/mp4"], "clip.mp4"],
+            [["upload-3", 1, null, "application/octet-stream"], "notes.txt"],
           ],
         ],
         null,
@@ -108,7 +112,7 @@ describe("gemini-web uploads", () => {
         1,
         expect.stringMatching(/^[0-9A-F-]{36}$/),
       ]);
-      expect(fetchMock).toHaveBeenCalledTimes(4);
+      expect(fetchMock).toHaveBeenCalledTimes(5);
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
