@@ -7,15 +7,46 @@ import {
 import { loadBrowserFixture } from "../_helpers/browserFixture.js";
 
 async function evaluateGpt56SolProIntelligenceMenu(options: {
-  includeSol: boolean;
-  proChecked: boolean;
-  selectedVersionLabel?: string | null;
-  alternateSelectedVersionLabel?: string | null;
-  includeSelectedVersionState?: boolean;
-  solMenuLabel?: string;
-  additionalFiberKey?: boolean;
-  deepSelectedVersionTail?: boolean;
+  proChecked?: boolean;
+  solChecked?: boolean;
+  includePro?: boolean;
+  includeSolTrigger?: boolean;
+  includeSolRow?: boolean;
+  solTriggerLabel?: string;
+  solRowLabel?: string;
+  useControlledParent?: boolean;
+  useControlledModel?: boolean;
+  duplicateParentId?: boolean;
+  duplicateModelId?: boolean;
+  duplicateVisiblePro?: boolean;
+  duplicateHiddenPro?: boolean;
+  duplicateVisibleSolTrigger?: boolean;
+  duplicateHiddenSolTrigger?: boolean;
+  duplicateVisibleSolRow?: boolean;
+  duplicateHiddenSolRow?: boolean;
+  effortMarkerConflict?: boolean;
+  modelMarkerConflict?: boolean;
+  effortMarkerMissing?: boolean;
+  modelMarkerMissing?: boolean;
+  effortOptionalMarkerConflict?: boolean;
+  modelOptionalMarkerConflict?: boolean;
+  extraEffortChecked?: boolean;
+  extraModelChecked?: boolean;
   foreignMenuOnly?: boolean;
+  causalExtraParentMenu?: boolean;
+  causalExtraModelMenu?: boolean;
+  uncheckProOnSolSwitch?: boolean;
+  disconnectParentWhenModelOpens?: boolean;
+  disconnectModelWhenOpened?: boolean;
+  delayedControlledParentOwner?: boolean;
+  delayedControlledModelOwner?: boolean;
+  modelOpensOnHover?: boolean;
+  remountParentMenuOnProSwitch?: boolean;
+  remountModelMenuOnSolSwitch?: boolean;
+  additionalComposerPill?: boolean;
+  additionalProPill?: boolean;
+  currentPillLabel?: string;
+  fiberNoise?: boolean;
 }): Promise<unknown> {
   class FakeEventTarget {
     dispatchEvent(_event: unknown): boolean {
@@ -33,15 +64,21 @@ async function evaluateGpt56SolProIntelligenceMenu(options: {
   class FakeElement extends FakeEventTarget {
     public parentElement: FakeElement | null = null;
     public readonly tagName: string;
+    public isConnected = true;
+    private visible: boolean;
+    private hiddenVisibilityChecks = 0;
 
     constructor(
       public textContent: string,
-      private readonly attributes: Readonly<Record<string, string>> = {},
-      private readonly children: readonly FakeElement[] = [],
+      private readonly attributes: Record<string, string> = {},
+      private readonly children: FakeElement[] = [],
       private readonly onDispatch?: () => void,
+      visible = true,
+      private readonly onHover?: () => void,
     ) {
       super();
       this.tagName = attributes.tagName ?? "DIV";
+      this.visible = visible;
       for (const child of children) child.parentElement = this;
     }
 
@@ -50,11 +87,31 @@ async function evaluateGpt56SolProIntelligenceMenu(options: {
     }
 
     setAttribute(name: string, value: string): void {
-      (this.attributes as Record<string, string>)[name] = value;
+      this.attributes[name] = value;
     }
 
-    querySelector(_selector: string): FakeElement | null {
-      return null;
+    removeAttribute(name: string): void {
+      delete this.attributes[name];
+    }
+
+    setVisible(visible: boolean): void {
+      this.visible = visible;
+    }
+
+    delayVisibility(checks: number): void {
+      this.hiddenVisibilityChecks = Math.max(0, checks);
+    }
+
+    replaceChild(target: FakeElement, replacement: FakeElement): void {
+      const index = this.children.indexOf(target);
+      if (index < 0) throw new Error("fixture child not found");
+      this.children[index] = replacement;
+      replacement.parentElement = this;
+      target.parentElement = null;
+    }
+
+    querySelector(selector: string): FakeElement | null {
+      return this.querySelectorAll(selector)[0] ?? null;
     }
 
     querySelectorAll(selector: string): FakeElement[] {
@@ -62,18 +119,70 @@ async function evaluateGpt56SolProIntelligenceMenu(options: {
         child,
         ...child.querySelectorAll(selector),
       ]);
-      if (selector === "button.__composer-pill") {
-        return descendants.filter((child) => child.attributes.class === "__composer-pill");
-      }
-      return descendants;
+      return descendants.filter((child) => child.matches(selector));
     }
 
     matches(selector: string): boolean {
-      return selector.includes("__composer-pill") && this.attributes.class === "__composer-pill";
+      const role = this.attributes.role;
+      const testId = this.attributes["data-testid"] ?? "";
+      if (selector === "[id]") return this.attributes.id !== undefined;
+      if (
+        selector.includes("button.__composer-pill") &&
+        this.tagName === "BUTTON" &&
+        this.attributes.class?.split(/\s+/).includes("__composer-pill")
+      ) {
+        return true;
+      }
+      if (selector.includes('[role="menuitemradio"]') && role === "menuitemradio") return true;
+      if (selector.includes('[role="menuitem"]') && role === "menuitem") return true;
+      if (selector.includes('[role="option"]') && role === "option") return true;
+      if (selector.includes('[role="radio"]') && role === "radio") return true;
+      if (selector.includes('[role="menu"]') && role === "menu") return true;
+      if (
+        selector.includes("data-radix-collection-root") &&
+        this.attributes["data-radix-collection-root"] !== undefined
+      ) {
+        return true;
+      }
+      if (
+        selector.includes("composer-intelligence-picker-content") &&
+        testId === "composer-intelligence-picker-content"
+      ) {
+        return true;
+      }
+      if (
+        selector.includes("model-switcher-dropdown-button") &&
+        testId === "model-switcher-dropdown-button"
+      ) {
+        return true;
+      }
+      if (
+        (selector.includes("prompt-textarea") ||
+          selector.includes("contenteditable") ||
+          selector.includes("ProseMirror")) &&
+        (this.attributes.id === "prompt-textarea" || this.attributes.contenteditable === "true")
+      ) {
+        return true;
+      }
+      if (selector.includes('[data-testid*="composer"]') && testId.includes("composer"))
+        return true;
+      if (selector.includes("[data-testid]") && testId) return true;
+      if (selector.includes("button") && this.tagName === "BUTTON") return true;
+      return false;
+    }
+
+    private isEffectivelyVisible(): boolean {
+      if (this.visible && this.hiddenVisibilityChecks > 0) {
+        this.hiddenVisibilityChecks -= 1;
+        return false;
+      }
+      return (
+        this.visible && this.isConnected && (this.parentElement?.isEffectivelyVisible() ?? true)
+      );
     }
 
     getBoundingClientRect(): { width: number; height: number } {
-      return { width: 120, height: 36 };
+      return this.isEffectivelyVisible() ? { width: 120, height: 36 } : { width: 0, height: 0 };
     }
 
     contains(node: unknown): boolean {
@@ -92,63 +201,242 @@ async function evaluateGpt56SolProIntelligenceMenu(options: {
     }
 
     override dispatchEvent(event: unknown): boolean {
-      this.onDispatch?.();
+      const type = (event as { type?: string })?.type;
+      if (type === "click") this.onDispatch?.();
+      if (type === "pointerover") this.onHover?.();
       return super.dispatchEvent(event);
     }
   }
 
-  let menuOpen = false;
+  const proChecked = options.proChecked ?? true;
+  const solChecked = options.solChecked ?? true;
+  const useControlledParent = options.useControlledParent ?? true;
+  const useControlledModel = options.useControlledModel ?? true;
+  const parentId = "oracle-intelligence-menu";
+  const modelId = "oracle-sol-submenu";
+  const setChecked = (row: FakeElement, checked: boolean): void => {
+    row.setAttribute("aria-checked", String(checked));
+    row.setAttribute("data-state", checked ? "checked" : "unchecked");
+  };
+
+  let parentMenu: FakeElement;
+  let modelMenu: FakeElement;
   let modelButton: FakeElement;
-  const proMode = new FakeElement(
+  let solTrigger: FakeElement;
+  let extraParentMenu: FakeElement | null = null;
+  let extraModelMenu: FakeElement | null = null;
+
+  let remountParentSelection = (): void => {};
+  let remountModelSelection = (): void => {};
+  let standardMode = new FakeElement("Standard", {
+    role: "menuitemradio",
+    "aria-checked": String(!proChecked || options.extraEffortChecked === true),
+    "data-state": !proChecked || options.extraEffortChecked ? "checked" : "unchecked",
+  });
+  let proMode = new FakeElement(
     "Pro",
     {
       role: "menuitemradio",
-      "aria-checked": String(options.proChecked),
+      "aria-checked": String(proChecked),
+      ...(options.effortMarkerMissing
+        ? {}
+        : {
+            "data-state": options.effortMarkerConflict
+              ? proChecked
+                ? "unchecked"
+                : "checked"
+              : proChecked
+                ? "checked"
+                : "unchecked",
+          }),
+      ...(options.effortOptionalMarkerConflict ? { "aria-selected": String(!proChecked) } : {}),
     },
     [],
     () => {
-      proMode.setAttribute("aria-checked", "true");
+      setChecked(standardMode, false);
+      setChecked(proMode, true);
       modelButton.textContent = "Pro";
+      parentMenu.setVisible(false);
+      modelMenu.setVisible(false);
       modelButton.setAttribute("aria-expanded", "false");
-      menuOpen = false;
+      solTrigger.setAttribute("aria-expanded", "false");
+      if (options.remountParentMenuOnProSwitch) remountParentSelection();
     },
   );
-  const items = [
-    ...(options.includeSol
-      ? [
-          new FakeElement(options.solMenuLabel ?? "GPT-5.6 Sol", {
-            role: "menuitem",
-            "aria-haspopup": "menu",
+
+  let oldModel = new FakeElement("GPT-5.5", {
+    role: "menuitemradio",
+    "aria-checked": String(!solChecked || options.extraModelChecked === true),
+    "data-state": !solChecked || options.extraModelChecked ? "checked" : "unchecked",
+  });
+  let solModel = new FakeElement(
+    options.solRowLabel ?? "GPT-5.6 Sol",
+    {
+      role: "menuitemradio",
+      "aria-checked": String(solChecked),
+      ...(options.modelMarkerMissing
+        ? {}
+        : {
+            "data-state": options.modelMarkerConflict
+              ? solChecked
+                ? "unchecked"
+                : "checked"
+              : solChecked
+                ? "checked"
+                : "unchecked",
           }),
-        ]
-      : []),
-    proMode,
+      ...(options.modelOptionalMarkerConflict ? { "data-selected": String(!solChecked) } : {}),
+    },
+    [],
+    () => {
+      setChecked(oldModel, false);
+      setChecked(solModel, true);
+      if (options.uncheckProOnSolSwitch) {
+        setChecked(proMode, false);
+        setChecked(standardMode, true);
+      }
+      parentMenu.setVisible(false);
+      modelMenu.setVisible(false);
+      modelButton.setAttribute("aria-expanded", "false");
+      solTrigger.setAttribute("aria-expanded", "false");
+      if (options.remountModelMenuOnSolSwitch) remountModelSelection();
+    },
+  );
+
+  const modelRows: FakeElement[] = [
+    oldModel,
+    ...(options.includeSolRow === false ? [] : [solModel]),
   ];
+  if (options.duplicateVisibleSolRow) {
+    modelRows.push(
+      new FakeElement("GPT-5.6 Sol", {
+        role: "menuitemradio",
+        "aria-checked": "false",
+        "data-state": "unchecked",
+      }),
+    );
+  }
+  if (options.duplicateHiddenSolRow) {
+    modelRows.push(
+      new FakeElement(
+        "GPT-5.6 Sol",
+        { role: "menuitemradio", "aria-checked": "false", "data-state": "unchecked" },
+        [],
+        undefined,
+        false,
+      ),
+    );
+  }
+  modelMenu = new FakeElement(
+    "Models GPT-5.5 GPT-5.6 Sol",
+    { role: "menu", ...(useControlledModel ? { id: modelId } : {}) },
+    modelRows,
+    undefined,
+    false,
+  );
+
+  const setModelMenuOpen = (opening: boolean): void => {
+    solTrigger.setAttribute("aria-expanded", String(opening));
+    modelMenu.setVisible(opening);
+    if (opening && options.delayedControlledModelOwner) modelMenu.delayVisibility(3);
+    extraModelMenu?.setVisible(opening);
+    if (opening && options.disconnectParentWhenModelOpens) parentMenu.isConnected = false;
+    if (opening && options.disconnectModelWhenOpened) modelMenu.isConnected = false;
+  };
+
+  solTrigger = new FakeElement(
+    options.solTriggerLabel ?? "GPT-5.6 Sol",
+    {
+      tagName: "BUTTON",
+      role: "menuitem",
+      "aria-haspopup": "menu",
+      "aria-expanded": "false",
+      ...(useControlledModel ? { "aria-controls": modelId } : {}),
+    },
+    [],
+    options.modelOpensOnHover
+      ? undefined
+      : () => setModelMenuOpen(solTrigger.getAttribute("aria-expanded") !== "true"),
+    true,
+    options.modelOpensOnHover ? () => setModelMenuOpen(true) : undefined,
+  );
+
+  const parentRows: FakeElement[] = [
+    standardMode,
+    ...(options.includePro === false ? [] : [proMode]),
+    ...(options.includeSolTrigger === false ? [] : [solTrigger]),
+  ];
+  if (options.duplicateVisiblePro) {
+    parentRows.push(
+      new FakeElement("Pro", {
+        role: "menuitemradio",
+        "aria-checked": "false",
+        "data-state": "unchecked",
+      }),
+    );
+  }
+  if (options.duplicateHiddenPro) {
+    parentRows.push(
+      new FakeElement(
+        "Pro",
+        { role: "menuitemradio", "aria-checked": "false", "data-state": "unchecked" },
+        [],
+        undefined,
+        false,
+      ),
+    );
+  }
+  if (options.duplicateVisibleSolTrigger) {
+    parentRows.push(
+      new FakeElement("GPT-5.6 Sol", {
+        tagName: "BUTTON",
+        role: "menuitem",
+        "aria-haspopup": "menu",
+      }),
+    );
+  }
+  if (options.duplicateHiddenSolTrigger) {
+    parentRows.push(
+      new FakeElement(
+        "GPT-5.6 Sol",
+        { tagName: "BUTTON", role: "menuitem", "aria-haspopup": "menu" },
+        [],
+        undefined,
+        false,
+      ),
+    );
+  }
   const intelligenceOwner = new FakeElement(
-    "Intelligence GPT-5.6 Sol Pro",
+    "Intelligence Standard Pro GPT-5.6 Sol",
     { role: "group", "data-testid": "composer-intelligence-picker-content" },
-    items,
+    parentRows,
   );
-  const primaryMenu = new FakeElement("Intelligence GPT-5.6 Sol Pro", { role: "menu" }, [
-    intelligenceOwner,
-  ]);
-  const foreignOwner = new FakeElement(
-    "Intelligence GPT-5.6 Sol Pro",
-    { role: "group", "data-testid": "composer-intelligence-picker-content" },
-    items,
+  parentMenu = new FakeElement(
+    "Intelligence Standard Pro GPT-5.6 Sol",
+    { role: "menu", ...(useControlledParent ? { id: parentId } : {}) },
+    [intelligenceOwner],
+    undefined,
+    false,
   );
+
   modelButton = new FakeElement(
-    options.proChecked ? "Pro" : "Standard",
+    options.currentPillLabel ?? (proChecked ? "Pro" : "Standard"),
     {
       tagName: "BUTTON",
       class: "__composer-pill",
       "aria-haspopup": "menu",
       "aria-expanded": "false",
+      ...(useControlledParent ? { "aria-controls": parentId } : {}),
     },
     [],
     () => {
-      modelButton.setAttribute("aria-expanded", "true");
-      menuOpen = !options.foreignMenuOnly;
+      const opening = modelButton.getAttribute("aria-expanded") !== "true";
+      modelButton.setAttribute("aria-expanded", String(opening));
+      parentMenu.setVisible(opening && !options.foreignMenuOnly);
+      if (opening && options.delayedControlledParentOwner) parentMenu.delayVisibility(3);
+      modelMenu.setVisible(false);
+      solTrigger.setAttribute("aria-expanded", "false");
+      extraParentMenu?.setVisible(opening);
     },
   );
   const prompt = new FakeElement("", {
@@ -159,106 +447,139 @@ async function evaluateGpt56SolProIntelligenceMenu(options: {
   const composer = new FakeElement("", { tagName: "FORM", "data-testid": "composer-root" }, [
     prompt,
     modelButton,
+    ...(options.additionalComposerPill || options.additionalProPill
+      ? [
+          new FakeElement(options.additionalProPill ? "Pro" : "Canvas", {
+            tagName: "BUTTON",
+            class: "__composer-pill",
+            "aria-haspopup": "menu",
+          }),
+        ]
+      : []),
   ]);
-  const selectedVersionLabel =
-    options.selectedVersionLabel === undefined ? "GPT-5.6 Sol" : options.selectedVersionLabel;
-  const alternateSelectedVersionLabel =
-    options.alternateSelectedVersionLabel === undefined
-      ? selectedVersionLabel
-      : options.alternateSelectedVersionLabel;
-  const pickerProps = (label: string | null): Record<string, unknown> => {
-    if (options.includeSelectedVersionState === false) return { children: [] };
-    const selectedState = {
-      children: [
-        null,
-        {
-          props: {
-            children: {
-              props: {
-                children: {
-                  props: {
-                    composerIntelligencePickerState: {
-                      selectedVersionEntry:
-                        label === null
-                          ? null
-                          : {
-                              displayTextForIntelligence: label,
-                              shortDisplayTextForIntelligence: label,
-                              id: "latest",
-                            },
-                    },
-                  },
-                },
-              },
-            },
+
+  const foreignOwner = new FakeElement(
+    "Intelligence Standard Pro GPT-5.6 Sol",
+    { role: "group", "data-testid": "composer-intelligence-picker-content" },
+    [
+      new FakeElement("Pro", {
+        role: "menuitemradio",
+        "aria-checked": "true",
+        "data-state": "checked",
+      }),
+      new FakeElement("GPT-5.6 Sol", {
+        tagName: "BUTTON",
+        role: "menuitem",
+        "aria-haspopup": "menu",
+      }),
+    ],
+  );
+  const foreignMenu = new FakeElement(
+    "Foreign Intelligence Pro GPT-5.6 Sol",
+    { role: "menu" },
+    [foreignOwner],
+    undefined,
+    options.foreignMenuOnly === true,
+  );
+  if (options.causalExtraParentMenu) {
+    extraParentMenu = new FakeElement("Unrelated menu", { role: "menu" }, [], undefined, false);
+  }
+  if (options.causalExtraModelMenu) {
+    extraModelMenu = new FakeElement("Unrelated submenu", { role: "menu" }, [], undefined, false);
+  }
+  const duplicateIdNodes = [
+    ...(options.duplicateParentId
+      ? [
+          new FakeElement(
+            "duplicate parent id",
+            { role: "menu", id: parentId },
+            [],
+            undefined,
+            false,
+          ),
+        ]
+      : []),
+    ...(options.duplicateModelId
+      ? [new FakeElement("duplicate model id", { role: "menu", id: modelId }, [], undefined, false)]
+      : []),
+  ];
+  if (options.fiberNoise) {
+    (modelButton as unknown as Record<string, unknown>)["__reactFiber$oracle"] = {
+      memoizedProps: {
+        children: Array.from({ length: 300 }, (_, index) => ({
+          composerIntelligencePickerState: {
+            selectedVersionEntry: { displayTextForIntelligence: `wrong-${index}` },
           },
-        },
-      ],
-    };
-    if (!options.deepSelectedVersionTail) return selectedState;
-    let deepTail: unknown = {
-      composerIntelligencePickerState: {
-        selectedVersionEntry: { displayTextForIntelligence: "GPT-5.6 Sol Mini" },
+        })),
       },
     };
-    for (let depth = 0; depth < 14; depth += 1) deepTail = { props: deepTail };
-    return { children: [selectedState, deepTail] };
-  };
-  const alternateOwnerFiber: Record<string, unknown> = {
-    memoizedProps: pickerProps(alternateSelectedVersionLabel),
-    pendingProps: pickerProps(alternateSelectedVersionLabel),
-    stateNode: composer,
-    return: null,
-  };
-  const ownerFiber: Record<string, unknown> = {
-    memoizedProps: pickerProps(selectedVersionLabel),
-    pendingProps: pickerProps(selectedVersionLabel),
-    stateNode: composer,
-    return: null,
-    alternate: alternateOwnerFiber,
-  };
-  alternateOwnerFiber.alternate = ownerFiber;
-  const alternateLeafFiber: Record<string, unknown> = {
-    return: alternateOwnerFiber,
-  };
-  const leafFiber: Record<string, unknown> = {
-    return: ownerFiber,
-  };
-  leafFiber.alternate = alternateLeafFiber;
-  alternateLeafFiber.alternate = leafFiber;
-  (modelButton as unknown as Record<string, unknown>)["__reactFiber$oracle"] = leafFiber;
-  if (options.additionalFiberKey) {
-    (modelButton as unknown as Record<string, unknown>)["__reactFiber$ambiguous"] = leafFiber;
   }
+
+  const body = new FakeElement("", { tagName: "BODY" }, [
+    composer,
+    parentMenu,
+    modelMenu,
+    foreignMenu,
+    ...(extraParentMenu ? [extraParentMenu] : []),
+    ...(extraModelMenu ? [extraModelMenu] : []),
+    ...duplicateIdNodes,
+  ]);
+  remountParentSelection = () => {
+    const oldParent = parentMenu;
+    standardMode = new FakeElement("Standard", {
+      role: "menuitemradio",
+      "aria-checked": "false",
+      "data-state": "unchecked",
+    });
+    proMode = new FakeElement("Pro", {
+      role: "menuitemradio",
+      "aria-checked": "true",
+      "data-state": "checked",
+    });
+    const replacementOwner = new FakeElement(
+      "Intelligence Standard Pro GPT-5.6 Sol",
+      { role: "group", "data-testid": "composer-intelligence-picker-content" },
+      [standardMode, proMode, solTrigger],
+    );
+    parentMenu = new FakeElement(
+      "Intelligence Standard Pro GPT-5.6 Sol",
+      { role: "menu", ...(useControlledParent ? { id: parentId } : {}) },
+      [replacementOwner],
+      undefined,
+      false,
+    );
+    body.replaceChild(oldParent, parentMenu);
+    oldParent.isConnected = false;
+  };
+  remountModelSelection = () => {
+    const oldMenu = modelMenu;
+    oldModel = new FakeElement("GPT-5.5", {
+      role: "menuitemradio",
+      "aria-checked": "false",
+      "data-state": "unchecked",
+    });
+    solModel = new FakeElement(options.solRowLabel ?? "GPT-5.6 Sol", {
+      role: "menuitemradio",
+      "aria-checked": "true",
+      "data-state": "checked",
+    });
+    modelMenu = new FakeElement(
+      "Models GPT-5.5 GPT-5.6 Sol",
+      { role: "menu", ...(useControlledModel ? { id: modelId } : {}) },
+      [oldModel, solModel],
+      undefined,
+      false,
+    );
+    body.replaceChild(oldMenu, modelMenu);
+    oldMenu.isConnected = false;
+  };
   const documentStub = {
-    body: new FakeElement(""),
+    body,
     activeElement: prompt,
-    getElementById: () => null,
-    querySelector: (selector: string) => {
-      if (selector.includes("composer-intelligence-picker-content")) {
-        return menuOpen ? intelligenceOwner : options.foreignMenuOnly ? foreignOwner : null;
-      }
-      if (
-        selector.includes("model-switcher-dropdown-button") ||
-        selector.includes("__composer-pill")
-      ) {
-        return modelButton;
-      }
-      return null;
-    },
-    querySelectorAll: (selector: string) => {
-      if (selector.includes("prompt-textarea") || selector.includes("contenteditable")) {
-        return [prompt];
-      }
-      if (selector === "button.__composer-pill") return [modelButton];
-      if (selector.includes("composer-intelligence-picker-content")) {
-        return [
-          ...(options.foreignMenuOnly ? [foreignOwner] : []),
-          ...(menuOpen ? [intelligenceOwner] : []),
-        ];
-      }
-      return menuOpen && selector.includes('role="menu"') ? [primaryMenu] : [];
-    },
+    getElementById: (id: string) =>
+      body.querySelectorAll("[id]").find((node) => node.getAttribute("id") === id) ?? null,
+    querySelector: (selector: string) => body.querySelector(selector),
+    querySelectorAll: (selector: string) => body.querySelectorAll(selector),
     dispatchEvent: () => true,
   };
   let now = 0;
@@ -377,10 +698,8 @@ describe("browser thinking-time selection expression", () => {
     expect(inferThinkingTargetModelKindForTest("project")).toBeNull();
   });
 
-  it("proves the active React-selected Sol version plus checked bare Pro", async () => {
-    await expect(
-      evaluateGpt56SolProIntelligenceMenu({ includeSol: true, proChecked: true }),
-    ).resolves.toMatchObject({
+  it("proves checked Pro and Sol through both live controlled menus", async () => {
+    await expect(evaluateGpt56SolProIntelligenceMenu({})).resolves.toMatchObject({
       status: "already-selected",
       label: "Pro",
       modelKind: "pro",
@@ -392,9 +711,60 @@ describe("browser thinking-time selection expression", () => {
     });
   });
 
-  it("selects and re-verifies bare Pro beside GPT-5.6 Sol", async () => {
+  it("uses unique newly-visible menu deltas when both triggers lack aria-controls", async () => {
     await expect(
-      evaluateGpt56SolProIntelligenceMenu({ includeSol: true, proChecked: false }),
+      evaluateGpt56SolProIntelligenceMenu({
+        useControlledParent: false,
+        useControlledModel: false,
+      }),
+    ).resolves.toMatchObject({
+      status: "already-selected",
+      modelVerified: true,
+      modeVerified: true,
+      verifiedBeforePromptSubmit: true,
+    });
+  });
+
+  it("opens a controlled Sol submenu that responds to pointer hover instead of click", async () => {
+    await expect(
+      evaluateGpt56SolProIntelligenceMenu({ modelOpensOnHover: true }),
+    ).resolves.toMatchObject({
+      status: "already-selected",
+      modelVerified: true,
+      modeVerified: true,
+      verifiedBeforePromptSubmit: true,
+    });
+  });
+
+  it.each([{ delayedControlledParentOwner: true }, { delayedControlledModelOwner: true }])(
+    "polls fresh controlled owner handles through delayed portal visibility: %o",
+    async (options) => {
+      await expect(evaluateGpt56SolProIntelligenceMenu(options)).resolves.toMatchObject({
+        status: "already-selected",
+        modelVerified: true,
+        modeVerified: true,
+        verifiedBeforePromptSubmit: true,
+      });
+    },
+  );
+
+  it("keeps arbitrary React fiber state out of the authorization result", async () => {
+    expect(buildThinkingTimeExpressionForTest("extended", "GPT-5.6 Sol")).not.toContain(
+      "__reactFiber",
+    );
+    await expect(evaluateGpt56SolProIntelligenceMenu({ fiberNoise: true })).resolves.toMatchObject({
+      status: "already-selected",
+      modelVerified: true,
+      modeVerified: true,
+    });
+  });
+
+  it("selects bare Pro, discards old handles, then fully re-proves both axes", async () => {
+    await expect(
+      evaluateGpt56SolProIntelligenceMenu({
+        proChecked: false,
+        remountParentMenuOnProSwitch: true,
+      }),
     ).resolves.toMatchObject({
       status: "switched",
       modelLabel: "GPT-5.6 Sol",
@@ -405,80 +775,84 @@ describe("browser thinking-time selection expression", () => {
     });
   });
 
-  it("does not treat an available Sol trigger as proof when another version is active", async () => {
-    await expect(
-      evaluateGpt56SolProIntelligenceMenu({
-        includeSol: true,
-        proChecked: true,
-        selectedVersionLabel: "GPT-5.5",
-      }),
-    ).resolves.toMatchObject({
-      status: "model-kind-not-found",
-      modelVerified: false,
-      modeVerified: false,
-      verifiedBeforePromptSubmit: false,
-    });
-  });
-
-  it("fails closed when current and alternate React fibers disagree on the selected version", async () => {
-    await expect(
-      evaluateGpt56SolProIntelligenceMenu({
-        includeSol: true,
-        proChecked: true,
-        selectedVersionLabel: "GPT-5.6 Sol",
-        alternateSelectedVersionLabel: "GPT-5.5",
-      }),
-    ).resolves.toMatchObject({
-      status: "model-kind-not-found",
-      modelVerified: false,
-      modeVerified: false,
-      verifiedBeforePromptSubmit: false,
-    });
-  });
-
-  it("fails closed when the active composer exposes no selected-version React state", async () => {
-    await expect(
-      evaluateGpt56SolProIntelligenceMenu({
-        includeSol: true,
-        proChecked: true,
-        includeSelectedVersionState: false,
-      }),
-    ).resolves.toMatchObject({
-      status: "model-kind-not-found",
-      modelVerified: false,
-      modeVerified: false,
-      verifiedBeforePromptSubmit: false,
-    });
-  });
-
-  it("fails closed on ambiguous or truncated selected-version React state", async () => {
-    for (const options of [{ additionalFiberKey: true }, { deepSelectedVersionTail: true }]) {
+  it.each(["Instant5.5", "Instant 5.5"])(
+    "repairs the live non-Pro picker label %s to checked Pro",
+    async (currentPillLabel) => {
       await expect(
         evaluateGpt56SolProIntelligenceMenu({
-          includeSol: true,
-          proChecked: true,
-          ...options,
+          proChecked: false,
+          currentPillLabel,
         }),
       ).resolves.toMatchObject({
-        status: "model-kind-not-found",
-        modelVerified: false,
-        modeVerified: false,
-        verifiedBeforePromptSubmit: false,
+        status: "switched",
+        modelLabel: "GPT-5.6 Sol",
+        modelVerified: true,
+        modeLabel: "Pro",
+        modeVerified: true,
+        verifiedBeforePromptSubmit: true,
       });
-    }
+    },
+  );
+
+  it("selects Sol in the owned submenu, discards old handles, then fully re-proves both axes", async () => {
+    await expect(
+      evaluateGpt56SolProIntelligenceMenu({
+        solChecked: false,
+        remountModelMenuOnSolSwitch: true,
+      }),
+    ).resolves.toMatchObject({
+      status: "switched",
+      modelLabel: "GPT-5.6 Sol",
+      modelVerified: true,
+      modeLabel: "Pro",
+      modeVerified: true,
+      verifiedBeforePromptSubmit: true,
+    });
   });
 
-  it.each(["GPT-5.6 Sol Mini", "GPT-5.6 Luna", "GPT-6.5 Sol"])(
-    "rejects selected-version lookalike %s",
-    async (selectedVersionLabel) => {
-      await expect(
-        evaluateGpt56SolProIntelligenceMenu({
-          includeSol: true,
-          proChecked: true,
-          selectedVersionLabel,
-        }),
-      ).resolves.toMatchObject({
-        status: "model-kind-not-found",
+  it("re-proves and repairs Pro when switching Sol invalidates the parent axis", async () => {
+    await expect(
+      evaluateGpt56SolProIntelligenceMenu({
+        solChecked: false,
+        uncheckProOnSolSwitch: true,
+      }),
+    ).resolves.toMatchObject({
+      status: "switched",
+      modelVerified: true,
+      modeVerified: true,
+      verifiedBeforePromptSubmit: true,
+    });
+  });
+
+  it.each([
+    { solTriggerLabel: "GPT-5.6 Sol Mini" },
+    { solTriggerLabel: "GPT-5.6 Luna" },
+    { solTriggerLabel: "GPT-6.5 Sol" },
+    { solRowLabel: "GPT-5.6 Sol Mini" },
+    { solRowLabel: "GPT-5.6 Luna" },
+    { solRowLabel: "GPT-6.5 Sol" },
+  ])("rejects exact-model lookalikes: %o", async (lookalike) => {
+    await expect(evaluateGpt56SolProIntelligenceMenu(lookalike)).resolves.toMatchObject({
+      modelVerified: false,
+      modeVerified: false,
+      verifiedBeforePromptSubmit: false,
+    });
+  });
+
+  it("requires an exact unique Sol submenu trigger in the owned parent", async () => {
+    await expect(
+      evaluateGpt56SolProIntelligenceMenu({ includeSolTrigger: false }),
+    ).resolves.toMatchObject({
+      modelVerified: false,
+      modeVerified: false,
+      verifiedBeforePromptSubmit: false,
+    });
+  });
+
+  it.each([{ includePro: false }, { includeSolRow: false }])(
+    "requires the exact target row on both axes: %o",
+    async (missingRow) => {
+      await expect(evaluateGpt56SolProIntelligenceMenu(missingRow)).resolves.toMatchObject({
         modelVerified: false,
         modeVerified: false,
         verifiedBeforePromptSubmit: false,
@@ -486,42 +860,110 @@ describe("browser thinking-time selection expression", () => {
     },
   );
 
-  it("rejects a Sol Mini-only menu even when React reports current Sol", async () => {
-    await expect(
-      evaluateGpt56SolProIntelligenceMenu({
-        includeSol: true,
-        proChecked: true,
-        selectedVersionLabel: "GPT-5.6 Sol",
-        solMenuLabel: "GPT-5.6 Sol Mini",
-      }),
-    ).resolves.toMatchObject({
-      status: "model-kind-not-found",
+  it.each([
+    { duplicateVisiblePro: true },
+    { duplicateHiddenPro: true },
+    { duplicateVisibleSolTrigger: true },
+    { duplicateHiddenSolTrigger: true },
+    { duplicateVisibleSolRow: true },
+    { duplicateHiddenSolRow: true },
+  ])("fails closed on visible or hidden exact-label duplicates: %o", async (duplicate) => {
+    await expect(evaluateGpt56SolProIntelligenceMenu(duplicate)).resolves.toMatchObject({
       modelVerified: false,
       modeVerified: false,
       verifiedBeforePromptSubmit: false,
     });
   });
 
-  it("fails closed when checked bare Pro lacks GPT-5.6 Sol in its owner menu", async () => {
-    await expect(
-      evaluateGpt56SolProIntelligenceMenu({ includeSol: false, proChecked: true }),
-    ).resolves.toMatchObject({
-      status: "model-kind-not-found",
+  it.each([
+    { effortMarkerConflict: true },
+    { modelMarkerConflict: true },
+    { effortMarkerMissing: true },
+    { modelMarkerMissing: true },
+    { effortOptionalMarkerConflict: true },
+    { modelOptionalMarkerConflict: true },
+  ])("requires complete, mutually agreeing public selection markers: %o", async (conflict) => {
+    await expect(evaluateGpt56SolProIntelligenceMenu(conflict)).resolves.toMatchObject({
       modelVerified: false,
       modeVerified: false,
       verifiedBeforePromptSubmit: false,
     });
   });
+
+  it.each([{ extraEffortChecked: true }, { extraModelChecked: true }])(
+    "requires exactly one checked row across the owned selection group: %o",
+    async (extraChecked) => {
+      await expect(evaluateGpt56SolProIntelligenceMenu(extraChecked)).resolves.toMatchObject({
+        modelVerified: false,
+        modeVerified: false,
+        verifiedBeforePromptSubmit: false,
+      });
+    },
+  );
+
+  it.each([{ duplicateParentId: true }, { duplicateModelId: true }])(
+    "vetoes duplicate aria-controls target ids: %o",
+    async (duplicateId) => {
+      await expect(evaluateGpt56SolProIntelligenceMenu(duplicateId)).resolves.toMatchObject({
+        modelVerified: false,
+        modeVerified: false,
+        verifiedBeforePromptSubmit: false,
+      });
+    },
+  );
 
   it("does not borrow a sole visible Intelligence menu from a foreign portal", async () => {
     await expect(
       evaluateGpt56SolProIntelligenceMenu({
-        includeSol: true,
-        proChecked: true,
+        useControlledParent: false,
         foreignMenuOnly: true,
       }),
     ).resolves.toMatchObject({
       status: "menu-not-found",
+      modelVerified: false,
+      modeVerified: false,
+      verifiedBeforePromptSubmit: false,
+    });
+  });
+
+  it.each([
+    { useControlledParent: false, causalExtraParentMenu: true },
+    { useControlledModel: false, causalExtraModelMenu: true },
+  ])("vetoes ambiguous causal menu deltas: %o", async (ambiguousDelta) => {
+    await expect(evaluateGpt56SolProIntelligenceMenu(ambiguousDelta)).resolves.toMatchObject({
+      modelVerified: false,
+      modeVerified: false,
+      verifiedBeforePromptSubmit: false,
+    });
+  });
+
+  it.each([{ disconnectParentWhenModelOpens: true }, { disconnectModelWhenOpened: true }])(
+    "vetoes stale owner handles after an async submenu open: %o",
+    async (staleOwner) => {
+      await expect(evaluateGpt56SolProIntelligenceMenu(staleOwner)).resolves.toMatchObject({
+        modelVerified: false,
+        modeVerified: false,
+        verifiedBeforePromptSubmit: false,
+      });
+    },
+  );
+
+  it("ignores a separate non-Pro composer menu pill", async () => {
+    await expect(
+      evaluateGpt56SolProIntelligenceMenu({ additionalComposerPill: true }),
+    ).resolves.toMatchObject({
+      status: "already-selected",
+      modelVerified: true,
+      modeVerified: true,
+      verifiedBeforePromptSubmit: true,
+    });
+  });
+
+  it("requires exactly one visible Pro Intelligence pill in the active composer", async () => {
+    await expect(
+      evaluateGpt56SolProIntelligenceMenu({ additionalProPill: true }),
+    ).resolves.toMatchObject({
+      status: "chip-not-found",
       modelVerified: false,
       modeVerified: false,
       verifiedBeforePromptSubmit: false,
@@ -559,7 +1001,7 @@ describe("browser thinking-time selection expression", () => {
     });
   });
 
-  it("rejects bare Pro evidence without same-menu Sol proof", async () => {
+  it("rejects bare Pro evidence without owned model-submenu Sol proof", async () => {
     const runtime = {
       evaluate: async () => ({
         result: {
@@ -578,7 +1020,7 @@ describe("browser thinking-time selection expression", () => {
 
     await expect(
       ensureThinkingTime(runtime as never, "extended", (() => {}) as never, "GPT-5.6 Sol"),
-    ).rejects.toThrow(/exact active-composer GPT-5.6 Sol state plus a checked bare Pro mode/);
+    ).rejects.toThrow(/owned Intelligence menu plus a checked exact GPT-5.6 Sol row/);
   });
 
   it("waits for the model button when current Pro effort rows render first", async () => {

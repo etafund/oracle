@@ -101,7 +101,7 @@ export async function ensureThinkingTime(
     await logDomFailure(Runtime, logger, "thinking-gpt-5-6-sol-pro-unverified");
     logPickerDiagnostic(result, logger);
     throw new Error(
-      "Thinking time: GPT-5.6 Sol + Pro selection unverified; refusing to submit without exact active-composer GPT-5.6 Sol state plus a checked bare Pro mode in its open Intelligence menu.",
+      "Thinking time: GPT-5.6 Sol + Pro selection unverified; refusing to submit without a checked bare Pro row in the active composer's owned Intelligence menu plus a checked exact GPT-5.6 Sol row in its owned model submenu.",
     );
   }
 
@@ -358,9 +358,12 @@ function buildThinkingTimeExpression(
     const dispatchHoverSequence = (target) => {
       if (!target || !(target instanceof EventTarget)) return false;
       const types = ['pointerover', 'pointerenter', 'mouseover', 'mouseenter', 'pointermove', 'mousemove'];
+      const rect = target.getBoundingClientRect?.();
+      const clientX = Number(rect?.left ?? rect?.x ?? 0) + Number(rect?.width ?? 0) / 2;
+      const clientY = Number(rect?.top ?? rect?.y ?? 0) + Number(rect?.height ?? 0) / 2;
       for (const type of types) {
         try {
-          const common = { bubbles: true, cancelable: true, view: window };
+          const common = { bubbles: true, cancelable: true, view: window, clientX, clientY };
           const event =
             type.startsWith('pointer') && 'PointerEvent' in window
               ? new PointerEvent(type, { ...common, pointerId: 1, pointerType: 'mouse' })
@@ -428,115 +431,29 @@ function buildThinkingTimeExpression(
     };
     const findActiveComposerIntelligencePill = (composer) => {
       if (!composer) return null;
+      // The picker pill displays the *current* effort. It therefore cannot be
+      // located by requiring "Pro" before the repair path has selected Pro.
+      // Keep the pre-open locator closed-world and fail on ambiguity; the
+      // owned Intelligence menu proof below remains the authority.
+      const intelligencePillLabels = new Set([
+        'instant',
+        'instant5 5',
+        'instant 5 5',
+        'standard',
+        'medium',
+        'high',
+        'extra high',
+        'pro',
+      ]);
       const candidates = Array.from(composer.querySelectorAll('button.__composer-pill'))
         .filter(isVisible)
-        .filter((node) => node.getAttribute?.('aria-haspopup') === 'menu');
+        .filter((node) => node.getAttribute?.('aria-haspopup') === 'menu')
+        .filter((node) =>
+          intelligencePillLabels.has(
+            normalize(node.textContent ?? node.getAttribute?.('aria-label') ?? ''),
+          ),
+        );
       return candidates.length === 1 ? candidates[0] : null;
-    };
-    const readActiveComposerSelectedVersion = (composer, pill) => {
-      if (!composer || !pill || !composer.contains?.(pill)) {
-        return { verified: false, label: null };
-      }
-      const fiberKeys = Object.getOwnPropertyNames(pill).filter((key) => /^__reactFiber\\$/.test(key));
-      if (fiberKeys.length !== 1) return { verified: false, label: null };
-      const MAX_FIBER_ANCESTORS = 64;
-      const MAX_PROPS_DEPTH = 12;
-      const MAX_PROPS_OBJECTS = 128;
-      const labelsFromProps = (root) => {
-        const labels = [];
-        let invalidState = false;
-        let truncated = false;
-        const queue = [{ value: root, depth: 0 }];
-        const seen = new Set();
-        let cursor = 0;
-        let visited = 0;
-        while (cursor < queue.length && visited < MAX_PROPS_OBJECTS) {
-          const item = queue[cursor++];
-          const value = item?.value;
-          if (!value || typeof value !== 'object' || seen.has(value)) continue;
-          seen.add(value);
-          visited += 1;
-          if (
-            !Array.isArray(value) &&
-            Object.prototype.hasOwnProperty.call(value, 'composerIntelligencePickerState')
-          ) {
-            const label = value.composerIntelligencePickerState
-              ?.selectedVersionEntry?.displayTextForIntelligence;
-            if (typeof label === 'string' && label.trim()) labels.push(label.trim());
-            else invalidState = true;
-          }
-          if (item.depth >= MAX_PROPS_DEPTH) {
-            const traversalChildren = Array.isArray(value)
-              ? value
-              : ['children', 'props']
-                  .filter((key) => Object.prototype.hasOwnProperty.call(value, key))
-                  .map((key) => value[key]);
-            if (traversalChildren.some((child) => child && typeof child === 'object')) {
-              truncated = true;
-            }
-            continue;
-          }
-          if (Array.isArray(value)) {
-            for (const child of value) queue.push({ value: child, depth: item.depth + 1 });
-            continue;
-          }
-          for (const key of ['children', 'props']) {
-            if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
-            queue.push({ value: value[key], depth: item.depth + 1 });
-          }
-        }
-        truncated ||= cursor < queue.length;
-        return { labels, invalidState, truncated };
-      };
-      const inspectFiberBranch = (start) => {
-        const labels = [];
-        let invalidState = false;
-        let truncated = false;
-        const seenFibers = new Set();
-        let fiber = start;
-        let reachedComposerBoundary = false;
-        for (
-          let depth = 0;
-          fiber && typeof fiber === 'object' && depth < MAX_FIBER_ANCESTORS;
-          depth += 1
-        ) {
-          if (seenFibers.has(fiber)) break;
-          seenFibers.add(fiber);
-          for (const props of [fiber.memoizedProps, fiber.pendingProps]) {
-            const inspected = labelsFromProps(props);
-            labels.push(...inspected.labels);
-            invalidState ||= inspected.invalidState;
-            truncated ||= inspected.truncated;
-          }
-          if (fiber.stateNode === composer) {
-            reachedComposerBoundary = true;
-            break;
-          }
-          fiber = fiber.return;
-        }
-        return { labels, invalidState, truncated, reachedComposerBoundary };
-      };
-      const current = pill[fiberKeys[0]];
-      const branches = [current];
-      if (current?.alternate && current.alternate !== current) branches.push(current.alternate);
-      const labels = [];
-      let ownershipVerified = true;
-      let invalidState = false;
-      for (const branch of branches) {
-        const inspected = inspectFiberBranch(branch);
-        if (!inspected.reachedComposerBoundary || inspected.labels.length === 0) {
-          ownershipVerified = false;
-        }
-        invalidState ||= inspected.invalidState || inspected.truncated;
-        labels.push(...inspected.labels);
-      }
-      const normalizedLabels = Array.from(new Set(labels.map(normalize).filter(Boolean)));
-      const verified =
-        ownershipVerified &&
-        !invalidState &&
-        normalizedLabels.length === 1 &&
-        normalizedLabels[0] === 'gpt 5 6 sol';
-      return { verified, label: verified ? labels[0] : null };
     };
     const redactDiagnosticText = (value, maxLength = 120) =>
       String(value ?? '')
@@ -855,186 +772,403 @@ function buildThinkingTimeExpression(
       return result;
     };
 
-    // Current ChatGPT Pro is a two-axis selection: the active model is
-    // "GPT-5.6 Sol" and the checked Intelligence option is the bare "Pro"
-    // row. The Sol submenu trigger proves only availability. The model proof
-    // must instead come from the exact active composer's Intelligence pill React
-    // state, while the mode proof comes from its currently open Intelligence
-    // owner. Subscription badges and detached effort menus are never proof.
+    // Current ChatGPT Pro is a two-axis selection. Authorization comes only
+    // from rendered, checked rows in menus causally owned by the exact active
+    // composer: bare Pro in the parent Intelligence menu and exact GPT-5.6 Sol
+    // in the Sol trigger's model submenu. React fiber data is intentionally not
+    // an authorization input: it is implementation-private and can be stale or
+    // truncated. A hostile renderer can still paint false state; this gate is a
+    // fail-closed UI-state proof, not an attestation of ChatGPT's server state.
     if (TARGET_IS_GPT56_SOL && TARGET_LEVEL === 'extended') {
-      const activeComposer = findActiveComposerRoot();
-      const modelBtn = findActiveComposerIntelligencePill(activeComposer);
-      if (!modelBtn) {
-        return failure('chip-not-found', {
-          modelKind: 'pro',
-          modelVerified: false,
-          modeVerified: false,
-          verifiedBeforePromptSubmit: false,
-        });
-      }
-
-      const intelligenceItems = (menu) => Array.from(
-        menu?.querySelectorAll?.(
-          '[role="menuitemradio"], [role="menuitem"], [role="option"], [role="radio"]',
+      const EXACT_PRO = 'pro';
+      const EXACT_SOL = 'gpt 5 6 sol';
+      const MAX_FULL_REPROOFS = 6;
+      const MAX_SWITCHES_PER_AXIS = 2;
+      const belongsToSelectionOwner = (node, owner) => {
+        let current = node;
+        while (current && current !== owner) {
+          current = current.parentElement;
+          if (
+            current &&
+            current !== owner &&
+            ['menu', 'listbox'].includes(current.getAttribute?.('role'))
+          ) {
+            return false;
+          }
+        }
+        return current === owner;
+      };
+      const selectionRows = (owner) => Array.from(
+        owner?.querySelectorAll?.(
+          '[role="menuitemradio"], [role="radio"], [role="option"]',
         ) ?? [],
-      );
+      ).filter((row) => belongsToSelectionOwner(row, owner));
+      const triggerRows = (owner) => Array.from(
+        owner?.querySelectorAll?.(
+          '[role="menuitemradio"], [role="menuitem"], [role="option"], [role="radio"], button',
+        ) ?? [],
+      ).filter((row) => belongsToSelectionOwner(row, owner));
       const itemLabel = (node) =>
         normalize(node?.textContent ?? '') || normalize(node?.getAttribute?.('aria-label') ?? '');
-      const isGpt56SolModelOption = (node) => {
-        const label = itemLabel(node);
-        return label === 'gpt 5 6 sol';
+      const isLive = (node) => node?.isConnected !== false && isVisible(node);
+      const readSelectionMarkers = (node) => {
+        if (!node || !['menuitemradio', 'radio', 'option'].includes(node.getAttribute?.('role'))) {
+          return { valid: false, selected: false };
+        }
+        const readings = [];
+        const pushBoolean = (raw, selectedValues, unselectedValues) => {
+          if (raw === null || raw === undefined) return true;
+          const value = String(raw).toLowerCase();
+          if (selectedValues.includes(value)) {
+            readings.push(true);
+            return true;
+          }
+          if (unselectedValues.includes(value)) {
+            readings.push(false);
+            return true;
+          }
+          return false;
+        };
+        const ariaChecked = node.getAttribute?.('aria-checked');
+        const dataState = node.getAttribute?.('data-state');
+        if (
+          ariaChecked === null ||
+          ariaChecked === undefined ||
+          dataState === null ||
+          dataState === undefined
+        ) {
+          return { valid: false, selected: false };
+        }
+        let valid = pushBoolean(ariaChecked, ['true'], ['false']);
+        valid &&= pushBoolean(dataState, ['checked'], ['unchecked']);
+        valid &&= pushBoolean(node.getAttribute?.('aria-selected'), ['true'], ['false']);
+        valid &&= pushBoolean(node.getAttribute?.('aria-current'), ['true'], ['false']);
+        valid &&= pushBoolean(node.getAttribute?.('data-selected'), ['true'], ['false']);
+        if (!valid || readings.length === 0 || new Set(readings).size !== 1) {
+          return { valid: false, selected: false };
+        }
+        return { valid: true, selected: readings[0] };
       };
-      const isBareProOption = (node) => itemLabel(node) === 'pro';
-      const visibleIntelligenceOwners = () =>
-        Array.from(document.querySelectorAll(INTELLIGENCE_MENU_SELECTOR)).filter(isVisible);
-      let unownedMenuBaseline = new Set();
-      let fallbackOwnerOpenedByActivePill = false;
-      const openActiveComposerIntelligencePill = async () => {
-        let composer = findActiveComposerRoot();
-        let pill = findActiveComposerIntelligencePill(composer);
-        if (!pill) return false;
-        const hasExplicitOwner = Boolean(pill.getAttribute?.('aria-controls'));
-        if (!hasExplicitOwner && pill.getAttribute?.('aria-expanded') === 'true') {
-          // Without aria-controls, a pre-open menu cannot be causally tied to
-          // this composer. Close and reopen the exact active pill so only a
-          // newly visible owner can supply mode evidence.
-          dispatchClickSequence(pill);
-          await sleep(STEP_WAIT_MS);
-          composer = findActiveComposerRoot();
-          pill = findActiveComposerIntelligencePill(composer);
-          if (!pill || pill.getAttribute?.('aria-expanded') === 'true') return false;
+      const readClosedWorldSelection = (owner, exactLabel) => {
+        if (!isLive(owner)) return { valid: false, target: null, targetSelected: false };
+        const allRows = selectionRows(owner);
+        // Exact-label uniqueness is over visible and hidden rows. A hidden exact
+        // duplicate is ambiguity, not something to silently ignore.
+        const exactRows = allRows.filter((row) => itemLabel(row) === exactLabel);
+        if (exactRows.length !== 1 || !isLive(exactRows[0])) {
+          return { valid: false, target: null, targetSelected: false };
         }
-        if (!pill.getAttribute?.('aria-controls')) {
-          unownedMenuBaseline = new Set(visibleIntelligenceOwners());
+        const visibleRows = allRows.filter(isLive);
+        const states = visibleRows.map((row) => ({ row, state: readSelectionMarkers(row) }));
+        if (states.length === 0 || states.some(({ state }) => !state.valid)) {
+          return { valid: false, target: null, targetSelected: false };
         }
-        if (pill.getAttribute?.('aria-expanded') !== 'true') {
-          fallbackOwnerOpenedByActivePill = !pill.getAttribute?.('aria-controls');
-          dispatchClickSequence(pill);
-          await sleep(INITIAL_WAIT_MS);
+        const checked = states.filter(({ state }) => state.selected);
+        if (checked.length !== 1) {
+          return { valid: false, target: null, targetSelected: false };
         }
-        return true;
+        const target = exactRows[0];
+        const targetState = states.find(({ row }) => row === target)?.state;
+        if (!targetState?.selected && target.getAttribute?.('aria-disabled') === 'true') {
+          return { valid: false, target: null, targetSelected: false };
+        }
+        return { valid: true, target, targetSelected: targetState?.selected === true };
       };
-      const findCurrentIntelligenceOwner = (pill) => {
-        if (!pill || pill.getAttribute?.('aria-expanded') !== 'true') return null;
-        const candidates = visibleIntelligenceOwners();
-        const controlledId = pill.getAttribute?.('aria-controls');
-        if (controlledId) {
-          const controlled = document.getElementById?.(controlledId) ?? null;
-          const owned = candidates.filter(
-            (menu) => menu === controlled || Boolean(controlled?.contains?.(menu)),
-          );
-          return owned.length === 1 ? owned[0] : null;
+      const readExactSolTrigger = (owner) => {
+        if (!isLive(owner)) return { valid: false, trigger: null };
+        const exactRows = triggerRows(owner).filter((row) => itemLabel(row) === EXACT_SOL);
+        if (exactRows.length !== 1) return { valid: false, trigger: null };
+        const trigger = exactRows[0];
+        if (!isLive(trigger) || trigger.getAttribute?.('aria-haspopup') !== 'menu') {
+          return { valid: false, trigger: null };
         }
-        if (!fallbackOwnerOpenedByActivePill) return null;
-        const newlyVisible = candidates.filter((menu) => !unownedMenuBaseline.has(menu));
-        return newlyVisible.length === 1 ? newlyVisible[0] : null;
+        return { valid: true, trigger };
       };
-      const readGpt56SolProSnapshot = () => {
+      const visibleMenuRoots = () => Array.from(
+        new Set(Array.from(document.querySelectorAll(MENU_CONTAINER_SELECTOR)).filter(isLive)),
+      );
+      const intelligenceSelectionScope = (root) => {
+        if (!isLive(root)) return null;
+        const markers = [];
+        if (root.getAttribute?.('data-testid') === 'composer-intelligence-picker-content') {
+          markers.push(root);
+        }
+        for (const marker of root.querySelectorAll?.(INTELLIGENCE_MENU_SELECTOR) ?? []) {
+          if (!markers.includes(marker)) markers.push(marker);
+        }
+        return markers.length === 1 && isLive(markers[0]) ? markers[0] : null;
+      };
+      const isIntelligenceOwner = (root) => Boolean(intelligenceSelectionScope(root));
+      const uniqueIdNode = (id) => {
+        if (!id) return null;
+        const matches = Array.from(document.querySelectorAll('[id]')).filter(
+          (node) => node.getAttribute?.('id') === id,
+        );
+        return matches.length === 1 ? matches[0] : null;
+      };
+      const controlledMenu = (trigger, kind) => {
+        const id = trigger?.getAttribute?.('aria-controls');
+        const root = uniqueIdNode(id);
+        if (!root || !isLive(root)) return null;
+        if (kind === 'parent') return isIntelligenceOwner(root) ? root : null;
+        const role = root.getAttribute?.('role');
+        if (
+          role === 'menu' ||
+          role === 'listbox' ||
+          root.getAttribute?.('data-radix-collection-root') !== null
+        ) {
+          return root;
+        }
+        const descendants = Array.from(
+          root.querySelectorAll?.(
+            '[role="menu"], [role="listbox"], [data-radix-collection-root]',
+          ) ?? [],
+        ).filter(isLive);
+        const topLevel = descendants.filter((candidate) =>
+          !descendants.some(
+            (other) => other !== candidate && other.contains?.(candidate),
+          )
+        );
+        return topLevel.length === 1 ? topLevel[0] : null;
+      };
+      const parentTrigger = () => {
         const composer = findActiveComposerRoot();
         const pill = findActiveComposerIntelligencePill(composer);
-        const selectedVersion = readActiveComposerSelectedVersion(composer, pill);
-        const menu = findCurrentIntelligenceOwner(pill);
-        if (!menu) return null;
-        const items = intelligenceItems(menu);
-        const modelOption = items.find(isGpt56SolModelOption) ?? null;
-        const modeOption = items.find(isBareProOption) ?? null;
+        return composer && pill && composer.contains?.(pill) && isLive(pill) ? pill : null;
+      };
+      const bindingOwner = (binding, getTrigger) => {
+        const trigger = getTrigger();
+        if (!trigger || trigger.getAttribute?.('aria-expanded') !== 'true') return null;
+        if (binding.type === 'controlled') {
+          if (!trigger.getAttribute?.('aria-controls')) return null;
+          return controlledMenu(trigger, binding.kind);
+        }
+        if (trigger.getAttribute?.('aria-controls')) return null;
+        const current = visibleMenuRoots().filter((root) => root === binding.root);
+        if (current.length !== 1) return null;
+        if (binding.kind === 'parent' && !isIntelligenceOwner(current[0])) return null;
+        return current[0];
+      };
+      const waitForControlledBinding = async (getTrigger, kind, attempts = 12) => {
+        for (let attempt = 0; attempt < attempts; attempt += 1) {
+          const current = getTrigger();
+          if (
+            !current ||
+            !current.getAttribute?.('aria-controls')
+          ) {
+            return null;
+          }
+          if (
+            current.getAttribute?.('aria-expanded') === 'true' &&
+            controlledMenu(current, kind)
+          ) {
+            return { type: 'controlled', kind };
+          }
+          await sleep(50);
+        }
+        return null;
+      };
+      const openBoundMenu = async (getTrigger, kind) => {
+        let trigger = getTrigger();
+        if (!trigger) return null;
+        if (trigger.getAttribute?.('aria-controls')) {
+          if (trigger.getAttribute?.('aria-expanded') !== 'true') {
+            dispatchHoverSequence(trigger);
+            trigger = getTrigger();
+            if (!trigger) return null;
+            if (trigger.getAttribute?.('aria-expanded') !== 'true') {
+              dispatchClickSequence(trigger);
+            }
+            await sleep(INITIAL_WAIT_MS);
+          }
+          // Discard the pre-click handle. Poll only the current trigger and its
+          // unique IDREF so ordinary delayed portal rendering remains viable
+          // without transferring trust from a stale handle.
+          return await waitForControlledBinding(getTrigger, kind);
+        }
+
+        if (trigger.getAttribute?.('aria-expanded') === 'true') {
+          dispatchClickSequence(trigger);
+          await sleep(STEP_WAIT_MS);
+          trigger = getTrigger();
+          if (
+            !trigger ||
+            trigger.getAttribute?.('aria-controls') ||
+            trigger.getAttribute?.('aria-expanded') === 'true'
+          ) {
+            return null;
+          }
+        }
+        const before = new Set(visibleMenuRoots());
+        dispatchHoverSequence(trigger);
+        trigger = getTrigger();
+        if (!trigger) return null;
+        if (trigger.getAttribute?.('aria-expanded') !== 'true') {
+          dispatchClickSequence(trigger);
+        }
+        await sleep(INITIAL_WAIT_MS);
+        for (let attempt = 0; attempt < 12; attempt += 1) {
+          trigger = getTrigger();
+          if (!trigger || trigger.getAttribute?.('aria-controls')) return null;
+          if (trigger.getAttribute?.('aria-expanded') === 'true') {
+            const after = visibleMenuRoots();
+            const added = after.filter((root) => !before.has(root));
+            const removed = Array.from(before).filter((root) => !after.includes(root));
+            if (added.length === 1 && removed.length === 0) {
+              if (kind === 'parent' && !isIntelligenceOwner(added[0])) return null;
+              return { type: 'causal', kind, root: added[0] };
+            }
+            if (added.length > 1 || removed.length > 0) return null;
+          }
+          await sleep(50);
+        }
+        return null;
+      };
+      const readParentProof = (binding) => {
+        const owner = bindingOwner(binding, parentTrigger);
+        if (!owner) return { valid: false, owner: null };
+        const scope = intelligenceSelectionScope(owner);
+        if (!scope) return { valid: false, owner: null };
+        const effort = readClosedWorldSelection(scope, EXACT_PRO);
+        const solTrigger = readExactSolTrigger(scope);
         return {
-          menu,
-          modelOption,
-          modeOption,
-          modelLabel: selectedVersion.label,
-          modelVerified: selectedVersion.verified,
-          modeLabel: modeOption?.textContent?.trim?.() || null,
-          modeSelected: optionIsSelected(modeOption),
+          valid: effort.valid && solTrigger.valid,
+          owner,
+          scope,
+          effort,
+          solTrigger,
         };
       };
-
-      if (!(await openActiveComposerIntelligencePill())) {
-        return failure('menu-not-found', {
-          modelKind: 'pro',
-          modelVerified: false,
-          modeVerified: false,
-          verifiedBeforePromptSubmit: false,
-        });
-      }
-      const verifiedGpt56SolPro = (status, snapshot) => ({
-        status,
-        label: snapshot.modeLabel,
+      const modelTriggerFor = (parentBinding) => () => {
+        const parent = readParentProof(parentBinding);
+        return parent.valid ? parent.solTrigger.trigger : null;
+      };
+      const readModelProof = (modelBinding, getModelTrigger) => {
+        const owner = bindingOwner(modelBinding, getModelTrigger);
+        if (!owner) return { valid: false, owner: null };
+        const model = readClosedWorldSelection(owner, EXACT_SOL);
+        return { valid: model.valid, owner, model };
+      };
+      const gpt56Failure = (status, extra = {}) => failure(status, {
         modelKind: 'pro',
-        modelLabel: snapshot.modelLabel,
-        modelVerified: snapshot.modelVerified,
-        modeLabel: snapshot.modeLabel,
+        modelLabel: null,
+        modelVerified: false,
+        modeLabel: null,
+        modeVerified: false,
+        verifiedBeforePromptSubmit: false,
+        ...extra,
+      });
+      const verifiedGpt56SolPro = (status, modelLabel, modeLabel) => ({
+        status,
+        label: modeLabel,
+        modelKind: 'pro',
+        modelLabel,
+        modelVerified: true,
+        modeLabel,
         modeVerified: true,
         verifiedBeforePromptSubmit: true,
       });
 
-      let snapshot = null;
-      const intelligenceDeadline = performance.now() + INTELLIGENCE_WAIT_MS;
-      while (performance.now() < intelligenceDeadline) {
-        snapshot = readGpt56SolProSnapshot();
-        if (snapshot) break;
-        await sleep(100);
+      if (!parentTrigger()) {
+        return gpt56Failure('chip-not-found');
       }
-      if (!snapshot) return failure('menu-not-found', {
-        modelKind: 'pro',
-        modelVerified: false,
-        modeVerified: false,
-        verifiedBeforePromptSubmit: false,
-      });
-      if (!snapshot.modelOption || !snapshot.modelVerified) return failure('model-kind-not-found', {
-        modelKind: 'pro',
-        modelLabel: snapshot.modelLabel,
-        modelVerified: false,
-        modeLabel: snapshot.modeLabel,
-        modeVerified: false,
-        verifiedBeforePromptSubmit: false,
-      });
-      if (!snapshot.modeOption) return failure('option-not-found', {
-        modelKind: 'pro',
-        modelLabel: snapshot.modelLabel,
-        modelVerified: snapshot.modelVerified,
-        modeLabel: null,
-        modeVerified: false,
-        verifiedBeforePromptSubmit: false,
-      });
-      if (snapshot.modeSelected) {
-        closeOpenMenus();
-        return verifiedGpt56SolPro('already-selected', snapshot);
-      }
-
-      dispatchClickSequence(snapshot.modeOption);
-      await sleep(STEP_WAIT_MS);
-      let reopened = false;
-      const selectionDeadline = performance.now() + 2000;
-      while (performance.now() < selectionDeadline) {
-        snapshot = readGpt56SolProSnapshot();
-        if (!snapshot && !reopened) {
-          const currentComposer = findActiveComposerRoot();
-          const currentModelBtn = findActiveComposerIntelligencePill(currentComposer);
-          if (currentModelBtn) dispatchClickSequence(currentModelBtn);
-          reopened = true;
-          await sleep(INITIAL_WAIT_MS);
-          snapshot = readGpt56SolProSnapshot();
+      let switched = false;
+      let modeSwitches = 0;
+      let modelSwitches = 0;
+      let lastStatus = 'menu-not-found';
+      for (let attempt = 0; attempt < MAX_FULL_REPROOFS; attempt += 1) {
+        const parentBinding = await openBoundMenu(parentTrigger, 'parent');
+        if (!parentBinding) {
+          lastStatus = 'menu-not-found';
+          continue;
         }
-        if (
-          snapshot?.modelOption &&
-          snapshot.modelVerified &&
-          snapshot?.modeOption &&
-          snapshot.modeSelected
-        ) {
+        let parent = readParentProof(parentBinding);
+        if (!parent.valid) {
           closeOpenMenus();
-          return verifiedGpt56SolPro('switched', snapshot);
+          return gpt56Failure(
+            parent.effort?.valid === false ? 'selection-unverified' : 'model-kind-not-found',
+          );
         }
-        await sleep(100);
+
+        if (!parent.effort.targetSelected) {
+          if (modeSwitches >= MAX_SWITCHES_PER_AXIS) break;
+          // Re-resolve immediately before the action. No row handle crosses the
+          // click or following wait; the next iteration starts at the composer.
+          parent = readParentProof(parentBinding);
+          const target = parent.valid ? parent.effort.target : null;
+          if (!target || !isLive(target)) {
+            lastStatus = 'selection-unverified';
+            continue;
+          }
+          dispatchClickSequence(target);
+          modeSwitches += 1;
+          switched = true;
+          await sleep(STEP_WAIT_MS);
+          continue;
+        }
+
+        const getModelTrigger = modelTriggerFor(parentBinding);
+        const modelBinding = await openBoundMenu(getModelTrigger, 'model');
+        if (!modelBinding) {
+          lastStatus = 'model-kind-not-found';
+          continue;
+        }
+        let model = readModelProof(modelBinding, getModelTrigger);
+        if (!model.valid) {
+          closeOpenMenus();
+          return gpt56Failure('model-kind-not-found', {
+            modeLabel: parent.effort.target?.textContent?.trim?.() || 'Pro',
+          });
+        }
+        if (!model.model.targetSelected) {
+          if (modelSwitches >= MAX_SWITCHES_PER_AXIS) break;
+          // Both bindings and both axes are synchronously re-read before the
+          // click. The click invalidates every handle and forces a full reproof.
+          parent = readParentProof(parentBinding);
+          model = readModelProof(modelBinding, getModelTrigger);
+          const target =
+            parent.valid && parent.effort.targetSelected && model.valid
+              ? model.model.target
+              : null;
+          if (!target || !isLive(target)) {
+            lastStatus = 'selection-unverified';
+            continue;
+          }
+          dispatchClickSequence(target);
+          modelSwitches += 1;
+          switched = true;
+          await sleep(STEP_WAIT_MS);
+          continue;
+        }
+
+        // Final same-task reproof: active composer/pill, both live owner
+        // bindings, exact unique rows, marker agreement, and exactly one checked
+        // row per axis are all re-read without a wait between proof and return.
+        parent = readParentProof(parentBinding);
+        model = readModelProof(modelBinding, getModelTrigger);
+        if (
+          parent.valid &&
+          parent.effort.targetSelected &&
+          model.valid &&
+          model.model.targetSelected
+        ) {
+          const modeRow = parent.effort.target;
+          const modelRow = model.model.target;
+          // Capture only inert labels before Escape can synchronously unmount
+          // the menu portals. Authorization above is complete; detached DOM
+          // handles never cross the close operation or leave this expression.
+          const modeLabel = modeRow.textContent?.trim?.() || 'Pro';
+          const modelLabel = modelRow.textContent?.trim?.() || 'GPT-5.6 Sol';
+          closeOpenMenus();
+          return verifiedGpt56SolPro(
+            switched ? 'switched' : 'already-selected',
+            modelLabel,
+            modeLabel,
+          );
+        }
+        lastStatus = 'selection-unverified';
       }
-      const result = failure('selection-unverified', {
-        modelKind: 'pro',
-        modelLabel: snapshot?.modelLabel ?? null,
-        modelVerified: snapshot?.modelVerified === true,
-        modeLabel: snapshot?.modeLabel ?? null,
-        modeVerified: false,
-        verifiedBeforePromptSubmit: false,
-      });
+      const result = gpt56Failure(lastStatus);
       closeOpenMenus();
       return result;
     }

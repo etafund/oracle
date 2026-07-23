@@ -3,6 +3,7 @@ import type { BrowserLogger, ChromeClient } from "../types.js";
 import type { ProviderDomAdapter, ProviderDomFlowContext } from "../providerDomFlow.js";
 import { INPUT_SELECTORS, SEND_BUTTON_SELECTORS } from "../constants.js";
 import { ensurePromptReady } from "../actions/navigation.js";
+import { buildClickDispatcher } from "../actions/domEvents.js";
 import { assertPreRunAccessState } from "../actions/challengeDetection.js";
 import {
   buildAttachmentReadyExpression,
@@ -566,150 +567,13 @@ function buildChatGptProDomProbeExpression(
       composerModel,
       buttonModel,
     ].map(normalize).filter(Boolean)));
-    const collectComposerOwnedSelectedVersionLabels = () => {
-      // Private React state is deliberately scoped to the exact token-bound
-      // composer. Never walk a document/global root, a sibling fiber, or cache
-      // a prior proof across a composer remount.
-      if (
-        !composerBindingVerified ||
-        !routeRoot ||
-        routeRoot === document ||
-        (!ATTACHMENT_BINDING_TOKEN && !COMPOSER_BINDING_TOKEN)
-      ) {
-        return { signals: [], attempted: false, valid: true };
-      }
-      const bareProPills = queryVisible(routeRoot, ['button.__composer-pill'])
-        .filter((node) => isBareProLabel(text(node)));
-      if (bareProPills.length === 0) {
-        return { signals: [], attempted: false, valid: true };
-      }
-      if (bareProPills.length !== 1) {
-        return { signals: [], attempted: true, valid: false };
-      }
-      const pill = bareProPills[0];
-      const fiberKeys = Object.getOwnPropertyNames(pill)
-        .filter((key) => key.startsWith('__reactFiber$'));
-      if (fiberKeys.length !== 1) {
-        return { signals: [], attempted: true, valid: false };
-      }
-
-      const MAX_FIBER_ANCESTORS = 64;
-      const MAX_PROPS_DEPTH = 12;
-      const MAX_PROPS_OBJECTS = 128;
-      const labelsFromProps = (root) => {
-        const labels = [];
-        let invalidState = false;
-        let truncated = false;
-        const queue = [{ value: root, depth: 0 }];
-        const seen = new Set();
-        let cursor = 0;
-        let visited = 0;
-        while (cursor < queue.length && visited < MAX_PROPS_OBJECTS) {
-          const item = queue[cursor++];
-          const value = item?.value;
-          if (!value || typeof value !== 'object' || seen.has(value)) continue;
-          seen.add(value);
-          visited += 1;
-          if (
-            !Array.isArray(value) &&
-            Object.prototype.hasOwnProperty.call(value, 'composerIntelligencePickerState')
-          ) {
-            const label = value.composerIntelligencePickerState
-              ?.selectedVersionEntry?.displayTextForIntelligence;
-            if (typeof label === 'string' && normalize(label)) labels.push(normalize(label));
-            else invalidState = true;
-          }
-          if (item.depth >= MAX_PROPS_DEPTH) {
-            const traversalChildren = Array.isArray(value)
-              ? value
-              : ['children', 'props']
-                  .filter((key) => Object.prototype.hasOwnProperty.call(value, key))
-                  .map((key) => value[key]);
-            if (traversalChildren.some((child) => child && typeof child === 'object')) {
-              truncated = true;
-            }
-            continue;
-          }
-          if (Array.isArray(value)) {
-            for (const child of value) {
-              queue.push({ value: child, depth: item.depth + 1 });
-            }
-            continue;
-          }
-          for (const key of ['children', 'props']) {
-            if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
-            queue.push({ value: value[key], depth: item.depth + 1 });
-          }
-        }
-        truncated ||= cursor < queue.length;
-        return { labels, invalidState, truncated };
-      };
-      const inspectFiberBranch = (start) => {
-        const labels = [];
-        let invalidState = false;
-        let truncated = false;
-        const seenFibers = new Set();
-        let fiber = start;
-        let reachedBoundComposer = false;
-        for (
-          let depth = 0;
-          fiber && typeof fiber === 'object' && depth < MAX_FIBER_ANCESTORS;
-          depth += 1
-        ) {
-          if (seenFibers.has(fiber)) break;
-          seenFibers.add(fiber);
-          for (const props of [fiber.memoizedProps, fiber.pendingProps]) {
-            const inspected = labelsFromProps(props);
-            labels.push(...inspected.labels);
-            invalidState ||= inspected.invalidState;
-            truncated ||= inspected.truncated;
-          }
-          if (fiber.stateNode === routeRoot) {
-            reachedBoundComposer = true;
-            break;
-          }
-          fiber = fiber.return;
-        }
-        return { labels, invalidState, truncated, reachedBoundComposer };
-      };
-
-      const gathered = [];
-      let ownershipVerified = true;
-      for (const fiberKey of fiberKeys) {
-        const current = pill[fiberKey];
-        const branches = [current];
-        if (current?.alternate && current.alternate !== current) branches.push(current.alternate);
-        for (const branch of branches) {
-          const inspected = inspectFiberBranch(branch);
-          if (
-            !inspected.reachedBoundComposer ||
-            inspected.labels.length === 0 ||
-            inspected.invalidState ||
-            inspected.truncated
-          ) {
-            ownershipVerified = false;
-          }
-          gathered.push(...inspected.labels);
-        }
-      }
-      return {
-        signals: ownershipVerified ? Array.from(new Set(gathered)) : [],
-        attempted: true,
-        valid: ownershipVerified,
-      };
-    };
-    const privateModelProof = collectComposerOwnedSelectedVersionLabels();
-    const privateModelSignals = privateModelProof.signals;
-    // These are deliberately limited to CURRENT-selection surfaces. Never add
-    // unselected menu rows here: this probe is the fail-closed, non-mutating
-    // check used after an attachment upload, where seeing an available model is
-    // not proof that it is still the active model.
-    // Public DOM labels remain independently sufficient when the private
-    // fallback is unavailable. When both surfaces exist, require unanimity so
-    // a stale public label cannot mask contradictory current composer state.
-    const routeModelSignals = Array.from(
-      new Set([...publicModelSignals, ...privateModelSignals]),
-    );
+    // Framework-private state is intentionally excluded from authorization.
+    // Closed-composer public labels remain useful diagnostics, while the
+    // protected Send path gets its authoritative model evidence by opening the
+    // exact pill's causally owned public submenu after the last composer
+    // mutation (see buildProtectedRouteProofMintExpression below).
+    const privateModelProof = { attempted: false, valid: true };
+    const routeModelSignals = publicModelSignals;
     const routeModeSignals = Array.from(new Set([
       fixtureSelectedEffort,
       selectedEffort,
@@ -759,8 +623,9 @@ function buildChatGptProDomProbeExpression(
   })()`;
 }
 
-export interface Gpt56SolProReadOnlyRouteEvidence {
+export interface Gpt56SolProPublicRouteEvidence {
   readonly verified: boolean;
+  readonly reason: string | null;
   readonly composerBindingVerified: boolean;
   readonly modelVerified: boolean;
   readonly modeVerified: boolean;
@@ -788,7 +653,7 @@ function classifyGpt56SolProRouteProbe(
     | "hasProPill"
     | "composerBindingVerified"
   >,
-): Gpt56SolProReadOnlyRouteEvidence {
+): Gpt56SolProPublicRouteEvidence {
   const modelSignals = Array.from(
     new Set(probe.routeModelSignals.map(normalizeProtectedRouteLabel).filter(Boolean)),
   );
@@ -804,7 +669,6 @@ function classifyGpt56SolProRouteProbe(
   // therefore fails closed.
   const modelVerified =
     probe.composerBindingVerified &&
-    (!probe.privateModelProofAttempted || probe.privateModelProofValid) &&
     modelSignals.length > 0 &&
     modelSignals.every((label) => label === "gpt 5 6 sol");
   const modeVerified =
@@ -813,6 +677,7 @@ function classifyGpt56SolProRouteProbe(
     modeSignals.every((label) => label === "pro");
   return {
     verified: probe.composerBindingVerified && modelVerified && modeVerified,
+    reason: null,
     composerBindingVerified: probe.composerBindingVerified,
     modelVerified,
     modeVerified,
@@ -823,34 +688,918 @@ function classifyGpt56SolProRouteProbe(
   };
 }
 
+const PROTECTED_ROUTE_PROOF_REGISTRY = "__oracleProtectedPublicRouteProofsV1";
+const PROTECTED_ROUTE_PROOF_TTL_MS = 10_000;
+const PROTECTED_DISPATCH_GUARD_REGISTRY = "__oracleProtectedDispatchGuardsV3";
+const PROTECTED_DISPATCH_GUARD_TTL_MS = 15_000;
+
+function buildProtectedRouteProofMintExpression(
+  attachmentBindingToken?: string,
+  composerBindingToken?: string,
+  proofNonce?: string,
+): string {
+  const attachmentTokenLiteral = JSON.stringify(attachmentBindingToken ?? "");
+  const composerTokenLiteral = JSON.stringify(composerBindingToken ?? "");
+  const proofNonceLiteral = JSON.stringify(proofNonce ?? "");
+  const proofRegistryLiteral = JSON.stringify(PROTECTED_ROUTE_PROOF_REGISTRY);
+  const proofTtlLiteral = JSON.stringify(PROTECTED_ROUTE_PROOF_TTL_MS);
+  const inputSelectorsLiteral = JSON.stringify(INPUT_SELECTORS);
+  const sendSelectorsLiteral = JSON.stringify(SEND_BUTTON_SELECTORS);
+  return `(async () => {
+    const ATTACHMENT_TOKEN = ${attachmentTokenLiteral};
+    const TOKEN = ${composerTokenLiteral};
+    const NONCE = ${proofNonceLiteral};
+    const REGISTRY_KEY = ${proofRegistryLiteral};
+    const TTL_MS = ${proofTtlLiteral};
+    const INPUT_SELECTORS = ${inputSelectorsLiteral};
+    const SEND_SELECTORS = ${sendSelectorsLiteral};
+    const MODEL_LABEL = 'GPT-5.6 Sol';
+    const MODE_LABEL = 'Pro';
+    const root = window;
+    ${buildClickDispatcher("activatePublicRouteControl")}
+    const normalizeRenderedPromptDomIdentity = ${normalizeRenderedPromptDomIdentity.toString()};
+    const exactText = (node) => String(
+      node?.innerText || node?.textContent || node?.getAttribute?.('aria-label') || ''
+    ).normalize('NFC').replace(/\\s+/g, ' ').trim();
+    const isVisible = (node) => {
+      if (!node || node.isConnected === false || typeof node.getBoundingClientRect !== 'function') {
+        return false;
+      }
+      const rect = node.getBoundingClientRect();
+      if (!(rect.width > 0 && rect.height > 0)) return false;
+      if (typeof node.getClientRects === 'function' && node.getClientRects().length === 0) return false;
+      let current = node;
+      while (current && current !== document.documentElement?.parentElement) {
+        const style = root.getComputedStyle?.(current);
+        if (
+          current.hidden === true ||
+          current.hasAttribute?.('inert') ||
+          current.getAttribute?.('aria-hidden') === 'true' ||
+          style?.display === 'none' ||
+          style?.visibility === 'hidden' ||
+          style?.visibility === 'collapse' ||
+          Number.parseFloat(style?.opacity || '1') === 0
+        ) return false;
+        current = current.parentElement;
+      }
+      return true;
+    };
+    const isEnabled = (node) => Boolean(
+      node &&
+      !node.hasAttribute?.('disabled') &&
+      node.getAttribute?.('aria-disabled') !== 'true' &&
+      node.getAttribute?.('data-disabled') !== 'true'
+    );
+    const unique = (values) => Array.from(new Set(values));
+    const queryAll = (scope, selectors) => unique(selectors.flatMap((selector) =>
+      Array.from(scope?.querySelectorAll?.(selector) ?? [])
+    ));
+    const readEditorValue = (editor) => {
+      if (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement) {
+        return editor.value || '';
+      }
+      return editor?.innerText ?? editor?.textContent ?? '';
+    };
+    const locate = () => {
+      const composers = TOKEN
+        ? Array.from(document.querySelectorAll('[data-oracle-send-composer-binding]')).filter(
+            (node) => node?.getAttribute?.('data-oracle-send-composer-binding') === TOKEN,
+          )
+        : [];
+      const composer = composers.length === 1 ? composers[0] : null;
+      const editors = TOKEN
+        ? Array.from(document.querySelectorAll('[data-oracle-send-editor-binding]')).filter(
+            (node) => node?.getAttribute?.('data-oracle-send-editor-binding') === TOKEN,
+          )
+        : [];
+      const editor = editors.length === 1 ? editors[0] : null;
+      const markedSends = TOKEN
+        ? Array.from(document.querySelectorAll('[data-oracle-send-binding]')).filter(
+            (node) => node?.getAttribute?.('data-oracle-send-binding') === TOKEN,
+          )
+        : [];
+      const send = markedSends.length === 1 ? markedSends[0] : null;
+      const currentSends = composer
+        ? queryAll(composer, SEND_SELECTORS).filter((node) => isVisible(node) && isEnabled(node))
+        : [];
+      const activeInputs = composer
+        ? queryAll(composer, INPUT_SELECTORS).filter(isVisible)
+        : [];
+      const pills = composer
+        ? Array.from(composer.querySelectorAll('button.__composer-pill[aria-haspopup="menu"]'))
+            .filter(isVisible)
+            .filter((node) => exactText(node) === MODE_LABEL)
+        : [];
+      const pill = pills.length === 1 ? pills[0] : null;
+      const attachmentRoots = ATTACHMENT_TOKEN
+        ? Array.from(document.querySelectorAll('[data-oracle-attachment-binding]')).filter(
+            (node) => node?.getAttribute?.('data-oracle-attachment-binding') === ATTACHMENT_TOKEN,
+          )
+        : [];
+      const attachmentRoot = ATTACHMENT_TOKEN && attachmentRoots.length === 1
+        ? attachmentRoots[0]
+        : null;
+      const ok = Boolean(
+        TOKEN && NONCE && composer && editor && send && pill &&
+        composer.isConnected !== false &&
+        composer.contains?.(editor) && composer.contains?.(send) && composer.contains?.(pill) &&
+        activeInputs.length === 1 && activeInputs[0] === editor &&
+        currentSends.length === 1 && currentSends[0] === send &&
+        exactText(pill) === MODE_LABEL &&
+        isVisible(editor) && isVisible(send) && isEnabled(send) &&
+        (!ATTACHMENT_TOKEN || attachmentRoot === composer)
+      );
+      return { ok, composer, editor, send, pill, attachmentRoot };
+    };
+    const menuRoots = () => Array.from(
+      document.querySelectorAll('[role="menu"], [role="listbox"]')
+    ).filter(isVisible);
+    const rowSelector = '[role="menuitemradio"], [role="radio"], [role="option"]';
+    const belongsToOwner = (node, owner) => {
+      let current = node;
+      while (current && current !== owner) {
+        current = current.parentElement;
+        if (
+          current && current !== owner &&
+          (current.getAttribute?.('role') === 'menu' || current.getAttribute?.('role') === 'listbox')
+        ) return false;
+      }
+      return current === owner;
+    };
+    const ownedRows = (owner) => Array.from(owner?.querySelectorAll?.(rowSelector) ?? [])
+      .filter((node) => belongsToOwner(node, owner));
+    const ownedSubmenuTriggers = (owner) => Array.from(
+      owner?.querySelectorAll?.('[aria-haspopup="menu"]') ?? []
+    ).filter((node) => belongsToOwner(node, owner));
+    const menuLike = (node) => Boolean(
+      node &&
+      (ownedRows(node).length > 0 || ownedSubmenuTriggers(node).length > 0)
+    );
+    const duplicateFreeIdNode = (id) => {
+      if (!id) return null;
+      const matches = Array.from(document.querySelectorAll('[id]')).filter(
+        (node) => node.getAttribute?.('id') === id,
+      );
+      return matches.length === 1 ? matches[0] : null;
+    };
+    const controlledOwner = (trigger) => {
+      if (!trigger || trigger.getAttribute?.('aria-expanded') !== 'true') return null;
+      const id = trigger.getAttribute?.('aria-controls') || '';
+      const controlled = duplicateFreeIdNode(id);
+      if (!controlled || !isVisible(controlled)) return null;
+      const controlledRole = controlled.getAttribute?.('role');
+      const controlledIsOwner =
+        controlledRole === 'menu' ||
+        controlledRole === 'listbox' ||
+        controlled.getAttribute?.('data-testid') === 'composer-intelligence-picker-content';
+      if (controlledIsOwner && menuLike(controlled)) return controlled;
+      const descendants = Array.from(
+        controlled.querySelectorAll?.('[role="menu"], [role="listbox"], [data-testid="composer-intelligence-picker-content"]') ?? []
+      ).filter((node) => isVisible(node) && menuLike(node));
+      const topLevel = descendants.filter((candidate) =>
+        !descendants.some(
+          (other) => other !== candidate && other.contains?.(candidate),
+        )
+      );
+      return topLevel.length === 1 ? topLevel[0] : null;
+    };
+    const raf = () => new Promise((resolve) => {
+      if (typeof root.requestAnimationFrame === 'function') root.requestAnimationFrame(() => resolve());
+      else root.setTimeout?.(resolve, 0);
+    });
+    const settle = async () => {
+      await raf();
+      await raf();
+      if (typeof MutationObserver !== 'function' || typeof root.setTimeout !== 'function') {
+        await new Promise((resolve) => root.setTimeout?.(resolve, 40));
+        return;
+      }
+      await new Promise((resolve) => {
+        let quietId = null;
+        let maxId = null;
+        const done = () => {
+          try { observer.disconnect(); } catch {}
+          try { if (quietId != null) root.clearTimeout?.(quietId); } catch {}
+          try { if (maxId != null) root.clearTimeout?.(maxId); } catch {}
+          resolve();
+        };
+        const armQuiet = () => {
+          try { if (quietId != null) root.clearTimeout?.(quietId); } catch {}
+          quietId = root.setTimeout?.(done, 50);
+        };
+        const observer = new MutationObserver(armQuiet);
+        try {
+          observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true });
+          armQuiet();
+          maxId = root.setTimeout?.(done, 750);
+        } catch {
+          done();
+        }
+      });
+    };
+    const activate = (node) => {
+      if (!node || !isVisible(node) || !isEnabled(node)) return false;
+      try { return activatePublicRouteControl(node) === true; } catch { return false; }
+    };
+    const hover = (node) => {
+      if (!node || typeof node.dispatchEvent !== 'function' || typeof MouseEvent !== 'function') {
+        return;
+      }
+      const rect = node.getBoundingClientRect?.();
+      const clientX = Number(rect?.left || 0) + Number(rect?.width || 0) / 2;
+      const clientY = Number(rect?.top || 0) + Number(rect?.height || 0) / 2;
+      for (const type of [
+        'pointerover', 'pointerenter', 'mouseover', 'mouseenter', 'pointermove', 'mousemove',
+      ]) {
+        try {
+          const common = { bubbles: true, composed: true, clientX, clientY, view: root };
+          const event = type.startsWith('pointer') && typeof PointerEvent === 'function'
+            ? new PointerEvent(type, { ...common, pointerId: 1, pointerType: 'mouse' })
+            : new MouseEvent(type, common);
+          node.dispatchEvent(event);
+        } catch {}
+      }
+    };
+    const resolveOwnedMenuAfterOpen = async (reacquire) => {
+      let trigger = reacquire();
+      if (!trigger || !isVisible(trigger)) return null;
+      const waitForControlledOwner = async (attempts) => {
+        for (let attempt = 0; attempt < attempts; attempt += 1) {
+          const current = reacquire();
+          if (!current || !isVisible(current)) return null;
+          if (
+            current.getAttribute?.('aria-expanded') === 'true' &&
+            current.getAttribute?.('aria-controls')
+          ) {
+            const owner = controlledOwner(current);
+            if (owner) return {
+              trigger: current,
+              owner,
+              ownership: 'aria-controls',
+              controlId: current.getAttribute?.('aria-controls') || '',
+            };
+          }
+          await new Promise((resolve) => root.setTimeout?.(resolve, 50));
+        }
+        return null;
+      };
+      if (trigger.getAttribute?.('aria-expanded') === 'true') {
+        if (trigger.getAttribute?.('aria-controls')) {
+          return await waitForControlledOwner(12);
+        }
+        if (!activate(trigger)) return null;
+        await settle();
+        trigger = reacquire();
+        if (!trigger || trigger.getAttribute?.('aria-expanded') === 'true') {
+          return null;
+        }
+      }
+      const before = new Set(menuRoots());
+      if (!activate(trigger)) return null;
+      await settle();
+      const waitForOpenOwner = async (attempts) => {
+        for (let attempt = 0; attempt < attempts; attempt += 1) {
+          const current = reacquire();
+          if (current?.getAttribute?.('aria-expanded') === 'true') {
+            if (current.getAttribute?.('aria-controls')) {
+              if (controlledOwner(current)) return current;
+            } else {
+              const after = menuRoots();
+              const removed = Array.from(before).filter((menu) => !after.includes(menu));
+              const added = after.filter((menu) => !before.has(menu));
+              if (removed.length === 0 && added.length === 1 && menuLike(added[0])) {
+                return current;
+              }
+            }
+          }
+          await new Promise((resolve) => root.setTimeout?.(resolve, 50));
+        }
+        return null;
+      };
+      trigger = await waitForOpenOwner(2);
+      if (!trigger) {
+        const hoverTarget = reacquire();
+        if (!hoverTarget) return null;
+        hover(hoverTarget);
+        trigger = await waitForOpenOwner(12);
+      }
+      if (!trigger) return null;
+      if (trigger.getAttribute?.('aria-controls')) {
+        const owner = controlledOwner(trigger);
+        return owner ? {
+          trigger,
+          owner,
+          ownership: 'aria-controls',
+          controlId: trigger.getAttribute?.('aria-controls') || '',
+        } : null;
+      }
+      const after = menuRoots();
+      const removed = Array.from(before).filter((menu) => !after.includes(menu));
+      const added = after.filter((menu) => !before.has(menu));
+      return removed.length === 0 && added.length === 1 && menuLike(added[0])
+        ? {
+            trigger,
+            owner: added[0],
+            ownership: 'newly-visible',
+            controlId: '',
+          }
+        : null;
+    };
+    const resolveBoundOwner = (binding, reacquire) => {
+      const trigger = reacquire();
+      if (!trigger || !isVisible(trigger) || trigger.getAttribute?.('aria-expanded') !== 'true') {
+        return null;
+      }
+      if (binding.ownership === 'aria-controls') {
+        if (
+          !binding.controlId ||
+          trigger.getAttribute?.('aria-controls') !== binding.controlId
+        ) return null;
+        return controlledOwner(trigger);
+      }
+      if (trigger.getAttribute?.('aria-controls')) return null;
+      return menuRoots().filter((root) => root === binding.owner).length === 1 &&
+        menuLike(binding.owner)
+        ? binding.owner
+        : null;
+    };
+    const checkedState = (row) => {
+      const aria = row?.getAttribute?.('aria-checked');
+      const data = String(row?.getAttribute?.('data-state') || '').toLowerCase();
+      const ariaKnown = aria === 'true' || aria === 'false';
+      const dataKnown = data === 'checked' || data === 'unchecked';
+      const ariaChecked = aria === 'true';
+      const dataChecked = data === 'checked';
+      const optionalMarkers = [
+        row?.getAttribute?.('aria-selected'),
+        row?.getAttribute?.('aria-current'),
+        row?.getAttribute?.('data-selected'),
+      ].filter((value) => value !== null && value !== undefined);
+      const optionalKnown = optionalMarkers.every((value) => value === 'true' || value === 'false');
+      const optionalAgree = optionalMarkers.every((value) => (value === 'true') === ariaChecked);
+      return {
+        valid:
+          ariaKnown && dataKnown && ariaChecked === dataChecked && optionalKnown && optionalAgree,
+        checked: ariaChecked && dataChecked,
+      };
+    };
+    const verifyCheckedRadio = (owner, expectedLabel) => {
+      if (!owner || !isVisible(owner)) return { ok: false, reason: 'owned-menu-not-visible' };
+      const rows = ownedRows(owner);
+      const exactRows = rows.filter((row) => exactText(row) === expectedLabel);
+      if (exactRows.length !== 1 || !isVisible(exactRows[0])) {
+        return { ok: false, reason: 'exact-row-ambiguous' };
+      }
+      const states = rows.filter(isVisible).map((row) => ({ row, state: checkedState(row) }));
+      if (states.some(({ state }) => !state.valid)) {
+        return { ok: false, reason: 'row-selection-state-contradictory' };
+      }
+      const checked = states.filter(({ state }) => state.checked);
+      if (checked.length !== 1 || checked[0].row !== exactRows[0]) {
+        return { ok: false, reason: 'checked-row-not-exact' };
+      }
+      return { ok: true, row: exactRows[0] };
+    };
+    const findSolTrigger = (owner) => {
+      const candidates = Array.from(owner?.querySelectorAll?.('[aria-haspopup="menu"]') ?? [])
+        .filter((node) => belongsToOwner(node, owner) && exactText(node) === MODEL_LABEL);
+      return candidates.length === 1 && isVisible(candidates[0]) && isEnabled(candidates[0])
+        ? candidates[0]
+        : null;
+    };
+    const closeProofMenus = async () => {
+      let current = locate().pill;
+      if (current?.getAttribute?.('aria-expanded') === 'true') {
+        activate(current);
+        await settle();
+      }
+      current = locate().pill;
+      if (current?.getAttribute?.('aria-expanded') === 'true') {
+        try {
+          document.dispatchEvent?.(new KeyboardEvent('keydown', {
+            key: 'Escape', code: 'Escape', bubbles: true, composed: true,
+          }));
+        } catch {}
+        await settle();
+      }
+      current = locate().pill;
+      return Boolean(current && current.getAttribute?.('aria-expanded') !== 'true');
+    };
+    const fail = (reason) => ({
+      verified: false,
+      composerBindingVerified: locate().ok,
+      modelVerified: false,
+      modeVerified: false,
+      modelSignals: [],
+      modeSignals: [],
+      proofMinted: false,
+      reason,
+    });
+    if (!TOKEN || !NONCE) return fail('public-route-proof-token-missing');
+    let registry = root[REGISTRY_KEY];
+    if (!(registry instanceof Map)) {
+      registry = new Map();
+      root[REGISTRY_KEY] = registry;
+    }
+    try { registry.get(TOKEN)?.burn?.('superseded'); } catch {}
+    registry.delete(TOKEN);
+
+    let proved = null;
+    let lastReason = 'public-route-proof-unavailable';
+    for (let attempt = 0; attempt < 2 && !proved; attempt += 1) {
+      const located = locate();
+      if (!located.ok) {
+        lastReason = 'exact-dispatch-composer-unavailable';
+        break;
+      }
+      const { composer, editor, send, attachmentRoot } = located;
+      const parentBinding = await resolveOwnedMenuAfterOpen(() => locate().pill);
+      const readParentProof = () => {
+        const owner = parentBinding
+          ? resolveBoundOwner(parentBinding, () => locate().pill)
+          : null;
+        if (!owner) return { ok: false, reason: 'parent-menu-owner-unverified' };
+        const pro = verifyCheckedRadio(owner, MODE_LABEL);
+        const solTrigger = findSolTrigger(owner);
+        if (!pro.ok || !solTrigger) {
+          return {
+            ok: false,
+            reason: !pro.ok ? pro.reason : 'sol-submenu-trigger-ambiguous',
+          };
+        }
+        return { ok: true, owner, pro, solTrigger };
+      };
+      let parent = readParentProof();
+      if (!parentBinding || !parent.ok || locate().composer !== composer) {
+        lastReason = 'parent-menu-owner-unverified';
+        await closeProofMenus();
+        continue;
+      }
+      const getSolTrigger = () => {
+        const current = readParentProof();
+        return current.ok ? current.solTrigger : null;
+      };
+      const modelBinding = await resolveOwnedMenuAfterOpen(getSolTrigger);
+      const readModelProof = () => {
+        const owner = modelBinding ? resolveBoundOwner(modelBinding, getSolTrigger) : null;
+        if (!owner) return { ok: false, reason: 'model-submenu-owner-unverified' };
+        const model = verifyCheckedRadio(owner, MODEL_LABEL);
+        return model.ok
+          ? { ok: true, owner, model }
+          : { ok: false, reason: model.reason };
+      };
+      if (!modelBinding || locate().composer !== composer) {
+        lastReason = 'model-submenu-owner-unverified';
+        await closeProofMenus();
+        continue;
+      }
+      parent = readParentProof();
+      const model = readModelProof();
+      if (!parent.ok || !model.ok) {
+        lastReason = !parent.ok ? parent.reason : model.reason;
+        await closeProofMenus();
+        continue;
+      }
+      const provedOpenPill = locate().pill;
+      if (!provedOpenPill || !isVisible(provedOpenPill)) {
+        lastReason = 'proved-route-pill-unavailable';
+        await closeProofMenus();
+        continue;
+      }
+      if (!(await closeProofMenus())) {
+        lastReason = 'proof-menus-did-not-close';
+        continue;
+      }
+      const finalLocated = locate();
+      if (
+        !finalLocated.ok ||
+        finalLocated.composer !== composer ||
+        finalLocated.editor !== editor ||
+        finalLocated.send !== send ||
+        finalLocated.pill !== provedOpenPill ||
+        finalLocated.attachmentRoot !== attachmentRoot
+      ) {
+        lastReason = 'dispatch-composer-remounted-during-proof';
+        continue;
+      }
+      try { editor.focus?.({ preventScroll: true }); } catch { try { editor.focus?.(); } catch {} }
+      await settle();
+      const rebound = locate();
+      if (
+        !rebound.ok || rebound.composer !== composer || rebound.editor !== editor ||
+        rebound.send !== send || rebound.pill !== finalLocated.pill ||
+        rebound.attachmentRoot !== attachmentRoot ||
+        document.activeElement !== editor
+      ) {
+        lastReason = 'dispatch-composer-focus-rebind-failed';
+        continue;
+      }
+      proved = {
+        composer, editor, send, pill: provedOpenPill, attachmentRoot,
+        parentMenu: parent.owner,
+        proRow: parent.pro.row,
+        solTrigger: parent.solTrigger,
+        modelMenu: model.owner,
+        solRow: model.model.row,
+      };
+    }
+    if (!proved) return fail(lastReason);
+
+    const mintedAt = Date.now();
+    const promptSnapshot = normalizeRenderedPromptDomIdentity(readEditorValue(proved.editor));
+    const hrefSnapshot = String(root.location?.href || '');
+    const closedMenuBaseline = menuRoots();
+    const routeRefs = [
+      proved.parentMenu, proved.proRow, proved.solTrigger, proved.modelMenu, proved.solRow,
+    ];
+    const boundRefs = [proved.composer, proved.editor, proved.send, proved.pill];
+    let observer = null;
+    let expiryId = null;
+    let handoffExpiryId = null;
+    let handoffCleanupId = null;
+    const listeners = [];
+    const proof = {
+      version: 1,
+      token: TOKEN,
+      nonce: NONCE,
+      status: 'valid',
+      reason: null,
+      mintedAt,
+      expiresAt: mintedAt + TTL_MS,
+      composer: proved.composer,
+      editor: proved.editor,
+      send: proved.send,
+      pill: proved.pill,
+      attachmentRoot: proved.attachmentRoot,
+      promptSnapshot,
+      hrefSnapshot,
+      closedMenuBaseline,
+      routeRefs,
+      guardArmed: false,
+      preGuardViolation: false,
+      preGuardTerminalSeen: false,
+      observer: null,
+      armGuard: null,
+      burn: null,
+      validate: null,
+      consume: null,
+      cleanup: null,
+    };
+    const cleanup = () => {
+      try { observer?.disconnect?.(); } catch {}
+      observer = null;
+      proof.observer = null;
+      try { if (expiryId != null) root.clearTimeout?.(expiryId); } catch {}
+      expiryId = null;
+      for (const [target, type, listener] of listeners) {
+        try { target.removeEventListener?.(type, listener, true); } catch {}
+      }
+      listeners.length = 0;
+    };
+    const handoffEventTypes = [
+      'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'submit',
+    ];
+    const cleanupHandoffBlocker = () => {
+      try { if (handoffExpiryId != null) root.clearTimeout?.(handoffExpiryId); } catch {}
+      try { if (handoffCleanupId != null) root.clearTimeout?.(handoffCleanupId); } catch {}
+      handoffExpiryId = null;
+      handoffCleanupId = null;
+      for (const type of handoffEventTypes) {
+        try { root.removeEventListener?.(type, handoffBlocker, true); } catch {}
+      }
+    };
+    const scheduleHandoffCleanup = () => {
+      if (handoffCleanupId != null) return;
+      handoffCleanupId = root.setTimeout?.(cleanupHandoffBlocker, 250) ?? null;
+    };
+    const handoffBlocker = (event) => {
+      if (proof.guardArmed === true) return;
+      const target = event?.target;
+      const targetsProtectedSend = Boolean(
+        event?.type !== 'submit' &&
+        target && (target === proved.send || proved.send.contains?.(target))
+      );
+      const targetsProtectedSubmit = Boolean(
+        event?.type === 'submit' &&
+        target && (
+          target === proved.composer ||
+          proved.composer.contains?.(target) ||
+          target.contains?.(proved.composer)
+        )
+      );
+      if (!targetsProtectedSend && !targetsProtectedSubmit) return;
+      proof.preGuardViolation = true;
+      if (event?.type === 'click' || event?.type === 'submit') {
+        proof.preGuardTerminalSeen = true;
+        if (proof.status !== 'valid') scheduleHandoffCleanup();
+      }
+      try { event.preventDefault?.(); } catch {}
+      try { event.stopImmediatePropagation?.(); } catch {}
+      try { event.stopPropagation?.(); } catch {}
+    };
+    const removeProofRecord = () => {
+      try {
+        if (registry.get(TOKEN) === proof) registry.delete(TOKEN);
+        if (root[REGISTRY_KEY] === registry && registry.size === 0) {
+          delete root[REGISTRY_KEY];
+        }
+      } catch {}
+    };
+    const burn = (reason) => {
+      if (proof.status !== 'valid') return false;
+      proof.status = 'burned';
+      proof.reason = reason || 'public-route-proof-burned';
+      cleanup();
+      if (!proof.preGuardViolation || proof.preGuardTerminalSeen) {
+        scheduleHandoffCleanup();
+      }
+      removeProofRecord();
+      return true;
+    };
+    const mutationTargetTouches = (node, ref) => Boolean(
+      node && ref && (node === ref || ref.contains?.(node))
+    );
+    const mutationNodeContainsRef = (node, ref) => Boolean(
+      node && ref && (node === ref || node.contains?.(ref))
+    );
+    const mutationRelevant = (mutation) => {
+      const target = mutation?.target;
+      // Hover/focus over Send may legitimately add tooltip children or change
+      // cosmetic data-state. Continuity is still synchronously revalidated at
+      // every trusted precursor and at the button-capture click, so observe
+      // only payload/route surfaces plus identity- or enabledness-critical
+      // attributes here rather than burning on every composer mutation.
+      const attributeName = mutation?.attributeName;
+      if (
+        mutation?.type === 'attributes' &&
+        target === proved.composer &&
+        ['data-oracle-send-composer-binding', 'data-oracle-attachment-binding'].includes(attributeName)
+      ) return true;
+      if (
+        mutation?.type === 'attributes' &&
+        target === proved.send &&
+        ['disabled', 'aria-disabled', 'data-disabled', 'data-oracle-send-binding'].includes(attributeName)
+      ) return true;
+      if (
+        mutationTargetTouches(target, proved.editor) ||
+        mutationTargetTouches(target, proved.pill)
+      ) return true;
+      if (routeRefs.some((ref) => mutationTargetTouches(target, ref))) return true;
+      for (const node of [
+        ...Array.from(mutation?.addedNodes ?? []),
+        ...Array.from(mutation?.removedNodes ?? []),
+      ]) {
+        if (boundRefs.some((ref) => mutationNodeContainsRef(node, ref))) return true;
+        if (routeRefs.some((ref) => mutationNodeContainsRef(node, ref))) return true;
+        if (
+          node?.getAttribute?.('role') === 'menu' ||
+          node?.getAttribute?.('role') === 'listbox' ||
+          node?.querySelector?.('[role="menu"], [role="listbox"]')
+        ) return true;
+      }
+      return false;
+    };
+    const processMutations = (records) => {
+      if (records.some(mutationRelevant)) burn('public-route-proof-dom-mutated');
+    };
+    const addListener = (target, type, listener) => {
+      target?.addEventListener?.(type, listener, { capture: true, passive: false });
+      listeners.push([target, type, listener]);
+    };
+    const routeEvent = (event) => {
+      if (proof.status !== 'valid') return;
+      const target = event?.target;
+      const targetsProtectedSubmit = Boolean(
+        event?.type === 'submit' &&
+        target && (
+          target === proved.composer ||
+          proved.composer.contains?.(target) ||
+          target.contains?.(proved.composer)
+        )
+      );
+      if (targetsProtectedSubmit) {
+        burn('public-route-proof-alternate-submit');
+        try { event.preventDefault?.(); } catch {}
+        try { event.stopImmediatePropagation?.(); } catch {}
+        try { event.stopPropagation?.(); } catch {}
+        return;
+      }
+      if (
+        ['input', 'change', 'beforeinput', 'paste', 'drop'].includes(event?.type) &&
+        target && proved.composer.contains?.(target)
+      ) {
+        burn('public-route-proof-payload-event');
+        return;
+      }
+      if (event?.type === 'keydown') {
+        burn('public-route-proof-key-event');
+        try { event.preventDefault?.(); } catch {}
+        try { event.stopImmediatePropagation?.(); } catch {}
+        try { event.stopPropagation?.(); } catch {}
+        return;
+      }
+      const routeControl = target?.closest?.(
+        'button.__composer-pill, [aria-haspopup="menu"], [role="menu"], [role="listbox"]'
+      );
+      if (routeControl) burn('public-route-proof-route-event');
+    };
+    const navigationEvent = () => burn('public-route-proof-navigation');
+    proof.cleanup = () => {
+      cleanup();
+      cleanupHandoffBlocker();
+    };
+    proof.armGuard = () => {
+      if (proof.status !== 'valid' || proof.guardArmed === true) return false;
+      const checked = proof.validate?.();
+      if (checked?.ok !== true) return false;
+      proof.guardArmed = true;
+      cleanupHandoffBlocker();
+      return true;
+    };
+    proof.burn = burn;
+    proof.validate = () => {
+      if (proof.status !== 'valid') return { ok: false, reason: proof.reason || proof.status };
+      if (proof.preGuardViolation === true) {
+        burn('public-route-proof-dispatch-before-guard');
+      }
+      if (proof.status !== 'valid') return { ok: false, reason: proof.reason };
+      try { processMutations(observer?.takeRecords?.() ?? []); } catch { burn('public-route-proof-observer-failed'); }
+      if (proof.status !== 'valid') return { ok: false, reason: proof.reason };
+      if (Date.now() > proof.expiresAt) burn('public-route-proof-expired');
+      const current = locate();
+      if (
+        proof.status === 'valid' &&
+        (!current.ok || current.composer !== proof.composer || current.editor !== proof.editor ||
+          current.send !== proof.send || current.pill !== proof.pill ||
+          current.attachmentRoot !== proof.attachmentRoot)
+      ) burn('public-route-proof-bound-node-changed');
+      if (
+        proof.status === 'valid' &&
+        normalizeRenderedPromptDomIdentity(readEditorValue(proof.editor)) !== proof.promptSnapshot
+      ) burn('public-route-proof-prompt-changed');
+      if (
+        proof.status === 'valid' &&
+        (exactText(proof.pill) !== MODE_LABEL ||
+          proof.pill.getAttribute?.('aria-haspopup') !== 'menu' ||
+          proof.pill.getAttribute?.('aria-expanded') === 'true')
+      ) burn('public-route-proof-pill-changed');
+      if (proof.status === 'valid') {
+        const currentMenus = menuRoots();
+        if (
+          currentMenus.length !== proof.closedMenuBaseline.length ||
+          currentMenus.some((menu, index) => menu !== proof.closedMenuBaseline[index])
+        ) {
+          burn('public-route-proof-menu-set-changed');
+        }
+      }
+      if (proof.status === 'valid' && String(root.location?.href || '') !== proof.hrefSnapshot) {
+        burn('public-route-proof-location-changed');
+      }
+      return proof.status === 'valid'
+        ? { ok: true, reason: null }
+        : { ok: false, reason: proof.reason || proof.status };
+    };
+    proof.consume = () => {
+      if (proof.guardArmed !== true) {
+        burn('public-route-proof-consumed-before-guard');
+        return { ok: false, reason: proof.reason };
+      }
+      const checked = proof.validate();
+      if (!checked.ok) return checked;
+      proof.status = 'consumed';
+      proof.reason = null;
+      cleanup();
+      return { ok: true, reason: null };
+    };
+    if (typeof MutationObserver === 'function') {
+      try {
+        observer = new MutationObserver(processMutations);
+        observer.observe(document.documentElement, {
+          subtree: true,
+          childList: true,
+          characterData: true,
+          attributes: true,
+          attributeFilter: [
+            'aria-controls', 'aria-expanded', 'aria-checked', 'aria-disabled', 'aria-hidden',
+            'data-state', 'data-selected', 'disabled', 'hidden',
+            'data-oracle-send-binding', 'data-oracle-send-composer-binding',
+            'data-oracle-send-editor-binding', 'data-oracle-attachment-binding',
+          ],
+        });
+        proof.observer = observer;
+      } catch {
+        burn('public-route-proof-observer-unavailable');
+      }
+    } else {
+      burn('public-route-proof-observer-unavailable');
+    }
+    if (
+      proof.status === 'valid' &&
+      typeof root.addEventListener === 'function' &&
+      typeof root.removeEventListener === 'function'
+    ) {
+      for (const type of handoffEventTypes) {
+        root.addEventListener(type, handoffBlocker, { capture: true, passive: false });
+      }
+      handoffExpiryId = root.setTimeout?.(cleanupHandoffBlocker, TTL_MS + 250) ?? null;
+    } else if (proof.status === 'valid') {
+      burn('public-route-proof-handoff-blocker-unavailable');
+    }
+    if (proof.status === 'valid') {
+      for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'submit', 'keydown', 'input', 'change', 'beforeinput', 'paste', 'drop']) {
+        addListener(root, type, routeEvent);
+      }
+      for (const type of ['beforeunload', 'pagehide', 'popstate', 'hashchange']) {
+        addListener(root, type, navigationEvent);
+      }
+      if (typeof root.setTimeout === 'function') {
+        expiryId = root.setTimeout(() => burn('public-route-proof-expired'), TTL_MS);
+      }
+    }
+    if (proof.status !== 'valid') {
+      return fail(proof.reason || 'public-route-proof-invalid-at-mint');
+    }
+    registry.set(TOKEN, proof);
+    const finalCheck = proof.validate();
+    if (!finalCheck.ok) return fail(finalCheck.reason || 'public-route-proof-invalid-at-mint');
+    return {
+      verified: true,
+      composerBindingVerified: true,
+      modelVerified: true,
+      modeVerified: true,
+      modelSignals: [MODEL_LABEL],
+      modeSignals: [MODE_LABEL],
+      proofMinted: true,
+      reason: null,
+    };
+  })()`;
+}
+
 /**
- * Read the already-selected protected route without opening a picker or
- * dispatching any DOM event. This is safe to call after uploading files: it
- * can fail closed, but it can never remount the composer by selecting a model.
+ * Prove the protected route from the exact composer's public, causally owned
+ * parent menu and model submenu. This call intentionally opens and closes the
+ * picker, awaits UI settling, then mints a short-lived continuity proof after
+ * the last composer mutation. The later trusted-click capture guard is the
+ * only consumer; private React/Fiber state is not part of authorization.
  */
-export async function readGpt56SolProRouteReadOnly(
+export async function proveGpt56SolProPublicRoute(
   runtime: ChromeClient["Runtime"],
   attachmentBindingToken?: string,
   composerBindingToken?: string,
-): Promise<Gpt56SolProReadOnlyRouteEvidence> {
-  const probe = await readChatGptProDomProbe(runtime, attachmentBindingToken, composerBindingToken);
-  if (!probe) {
+): Promise<Gpt56SolProPublicRouteEvidence> {
+  const proofNonce = randomUUID();
+  const outcome = await runtime.evaluate({
+    expression: buildProtectedRouteProofMintExpression(
+      attachmentBindingToken,
+      composerBindingToken,
+      proofNonce,
+    ),
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  const result = outcome.result?.value;
+  if (!result || typeof result !== "object") {
     return {
       verified: false,
+      reason: "public-route-proof-result-missing",
       composerBindingVerified: false,
       modelVerified: false,
       modeVerified: false,
       modelSignals: [],
       modeSignals: [],
       privateModelProofAttempted: false,
-      privateModelProofValid: false,
+      privateModelProofValid: true,
     };
   }
-  return classifyGpt56SolProRouteProbe(probe);
+  const value = result as {
+    verified?: unknown;
+    composerBindingVerified?: unknown;
+    modelVerified?: unknown;
+    modeVerified?: unknown;
+    modelSignals?: unknown;
+    modeSignals?: unknown;
+    proofMinted?: unknown;
+    reason?: unknown;
+  };
+  const modelSignals = Array.isArray(value.modelSignals)
+    ? value.modelSignals.filter((signal): signal is string => typeof signal === "string")
+    : [];
+  const modeSignals = Array.isArray(value.modeSignals)
+    ? value.modeSignals.filter((signal): signal is string => typeof signal === "string")
+    : [];
+  const proofMinted = value.proofMinted === true;
+  return {
+    verified: value.verified === true && proofMinted,
+    reason: typeof value.reason === "string" ? value.reason : null,
+    composerBindingVerified: value.composerBindingVerified === true,
+    modelVerified: value.modelVerified === true && proofMinted,
+    modeVerified: value.modeVerified === true && proofMinted,
+    modelSignals,
+    modeSignals,
+    privateModelProofAttempted: false,
+    privateModelProofValid: true,
+  };
 }
-
-const PROTECTED_DISPATCH_GUARD_REGISTRY = "__oracleProtectedDispatchGuardsV2";
-const PROTECTED_DISPATCH_GUARD_TTL_MS = 15_000;
 
 function buildProtectedDispatchGuardInstallExpression(
   attachmentBindingToken?: string,
@@ -862,14 +1611,11 @@ function buildProtectedDispatchGuardInstallExpression(
     exactSubmission?: ExactSubmissionExpectation;
   } = { requireProtectedRoute: true },
 ): string {
-  const routeProbeExpression = buildChatGptProDomProbeExpression(
-    attachmentBindingToken,
-    composerBindingToken,
-  );
   const tokenLiteral = JSON.stringify(composerBindingToken ?? "");
   const bindingNameLiteral = JSON.stringify(verdictBindingName ?? "");
   const nonceLiteral = JSON.stringify(verdictNonce ?? "");
   const registryLiteral = JSON.stringify(PROTECTED_DISPATCH_GUARD_REGISTRY);
+  const routeProofRegistryLiteral = JSON.stringify(PROTECTED_ROUTE_PROOF_REGISTRY);
   const sendSelectorsLiteral = JSON.stringify(SEND_BUTTON_SELECTORS);
   const ttlLiteral = JSON.stringify(PROTECTED_DISPATCH_GUARD_TTL_MS);
   const requireProtectedRouteLiteral = JSON.stringify(options.requireProtectedRoute);
@@ -890,6 +1636,7 @@ function buildProtectedDispatchGuardInstallExpression(
     const BINDING_NAME = ${bindingNameLiteral};
     const NONCE = ${nonceLiteral};
     const REGISTRY_KEY = ${registryLiteral};
+    const ROUTE_PROOF_REGISTRY_KEY = ${routeProofRegistryLiteral};
     const SEND_SELECTORS = ${sendSelectorsLiteral};
     const TTL_MS = ${ttlLiteral};
     const REQUIRE_PROTECTED_ROUTE = ${requireProtectedRouteLiteral};
@@ -899,45 +1646,41 @@ function buildProtectedDispatchGuardInstallExpression(
     const EVENT_TYPES = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
     const normalizeRenderedPromptDomIdentity = ${normalizeRenderedPromptDomIdentity.toString()};
     const readAttachmentState = () => (${attachmentStateExpression});
-    const normalize = (value) => String(value || '')
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, ' ')
-      .replace(/\\s+/g, ' ')
-      .trim();
-    const readRoute = () => (${routeProbeExpression});
-    const classifyRoute = (probe) => {
-      const modelSignals = Array.from(new Set(
-        (Array.isArray(probe?.routeModelSignals) ? probe.routeModelSignals : [])
-          .map(normalize)
-          .filter(Boolean)
-      ));
-      const modeSignals = Array.from(new Set([
-        ...(Array.isArray(probe?.routeModeSignals) ? probe.routeModeSignals : [])
-          .map(normalize)
-          .filter(Boolean),
-        ...(probe?.hasProPill === true ? ['pro'] : []),
-      ]));
-      const composerBindingVerified = REQUIRE_PROTECTED_ROUTE
-        ? probe?.composerBindingVerified === true
-        : true;
-      const modelVerified =
-        !REQUIRE_PROTECTED_ROUTE || (composerBindingVerified &&
-        (probe?.privateModelProofAttempted !== true || probe?.privateModelProofValid === true) &&
-        modelSignals.length > 0 &&
-        modelSignals.every((label) => label === 'gpt 5 6 sol'));
-      const modeVerified =
-        !REQUIRE_PROTECTED_ROUTE || (composerBindingVerified &&
-        modeSignals.length > 0 &&
-        modeSignals.every((label) => label === 'pro'));
+    const readPublicRouteProof = () => {
+      if (!REQUIRE_PROTECTED_ROUTE) {
+        return {
+          verified: true,
+          reason: null,
+          record: null,
+          probe: {
+            routeModelSignals: [],
+            routeModeSignals: [],
+            privateModelProofAttempted: false,
+            privateModelProofValid: true,
+            hasProPill: false,
+            composerBindingVerified: true,
+          },
+        };
+      }
+      const registry = window[ROUTE_PROOF_REGISTRY_KEY];
+      const record = registry instanceof Map ? registry.get(TOKEN) : null;
+      let checked = null;
+      try { checked = record?.validate?.(); } catch {}
+      const verified = Boolean(
+        record && record.version === 1 && record.token === TOKEN && checked?.ok === true
+      );
       return {
-        verified: composerBindingVerified && modelVerified && modeVerified,
-        composerBindingVerified,
-        modelVerified,
-        modeVerified,
-        modelSignals,
-        modeSignals,
-        privateModelProofAttempted: probe?.privateModelProofAttempted === true,
-        privateModelProofValid: probe?.privateModelProofValid === true,
+        verified,
+        reason: verified ? null : (checked?.reason || record?.reason || 'public-route-proof-missing'),
+        record,
+        probe: {
+          routeModelSignals: verified ? ['GPT-5.6 Sol'] : [],
+          routeModeSignals: verified ? ['Pro'] : [],
+          privateModelProofAttempted: false,
+          privateModelProofValid: true,
+          hasProPill: verified,
+          composerBindingVerified: verified,
+        },
       };
     };
     const isVisible = (node) => {
@@ -1016,11 +1759,18 @@ function buildProtectedDispatchGuardInstallExpression(
       return editor?.innerText ?? editor?.textContent ?? '';
     };
     const inspect = (allowButtonFocus = false) => {
-      let probe = null;
-      try {
-        probe = readRoute();
-      } catch {}
-      const route = classifyRoute(probe);
+      const routeProof = readPublicRouteProof();
+      const probe = routeProof.probe;
+      const route = {
+        verified: routeProof.verified,
+        composerBindingVerified: routeProof.verified,
+        modelVerified: routeProof.verified,
+        modeVerified: routeProof.verified,
+        modelSignals: routeProof.verified ? ['gpt 5 6 sol'] : [],
+        modeSignals: routeProof.verified ? ['pro'] : [],
+        privateModelProofAttempted: false,
+        privateModelProofValid: true,
+      };
       const target = findExactBoundTarget();
       const focused = document.activeElement;
       const editorFocused = Boolean(
@@ -1053,7 +1803,7 @@ function buildProtectedDispatchGuardInstallExpression(
         reason: !TOKEN
           ? 'guard-token-missing'
           : !route.verified
-            ? 'protected-route-changed'
+            ? (routeProof.reason || 'protected-route-changed')
             : !target.verified
               ? 'bound-send-target-changed'
               : !exactPromptVerified
@@ -1065,6 +1815,7 @@ function buildProtectedDispatchGuardInstallExpression(
               : null,
         probe,
         route,
+        routeProofRecord: routeProof.record,
         button: target.button,
         composer: target.composer,
         editor: target.editor,
@@ -1101,6 +1852,7 @@ function buildProtectedDispatchGuardInstallExpression(
       typeof document.addEventListener !== 'function' ||
       typeof initial.button?.addEventListener !== 'function'
     ) {
+      try { initial.routeProofRecord?.burn?.(initial.reason || 'dispatch-guard-install-failed'); } catch {}
       removeOwnedAttributes();
       try { delete root[BINDING_NAME]; } catch {}
       return {
@@ -1122,6 +1874,7 @@ function buildProtectedDispatchGuardInstallExpression(
       root[REGISTRY_KEY] = registry;
     }
     if (root[REGISTRY_KEY] !== registry) {
+      try { initial.routeProofRecord?.burn?.('guard-registry-unavailable'); } catch {}
       removeOwnedAttributes();
       try { delete root[BINDING_NAME]; } catch {}
       return {
@@ -1140,6 +1893,8 @@ function buildProtectedDispatchGuardInstallExpression(
       status: 'armed',
       reason: null,
       lastEvent: null,
+      requireProtectedRoute: REQUIRE_PROTECTED_ROUTE,
+      routeProofRecord: initial.routeProofRecord,
       reported: false,
       cleaned: false,
       expiryId: null,
@@ -1169,6 +1924,7 @@ function buildProtectedDispatchGuardInstallExpression(
       state.status = 'blocked';
       state.reason = state.reason || reason;
       state.lastEvent = event?.type || state.lastEvent;
+      try { initial.routeProofRecord?.burn?.(state.reason); } catch {}
       reportTerminal();
       try { event?.preventDefault?.(); } catch {}
       try { event?.stopImmediatePropagation?.(); } catch {}
@@ -1225,6 +1981,7 @@ function buildProtectedDispatchGuardInstallExpression(
         current.button !== initial.button ||
         current.composer !== initial.composer ||
         current.editor !== initial.editor ||
+        current.routeProofRecord !== initial.routeProofRecord ||
         !targetMatches ||
         !hitMatches
       ) {
@@ -1243,6 +2000,14 @@ function buildProtectedDispatchGuardInstallExpression(
         return;
       }
       if (event.currentTarget !== initial.button) return;
+      if (REQUIRE_PROTECTED_ROUTE) {
+        let consumed = null;
+        try { consumed = current.routeProofRecord?.consume?.(); } catch {}
+        if (consumed?.ok !== true) {
+          cancel(event, consumed?.reason || 'public-route-proof-consume-failed');
+          return;
+        }
+      }
       state.status = 'allowed';
       if (!reportTerminal()) {
         state.status = 'blocked';
@@ -1253,6 +2018,9 @@ function buildProtectedDispatchGuardInstallExpression(
     const cleanup = () => {
       if (state.cleaned) return;
       state.cleaned = true;
+      if (state.status !== 'allowed') {
+        try { initial.routeProofRecord?.burn?.('dispatch-guard-cleanup'); } catch {}
+      }
       try { if (state.expiryId != null) root.clearTimeout?.(state.expiryId); } catch {}
       for (const type of EVENT_TYPES) {
         try { root.removeEventListener(type, listener, true); } catch {}
@@ -1281,6 +2049,25 @@ function buildProtectedDispatchGuardInstallExpression(
         }
       }, TTL_MS);
     }
+    let routeGuardArmed = !REQUIRE_PROTECTED_ROUTE;
+    if (REQUIRE_PROTECTED_ROUTE) {
+      try { routeGuardArmed = initial.routeProofRecord?.armGuard?.() === true; } catch {}
+    }
+    if (!routeGuardArmed) {
+      state.status = 'blocked';
+      state.reason = 'public-route-proof-guard-handoff-failed';
+      reportTerminal();
+      cleanup();
+      return {
+        installed: false,
+        status: state.status,
+        reason: state.reason,
+        routeProof: initial.probe,
+        exactPromptVerified: initial.exactPromptVerified,
+        attachmentStateVerified: initial.attachmentStateVerified,
+        focusVerified: initial.focusVerified,
+      };
+    }
     return {
       installed: true,
       status: state.status,
@@ -1296,16 +2083,31 @@ function buildProtectedDispatchGuardInstallExpression(
 function buildProtectedDispatchGuardStatusExpression(composerBindingToken?: string): string {
   const tokenLiteral = JSON.stringify(composerBindingToken ?? "");
   const registryLiteral = JSON.stringify(PROTECTED_DISPATCH_GUARD_REGISTRY);
+  const routeProofRegistryLiteral = JSON.stringify(PROTECTED_ROUTE_PROOF_REGISTRY);
   return `(() => {
     const registry = window[${registryLiteral}];
     const state = registry instanceof Map ? registry.get(${tokenLiteral}) : null;
     if (!state) {
       return { status: 'missing', reason: 'dispatch-guard-missing', lastEvent: null };
     }
+    const proofRegistry = window[${routeProofRegistryLiteral}];
+    const proof =
+      (proofRegistry instanceof Map ? proofRegistry.get(${tokenLiteral}) : null) ||
+      state.routeProofRecord ||
+      null;
+    let proofCheck = null;
+    try { proofCheck = proof?.validate?.(); } catch {}
     return {
-      status: state.status,
-      reason: state.reason || null,
+      status: state.status === 'armed' && state.requireProtectedRoute === true && proofCheck?.ok !== true
+        ? 'blocked'
+        : state.status,
+      reason: state.reason || (
+        state.status === 'armed' && state.requireProtectedRoute === true && proofCheck?.ok !== true
+          ? (proofCheck?.reason || proof?.reason || 'public-route-proof-invalid')
+          : null
+      ),
       lastEvent: state.lastEvent || null,
+      routeProofStatus: proof?.status || null,
     };
   })()`;
 }
@@ -1317,11 +2119,14 @@ function buildProtectedDispatchGuardVerdictExpression(
   const tokenLiteral = JSON.stringify(composerBindingToken ?? "");
   const bindingNameLiteral = JSON.stringify(verdictBindingName ?? "");
   const registryLiteral = JSON.stringify(PROTECTED_DISPATCH_GUARD_REGISTRY);
+  const routeProofRegistryLiteral = JSON.stringify(PROTECTED_ROUTE_PROOF_REGISTRY);
   return `(() => {
     const TOKEN = ${tokenLiteral};
     const BINDING_NAME = ${bindingNameLiteral};
     const root = window;
     const registry = root[${registryLiteral}];
+    const proofRegistry = root[${routeProofRegistryLiteral}];
+    const routeProof = proofRegistry instanceof Map ? proofRegistry.get(TOKEN) : null;
     const state = registry instanceof Map ? registry.get(TOKEN) : null;
     if (!state) {
       for (const node of Array.from(document.querySelectorAll('[data-oracle-send-binding]'))) {
@@ -1339,6 +2144,10 @@ function buildProtectedDispatchGuardVerdictExpression(
           try { node.removeAttribute?.('data-oracle-send-editor-binding'); } catch {}
         }
       }
+      try { routeProof?.burn?.('dispatch-guard-missing'); } catch {}
+      try { routeProof?.cleanup?.(); } catch {}
+      try { proofRegistry?.delete?.(TOKEN); } catch {}
+      try { if (proofRegistry instanceof Map && proofRegistry.size === 0) delete root[${routeProofRegistryLiteral}]; } catch {}
       try { delete root[BINDING_NAME]; } catch {}
       return { status: 'missing', reason: 'dispatch-guard-missing', lastEvent: null };
     }
@@ -1348,15 +2157,20 @@ function buildProtectedDispatchGuardVerdictExpression(
       lastEvent: state.lastEvent || null,
     };
     try { state.cleanup?.(); } catch {}
+    try { if (routeProof?.status === 'valid') routeProof.burn?.('dispatch-verdict-cleanup'); } catch {}
+    try { routeProof?.cleanup?.(); } catch {}
+    try { proofRegistry?.delete?.(TOKEN); } catch {}
+    try { if (proofRegistry instanceof Map && proofRegistry.size === 0) delete root[${routeProofRegistryLiteral}]; } catch {}
     return verdict;
   })()`;
 }
 
 /**
- * Build the read-only route probe for the final, synchronous dispatch-boundary
- * evaluation. The caller combines this with the bound send-target check in one
- * Runtime.evaluate task so React cannot change model/mode labels between the
- * two observations.
+ * Build the synchronous consumer for the public route proof minted by
+ * proveGpt56SolProPublicRoute(). Menu discovery is deliberately asynchronous;
+ * this guard does not claim same-task atomicity with it. Instead, the trusted
+ * click's capture listener requires the exact short-lived proof, revalidates
+ * its bound nodes/payload, and consumes it before application handlers run.
  */
 export function buildGpt56SolProFinalDispatchGuard(
   attachmentBindingToken?: string,
@@ -1369,7 +2183,7 @@ export function buildGpt56SolProFinalDispatchGuard(
   const requireProtectedRoute = options.requireProtectedRoute ?? true;
   const verdictBindingName = `__oracleProtectedDispatchVerdict_${randomUUID().replaceAll("-", "")}`;
   const verdictNonce = randomUUID();
-  const evidenceFromInstallResult = (value: unknown): Gpt56SolProReadOnlyRouteEvidence | null => {
+  const evidenceFromInstallResult = (value: unknown): Gpt56SolProPublicRouteEvidence | null => {
     if (!value || typeof value !== "object") return null;
     const result = value as { routeProof?: unknown };
     const probe = parseChatGptProDomProbe(result.routeProof);
@@ -1514,7 +2328,7 @@ export function classifyGpt56SolProRouteProbeForTest(args: {
   composerBindingVerified?: boolean;
   privateModelProofAttempted?: boolean;
   privateModelProofValid?: boolean;
-}): Gpt56SolProReadOnlyRouteEvidence {
+}): Gpt56SolProPublicRouteEvidence {
   return classifyGpt56SolProRouteProbe({
     routeModelSignals: args.routeModelSignals ?? [],
     routeModeSignals: args.routeModeSignals ?? [],
@@ -1530,6 +2344,18 @@ export function buildChatGptProDomProbeExpressionForTest(
   composerBindingToken?: string,
 ): string {
   return buildChatGptProDomProbeExpression(attachmentBindingToken, composerBindingToken);
+}
+
+export function buildGpt56SolProPublicRouteProofExpressionForTest(
+  attachmentBindingToken?: string,
+  composerBindingToken?: string,
+  proofNonce = "oracle-public-route-proof-test",
+): string {
+  return buildProtectedRouteProofMintExpression(
+    attachmentBindingToken,
+    composerBindingToken,
+    proofNonce,
+  );
 }
 
 function buildSynthesisGateInput(

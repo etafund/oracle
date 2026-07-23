@@ -6,7 +6,7 @@ import {
 import {
   buildChatGptProDomProbeExpressionForTest,
   buildGpt56SolProFinalDispatchGuard,
-  classifyGpt56SolProRouteProbeForTest,
+  buildGpt56SolProPublicRouteProofExpressionForTest,
 } from "../../src/browser/providers/chatgptDomProvider.ts";
 
 interface FakeDomEvent {
@@ -66,10 +66,99 @@ class FakeEventTarget {
   }
 }
 
+interface FakeMutationRecord {
+  type: "attributes" | "characterData" | "childList";
+  target: unknown;
+  attributeName?: string;
+  addedNodes?: unknown[];
+  removedNodes?: unknown[];
+}
+
+class FakeMutationObserver {
+  private static readonly observers = new Set<FakeMutationObserver>();
+  private records: FakeMutationRecord[] = [];
+  private target: unknown = null;
+  private options: {
+    subtree?: boolean;
+    attributes?: boolean;
+    characterData?: boolean;
+    childList?: boolean;
+    attributeFilter?: string[];
+  } = {};
+  private scheduled = false;
+
+  constructor(private readonly callback: (records: FakeMutationRecord[]) => void) {}
+
+  observe(
+    target: unknown,
+    options: {
+      subtree?: boolean;
+      attributes?: boolean;
+      characterData?: boolean;
+      childList?: boolean;
+      attributeFilter?: string[];
+    },
+  ): void {
+    this.target = target;
+    this.options = options;
+    FakeMutationObserver.observers.add(this);
+  }
+
+  disconnect(): void {
+    FakeMutationObserver.observers.delete(this);
+    this.target = null;
+    this.records = [];
+  }
+
+  takeRecords(): FakeMutationRecord[] {
+    const records = this.records;
+    this.records = [];
+    return records;
+  }
+
+  static notify(record: FakeMutationRecord): void {
+    for (const observer of this.observers) observer.enqueue(record);
+  }
+
+  private enqueue(record: FakeMutationRecord): void {
+    const target = record.target as { contains?: (node: unknown) => boolean } | null;
+    const observed = this.target as { contains?: (node: unknown) => boolean } | null;
+    if (
+      !observed ||
+      (target !== observed && !(this.options.subtree && observed.contains?.(target)))
+    ) {
+      return;
+    }
+    if (record.type === "attributes") {
+      if (!this.options.attributes) return;
+      if (
+        this.options.attributeFilter &&
+        record.attributeName &&
+        !this.options.attributeFilter.includes(record.attributeName)
+      ) {
+        return;
+      }
+    }
+    if (record.type === "characterData" && !this.options.characterData) return;
+    if (record.type === "childList" && !this.options.childList) return;
+    this.records.push(record);
+    if (this.scheduled) return;
+    this.scheduled = true;
+    queueMicrotask(() => {
+      this.scheduled = false;
+      const records = this.takeRecords();
+      if (records.length > 0) this.callback(records);
+    });
+  }
+}
+
 class FakeElement extends FakeEventTarget {
   parentElement: FakeElement | null = null;
   readonly children: FakeElement[];
   readonly tagName: string;
+  private clickHandler: (() => void) | null = null;
+  private focusHandler: (() => void) | null = null;
+  private hoverHandler: (() => void) | null = null;
 
   constructor(
     tagName: string,
@@ -107,14 +196,43 @@ class FakeElement extends FakeEventTarget {
 
   setAttribute(name: string, value: string): void {
     this.attributes[name] = value;
+    FakeMutationObserver.notify({ type: "attributes", target: this, attributeName: name });
   }
 
   removeAttribute(name: string): void {
     delete this.attributes[name];
+    FakeMutationObserver.notify({ type: "attributes", target: this, attributeName: name });
   }
 
   setText(value: string): void {
     this.ownText = value;
+    FakeMutationObserver.notify({ type: "characterData", target: this });
+  }
+
+  setClickHandler(handler: () => void): void {
+    this.clickHandler = handler;
+  }
+
+  setFocusHandler(handler: () => void): void {
+    this.focusHandler = handler;
+  }
+
+  setHoverHandler(handler: () => void): void {
+    this.hoverHandler = handler;
+  }
+
+  click(): void {
+    this.clickHandler?.();
+  }
+
+  focus(): void {
+    this.focusHandler?.();
+  }
+
+  dispatchEvent(event: { type?: string }): boolean {
+    if (event.type === "click") this.click();
+    if (event.type === "pointerover") this.hoverHandler?.();
+    return true;
   }
 
   hasAttribute(name: string): boolean {
@@ -134,6 +252,11 @@ class FakeElement extends FakeEventTarget {
       left: Number(this.attributes["data-left"] ?? 0),
       top: Number(this.attributes["data-top"] ?? 0),
     };
+  }
+
+  getClientRects(): Array<ReturnType<FakeElement["getBoundingClientRect"]>> {
+    const rect = this.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 ? [rect] : [];
   }
 
   contains(node: FakeElement): boolean {
@@ -219,7 +342,8 @@ class FakeDocument extends FakeEventTarget {
 class FakeWindow extends FakeEventTarget {
   [key: string]: unknown;
   readonly location = { href: "https://chatgpt.com/" };
-  private timerCallback: (() => void) | null = null;
+  private nextTimerId = 1;
+  private readonly longTimers = new Map<number, () => void>();
 
   getComputedStyle(node: FakeElement): {
     display: string;
@@ -233,19 +357,31 @@ class FakeWindow extends FakeEventTarget {
     };
   }
 
-  setTimeout(callback: () => void): number {
-    this.timerCallback = callback;
+  requestAnimationFrame(callback: () => void): number {
+    queueMicrotask(callback);
     return 1;
   }
 
-  clearTimeout(): void {
-    this.timerCallback = null;
+  setTimeout(callback: () => void, delay = 0): number {
+    const id = this.nextTimerId++;
+    if (delay >= 1_000) {
+      this.longTimers.set(id, callback);
+    } else {
+      queueMicrotask(() => {
+        if (!this.longTimers.has(id)) callback();
+      });
+    }
+    return id;
+  }
+
+  clearTimeout(id?: number): void {
+    if (id !== undefined) this.longTimers.delete(id);
   }
 
   expireGuard(): void {
-    const callback = this.timerCallback;
-    this.timerCallback = null;
-    callback?.();
+    const timers = Array.from(this.longTimers.values());
+    this.longTimers.clear();
+    for (const callback of timers) callback();
   }
 
   dispatchDomEvent(
@@ -411,200 +547,6 @@ function evaluateSendButtonTargetExpression(
       pointerEvents: node.getAttribute("data-pointer-events") ?? "auto",
     }),
   });
-}
-
-function evaluateBoundRouteProbe(
-  document: FakeDocument,
-  bindingToken: string,
-): ReturnType<typeof classifyGpt56SolProRouteProbeForTest> {
-  const expression = buildChatGptProDomProbeExpressionForTest(bindingToken);
-  const evaluate = new Function("document", "window", `return ${expression};`) as (
-    document: FakeDocument,
-    window: unknown,
-  ) => {
-    routeModelSignals?: readonly string[];
-    routeModeSignals?: readonly string[];
-    hasProPill?: boolean;
-    composerBindingVerified?: boolean;
-  };
-  const probe = evaluate(document, {
-    location: { href: "https://chatgpt.com/" },
-    getComputedStyle: (node: FakeElement) => ({
-      display: node.hidden ? "none" : (node.getAttribute("data-display") ?? "block"),
-      visibility: node.getAttribute("data-visibility") ?? "visible",
-    }),
-  });
-  return classifyGpt56SolProRouteProbeForTest(probe);
-}
-
-function evaluateDispatchBoundRouteProbe(
-  document: FakeDocument,
-  composerBindingToken: string,
-): ReturnType<typeof classifyGpt56SolProRouteProbeForTest> {
-  const expression = buildChatGptProDomProbeExpressionForTest(undefined, composerBindingToken);
-  const evaluate = new Function("document", "window", `return ${expression};`) as (
-    document: FakeDocument,
-    window: unknown,
-  ) => {
-    routeModelSignals?: readonly string[];
-    routeModeSignals?: readonly string[];
-    hasProPill?: boolean;
-    composerBindingVerified?: boolean;
-  };
-  return classifyGpt56SolProRouteProbeForTest(
-    evaluate(document, {
-      location: { href: "https://chatgpt.com/" },
-      getComputedStyle: (node: FakeElement) => ({
-        display: node.hidden ? "none" : (node.getAttribute("data-display") ?? "block"),
-        visibility: node.getAttribute("data-visibility") ?? "visible",
-      }),
-    }),
-  );
-}
-
-function makeRouteComposer(args: {
-  bindingToken?: string;
-  composerBindingToken?: string;
-  model?: string | null;
-  secondaryModel?: string;
-  mode?: string;
-  proPill?: boolean;
-  hidden?: boolean;
-}): FakeElement {
-  const children = [
-    new FakeElement("div", {
-      id: "prompt-textarea",
-      contenteditable: "true",
-      role: "textbox",
-    }),
-  ];
-  if (args.model !== null) {
-    children.push(
-      new FakeElement(
-        "button",
-        { "data-testid": "model-switcher-dropdown-button" },
-        [],
-        args.model ?? "GPT-5.6 Sol",
-      ),
-    );
-  }
-  if (args.secondaryModel) {
-    children.push(
-      new FakeElement("div", { "data-testid": "composer-model-label" }, [], args.secondaryModel),
-    );
-  }
-  if (args.mode) {
-    children.push(
-      new FakeElement("button", { "data-testid": "effort-picker-button" }, [], args.mode),
-    );
-  }
-  if (args.proPill) {
-    children.push(new FakeElement("button", { class: "__composer-pill" }, [], "Pro"));
-  }
-  children.push(new FakeElement("button", { "data-testid": "send-button" }, [], "Send"));
-  return new FakeElement(
-    "div",
-    {
-      "data-testid": "unified-composer",
-      ...(args.bindingToken ? { "data-oracle-attachment-binding": args.bindingToken } : {}),
-      ...(args.composerBindingToken
-        ? { "data-oracle-send-composer-binding": args.composerBindingToken }
-        : {}),
-      ...(args.hidden ? { "data-hidden": "true" } : {}),
-    },
-    children,
-  );
-}
-
-interface FakeSelectedVersionEntry {
-  displayTextForIntelligence: string;
-}
-
-interface FakeReactFiber {
-  stateNode?: unknown;
-  return: FakeReactFiber | null;
-  alternate?: FakeReactFiber | null;
-  memoizedProps?: unknown;
-  pendingProps?: unknown;
-}
-
-function selectedVersionProps(entry: FakeSelectedVersionEntry | null): unknown {
-  return {
-    children: [
-      null,
-      {
-        props: {
-          children: {
-            props: {
-              children: {
-                props: entry
-                  ? {
-                      composerIntelligencePickerState: {
-                        selectedVersionEntry: entry,
-                      },
-                    }
-                  : {},
-              },
-            },
-          },
-        },
-      },
-    ],
-  };
-}
-
-function attachComposerSelectedVersionState(
-  composer: FakeElement,
-  args: {
-    currentLabel: string | null;
-    currentPendingLabel?: string | null;
-    alternateLabel?: string | null;
-    alternatePendingLabel?: string | null;
-    host?: FakeElement;
-    pill?: FakeElement;
-  },
-): {
-  entries: FakeSelectedVersionEntry[];
-  pill: FakeElement;
-} {
-  const pill =
-    args.pill ??
-    composer
-      .querySelectorAll("button.__composer-pill")
-      .find((candidate) => candidate.textContent.trim() === "Pro");
-  if (!pill) throw new Error("test composer requires a bare Pro pill");
-  const entries: FakeSelectedVersionEntry[] = [];
-  const entry = (label: string | null | undefined): FakeSelectedVersionEntry | null => {
-    if (label == null) return null;
-    const value = { displayTextForIntelligence: label };
-    entries.push(value);
-    return value;
-  };
-  const makeBranch = (
-    memoizedLabel: string | null,
-    pendingLabel: string | null | undefined,
-  ): FakeReactFiber => {
-    const hostFiber: FakeReactFiber = {
-      stateNode: args.host ?? composer,
-      return: null,
-    };
-    const ownerFiber: FakeReactFiber = {
-      memoizedProps: selectedVersionProps(entry(memoizedLabel)),
-      pendingProps: selectedVersionProps(entry(pendingLabel ?? memoizedLabel)),
-      return: hostFiber,
-    };
-    return { stateNode: pill, return: ownerFiber };
-  };
-  const current = makeBranch(args.currentLabel, args.currentPendingLabel);
-  const alternateLabel = args.alternateLabel ?? args.currentLabel;
-  const alternate = makeBranch(alternateLabel, args.alternatePendingLabel ?? alternateLabel);
-  current.alternate = alternate;
-  alternate.alternate = current;
-  Object.defineProperty(pill, "__reactFiber$oracleTest", {
-    configurable: true,
-    value: current,
-  });
-  return { entries, pill };
 }
 
 describe("prompt composer attachment expressions", () => {
@@ -1287,510 +1229,721 @@ describe("prompt composer attachment expressions", () => {
   });
 });
 
-describe("post-upload protected-route binding", () => {
-  const bindingToken = "attachment-binding-exact-1";
+class FakeMouseEvent {
+  constructor(
+    readonly type: string,
+    readonly options: Record<string, unknown> = {},
+  ) {}
+}
 
-  test("verifies the live closed-composer shape from bound selected-version state", () => {
-    const composer = makeRouteComposer({ bindingToken, model: null, proPill: true });
-    attachComposerSelectedVersionState(composer, { currentLabel: "GPT-5.6 Sol" });
-    const document = new FakeDocument([composer]);
+class FakeKeyboardEvent extends FakeMouseEvent {}
 
-    expect(evaluateBoundRouteProbe(document, bindingToken)).toMatchObject({
-      verified: true,
-      composerBindingVerified: true,
-      modelVerified: true,
-      modeVerified: true,
-      modelSignals: ["gpt 5 6 sol"],
-      modeSignals: ["pro"],
-      privateModelProofAttempted: true,
-      privateModelProofValid: true,
-    });
+interface PublicRouteFixtureOptions {
+  additionalMenuPill?: boolean;
+  additionalProPill?: boolean;
+  attachmentToken?: string;
+  composerBindingToken?: string;
+  duplicateParentId?: boolean;
+  duplicateSolRow?: "visible" | "hidden";
+  fallbackOwnership?: boolean;
+  fallbackPollution?: boolean;
+  hiddenUnmarkedOtherModel?: boolean;
+  modelCheckedLabel?: "GPT-5.6 Sol" | "GPT-5.6 Sol Mini";
+  modelMarkerMissing?: boolean;
+  modelOptionalMarkerConflict?: boolean;
+  modelStateContradiction?: boolean;
+  prompt?: string;
+  proChecked?: boolean;
+  proMarkerMissing?: boolean;
+  proOptionalMarkerConflict?: boolean;
+  proRowText?: string;
+  proStateContradiction?: boolean;
+  remountParentMenuOnModelOpen?: boolean;
+  remountPillOnClose?: boolean;
+  remountPillOnOpen?: boolean;
+  remountSolTriggerOnOpen?: boolean;
+  solRowText?: string;
+  solOpensOnDelayedHover?: boolean;
+  solTriggerText?: string;
+  wrapComposerInForm?: boolean;
+}
+
+function makePublicRouteFixture(options: PublicRouteFixtureOptions = {}) {
+  const composerBindingToken = options.composerBindingToken ?? "public-route-binding-1";
+  const attachmentToken = options.attachmentToken;
+  const prompt = options.prompt ?? "exact protected prompt";
+  const editor = new FakeElement(
+    "div",
+    {
+      id: "prompt-textarea",
+      contenteditable: "true",
+      role: "textbox",
+      "data-oracle-send-editor-binding": composerBindingToken,
+    },
+    [],
+    prompt,
+  );
+  let pill = new FakeElement(
+    "button",
+    {
+      class: "__composer-pill",
+      "aria-haspopup": "menu",
+      "aria-expanded": "false",
+      ...(options.fallbackOwnership ? {} : { "aria-controls": "intelligence-menu" }),
+    },
+    [],
+    "Pro",
+  );
+  const sendButton = new FakeElement("button", {
+    "data-testid": "send-button",
+    "data-oracle-send-binding": composerBindingToken,
   });
+  const additionalPill =
+    options.additionalMenuPill || options.additionalProPill
+      ? new FakeElement(
+          "button",
+          {
+            class: "__composer-pill",
+            "aria-haspopup": "menu",
+            "aria-expanded": "false",
+          },
+          [],
+          options.additionalProPill ? "Pro" : "Canvas",
+        )
+      : null;
+  const composer = new FakeElement(
+    "div",
+    {
+      "data-testid": "unified-composer",
+      "data-oracle-send-composer-binding": composerBindingToken,
+      ...(attachmentToken ? { "data-oracle-attachment-binding": attachmentToken } : {}),
+    },
+    [editor, pill, ...(additionalPill ? [additionalPill] : []), sendButton],
+  );
+  const form = options.wrapComposerInForm ? new FakeElement("form", {}, [composer]) : composer;
 
-  test("a bare Pro pill is mode-only when selected-version state is absent", () => {
-    const composer = makeRouteComposer({ bindingToken, model: null, proPill: true });
-    const document = new FakeDocument([composer]);
+  const proChecked = options.proChecked !== false;
+  const proRow = new FakeElement(
+    "button",
+    {
+      role: "menuitemradio",
+      "aria-checked": proChecked ? "true" : "false",
+      ...(options.proMarkerMissing
+        ? {}
+        : {
+            "data-state": options.proStateContradiction
+              ? proChecked
+                ? "unchecked"
+                : "checked"
+              : proChecked
+                ? "checked"
+                : "unchecked",
+          }),
+      ...(options.proOptionalMarkerConflict
+        ? { "aria-selected": proChecked ? "false" : "true" }
+        : {}),
+    },
+    [],
+    options.proRowText ?? "Pro",
+  );
+  const standardRow = new FakeElement(
+    "button",
+    { role: "menuitemradio", "aria-checked": "false", "data-state": "unchecked" },
+    [],
+    "Standard",
+  );
+  let solTrigger = new FakeElement(
+    "button",
+    {
+      role: "menuitem",
+      "aria-haspopup": "menu",
+      "aria-expanded": "false",
+      ...(options.fallbackOwnership ? {} : { "aria-controls": "sol-model-menu" }),
+    },
+    [],
+    options.solTriggerText ?? "GPT-5.6 Sol",
+  );
+  let parentMenu = new FakeElement(
+    "div",
+    {
+      id: "intelligence-menu",
+      role: "menu",
+      "data-hidden": "true",
+    },
+    [proRow, standardRow, solTrigger],
+  );
 
-    expect(evaluateBoundRouteProbe(document, bindingToken)).toMatchObject({
-      verified: false,
-      composerBindingVerified: true,
-      modelVerified: false,
-      modeVerified: true,
-      modelSignals: [],
-      modeSignals: ["pro"],
-      privateModelProofAttempted: true,
-      privateModelProofValid: false,
-    });
-  });
-
-  test("rejects a wrong or conflicting composer-owned selected version", () => {
-    const cases = [
-      { currentLabel: "GPT-5.6 Sol Mini" },
-      {
-        currentLabel: "GPT-5.6 Sol",
-        currentPendingLabel: "GPT-5.6 Sol Mini",
-      },
-    ];
-    for (const selection of cases) {
-      const composer = makeRouteComposer({ bindingToken, proPill: true });
-      attachComposerSelectedVersionState(composer, selection);
-      const evidence = evaluateBoundRouteProbe(new FakeDocument([composer]), bindingToken);
-      expect(evidence).toMatchObject({
-        verified: false,
-        composerBindingVerified: true,
-        modelVerified: false,
-        modeVerified: true,
-      });
-      expect(evidence.modelSignals).toContain("gpt 5 6 sol mini");
-    }
-  });
-
-  test("rejects current-versus-alternate selected-version drift", () => {
-    const composer = makeRouteComposer({ bindingToken, model: null, proPill: true });
-    attachComposerSelectedVersionState(composer, {
-      currentLabel: "GPT-5.6 Sol",
-      alternateLabel: "GPT-5.6 Sol Mini",
-    });
-
-    const evidence = evaluateBoundRouteProbe(new FakeDocument([composer]), bindingToken);
-    expect(evidence).toMatchObject({
-      verified: false,
-      composerBindingVerified: true,
-      modelVerified: false,
-      modeVerified: true,
-    });
-    expect(evidence.modelSignals).toEqual(
-      expect.arrayContaining(["gpt 5 6 sol", "gpt 5 6 sol mini"]),
+  const selectedLabel = options.modelCheckedLabel ?? "GPT-5.6 Sol";
+  const solChecked = selectedLabel === "GPT-5.6 Sol";
+  const solRow = new FakeElement(
+    "button",
+    {
+      role: "menuitemradio",
+      "aria-checked": solChecked ? "true" : "false",
+      ...(options.modelMarkerMissing
+        ? {}
+        : {
+            "data-state": options.modelStateContradiction
+              ? solChecked
+                ? "unchecked"
+                : "checked"
+              : solChecked
+                ? "checked"
+                : "unchecked",
+          }),
+      ...(options.modelOptionalMarkerConflict
+        ? { "data-selected": solChecked ? "false" : "true" }
+        : {}),
+    },
+    [],
+    options.solRowText ?? "GPT-5.6 Sol",
+  );
+  const miniRow = new FakeElement(
+    "button",
+    {
+      role: "menuitemradio",
+      ...(options.hiddenUnmarkedOtherModel
+        ? { "data-hidden": "true" }
+        : {
+            "aria-checked": solChecked ? "false" : "true",
+            "data-state": solChecked ? "unchecked" : "checked",
+          }),
+    },
+    [],
+    "GPT-5.6 Sol Mini",
+  );
+  const modelRows = [solRow, miniRow];
+  if (options.duplicateSolRow) {
+    modelRows.push(
+      new FakeElement(
+        "button",
+        {
+          role: "menuitemradio",
+          "aria-checked": "false",
+          "data-state": "unchecked",
+          ...(options.duplicateSolRow === "hidden" ? { "data-hidden": "true" } : {}),
+        },
+        [],
+        "GPT-5.6 Sol",
+      ),
     );
-  });
+  }
+  const modelMenu = new FakeElement(
+    "div",
+    { id: "sol-model-menu", role: "menu", "data-hidden": "true" },
+    modelRows,
+  );
+  const pollutionMenu = new FakeElement(
+    "div",
+    { id: "pollution-menu", role: "menu", "data-hidden": "true" },
+    [
+      new FakeElement(
+        "button",
+        { role: "menuitemradio", "aria-checked": "true", "data-state": "checked" },
+        [],
+        "Unrelated",
+      ),
+    ],
+  );
+  const duplicateParent = new FakeElement(
+    "div",
+    {
+      id: "intelligence-menu",
+      role: "menu",
+      "data-hidden": "true",
+    },
+    [],
+  );
+  const document = new FakeDocument([
+    form,
+    parentMenu,
+    modelMenu,
+    ...(options.fallbackPollution ? [pollutionMenu] : []),
+    ...(options.duplicateParentId ? [duplicateParent] : []),
+  ]);
+  const windowStub = new FakeWindow();
+  document.setHitTarget(sendButton);
+  editor.setFocusHandler(() => document.setActiveElement(editor));
+  document.setActiveElement(editor);
 
-  test("cannot borrow private selected-version state from a foreign composer", () => {
-    const boundComposer = makeRouteComposer({ bindingToken, model: null, proPill: true });
-    const foreignComposer = makeRouteComposer({ model: null, proPill: true });
-    attachComposerSelectedVersionState(foreignComposer, { currentLabel: "GPT-5.6 Sol" });
-    const document = new FakeDocument([boundComposer, foreignComposer]);
-
-    expect(evaluateBoundRouteProbe(document, bindingToken)).toMatchObject({
-      verified: false,
-      composerBindingVerified: true,
-      modelVerified: false,
-      modeVerified: true,
-      modelSignals: [],
-    });
-  });
-
-  test("ignores a hidden stale Pro pill and rejects a fiber not owned by the bound composer", () => {
-    const hiddenComposer = makeRouteComposer({ bindingToken, model: null, proPill: true });
-    const hiddenPill = new FakeElement(
+  const closeAllMenus = () => {
+    pill.setAttribute("aria-expanded", "false");
+    solTrigger.setAttribute("aria-expanded", "false");
+    parentMenu.setAttribute("data-hidden", "true");
+    modelMenu.setAttribute("data-hidden", "true");
+    pollutionMenu.setAttribute("data-hidden", "true");
+  };
+  let pillRemounted = false;
+  const replacePill = (target: FakeElement, expanded: boolean) => {
+    const replacement = new FakeElement(
       "button",
-      { class: "__composer-pill", "data-hidden": "true" },
+      {
+        class: "__composer-pill",
+        "aria-haspopup": "menu",
+        "aria-expanded": String(expanded),
+        ...(options.fallbackOwnership ? {} : { "aria-controls": "intelligence-menu" }),
+      },
       [],
       "Pro",
     );
-    hiddenPill.parentElement = hiddenComposer;
-    hiddenComposer.children.push(hiddenPill);
-    attachComposerSelectedVersionState(hiddenComposer, {
-      currentLabel: "GPT-5.6 Sol",
-      pill: hiddenPill,
+    installPillHandler(replacement);
+    const index = composer.children.indexOf(target);
+    composer.children[index] = replacement;
+    replacement.parentElement = composer;
+    target.setAttribute("data-connected", "false");
+    pill = replacement;
+  };
+  const installPillHandler = (target: FakeElement) =>
+    target.setClickHandler(() => {
+      if (target.getAttribute("aria-expanded") === "true") {
+        closeAllMenus();
+        if (options.remountPillOnClose) replacePill(target, false);
+        return;
+      }
+      target.setAttribute("aria-expanded", "true");
+      parentMenu.setAttribute("data-hidden", "false");
+      if (options.fallbackPollution) pollutionMenu.setAttribute("data-hidden", "false");
+      if (options.remountPillOnOpen && !pillRemounted) {
+        pillRemounted = true;
+        replacePill(target, true);
+      }
     });
-    expect(evaluateBoundRouteProbe(new FakeDocument([hiddenComposer]), bindingToken)).toMatchObject(
-      {
-        verified: false,
-        modelVerified: false,
-        modelSignals: [],
-      },
-    );
+  installPillHandler(pill);
 
-    const staleComposer = makeRouteComposer({ bindingToken, model: null, proPill: true });
-    attachComposerSelectedVersionState(staleComposer, {
-      currentLabel: "GPT-5.6 Sol",
-      host: new FakeElement("div", { "data-testid": "stale-composer" }),
-    });
-    expect(evaluateBoundRouteProbe(new FakeDocument([staleComposer]), bindingToken)).toMatchObject({
-      verified: false,
-      modelVerified: false,
-      modelSignals: [],
-    });
-  });
-
-  test("requires exactly one visible bare Pro pill for the private fallback", () => {
-    const composer = makeRouteComposer({ bindingToken, proPill: true });
-    attachComposerSelectedVersionState(composer, { currentLabel: "GPT-5.6 Sol" });
-    const duplicate = new FakeElement("button", { class: "__composer-pill" }, [], "Pro");
-    duplicate.parentElement = composer;
-    composer.children.push(duplicate);
-
-    expect(evaluateBoundRouteProbe(new FakeDocument([composer]), bindingToken)).toMatchObject({
-      verified: false,
-      modelVerified: false,
-      modeVerified: true,
-      modelSignals: ["gpt 5 6 sol"],
-    });
-  });
-
-  test("requires one unambiguous React fiber owner for the private fallback", () => {
-    const composer = makeRouteComposer({ bindingToken, proPill: true });
-    const { pill } = attachComposerSelectedVersionState(composer, {
-      currentLabel: "GPT-5.6 Sol",
-    });
-    const fiber = (pill as unknown as Record<string, unknown>)["__reactFiber$oracleTest"];
-    Object.defineProperty(pill, "__reactFiber$ambiguous", { value: fiber });
-
-    expect(evaluateBoundRouteProbe(new FakeDocument([composer]), bindingToken)).toMatchObject({
-      verified: false,
-      modelVerified: false,
-      modeVerified: true,
-      modelSignals: ["gpt 5 6 sol"],
-    });
-  });
-
-  test("rejects explicit empty or truncated selected-version state", () => {
-    const makeCase = (extraProps: unknown) => {
-      const composer = makeRouteComposer({ bindingToken, proPill: true });
-      const { pill } = attachComposerSelectedVersionState(composer, {
-        currentLabel: "GPT-5.6 Sol",
-      });
-      const leaf = (pill as unknown as Record<string, FakeReactFiber>)["__reactFiber$oracleTest"];
-      const owner = leaf.return!;
-      owner.memoizedProps = { children: [owner.memoizedProps, extraProps] };
-      const evidence = evaluateBoundRouteProbe(new FakeDocument([composer]), bindingToken);
-      expect(evidence.modelSignals).toContain("gpt 5 6 sol");
-      expect(evidence).toMatchObject({
-        privateModelProofAttempted: true,
-        privateModelProofValid: false,
-      });
-      return evidence;
+  let solTriggerRemounted = false;
+  let parentMenuRemounted = false;
+  let delayedHoverScheduled = false;
+  const installSolTriggerHandler = (target: FakeElement) => {
+    const open = () => {
+      target.setAttribute("aria-expanded", "true");
+      modelMenu.setAttribute("data-hidden", "false");
+      if (options.remountSolTriggerOnOpen && !solTriggerRemounted) {
+        solTriggerRemounted = true;
+        const replacement = new FakeElement(
+          "button",
+          {
+            role: "menuitem",
+            "aria-haspopup": "menu",
+            "aria-expanded": "true",
+            ...(options.fallbackOwnership ? {} : { "aria-controls": "sol-model-menu" }),
+          },
+          [],
+          options.solTriggerText ?? "GPT-5.6 Sol",
+        );
+        installSolTriggerHandler(replacement);
+        const index = parentMenu.children.indexOf(target);
+        parentMenu.children[index] = replacement;
+        replacement.parentElement = parentMenu;
+        target.setAttribute("data-connected", "false");
+        solTrigger = replacement;
+      }
+      if (options.remountParentMenuOnModelOpen && !parentMenuRemounted) {
+        parentMenuRemounted = true;
+        const oldParent = parentMenu;
+        const replacement = new FakeElement(
+          "div",
+          {
+            id: "intelligence-menu",
+            role: "menu",
+            "data-hidden": "false",
+          },
+          [proRow, standardRow, solTrigger],
+        );
+        const index = document.body.children.indexOf(oldParent);
+        document.body.children[index] = replacement;
+        replacement.parentElement = document.body;
+        oldParent.setAttribute("data-connected", "false");
+        parentMenu = replacement;
+      }
     };
-
-    expect(
-      makeCase({
-        composerIntelligencePickerState: { selectedVersionEntry: null },
-      }),
-    ).toMatchObject({ verified: false, modelVerified: false, modeVerified: true });
-
-    let deepState: unknown = {
-      composerIntelligencePickerState: {
-        selectedVersionEntry: { displayTextForIntelligence: "GPT-5.6 Sol Mini" },
-      },
-    };
-    for (let depth = 0; depth < 14; depth += 1) deepState = { props: deepState };
-    expect(makeCase(deepState)).toMatchObject({
-      verified: false,
-      modelVerified: false,
-      modeVerified: true,
+    target.setClickHandler(() => {
+      if (!options.solOpensOnDelayedHover) open();
     });
-  });
+    if (options.solOpensOnDelayedHover) {
+      target.setHoverHandler(() => {
+        if (delayedHoverScheduled) return;
+        delayedHoverScheduled = true;
+        windowStub.setTimeout(open, 150);
+      });
+    }
+  };
+  installSolTriggerHandler(solTrigger);
 
-  test("rejects private current-state drift even when a public model label is exact", () => {
-    const composer = makeRouteComposer({ bindingToken, proPill: true });
-    attachComposerSelectedVersionState(composer, { currentLabel: "GPT-5.6 Sol Mini" });
-
-    expect(evaluateBoundRouteProbe(new FakeDocument([composer]), bindingToken)).toMatchObject({
-      verified: false,
-      modelVerified: false,
-      modelSignals: expect.arrayContaining(["gpt 5 6 sol", "gpt 5 6 sol mini"]),
-      modeSignals: ["pro"],
-    });
-  });
-
-  test("uses only visible route signals from the exact token-bound active composer", () => {
-    const boundComposer = makeRouteComposer({ bindingToken, proPill: true });
-    attachComposerSelectedVersionState(boundComposer, { currentLabel: "GPT-5.6 Sol" });
-    const hiddenStaleComposer = makeRouteComposer({
-      bindingToken,
-      model: "GPT-5.6 Sol Mini",
-      mode: "Standard",
-      hidden: true,
-    });
-    const documentStaleSignals = new FakeElement("div", {}, [
-      new FakeElement(
-        "div",
-        {
-          role: "menuitem",
-          "data-testid": "model-switcher-stale",
-          "aria-selected": "true",
-        },
-        [],
-        "GPT-5.6 Sol Mini",
-      ),
-      new FakeElement("button", { class: "__composer-pill" }, [], "Standard"),
-    ]);
-    const document = new FakeDocument([hiddenStaleComposer, documentStaleSignals, boundComposer]);
-
-    expect(evaluateBoundRouteProbe(document, bindingToken)).toMatchObject({
-      verified: true,
-      composerBindingVerified: true,
-      modelVerified: true,
-      modeVerified: true,
-      modelSignals: ["gpt 5 6 sol"],
-      modeSignals: ["pro"],
-    });
-  });
-
-  test("rejects conflicting exact and lookalike model signals on the bound composer", () => {
-    const document = new FakeDocument([
-      makeRouteComposer({
-        bindingToken,
-        model: "GPT-5.6 Sol",
-        secondaryModel: "GPT-5.6 Sol Mini",
-        proPill: true,
-      }),
-    ]);
-
-    const evidence = evaluateBoundRouteProbe(document, bindingToken);
-    expect(evidence).toMatchObject({
-      verified: false,
-      composerBindingVerified: true,
-      modelVerified: false,
-      modeVerified: true,
-    });
-    expect(evidence.modelSignals).toEqual(
-      expect.arrayContaining(["gpt 5 6 sol", "gpt 5 6 sol mini"]),
-    );
-  });
-
-  test("rejects bound Standard even when a foreign global Pro pill exists", () => {
-    const document = new FakeDocument([
-      new FakeElement("div", { "data-testid": "foreign-toolbar" }, [
-        new FakeElement("button", { class: "__composer-pill" }, [], "Pro"),
-      ]),
-      makeRouteComposer({ bindingToken, mode: "Standard" }),
-    ]);
-
-    expect(evaluateBoundRouteProbe(document, bindingToken)).toMatchObject({
-      verified: false,
-      composerBindingVerified: true,
-      modelVerified: true,
-      modeVerified: false,
-      modeSignals: ["standard"],
-    });
-  });
-
-  test("text-only route proof cannot borrow Sol + Pro from a foreign visible composer", () => {
-    const composerBindingToken = "dispatch-composer-exact-1";
-    const selectedStandardComposer = makeRouteComposer({
-      composerBindingToken,
-      model: "GPT-5.6 Sol",
-      mode: "Standard",
-    });
-    const foreignSolProComposer = makeRouteComposer({ proPill: true });
-    const document = new FakeDocument([selectedStandardComposer, foreignSolProComposer]);
-
-    expect(evaluateDispatchBoundRouteProbe(document, composerBindingToken)).toMatchObject({
-      verified: false,
-      composerBindingVerified: true,
-      modelVerified: true,
-      modeVerified: false,
-      modeSignals: ["standard"],
-    });
-  });
-
-  test("fails closed after a composer remount drops the exact attachment token", () => {
-    const replacement = makeRouteComposer({
-      bindingToken: "replacement-composer",
-      model: null,
-      proPill: true,
-    });
-    attachComposerSelectedVersionState(replacement, { currentLabel: "GPT-5.6 Sol" });
-    const document = new FakeDocument([replacement]);
-
-    expect(evaluateBoundRouteProbe(document, bindingToken)).toMatchObject({
-      verified: false,
-      composerBindingVerified: false,
-      modelVerified: false,
-      modeVerified: false,
-      modelSignals: [],
-      modeSignals: [],
-    });
-  });
-
-  test("route probe stays read-only", () => {
-    const expression = buildChatGptProDomProbeExpressionForTest(bindingToken);
-    expect(expression).not.toMatch(/\.click\(|dispatchClick|dispatchEvent|setAttribute/);
-    expect(expression).toContain("Object.getOwnPropertyNames(pill)");
-    expect(expression).not.toMatch(/defineProperty|\.children\s*=|\.props\s*=/u);
-  });
-
-  function installDispatchGuard(exactPrompt?: string, privateComposerState = false) {
-    const composerBindingToken = "dispatch-race-guard-1";
-    const composer = makeRouteComposer(
-      privateComposerState
-        ? { composerBindingToken, model: null, proPill: true }
-        : { composerBindingToken, mode: "Pro" },
-    );
-    const selectedVersionState = privateComposerState
-      ? attachComposerSelectedVersionState(composer, { currentLabel: "GPT-5.6 Sol" })
-      : null;
-    const sendButton = composer.querySelector('[data-testid="send-button"]');
-    const editor = composer.querySelector('[contenteditable="true"]');
-    const modeButton = composer.querySelector('[data-testid="effort-picker-button"]');
-    expect(sendButton).not.toBeNull();
-    expect(editor).not.toBeNull();
-    if (!privateComposerState) expect(modeButton).not.toBeNull();
-    sendButton!.setAttribute("data-oracle-send-binding", composerBindingToken);
-    editor!.setAttribute("data-oracle-send-editor-binding", composerBindingToken);
-    if (exactPrompt !== undefined) editor!.setText(exactPrompt);
-    const document = new FakeDocument([composer]);
-    document.setActiveElement(editor);
-    document.setHitTarget(sendButton);
-    const windowStub = new FakeWindow();
-    const evaluate = (expression: string): unknown =>
-      new Function(
-        "document",
-        "window",
-        "HTMLElement",
-        "HTMLInputElement",
-        "HTMLTextAreaElement",
-        "HTMLButtonElement",
-        "Node",
-        `return ${expression};`,
-      )(
-        document,
-        windowStub,
-        FakeElement,
-        FakeInputElement,
-        FakeTextAreaElement,
-        FakeButtonElement,
-        FakeElement,
-      );
-
-    expect(evaluateDispatchBoundRouteProbe(document, composerBindingToken).verified).toBe(true);
-    const guard = buildGpt56SolProFinalDispatchGuard(undefined, composerBindingToken, {
-      exactSubmission:
-        exactPrompt === undefined ? undefined : { prompt: exactPrompt, attachments: [] },
-    });
-    const bindingPayloads: string[] = [];
-    expect(guard.verdictBinding).toBeDefined();
-    windowStub[guard.verdictBinding!.name] = (payload: string) => bindingPayloads.push(payload);
-    const installed = evaluate(guard.expression);
-    expect((installed as { routeProof?: unknown }).routeProof).toMatchObject({
-      composerBindingVerified: true,
-      routeModelSignals: ["GPT-5.6 Sol"],
-      routeModeSignals: ["Pro"],
-    });
-    expect(installed).toMatchObject({ installed: true, status: "armed", reason: null });
-    expect(() => guard.assertResult(installed)).not.toThrow();
-    return {
-      bindingPayloads,
-      composer,
-      composerBindingToken,
+  const evaluate = (expression: string): unknown =>
+    new Function(
+      "document",
+      "window",
+      "HTMLElement",
+      "HTMLInputElement",
+      "HTMLTextAreaElement",
+      "HTMLButtonElement",
+      "Node",
+      "MutationObserver",
+      "MouseEvent",
+      "KeyboardEvent",
+      "EventTarget",
+      `return ${expression};`,
+    )(
       document,
-      editor: editor!,
-      evaluate,
-      guard,
-      modeButton: modeButton!,
-      selectedVersionEntries: selectedVersionState?.entries ?? [],
-      sendButton: sendButton!,
       windowStub,
-    };
-  }
-
-  test("trusted-event guard blocks a same-node route-label change after preflight", () => {
-    const fixture = installDispatchGuard();
-
-    // The exact same selected-mode node changes after the async preflight but
-    // before trusted CDP input reaches the button. The capture listener runs
-    // synchronously inside the event and prevents every dispatch phase.
-    fixture.modeButton.setText("Standard");
-    for (const eventType of ["mousedown", "mouseup", "click"]) {
-      expect(
-        fixture.windowStub.dispatchDomEvent(fixture.document, eventType, fixture.sendButton)
-          .defaultPrevented,
-      ).toBe(true);
-    }
-
-    expect(fixture.bindingPayloads).toHaveLength(1);
-    expect(
-      fixture.guard.verdictBinding?.parsePayload(fixture.bindingPayloads[0] ?? ""),
-    ).toMatchObject({ status: "blocked", reason: "protected-route-changed" });
-    const verdict = fixture.evaluate(fixture.guard.afterDispatchExpression!);
-    expect(fixture.guard.isDispatchDefinitelyBlocked?.(verdict)).toBe(true);
-    let failure: unknown;
-    try {
-      fixture.guard.assertAfterDispatchResult?.(verdict);
-    } catch (error) {
-      failure = error;
-    }
-    expect(failure).toMatchObject({
-      name: "BrowserAutomationError",
-      details: { code: "protected-route-dispatch-blocked", retryable: false },
-    });
-    expect(fixture.sendButton.getAttribute("data-oracle-send-binding")).toBeNull();
-    expect(fixture.composer.getAttribute("data-oracle-send-composer-binding")).toBeNull();
-    expect(fixture.document.listenerCount("click")).toBe(0);
-    expect(fixture.windowStub.listenerCount("click")).toBe(0);
-  });
-
-  test("trusted-event guard blocks bound selected-version drift in the live UI shape", () => {
-    const fixture = installDispatchGuard(undefined, true);
-    expect(fixture.selectedVersionEntries.length).toBeGreaterThan(0);
-    for (const entry of fixture.selectedVersionEntries) {
-      entry.displayTextForIntelligence = "GPT-5.6 Sol Mini";
-    }
-
-    const click = fixture.windowStub.dispatchDomEvent(
-      fixture.document,
-      "click",
-      fixture.sendButton,
+      FakeElement,
+      FakeInputElement,
+      FakeTextAreaElement,
+      FakeButtonElement,
+      FakeElement,
+      FakeMutationObserver,
+      FakeMouseEvent,
+      FakeKeyboardEvent,
+      FakeEventTarget,
     );
-    expect(click.defaultPrevented).toBe(true);
-    expect(fixture.bindingPayloads).toHaveLength(1);
-    expect(
-      fixture.guard.verdictBinding?.parsePayload(fixture.bindingPayloads[0] ?? ""),
-    ).toMatchObject({ status: "blocked", reason: "protected-route-changed" });
-    expect(fixture.evaluate(fixture.guard.afterDispatchExpression!)).toMatchObject({
-      status: "blocked",
-      reason: "protected-route-changed",
-    });
-  });
+  const mint = async () =>
+    await evaluate(
+      buildGpt56SolProPublicRouteProofExpressionForTest(attachmentToken, composerBindingToken),
+    );
+  return {
+    attachmentToken,
+    composer,
+    composerBindingToken,
+    document,
+    editor,
+    evaluate,
+    mint,
+    modelMenu,
+    parentMenu,
+    pill,
+    pollutionMenu,
+    proRow,
+    sendButton,
+    solRow,
+    solTrigger,
+    form,
+    windowStub,
+  };
+}
 
-  test("trusted-event guard binds the exact focused prompt, not a stale sibling editor", () => {
-    const fixture = installDispatchGuard("complete expected prompt");
-    fixture.editor.setText("truncated");
-    const stale = new FakeElement(
-      "div",
-      {
-        id: "prompt-textarea",
-        contenteditable: "true",
-        role: "textbox",
-        "data-hidden": "true",
+async function installPublicRouteDispatchGuard(options: PublicRouteFixtureOptions = {}) {
+  const fixture = makePublicRouteFixture(options);
+  const minted = await fixture.mint();
+  expect(minted).toMatchObject({
+    verified: true,
+    proofMinted: true,
+    modelSignals: ["GPT-5.6 Sol"],
+    modeSignals: ["Pro"],
+  });
+  const guard = buildGpt56SolProFinalDispatchGuard(
+    fixture.attachmentToken,
+    fixture.composerBindingToken,
+    {
+      exactSubmission: {
+        prompt: options.prompt ?? "exact protected prompt",
+        attachments: [],
       },
-      [],
-      "complete expected prompt",
-    );
-    stale.parentElement = fixture.document.body;
-    fixture.document.body.children.unshift(stale);
+    },
+  );
+  const bindingPayloads: string[] = [];
+  windowStubSetBinding(fixture.windowStub, guard.verdictBinding!.name, bindingPayloads);
+  const installed = fixture.evaluate(guard.expression);
+  expect(installed).toMatchObject({ installed: true, status: "armed", reason: null });
+  expect(() => guard.assertResult(installed)).not.toThrow();
+  return { ...fixture, bindingPayloads, guard, installed };
+}
 
-    const click = fixture.windowStub.dispatchDomEvent(
-      fixture.document,
-      "click",
-      fixture.sendButton,
-    );
-    expect(click.defaultPrevented).toBe(true);
-    expect(fixture.evaluate(fixture.guard.afterDispatchExpression!)).toMatchObject({
-      status: "blocked",
-      reason: "exact-prompt-changed",
-    });
+function windowStubSetBinding(
+  windowStub: FakeWindow,
+  name: string,
+  bindingPayloads: string[],
+): void {
+  windowStub[name] = (payload: string) => bindingPayloads.push(payload);
+}
+
+describe("public controlled-submenu protected-route proof", () => {
+  test("removes React/Fiber from every authorization expression", () => {
+    const probe = buildChatGptProDomProbeExpressionForTest(undefined, "bound-composer");
+    const mint = buildGpt56SolProPublicRouteProofExpressionForTest(undefined, "bound-composer");
+    const guard = buildGpt56SolProFinalDispatchGuard(undefined, "bound-composer");
+    expect(probe).not.toMatch(/reactFiber|composerIntelligencePickerState/i);
+    expect(mint).not.toMatch(/reactFiber|composerIntelligencePickerState/i);
+    expect(guard.expression).not.toMatch(/reactFiber|composerIntelligencePickerState/i);
   });
 
-  test("only the final exact trusted click reaches application handlers and authorizes", () => {
-    const fixture = installDispatchGuard();
-    const observedByApplication: string[] = [];
-    fixture.sendButton.addEventListener("mousedown", () => observedByApplication.push("mousedown"));
-    fixture.sendButton.addEventListener("mouseup", () => observedByApplication.push("mouseup"));
-    fixture.sendButton.addEventListener("click", () => {
-      expect(fixture.bindingPayloads).toHaveLength(1);
-      observedByApplication.push("click");
+  test("mints from unique checked Pro and Sol rows in causally controlled menus", async () => {
+    const fixture = makePublicRouteFixture();
+    await expect(fixture.mint()).resolves.toMatchObject({
+      verified: true,
+      proofMinted: true,
+      composerBindingVerified: true,
+      modelVerified: true,
+      modeVerified: true,
+      modelSignals: ["GPT-5.6 Sol"],
+      modeSignals: ["Pro"],
     });
+    expect(fixture.pill.getAttribute("aria-expanded")).toBe("false");
+    expect(fixture.parentMenu.hidden).toBe(true);
+    expect(fixture.modelMenu.hidden).toBe(true);
+    expect(fixture.document.activeElement).toBe(fixture.editor);
+  });
 
-    for (const eventType of ["pointerdown", "mousedown", "pointerup", "mouseup"]) {
-      const event = fixture.windowStub.dispatchDomEvent(
+  test("latches and blocks Send attempts before the complete guard handoff", async () => {
+    const fixture = makePublicRouteFixture({ wrapComposerInForm: true });
+    await expect(fixture.mint()).resolves.toMatchObject({
+      verified: true,
+      proofMinted: true,
+    });
+    const applicationClicks: string[] = [];
+    fixture.sendButton.addEventListener("click", () => applicationClicks.push("click"));
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const preGuardClick = fixture.windowStub.dispatchDomEvent(
         fixture.document,
-        eventType,
+        "click",
         fixture.sendButton,
       );
+      expect(preGuardClick.defaultPrevented).toBe(true);
+    }
+    const preGuardSubmit = fixture.windowStub.dispatchDomEvent(
+      fixture.document,
+      "submit",
+      fixture.form,
+    );
+    expect(preGuardSubmit.defaultPrevented).toBe(true);
+    expect(applicationClicks).toEqual([]);
+
+    const guard = buildGpt56SolProFinalDispatchGuard(
+      fixture.attachmentToken,
+      fixture.composerBindingToken,
+      {
+        exactSubmission: {
+          prompt: "exact protected prompt",
+          attachments: [],
+        },
+      },
+    );
+    const bindingPayloads: string[] = [];
+    windowStubSetBinding(fixture.windowStub, guard.verdictBinding!.name, bindingPayloads);
+    expect(fixture.evaluate(guard.expression)).toMatchObject({
+      installed: false,
+      status: "blocked",
+      reason: "public-route-proof-dispatch-before-guard",
+    });
+    expect(bindingPayloads).toHaveLength(0);
+  });
+
+  test("keeps a split pre-guard pointer gesture blocked after handoff refusal", async () => {
+    const fixture = makePublicRouteFixture();
+    await expect(fixture.mint()).resolves.toMatchObject({
+      verified: true,
+      proofMinted: true,
+    });
+    const applicationClicks: string[] = [];
+    fixture.sendButton.addEventListener("click", () => applicationClicks.push("click"));
+    const pointerDown = fixture.windowStub.dispatchDomEvent(
+      fixture.document,
+      "pointerdown",
+      fixture.sendButton,
+    );
+    expect(pointerDown.defaultPrevented).toBe(true);
+
+    const guard = buildGpt56SolProFinalDispatchGuard(
+      fixture.attachmentToken,
+      fixture.composerBindingToken,
+      {
+        exactSubmission: {
+          prompt: "exact protected prompt",
+          attachments: [],
+        },
+      },
+    );
+    const bindingPayloads: string[] = [];
+    windowStubSetBinding(fixture.windowStub, guard.verdictBinding!.name, bindingPayloads);
+    expect(fixture.evaluate(guard.expression)).toMatchObject({
+      installed: false,
+      status: "blocked",
+      reason: "public-route-proof-dispatch-before-guard",
+    });
+
+    for (const type of ["mouseup", "click"]) {
+      const event = fixture.windowStub.dispatchDomEvent(fixture.document, type, fixture.sendButton);
+      expect(event.defaultPrevented).toBe(true);
+    }
+    expect(applicationClicks).toEqual([]);
+  });
+
+  test("blocks an ancestor-form submit while an armed click guard awaits dispatch", async () => {
+    const fixture = await installPublicRouteDispatchGuard({ wrapComposerInForm: true });
+    const applicationSubmits: string[] = [];
+    fixture.form.addEventListener("submit", () => applicationSubmits.push("submit"));
+
+    const submit = fixture.windowStub.dispatchDomEvent(fixture.document, "submit", fixture.form);
+    expect(submit.defaultPrevented).toBe(true);
+    expect(applicationSubmits).toEqual([]);
+    expect(fixture.evaluate(fixture.guard.immediatelyBeforeDispatchExpression!)).toMatchObject({
+      status: "blocked",
+      reason: "public-route-proof-alternate-submit",
+    });
+  });
+
+  test.each([
+    { remountPillOnOpen: true },
+    { remountSolTriggerOnOpen: true },
+    { remountParentMenuOnModelOpen: true },
+  ])(
+    "reacquires controlled public route nodes after a normal open-time remount: %o",
+    async (options) => {
+      const fixture = makePublicRouteFixture(options);
+      await expect(fixture.mint()).resolves.toMatchObject({
+        verified: true,
+        proofMinted: true,
+      });
+    },
+  );
+
+  test("waits for a Sol submenu that opens only after delayed hover intent", async () => {
+    const fixture = makePublicRouteFixture({ solOpensOnDelayedHover: true });
+    await expect(fixture.mint()).resolves.toMatchObject({
+      verified: true,
+      proofMinted: true,
+      modelVerified: true,
+      modeVerified: true,
+    });
+  });
+
+  test("ignores an unrelated composer menu pill", async () => {
+    const fixture = makePublicRouteFixture({ additionalMenuPill: true });
+    await expect(fixture.mint()).resolves.toMatchObject({
+      verified: true,
+      proofMinted: true,
+    });
+  });
+
+  test("rejects a second exact Pro composer pill", async () => {
+    const fixture = makePublicRouteFixture({ additionalProPill: true });
+    await expect(fixture.mint()).resolves.toMatchObject({
+      verified: false,
+      proofMinted: false,
+      reason: "exact-dispatch-composer-unavailable",
+    });
+  });
+
+  test("retries and refuses when the proved pill remounts while the menus close", async () => {
+    const fixture = makePublicRouteFixture({ remountPillOnClose: true });
+    await expect(fixture.mint()).resolves.toMatchObject({
+      verified: false,
+      proofMinted: false,
+      reason: "dispatch-composer-remounted-during-proof",
+    });
+  });
+
+  test("ignores marker state on hidden non-target rows while retaining exact-label ambiguity vetoes", async () => {
+    const fixture = makePublicRouteFixture({ hiddenUnmarkedOtherModel: true });
+    await expect(fixture.mint()).resolves.toMatchObject({
+      verified: true,
+      proofMinted: true,
+    });
+  });
+
+  test("an unchecked availability trigger cannot stand in for the checked model submenu row", async () => {
+    const fixture = makePublicRouteFixture({ modelCheckedLabel: "GPT-5.6 Sol Mini" });
+    await expect(fixture.mint()).resolves.toMatchObject({
+      verified: false,
+      proofMinted: false,
+      modelVerified: false,
+    });
+  });
+
+  test.each(["visible", "hidden"] as const)(
+    "rejects a %s duplicate exact Sol row in the owned submenu",
+    async (duplicateSolRow) => {
+      const fixture = makePublicRouteFixture({ duplicateSolRow });
+      await expect(fixture.mint()).resolves.toMatchObject({
+        verified: false,
+        proofMinted: false,
+      });
+    },
+  );
+
+  test.each([
+    { proStateContradiction: true },
+    { modelStateContradiction: true },
+    { proMarkerMissing: true },
+    { modelMarkerMissing: true },
+    { proOptionalMarkerConflict: true },
+    { modelOptionalMarkerConflict: true },
+    { proChecked: false },
+  ] satisfies PublicRouteFixtureOptions[])(
+    "fails closed on contradictory or wrong checked-state evidence: %o",
+    async (options) => {
+      const fixture = makePublicRouteFixture(options);
+      await expect(fixture.mint()).resolves.toMatchObject({
+        verified: false,
+        proofMinted: false,
+      });
+    },
+  );
+
+  test.each([
+    { solRowText: "GPT-5.6 Sol Pro" },
+    { solRowText: "gpt-5.6 sol" },
+    { solTriggerText: "GPT-5.6 Sol Mini" },
+    { proRowText: "Pro Max" },
+  ] satisfies PublicRouteFixtureOptions[])(
+    "rejects route label lookalikes: %o",
+    async (options) => {
+      const fixture = makePublicRouteFixture(options);
+      await expect(fixture.mint()).resolves.toMatchObject({
+        verified: false,
+        proofMinted: false,
+      });
+    },
+  );
+
+  test("accepts unique newly-visible causal owners when aria-controls is absent", async () => {
+    const fixture = makePublicRouteFixture({ fallbackOwnership: true });
+    await expect(fixture.mint()).resolves.toMatchObject({ verified: true, proofMinted: true });
+  });
+
+  test("rejects newly-visible fallback ownership when a second menu appears", async () => {
+    const fixture = makePublicRouteFixture({
+      fallbackOwnership: true,
+      fallbackPollution: true,
+    });
+    await expect(fixture.mint()).resolves.toMatchObject({
+      verified: false,
+      proofMinted: false,
+    });
+  });
+
+  test("rejects duplicate aria-controls ids instead of accepting getElementById's first match", async () => {
+    const fixture = makePublicRouteFixture({ duplicateParentId: true });
+    await expect(fixture.mint()).resolves.toMatchObject({
+      verified: false,
+      proofMinted: false,
+    });
+  });
+
+  test("keeps a unique token-bound composer scoped when another editor is visible", async () => {
+    const fixture = makePublicRouteFixture();
+    const foreignComposer = new FakeElement("div", { "data-testid": "unified-composer" }, [
+      new FakeElement("div", { contenteditable: "true", role: "textbox" }),
+    ]);
+    foreignComposer.parentElement = fixture.document.body;
+    fixture.document.body.children.push(foreignComposer);
+    await expect(fixture.mint()).resolves.toMatchObject({
+      verified: true,
+      proofMinted: true,
+    });
+  });
+
+  test("the trusted button capture consumes the proof before application click handlers", async () => {
+    const fixture = await installPublicRouteDispatchGuard();
+    const applicationObservations: string[] = [];
+    fixture.sendButton.addEventListener("click", () => {
+      const status = fixture.evaluate(fixture.guard.immediatelyBeforeDispatchExpression!);
+      expect(status).toMatchObject({ status: "allowed", routeProofStatus: "consumed" });
+      applicationObservations.push("click");
+    });
+    for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup"]) {
+      const event = fixture.windowStub.dispatchDomEvent(fixture.document, type, fixture.sendButton);
       expect(event.defaultPrevented).toBe(false);
-      expect(event.propagationStopped).toBe(true);
     }
     const click = fixture.windowStub.dispatchDomEvent(
       fixture.document,
@@ -1798,89 +1951,128 @@ describe("post-upload protected-route binding", () => {
       fixture.sendButton,
     );
     expect(click.defaultPrevented).toBe(false);
-    expect(observedByApplication).toEqual(["click"]);
-
+    expect(applicationObservations).toEqual(["click"]);
+    expect(fixture.bindingPayloads).toHaveLength(1);
+    expect(
+      fixture.guard.verdictBinding?.parsePayload(fixture.bindingPayloads[0] ?? ""),
+    ).toMatchObject({ status: "allowed", lastEvent: "click" });
     const verdict = fixture.evaluate(fixture.guard.afterDispatchExpression!);
     expect(verdict).toMatchObject({ status: "allowed", lastEvent: "click" });
     expect(() => fixture.guard.assertAfterDispatchResult?.(verdict)).not.toThrow();
   });
 
-  test("an untrusted or non-primary click cannot authorize protected dispatch", () => {
-    for (const options of [{ isTrusted: false }, { isTrusted: true, button: 1 }]) {
-      const fixture = installDispatchGuard();
-      const click = fixture.windowStub.dispatchDomEvent(
-        fixture.document,
-        "click",
-        fixture.sendButton,
-        options,
-      );
-      expect(click.defaultPrevented).toBe(true);
-      const verdict = fixture.evaluate(fixture.guard.afterDispatchExpression!);
-      expect(verdict).toMatchObject({ status: "blocked" });
-    }
-  });
-
-  test("a blocked precursor remains latched even when the route label is repaired", () => {
-    const fixture = installDispatchGuard();
-    fixture.modeButton.setText("Standard");
+  test.each([
+    { name: "middle-button", options: { button: 1 } },
+    { name: "touch-pointer", options: { pointerType: "touch" } },
+  ])("a $name click cannot authorize protected dispatch", async ({ options }) => {
+    const fixture = await installPublicRouteDispatchGuard();
+    const click = fixture.windowStub.dispatchDomEvent(
+      fixture.document,
+      "click",
+      fixture.sendButton,
+      options,
+    );
+    expect(click.defaultPrevented).toBe(true);
+    expect(fixture.bindingPayloads).toHaveLength(1);
     expect(
-      fixture.windowStub.dispatchDomEvent(fixture.document, "mousedown", fixture.sendButton)
-        .defaultPrevented,
-    ).toBe(true);
-    fixture.modeButton.setText("Pro");
-    expect(
-      fixture.windowStub.dispatchDomEvent(fixture.document, "click", fixture.sendButton)
-        .defaultPrevented,
-    ).toBe(true);
+      fixture.guard.verdictBinding?.parsePayload(fixture.bindingPayloads[0] ?? ""),
+    ).toMatchObject({ status: "blocked", reason: "non-primary-dispatch-event" });
     expect(fixture.evaluate(fixture.guard.afterDispatchExpression!)).toMatchObject({
       status: "blocked",
-      reason: "protected-route-changed",
+      reason: "non-primary-dispatch-event",
     });
   });
 
-  test("composer, send candidate, and hit-target identity are revalidated at each event", () => {
-    const mutations: Array<(fixture: ReturnType<typeof installDispatchGuard>) => void> = [
-      (fixture) =>
-        fixture.composer.setAttribute("data-oracle-send-composer-binding", "replacement"),
-      (fixture) => fixture.sendButton.setAttribute("aria-disabled", "true"),
-      (fixture) => fixture.document.setHitTarget(new FakeElement("div")),
-      (fixture) => fixture.sendButton.setAttribute("data-oracle-send-binding", "replacement"),
-      (fixture) => {
-        const competingSend = new FakeElement("button", { "data-testid": "send-button" });
-        competingSend.parentElement = fixture.composer;
-        fixture.composer.children.unshift(competingSend);
-      },
-    ];
-    for (const mutate of mutations) {
-      const fixture = installDispatchGuard();
-      mutate(fixture);
-      const event = fixture.windowStub.dispatchDomEvent(
-        fixture.document,
-        "click",
-        fixture.sendButton,
-      );
-      expect(event.defaultPrevented).toBe(true);
-      expect(fixture.evaluate(fixture.guard.afterDispatchExpression!)).toMatchObject({
-        status: "blocked",
-      });
+  test("does not burn the proof on cosmetic Send hover state or tooltip children", async () => {
+    const fixture = await installPublicRouteDispatchGuard();
+    fixture.sendButton.setAttribute("data-state", "hover");
+    const tooltip = new FakeElement("span", { role: "tooltip" }, [], "Send");
+    tooltip.parentElement = fixture.sendButton;
+    fixture.sendButton.children.push(tooltip);
+    FakeMutationObserver.notify({
+      type: "childList",
+      target: fixture.sendButton,
+      addedNodes: [tooltip],
+      removedNodes: [],
+    });
+    for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+      const event = fixture.windowStub.dispatchDomEvent(fixture.document, type, fixture.sendButton);
+      expect(event.defaultPrevented).toBe(false);
     }
+    expect(fixture.evaluate(fixture.guard.afterDispatchExpression!)).toMatchObject({
+      status: "allowed",
+      lastEvent: "click",
+    });
   });
 
-  test("moving the same bound button under an exact-label replacement composer is blocked", () => {
-    const fixture = installDispatchGuard();
-    const replacement = makeRouteComposer({
-      composerBindingToken: fixture.composerBindingToken,
-      mode: "Pro",
-    });
-    const replacementSend = replacement.querySelector('[data-testid="send-button"]');
-    expect(replacementSend).not.toBeNull();
-    replacement.children.splice(replacement.children.indexOf(replacementSend!), 1);
-    fixture.composer.children.splice(fixture.composer.children.indexOf(fixture.sendButton), 1);
-    replacement.children.push(fixture.sendButton);
-    fixture.sendButton.parentElement = replacement;
-    fixture.composer.parentElement = null;
-    replacement.parentElement = fixture.document.body;
-    fixture.document.body.children.splice(0, 1, replacement);
+  test.each([
+    {
+      name: "prompt edit",
+      mutate: (fixture: Awaited<ReturnType<typeof installPublicRouteDispatchGuard>>) =>
+        fixture.editor.setText("changed prompt"),
+    },
+    {
+      name: "pill route mutation",
+      mutate: (fixture: Awaited<ReturnType<typeof installPublicRouteDispatchGuard>>) =>
+        fixture.pill.setText("Standard"),
+    },
+    {
+      name: "menu reopening",
+      mutate: (fixture: Awaited<ReturnType<typeof installPublicRouteDispatchGuard>>) =>
+        fixture.pill.click(),
+    },
+    {
+      name: "composer binding replacement",
+      mutate: (fixture: Awaited<ReturnType<typeof installPublicRouteDispatchGuard>>) =>
+        fixture.composer.setAttribute("data-oracle-send-composer-binding", "replacement"),
+    },
+    {
+      name: "composer remount or detachment",
+      mutate: (fixture: Awaited<ReturnType<typeof installPublicRouteDispatchGuard>>) =>
+        fixture.composer.setAttribute("data-connected", "false"),
+    },
+    {
+      name: "navigation",
+      mutate: (fixture: Awaited<ReturnType<typeof installPublicRouteDispatchGuard>>) => {
+        fixture.windowStub.location.href = "https://chatgpt.com/c/replaced";
+      },
+    },
+    {
+      name: "relevant key event",
+      mutate: (fixture: Awaited<ReturnType<typeof installPublicRouteDispatchGuard>>) => {
+        fixture.windowStub.dispatchDomEvent(fixture.document, "keydown", fixture.editor);
+      },
+    },
+  ])("burns on $name before the trusted click", async ({ mutate }) => {
+    const fixture = await installPublicRouteDispatchGuard();
+    mutate(fixture);
+    const click = fixture.windowStub.dispatchDomEvent(
+      fixture.document,
+      "click",
+      fixture.sendButton,
+    );
+    expect(click.defaultPrevented).toBe(true);
+    expect(fixture.bindingPayloads).toHaveLength(1);
+    const verdict = fixture.evaluate(fixture.guard.afterDispatchExpression!);
+    expect(verdict).toMatchObject({ status: "blocked" });
+    expect(fixture.guard.isDispatchDefinitelyBlocked?.(verdict)).toBe(true);
+  });
+
+  test("binds focus to the exact editor instead of borrowing a stale sibling", async () => {
+    const fixture = await installPublicRouteDispatchGuard();
+    const staleSibling = new FakeElement(
+      "div",
+      {
+        id: "prompt-textarea",
+        contenteditable: "true",
+        role: "textbox",
+      },
+      [],
+      "exact protected prompt",
+    );
+    staleSibling.parentElement = fixture.document.body;
+    fixture.document.body.children.unshift(staleSibling);
+    fixture.document.setActiveElement(staleSibling);
 
     const click = fixture.windowStub.dispatchDomEvent(
       fixture.document,
@@ -1890,11 +2082,28 @@ describe("post-upload protected-route binding", () => {
     expect(click.defaultPrevented).toBe(true);
     expect(fixture.evaluate(fixture.guard.afterDispatchExpression!)).toMatchObject({
       status: "blocked",
+      reason: "exact-editor-focus-changed",
     });
   });
 
-  test("a replacement send button cannot inherit the old binding token", () => {
-    const fixture = installDispatchGuard();
+  test("rejects a trusted click when hit testing no longer resolves to the bound Send", async () => {
+    const fixture = await installPublicRouteDispatchGuard();
+    fixture.document.setHitTarget(new FakeElement("div"));
+
+    const click = fixture.windowStub.dispatchDomEvent(
+      fixture.document,
+      "click",
+      fixture.sendButton,
+    );
+    expect(click.defaultPrevented).toBe(true);
+    expect(fixture.evaluate(fixture.guard.afterDispatchExpression!)).toMatchObject({
+      status: "blocked",
+      reason: "trusted-event-target-changed",
+    });
+  });
+
+  test("a replacement Send button cannot inherit the old binding token", async () => {
+    const fixture = await installPublicRouteDispatchGuard();
     const replacement = new FakeElement("button", {
       "data-testid": "send-button",
       "data-oracle-send-binding": fixture.composerBindingToken,
@@ -1912,38 +2121,142 @@ describe("post-upload protected-route binding", () => {
     });
   });
 
-  test("an expired page guard remains fail-closed through the first late click", () => {
-    const fixture = installDispatchGuard();
-    expect(fixture.windowStub.listenerCount("click")).toBe(1);
-    expect(fixture.document.listenerCount("click")).toBe(1);
+  test("moving the same bound nodes under a replacement composer is blocked", async () => {
+    const fixture = await installPublicRouteDispatchGuard();
+    for (const node of [fixture.editor, fixture.pill, fixture.sendButton]) {
+      const index = fixture.composer.children.indexOf(node);
+      fixture.composer.children.splice(index, 1);
+    }
+    const replacementComposer = new FakeElement(
+      "div",
+      {
+        "data-testid": "unified-composer",
+        "data-oracle-send-composer-binding": fixture.composerBindingToken,
+      },
+      [fixture.editor, fixture.pill, fixture.sendButton],
+    );
+    const composerIndex = fixture.document.body.children.indexOf(fixture.composer);
+    fixture.document.body.children.splice(composerIndex, 1, replacementComposer);
+    replacementComposer.parentElement = fixture.document.body;
+    fixture.composer.parentElement = null;
+    fixture.document.setActiveElement(fixture.editor);
+    fixture.document.setHitTarget(fixture.sendButton);
 
-    fixture.windowStub.expireGuard();
-
-    expect(fixture.bindingPayloads).toHaveLength(1);
-    expect(
-      fixture.guard.verdictBinding?.parsePayload(fixture.bindingPayloads[0] ?? ""),
-    ).toMatchObject({ status: "blocked", reason: "dispatch-guard-expired" });
-    expect(fixture.windowStub.listenerCount("click")).toBe(1);
-    expect(fixture.document.listenerCount("click")).toBe(1);
-    expect(
-      fixture.windowStub.dispatchDomEvent(fixture.document, "click", fixture.sendButton)
-        .defaultPrevented,
-    ).toBe(true);
-    expect(fixture.evaluate(fixture.guard.immediatelyBeforeDispatchExpression!)).toMatchObject({
+    const click = fixture.windowStub.dispatchDomEvent(
+      fixture.document,
+      "click",
+      fixture.sendButton,
+    );
+    expect(click.defaultPrevented).toBe(true);
+    expect(fixture.evaluate(fixture.guard.afterDispatchExpression!)).toMatchObject({
       status: "blocked",
-      reason: "dispatch-guard-expired",
     });
-    expect(() =>
-      fixture.guard.assertImmediatelyBeforeDispatchResult?.(
-        fixture.evaluate(fixture.guard.immediatelyBeforeDispatchExpression!),
-      ),
-    ).toThrow(/no longer armed/i);
-    // The stale guard retires only after it has consumed the complete first
-    // late click sequence, so a crashed controller cannot wedge manual use.
+  });
+
+  test("a blocked precursor remains latched after the visible route label is repaired", async () => {
+    const fixture = await installPublicRouteDispatchGuard();
+    fixture.pill.setText("Standard");
+    const precursor = fixture.windowStub.dispatchDomEvent(
+      fixture.document,
+      "mousedown",
+      fixture.sendButton,
+    );
+    expect(precursor.defaultPrevented).toBe(true);
+    expect(fixture.bindingPayloads).toHaveLength(1);
+    const blockedPrecursor = fixture.guard.verdictBinding?.parsePayload(
+      fixture.bindingPayloads[0] ?? "",
+    ) as { status?: unknown; reason?: unknown } | undefined;
+    expect(blockedPrecursor).toMatchObject({ status: "blocked" });
+    fixture.pill.setText("Pro");
+
+    const click = fixture.windowStub.dispatchDomEvent(
+      fixture.document,
+      "click",
+      fixture.sendButton,
+    );
+    expect(click.defaultPrevented).toBe(true);
+    expect(fixture.bindingPayloads).toHaveLength(1);
+    expect(fixture.evaluate(fixture.guard.afterDispatchExpression!)).toMatchObject({
+      status: "blocked",
+      reason: blockedPrecursor?.reason,
+    });
+  });
+
+  test("a proof cannot be replayed after a blocked untrusted attempt", async () => {
+    const fixture = await installPublicRouteDispatchGuard();
+    const untrusted = fixture.windowStub.dispatchDomEvent(
+      fixture.document,
+      "click",
+      fixture.sendButton,
+      { isTrusted: false },
+    );
+    expect(untrusted.defaultPrevented).toBe(true);
+    const firstVerdict = fixture.evaluate(fixture.guard.afterDispatchExpression!);
+    expect(firstVerdict).toMatchObject({ status: "blocked", reason: "untrusted-dispatch-event" });
+
+    const replayGuard = buildGpt56SolProFinalDispatchGuard(undefined, fixture.composerBindingToken);
+    const replayPayloads: string[] = [];
+    windowStubSetBinding(fixture.windowStub, replayGuard.verdictBinding!.name, replayPayloads);
+    const replayInstall = fixture.evaluate(replayGuard.expression);
+    expect(replayInstall).toMatchObject({ installed: false, status: "blocked" });
+  });
+
+  test("binds the attachment-marked composer identity through trusted dispatch", async () => {
+    const fixture = await installPublicRouteDispatchGuard({
+      attachmentToken: "exact-attachment-composer-1",
+    });
+    fixture.composer.setAttribute("data-oracle-attachment-binding", "replacement");
+    const click = fixture.windowStub.dispatchDomEvent(
+      fixture.document,
+      "click",
+      fixture.sendButton,
+    );
+    expect(click.defaultPrevented).toBe(true);
+    expect(fixture.evaluate(fixture.guard.afterDispatchExpression!)).toMatchObject({
+      status: "blocked",
+    });
+  });
+
+  test("an expired guard blocks the complete first late click and then releases its hooks", async () => {
+    const fixture = await installPublicRouteDispatchGuard();
+    expect(fixture.windowStub.listenerCount("click")).toBe(2);
+    expect(fixture.document.listenerCount("click")).toBe(1);
+
     fixture.windowStub.expireGuard();
+    const status = fixture.evaluate(fixture.guard.immediatelyBeforeDispatchExpression!);
+    expect(status).toMatchObject({ status: "blocked", reason: "dispatch-guard-expired" });
+    expect(fixture.windowStub.listenerCount("click")).toBe(1);
+    expect(fixture.document.listenerCount("click")).toBe(1);
+
+    const lateClick = fixture.windowStub.dispatchDomEvent(
+      fixture.document,
+      "click",
+      fixture.sendButton,
+    );
+    expect(lateClick.defaultPrevented).toBe(true);
+    await Promise.resolve();
     expect(fixture.windowStub.listenerCount("click")).toBe(0);
     expect(fixture.document.listenerCount("click")).toBe(0);
+    expect(fixture.sendButton.listenerCount("click")).toBe(0);
     expect(fixture.sendButton.getAttribute("data-oracle-send-binding")).toBeNull();
     expect(fixture.composer.getAttribute("data-oracle-send-composer-binding")).toBeNull();
+    expect(fixture.editor.getAttribute("data-oracle-send-editor-binding")).toBeNull();
+  });
+
+  test("an expired unguarded proof releases its registry-held DOM references", async () => {
+    const fixture = makePublicRouteFixture();
+    await expect(fixture.mint()).resolves.toMatchObject({
+      verified: true,
+      proofMinted: true,
+    });
+    const registryKey = "__oracleProtectedPublicRouteProofsV1";
+    const registry = fixture.windowStub[registryKey] as Map<string, unknown>;
+    expect(registry).toBeInstanceOf(Map);
+    expect(registry.size).toBe(1);
+
+    fixture.windowStub.expireGuard();
+    await Promise.resolve();
+    expect(registry.size).toBe(0);
+    expect(fixture.windowStub[registryKey]).toBeUndefined();
   });
 });

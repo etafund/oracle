@@ -1,8 +1,8 @@
 export {
   chatgptDomProvider,
   buildGpt56SolProFinalDispatchGuard,
-  readGpt56SolProRouteReadOnly,
-  type Gpt56SolProReadOnlyRouteEvidence,
+  proveGpt56SolProPublicRoute,
+  type Gpt56SolProPublicRouteEvidence,
 } from "./chatgptDomProvider.js";
 export {
   geminiDeepThinkDomProvider,

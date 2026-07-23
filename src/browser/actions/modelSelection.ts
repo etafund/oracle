@@ -1052,18 +1052,13 @@ function buildModelSelectionExpression(
         node?.getAttribute?.('aria-labelledby') === 'model-selection-label') ||
       node?.getAttribute?.('aria-haspopup') === 'menu' ||
       node?.getAttribute?.('data-has-submenu') !== null;
-    const isAuthoritativeGpt56SolTrigger = (node, normalizedText) => {
-      if (!wantsGpt56Sol || normalizedText !== 'gpt 5 6 sol') return false;
-      if (node?.getAttribute?.('role') !== 'menuitem') return false;
-      if (node?.getAttribute?.('aria-haspopup') !== 'menu') return false;
-      const owner = node?.closest?.('[data-testid="composer-intelligence-picker-content"]');
-      // The live owner is role=group nested inside the primary role=menu.
-      // Detached legacy submenus are portalled outside this owner boundary.
-      return Boolean(owner);
-    };
     const canTrustSelectedOption = (node, normalizedText, testid) => {
-      const authoritativeGpt56Sol = isAuthoritativeGpt56SolTrigger(node, normalizedText);
-      if (!optionIsSelected(node) && !authoritativeGpt56Sol) return false;
+      // A version submenu trigger proves only that the model is available. It
+      // is not the selected model: current ChatGPT renders the exact
+      // "GPT-5.6 Sol" trigger unchecked while the controlled submenu carries
+      // the authoritative checked radio. Require an explicit selected marker
+      // here so the normal submenu path opens and inspects that radio.
+      if (!optionIsSelected(node)) return false;
       if (getConfigurationDialog() && !configuredSelectionMatchesTarget()) return false;
       const optionVersion = versionFromLabel(normalizedText) ?? versionFromTestId(testid);
       if (desiredVersion && optionVersion !== desiredVersion) return false;
@@ -1075,7 +1070,7 @@ function buildModelSelectionExpression(
         desiredModelVariant === 'sol' &&
         (labelHasProWord(normalizedText) || normalizeText(testid ?? '').includes('pro'))
       ) return false;
-      if (desiredVersion === '5-6') return authoritativeGpt56Sol || optionIsSelected(node);
+      if (desiredVersion === '5-6') return optionIsSelected(node);
       const currentButtonLabel = normalizeText(getButtonLabel());
       return !labelHasProWord(currentButtonLabel) && !hasProComposerPill();
     };

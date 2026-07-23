@@ -125,7 +125,7 @@ import { runProviderSubmissionFlow } from "./providerDomFlow.js";
 import {
   buildGpt56SolProFinalDispatchGuard,
   chatgptDomProvider,
-  readGpt56SolProRouteReadOnly,
+  proveGpt56SolProPublicRoute,
 } from "./providers/index.js";
 import { resolveAttachRunningConnection } from "./attachRunning.js";
 import { connectToExistingChatGptTab } from "./liveTabs.js";
@@ -1736,7 +1736,7 @@ async function verifyProtectedSolProSelectionForSubmit({
   return evidence;
 }
 
-async function assertProtectedSolProSelectionReadOnlyBeforeSubmit({
+async function proveProtectedSolProSelectionBeforeSubmit({
   desiredModel,
   runtime,
   logger,
@@ -1753,20 +1753,21 @@ async function assertProtectedSolProSelectionReadOnlyBeforeSubmit({
 }): Promise<ReturnType<typeof buildGpt56SolProFinalDispatchGuard> | void> {
   const requireProtectedRoute = isDesiredGpt56SolModel(desiredModel);
   if (requireProtectedRoute) {
-    const evidence = await readGpt56SolProRouteReadOnly(
+    const evidence = await proveGpt56SolProPublicRoute(
       runtime,
       attachmentBindingToken,
       composerBindingToken,
     );
     if (!evidence.verified) {
       logger(
-        `Protected route verification failed at dispatch boundary: composer=${evidence.composerBindingVerified}; model=${JSON.stringify(evidence.modelSignals)}; mode=${JSON.stringify(evidence.modeSignals)}`,
+        `Protected route verification failed at dispatch boundary: reason=${evidence.reason ?? "unknown"}; composer=${evidence.composerBindingVerified}; model=${JSON.stringify(evidence.modelSignals)}; mode=${JSON.stringify(evidence.modeSignals)}`,
       );
       throw new BrowserAutomationError(
         "GPT-5.6 Sol + Pro could not be verified on the exact dispatch composer; refusing to submit.",
         {
           stage: "model-selection",
-          code: "protected-route-readonly-unverified",
+          code: "protected-route-public-proof-unverified",
+          proofReason: evidence.reason,
           composerBindingVerified: evidence.composerBindingVerified,
           modelVerified: evidence.modelVerified,
           modeVerified: evidence.modeVerified,
@@ -1779,7 +1780,7 @@ async function assertProtectedSolProSelectionReadOnlyBeforeSubmit({
         },
       );
     }
-    logger("Protected route: GPT-5.6 Sol + Pro verified read-only at the dispatch boundary");
+    logger("Protected route: GPT-5.6 Sol + Pro public-menu proof minted at the dispatch boundary");
   }
   if (!requireProtectedRoute && !exactSubmission) return;
   return buildGpt56SolProFinalDispatchGuard(attachmentBindingToken, composerBindingToken, {
@@ -2950,7 +2951,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           composerBindingToken?: string,
           exactSubmission?: import("./actions/promptComposer.js").ExactSubmissionExpectation,
         ) =>
-          assertProtectedSolProSelectionReadOnlyBeforeSubmit({
+          proveProtectedSolProSelectionBeforeSubmit({
             desiredModel: config.desiredModel,
             runtime: Runtime,
             logger,
@@ -5187,7 +5188,7 @@ async function runRemoteBrowserMode(
           composerBindingToken?: string,
           exactSubmission?: import("./actions/promptComposer.js").ExactSubmissionExpectation,
         ) =>
-          assertProtectedSolProSelectionReadOnlyBeforeSubmit({
+          proveProtectedSolProSelectionBeforeSubmit({
             desiredModel: config.desiredModel,
             runtime: Runtime,
             logger,

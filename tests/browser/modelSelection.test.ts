@@ -1095,10 +1095,9 @@ describe("browser model selection matchers", () => {
     expect(testIdTokens).toContain("model-switcher-gpt-5-6-sol");
   });
 
-  it("accepts the un-checked GPT-5.6 Sol trigger only in the primary Intelligence menu", async () => {
-    await expect(evaluateGpt56SolPrimaryIntelligenceTrigger()).resolves.toEqual({
-      status: "already-selected",
-      label: "GPT-5.6 Sol",
+  it("never treats an unchecked GPT-5.6 Sol submenu trigger as selected", async () => {
+    await expect(evaluateGpt56SolPrimaryIntelligenceTrigger()).resolves.toMatchObject({
+      status: "option-not-found",
     });
     await expect(evaluateGpt56SolPrimaryIntelligenceTrigger(false)).resolves.toMatchObject({
       status: "option-not-found",
