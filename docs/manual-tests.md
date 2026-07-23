@@ -99,6 +99,42 @@ Checks:
    - Run a browser prompt that produces a downloadable artifact.
    - Reattach or render the session and confirm artifact metadata is present.
    - Confirm the router access log shows `GET /runs/<runId>/artifacts/<artifactId>` and that the artifact is fetched from the owning upstream.
+5. Controlled pending-claim recovery smoke:
+   - Use this only when changing remote recovery or session reattach. Drain the
+     selected account first and target one direct worker on port `9473` or
+     `9474`, never the router. Do not restart or kill Chrome, and never click
+     ChatGPT's "Answer now".
+   - Put the worker bearer token in an owner-only (`0600`) regular file, then
+     run:
+
+     ```bash
+     ORACLE_LIVE_TEST=1 \
+     ORACLE_LIVE_BROWSER=1 \
+     ORACLE_LIVE_REMOTE_RECOVERY=1 \
+     ORACLE_LIVE_DIRECT_LANE_ACK=1 \
+     ORACLE_LIVE_ACCOUNT_DRAINED=1 \
+     ORACLE_LIVE_PRESERVE_SESSION=1 \
+     ORACLE_LIVE_REMOTE_HOST='box1.example:9473' \
+     ORACLE_LIVE_REMOTE_TOKEN_FILE='/absolute/path/to/owner-only.token' \
+     ORACLE_LIVE_EXPECT_ACCOUNT='acct1' \
+     ORACLE_LIVE_EXPECT_LANE='acct1-9473' \
+     ORACLE_LIVE_ORACLE_HOME="$HOME/.oracle" \
+     ORACLE_LIVE_RECOVERY_TIMEOUT_MS=3600000 \
+     pnpm vitest run tests/live/remote-recovery-live.test.ts --reporter=verbose
+     ```
+
+   - The smoke deliberately severs only the first caller after an authenticated
+     durable claim, persists the pending-only state, and runs the real
+     `oracle session <id> --render` path. It must prove exactly one forwarded
+     `/runs`, exactly one capture-only `/recover`, the original account/lane,
+     strong message-handle binding, a challenge-clean sentinel answer, and no
+     worker-process restart. When the smoke runs on the browser host (or can
+     read a shared PID file), also set
+     `ORACLE_LIVE_CHROME_PID_FILE=/absolute/path/to/chrome.pid` to prove Chrome
+     PID stability. Otherwise record the remote Chrome PID independently
+     before and after the smoke; the harness reports that proof as unavailable
+     rather than claiming it. A Cloudflare/challenge signal is a hard stop:
+     keep the account drained and do not retry.
 
 ### Gemini browser mode (Gemini web / cookies)
 

@@ -43,6 +43,7 @@ import {
   isFailedRemoteBrowserOrigin,
   isRemoteBrowserRecoveryCompletionPersisted,
   ownsRemoteBrowserRecoveryCompletion,
+  promotePendingRemoteBrowserRecoveryClaim,
   recoverStoredRemoteBrowserSession,
   releaseRemoteBrowserRecoveryCompletion,
   RemoteBrowserRecoveryUnavailableError,
@@ -380,17 +381,45 @@ export async function attachSession(
   let attemptedRemoteRecovery = false;
   if (canRecoverRemote) {
     attemptedRemoteRecovery = true;
-    const coordinate = metadata.browser?.remoteRecovery;
-    const attemptedOriginRunId = coordinate?.originRunId;
-    const recoveryBrowserMetadata = metadata.browser;
-    console.log(
-      chalk.yellow(
-        `Attempting capture-only recovery on originating account ${coordinate?.accountId ?? "unknown"} (conversation=${coordinate?.runtime.conversationId ?? "unknown"})...`,
-      ),
-    );
+    let attemptedOriginRunId: string | undefined;
     let completionClaim: Awaited<ReturnType<typeof claimRemoteBrowserRecoveryCompletion>> = null;
     let recoveryCommitted = false;
     try {
+      if (!metadata.browser?.remoteRecovery) {
+        await promotePendingRemoteBrowserRecoveryClaim(metadata, {
+          log: (message?: string) => {
+            if (message) console.log(dim(message));
+          },
+        });
+        const refreshed = await sessionStore.readSession(sessionId);
+        if (!refreshed) {
+          throw new RemoteBrowserRecoveryUnavailableError(
+            "The session disappeared while resolving its pending remote recovery claim; refusing recovery.",
+          );
+        }
+        metadata = refreshed;
+      }
+      const coordinate = metadata.browser?.remoteRecovery;
+      const failedRun = metadata.browser?.remoteRun;
+      if (
+        !coordinate ||
+        failedRun?.terminalDoneOk !== false ||
+        coordinate.originRunId !== failedRun.runId ||
+        coordinate.accountId !== failedRun.accountId ||
+        (coordinate.laneId ?? null) !== (failedRun.laneId ?? null)
+      ) {
+        throw new RemoteBrowserRecoveryUnavailableError(
+          "The pending remote recovery claim did not produce a fresh origin-bound recovery coordinate; refusing recovery without resubmitting.",
+        );
+      }
+      attemptedOriginRunId = coordinate.originRunId;
+      const recoveryBrowserMetadata = metadata.browser;
+      const recoveryRuntime = metadata.browser?.runtime;
+      console.log(
+        chalk.yellow(
+          `Attempting capture-only recovery on originating account ${coordinate.accountId} (conversation=${coordinate.runtime.conversationId ?? "unknown"})...`,
+        ),
+      );
       completionClaim = await claimRemoteBrowserRecoveryCompletion(sessionId, attemptedOriginRunId);
       if (!completionClaim) {
         throw new RemoteBrowserRecoveryUnavailableError(
@@ -447,9 +476,9 @@ export async function attachSession(
               ...freshBrowser,
               config: current.browser?.config ?? recoveryBrowserMetadata?.config,
               runtime: {
-                ...runtime,
-                tabUrl: result.tabUrl ?? coordinate?.runtime.tabUrl,
-                conversationId: result.conversationId ?? coordinate?.runtime.conversationId,
+                ...recoveryRuntime,
+                tabUrl: result.tabUrl ?? coordinate.runtime.tabUrl,
+                conversationId: result.conversationId ?? coordinate.runtime.conversationId,
                 promptSubmitted: true,
               },
               remoteRun: result.remoteRun,
@@ -473,7 +502,7 @@ export async function attachSession(
         }
         recoveryCommitted = true;
       }
-      await deleteRemoteBrowserRecoverySecret(sessionId, attemptedOriginRunId).catch((error) => {
+      await deleteRemoteBrowserRecoverySecret(sessionId, coordinate.originRunId).catch((error) => {
         console.log(
           dim(
             `Recovered session metadata was committed, but private recovery cleanup failed (${error instanceof Error ? error.message : String(error)}).`,
@@ -486,7 +515,11 @@ export async function attachSession(
       metadata = (await sessionStore.readSession(sessionId)) ?? metadata;
     } catch (error) {
       if (recoveryCommitted) {
-        await deleteRemoteBrowserRecoverySecret(sessionId, attemptedOriginRunId).catch(() => false);
+        if (attemptedOriginRunId) {
+          await deleteRemoteBrowserRecoverySecret(sessionId, attemptedOriginRunId).catch(
+            () => false,
+          );
+        }
         const message = error instanceof Error ? error.message : String(error);
         console.log(
           chalk.yellow(

@@ -12,6 +12,7 @@ const saveTranscriptMock = vi.hoisted(() => vi.fn());
 const saveReportMock = vi.hoisted(() => vi.fn(async () => null));
 const claimMock = vi.hoisted(() => vi.fn());
 const releaseClaimMock = vi.hoisted(() => vi.fn());
+const promotePendingMock = vi.hoisted(() => vi.fn());
 
 const sessionStoreMock = vi.hoisted(() => ({
   readSession: vi.fn(),
@@ -38,6 +39,7 @@ vi.mock("../../src/remote/sessionRecovery.js", () => ({
     Boolean(metadata.browser?.remoteRecovery) ||
     metadata.browser?.remoteRun?.terminalDoneOk === false,
   recoverStoredRemoteBrowserSession: recoverMock,
+  promotePendingRemoteBrowserRecoveryClaim: promotePendingMock,
   ownsRemoteBrowserRecoveryCompletion: (
     metadata: SessionMetadata,
     claim: { claimId: string; originRunId: string },
@@ -140,6 +142,7 @@ describe("sessionDisplay manual remote recovery ownership", () => {
       kind: "transcript",
       path: "/tmp/sessions/remote-session/artifacts/transcript.md",
     });
+    promotePendingMock.mockResolvedValue(null);
     claimMock.mockImplementation(async (_sessionId: string, originRunId: string) => {
       const current = state.current;
       if (
@@ -222,6 +225,125 @@ describe("sessionDisplay manual remote recovery ownership", () => {
     );
   });
 
+  test("a pending claim is promoted, freshly reloaded, recovered, and rendered", async () => {
+    const pending = state.current;
+    if (!pending?.browser) throw new Error("missing fixture browser metadata");
+    const { remoteRecovery: _remoteRecovery, ...pendingBrowser } = pending.browser;
+    state.current = { ...pending, browser: pendingBrowser };
+    const staleBeforePromotion = state.current;
+    promotePendingMock.mockImplementation(async () => {
+      const current = state.current;
+      if (!current?.browser) throw new Error("missing pending browser metadata");
+      state.current = {
+        ...current,
+        browser: {
+          ...current.browser,
+          remoteRecovery: recoveryMetadata("origin-old"),
+        },
+      };
+      // attachSession must reload from the store after promotion rather than
+      // trusting this return value.
+      return staleBeforePromotion;
+    });
+    recoverMock.mockResolvedValue({
+      answerText: "promoted recovered answer",
+      answerMarkdown: "promoted recovered answer",
+      tookMs: 10,
+      answerTokens: 3,
+      answerChars: 25,
+      tabUrl: "https://chatgpt.com/c/origin-old",
+      conversationId: "origin-old",
+      remoteRun: {
+        runId: "origin-old",
+        accountId: "acct1",
+        laneId: "acct1-9473",
+        terminalDoneOk: true,
+        provenance: null,
+      },
+    });
+    sessionStoreMock.readLog.mockImplementation(async () =>
+      state.current?.status === "completed"
+        ? "Answer:\npromoted recovered answer\n"
+        : "Answer:\nprior failed capture\n",
+    );
+
+    const { attachSession } = await import("../../src/cli/sessionDisplay.js");
+    await attachSession("remote-session", {
+      suppressMetadata: true,
+      renderMarkdown: true,
+      renderPrompt: false,
+    });
+
+    expect(promotePendingMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        browser: expect.objectContaining({
+          remoteRun: expect.objectContaining({ runId: "origin-old", terminalDoneOk: false }),
+        }),
+      }),
+      expect.objectContaining({ log: expect.any(Function) }),
+    );
+    expect(claimMock).toHaveBeenCalledWith("remote-session", "origin-old");
+    expect(promotePendingMock.mock.invocationCallOrder[0]).toBeLessThan(
+      claimMock.mock.invocationCallOrder[0]!,
+    );
+    expect(recoverMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        browser: expect.objectContaining({
+          remoteRecovery: expect.objectContaining({ originRunId: "origin-old" }),
+        }),
+      }),
+      expect.objectContaining({
+        completionClaim: expect.objectContaining({ originRunId: "origin-old" }),
+      }),
+    );
+    expect(process.stdout.write).toHaveBeenCalledWith(
+      expect.stringContaining("promoted recovered answer"),
+    );
+    expect(state.current).toMatchObject({
+      status: "completed",
+      browser: {
+        remoteRun: { runId: "origin-old", terminalDoneOk: true },
+      },
+    });
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  test("an unavailable pending claim fails closed before claiming or recovering", async () => {
+    const pending = state.current;
+    if (!pending?.browser) throw new Error("missing fixture browser metadata");
+    const { remoteRecovery: _remoteRecovery, ...pendingBrowser } = pending.browser;
+    state.current = { ...pending, browser: pendingBrowser };
+    promotePendingMock.mockRejectedValue(
+      new Error(
+        "The stored post-submit recovery claim is not ready or is no longer available; the original prompt will not be replayed.",
+      ),
+    );
+
+    const { attachSession } = await import("../../src/cli/sessionDisplay.js");
+    await attachSession("remote-session", {
+      suppressMetadata: true,
+      renderPrompt: false,
+    });
+
+    expect(promotePendingMock).toHaveBeenCalledTimes(1);
+    expect(claimMock).not.toHaveBeenCalled();
+    expect(recoverMock).not.toHaveBeenCalled();
+    expect(saveTranscriptMock).not.toHaveBeenCalled();
+    expect(sessionStoreMock.createLogWriter).not.toHaveBeenCalled();
+    expect(deleteSecretMock).not.toHaveBeenCalled();
+    expect(state.current).toMatchObject({
+      status: "error",
+      browser: {
+        remoteRun: { runId: "origin-old", terminalDoneOk: false },
+      },
+    });
+    expect(state.current?.browser?.remoteRecovery).toBeUndefined();
+    expect(process.exitCode).toBe(1);
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringContaining("original prompt will not be replayed"),
+    );
+  });
+
   test("two concurrent callers dispatch exactly one remote recovery", async () => {
     let releaseRecovery: (() => void) | undefined;
     recoverMock.mockImplementation(
@@ -291,7 +413,7 @@ describe("sessionDisplay manual remote recovery ownership", () => {
     expect(deleteSecretMock).toHaveBeenCalledWith("remote-session", "origin-old");
   });
 
-  test("a winning local log failure releases only its claim and keeps recovery retryable", async () => {
+  test("a winning local log failure releases its claim and a second capture can complete", async () => {
     recoverMock.mockResolvedValue({
       answerText: "recovered answer",
       answerMarkdown: "recovered answer",
@@ -327,6 +449,23 @@ describe("sessionDisplay manual remote recovery ownership", () => {
     expect(updateModelRunMock).not.toHaveBeenCalled();
     expect(deleteSecretMock).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
+
+    process.exitCode = undefined;
+    await attachSession("remote-session", { suppressMetadata: true });
+
+    expect(recoverMock).toHaveBeenCalledTimes(2);
+    expect(releaseClaimMock).toHaveBeenCalledTimes(1);
+    expect(deleteSecretMock).toHaveBeenCalledOnce();
+    expect(deleteSecretMock).toHaveBeenCalledWith("remote-session", "origin-old");
+    expect(state.current).toMatchObject({
+      status: "completed",
+      browser: {
+        remoteRun: { runId: "origin-old", terminalDoneOk: true },
+      },
+    });
+    expect(state.current?.browser?.remoteRecovery).toBeUndefined();
+    expect(state.current?.browser?.remoteRecoveryCompletionClaim).toBeUndefined();
+    expect(process.exitCode).toBeUndefined();
   });
 
   test("a rejected account-affine recovery exits nonzero and remains retryable", async () => {

@@ -10,6 +10,7 @@ vi.mock("../../src/sessionStore.js", () => ({
 
 import {
   claimRemoteBrowserRecoveryCompletion,
+  ownsRemoteBrowserRecoveryCompletion,
   releaseRemoteBrowserRecoveryCompletion,
 } from "../../src/remote/sessionRecovery.js";
 
@@ -75,6 +76,31 @@ describe("remote recovery completion claims", () => {
       claimRemoteBrowserRecoveryCompletion("recovery-session", "origin-1"),
     ).resolves.toBeNull();
     expect(state.current.browser.remoteRecoveryCompletionClaim).toBeUndefined();
+  });
+
+  test.each([
+    ["successful", true],
+    ["missing", undefined],
+    ["invalid", null],
+  ] as const)("ownership is lost when the origin terminal marker is %s", async (_label, marker) => {
+    const claim = await claimRemoteBrowserRecoveryCompletion("recovery-session", "origin-1");
+    expect(claim).not.toBeNull();
+    if (!state.current?.browser?.remoteRun) throw new Error("missing fixture route");
+    Reflect.set(state.current.browser.remoteRun, "terminalDoneOk", marker);
+
+    expect(ownsRemoteBrowserRecoveryCompletion(state.current, claim!)).toBe(false);
+  });
+
+  test("ownership requires the exact unique claim id", async () => {
+    const claim = await claimRemoteBrowserRecoveryCompletion("recovery-session", "origin-1");
+    expect(claim).not.toBeNull();
+
+    expect(
+      ownsRemoteBrowserRecoveryCompletion(state.current!, {
+        ...claim!,
+        claimId: "different-writer",
+      }),
+    ).toBe(false);
   });
 
   test("excludes a second same-origin writer and becomes retryable after owner release", async () => {

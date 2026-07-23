@@ -15,12 +15,14 @@ import {
   RemoteRunFailedError,
   resolveRemoteBrowserPendingRecoveryClaim,
 } from "../../src/remote/client.js";
+import { attachSession } from "../../src/cli/sessionDisplay.js";
 import { persistRemoteBrowserFailureRecoveryState } from "../../src/cli/sessionRunner.js";
 import { setOracleHomeDirOverrideForTest } from "../../src/oracleHome.js";
 import { promotePendingRemoteBrowserRecoveryClaim } from "../../src/remote/sessionRecovery.js";
 import {
   readRemoteBrowserPendingRecoveryClaim,
   readRemoteBrowserRecoverySecret,
+  writeRemoteBrowserPendingRecoveryClaim,
 } from "../../src/remote/sessionRecoveryStore.js";
 import { sessionStore } from "../../src/sessionStore.js";
 import { createRemoteServer } from "../../src/remote/server.js";
@@ -57,6 +59,7 @@ const LANE_ID = "acct2-9474";
 const savedFleetDir = process.env.ORACLE_FLEET_DIR;
 const savedRemoteHost = process.env.ORACLE_REMOTE_HOST;
 const savedRemoteToken = process.env.ORACLE_REMOTE_TOKEN;
+const savedRemoteBrowser = process.env.ORACLE_REMOTE_BROWSER;
 const tempDirs: string[] = [];
 
 afterEach(async () => {
@@ -70,6 +73,9 @@ afterEach(async () => {
   else process.env.ORACLE_REMOTE_HOST = savedRemoteHost;
   if (savedRemoteToken === undefined) delete process.env.ORACLE_REMOTE_TOKEN;
   else process.env.ORACLE_REMOTE_TOKEN = savedRemoteToken;
+  if (savedRemoteBrowser === undefined) delete process.env.ORACLE_REMOTE_BROWSER;
+  else process.env.ORACLE_REMOTE_BROWSER = savedRemoteBrowser;
+  process.exitCode = undefined;
   while (tempDirs.length > 0) {
     await rm(tempDirs.pop()!, { recursive: true, force: true });
   }
@@ -313,6 +319,120 @@ async function waitForReady(port: number, timeoutMs = 3_000): Promise<void> {
 }
 
 describe("durable remote recovery-claim integration", () => {
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "attachSession fails closed on an unavailable pending claim without POSTing /runs",
+    async () => {
+      const { root } = await isolatedState("attach-pending-unavailable");
+      setOracleHomeDirOverrideForTest(path.join(root, "oracle-home"));
+      await sessionStore.ensureStorage();
+      const prompt = "recover this already-submitted answer";
+      const metadata = await sessionStore.createSession(
+        { prompt, model: "gpt-5.6-sol", mode: "browser" },
+        root,
+      );
+      const originRunId = "attach-pending-origin";
+      const promptPreview = buildPromptRecoveryOwnershipPreview(prompt);
+      await sessionStore.updateSession(metadata.id, {
+        status: "error",
+        response: { status: "incomplete", incompleteReason: "timeout" },
+        browser: {
+          config: {},
+          runtime: {
+            tabUrl: `https://chatgpt.com/c/${originRunId}`,
+            conversationId: originRunId,
+            promptSubmitted: true,
+          },
+          remoteRun: {
+            runId: originRunId,
+            accountId: ACCOUNT_ID,
+            laneId: LANE_ID,
+            terminalDoneOk: false,
+            provenance: null,
+          },
+        },
+      });
+      await writeRemoteBrowserPendingRecoveryClaim(metadata.id, {
+        claimKey: "A".repeat(43),
+        originRunId,
+        accountId: ACCOUNT_ID,
+        originLaneId: LANE_ID,
+        promptCandidates: [
+          {
+            promptPreview,
+            promptPreviewSha256: computePromptSha256(promptPreview),
+          },
+        ],
+      });
+
+      const requests: Array<{ method: string; url: string }> = [];
+      const server = http.createServer((req, res) => {
+        requests.push({ method: req.method ?? "", url: req.url ?? "" });
+        if (req.method === "GET" && req.url === REMOTE_BROWSER_RECOVERY_CLAIM_LOOKUP_PATH) {
+          res.writeHead(410, {
+            "content-type": "application/json",
+            ...REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
+            [REMOTE_BROWSER_RECOVERY_CLAIM_ROUTE_HEADER]:
+              REMOTE_BROWSER_RECOVERY_CLAIM_ROUTE_HEADER_VALUE,
+            "x-oracle-run-id": originRunId,
+            "x-oracle-account-id": ACCOUNT_ID,
+            "x-oracle-lane-id": LANE_ID,
+            [REMOTE_BROWSER_RECOVERY_CLAIM_HEADERS.originLaneId]: LANE_ID,
+          });
+          res.end('{"error":"recovery_claim_unrecoverable"}');
+          return;
+        }
+        res.writeHead(500, { "content-type": "application/json" });
+        res.end('{"error":"unexpected_request"}');
+      });
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", () => resolve());
+      });
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("pending-claim fixture did not bind a TCP port");
+      }
+      process.env.ORACLE_REMOTE_HOST = `127.0.0.1:${address.port}`;
+      process.env.ORACLE_REMOTE_TOKEN = TOKEN;
+      process.env.ORACLE_REMOTE_BROWSER = "preferred";
+
+      try {
+        const beforeAttach = await sessionStore.readSession(metadata.id);
+        await attachSession(metadata.id, {
+          suppressMetadata: true,
+          renderPrompt: false,
+        });
+
+        expect(requests).toEqual([
+          {
+            method: "GET",
+            url: REMOTE_BROWSER_RECOVERY_CLAIM_LOOKUP_PATH,
+          },
+        ]);
+        expect(
+          requests.some(
+            (request) =>
+              request.method === "POST" &&
+              (request.url === REMOTE_BROWSER_RUN_PATH || request.url.startsWith("/runs")),
+          ),
+        ).toBe(false);
+        expect(process.exitCode).toBe(1);
+        const failed = await sessionStore.readSession(metadata.id);
+        expect(failed).toEqual(beforeAttach);
+        expect(failed?.browser?.remoteRecovery).toBeUndefined();
+        await expect(
+          readRemoteBrowserPendingRecoveryClaim(metadata.id, originRunId),
+        ).resolves.toMatchObject({
+          originRunId,
+          accountId: ACCOUNT_ID,
+          originLaneId: LANE_ID,
+        });
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+  );
+
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
     "authenticates pending/ready/unrecoverable lookup state and hides every coordinate mismatch",
     async () => {

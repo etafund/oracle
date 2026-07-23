@@ -22,6 +22,7 @@
 - Browser: preserve whitespace and digit regex escapes in the generated thinking gate so completed “Thought for …” summaries are not mistaken for an active Pro-thinking status.
 - Browser/Remote: retain and identity-safely roll back a tab lease when acquisition commits but registry unlock cannot be proved, then clear only that failure's readiness taint after deferred self-healing. This prevents a rare post-commit lock fault from consuming shared-browser capacity indefinitely or hiding a separate cleanup failure.
 - CLI/Remote: keep JSON error envelopes consistent with process exit codes for generic remote capacity failures: proven pre-submit refusals now report `retryable_backoff` with `retry_safe=true`, while already-submitted recovery refusals remain non-retryable.
+- CLI/Remote: make `oracle session <id>` promote a durable pending browser-recovery claim before attempting capture, reload and verify its exact failed account/lane/run origin, and fence completion to one identity-bound local writer. Unavailable claims now fail closed without replaying the original prompt, while a local commit failure releases only that writer so a later capture-only reattach can finish. Add an explicitly gated direct-lane live smoke that proves one ordinary submission, one durable claim, one capture-only `/recover`, and no second `/runs`.
 
 ## 0.16.1 — 2026-07-23
 
