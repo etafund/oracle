@@ -1416,6 +1416,7 @@ function addCodexCommonOptions(command: Command): Command {
     .option("--browser-timeout <duration>", "Overall browser timeout (e.g. 10m, 1h).")
     .option("--browser-input-timeout <duration>", "Timeout waiting for the findings UI.")
     .option("--browser-profile-lock-timeout <duration>", "Timeout waiting for profile launch lock.")
+    .option("--browser-queue-timeout <duration>", "Timeout waiting for a shared browser tab slot.")
     .option("--browser-reuse-wait <duration>", "Wait for an existing shared Chrome to appear.")
     .option("--browser-max-concurrent-tabs <n>", "Concurrent tabs allowed for the shared profile.")
     .option("--browser-cookie-wait <duration>", "Wait before retrying cookie sync.")

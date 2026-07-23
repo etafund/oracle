@@ -9,6 +9,7 @@ import {
   launchChrome,
   positionChromeWindowOffscreen,
   registerTerminationHooks,
+  resolveIsolatedTabConnectOptions,
 } from "./chromeLifecycle.js";
 import { resolveBrowserConfig } from "./config.js";
 import { clearStaleChatGptConversationCookies, syncCookies } from "./cookies.js";
@@ -29,7 +30,10 @@ import {
   findRunningChromeDebugTargetForProfile,
   readChromePid,
   readDevToolsPort,
+  resolveChromeDebugTargetOwner,
   shouldCleanupManualLoginProfileState,
+  terminateRecordedChromeForProfile,
+  verifyChromeDebugTargetOwner,
   verifyDevToolsReachable,
   writeChromePid,
   writeDevToolsActivePort,
@@ -53,13 +57,18 @@ import {
 } from "./actions/codexFindings.js";
 import { normalizeCodexFindingsUrl, buildFindingDetailUrl } from "../codex/url.js";
 import { aggregateFindingPages, shouldStopPaging } from "../codex/findings.js";
-import { closeOwnedTargetWithDeadline, latchBrowserCleanupTaint } from "./index.js";
+import {
+  closeOwnedTargetWithDeadline,
+  releaseBrowserTabLeaseOrTaint,
+  rollbackOrphanedBrowserTabLeaseAcquisition,
+} from "./index.js";
 import type {
   CodexFinding,
   CodexFindingsPageCounter,
   CodexFindingsRequest,
   CodexFindingsResult,
 } from "../codex/types.js";
+import { BrowserAutomationError } from "../oracle/errors.js";
 
 type BrowserChrome = LaunchedChrome & { host?: string };
 
@@ -91,13 +100,21 @@ export async function runBrowserCodexFindings(
 
   const manualLogin = Boolean(config.manualLogin);
   const usingCopiedProfile = Boolean(config.copyProfileSource);
+  if (manualLogin && usingCopiedProfile) {
+    throw new BrowserAutomationError(
+      "--copy-profile cannot be combined with --browser-manual-login: choose either a throwaway copied profile or the persistent manual-login profile.",
+      { stage: "profile-config" },
+    );
+  }
   const manualProfileDir = config.manualLoginProfileDir
     ? path.resolve(config.manualLoginProfileDir)
     : defaultManualLoginProfileDir();
   const userDataDir = manualLogin
     ? manualProfileDir
     : await mkdtemp(path.join(os.tmpdir(), "oracle-codex-findings-"));
-  const effectiveKeepBrowser = Boolean(config.keepBrowser);
+  // A copied signed-in profile is temporary credential material and is never retainable,
+  // including when a direct API/config caller sets keepBrowser.
+  const effectiveKeepBrowser = usingCopiedProfile ? false : Boolean(config.keepBrowser);
   if (manualLogin) {
     await mkdir(userDataDir, { recursive: true });
     logger(`Manual login mode enabled; reusing persistent profile at ${userDataDir}`);
@@ -118,12 +135,21 @@ export async function runBrowserCodexFindings(
 
   let tabLease: BrowserTabLease | null = null;
   if (manualLogin) {
-    tabLease = await acquireBrowserTabLease(userDataDir, {
-      maxConcurrentTabs: config.maxConcurrentTabs,
-      timeoutMs: config.timeoutMs,
-      logger,
-      sessionId: "codex-findings",
-    });
+    try {
+      tabLease = await acquireBrowserTabLease(userDataDir, {
+        maxConcurrentTabs: config.maxConcurrentTabs,
+        timeoutMs: config.queueTimeoutMs,
+        logger,
+        sessionId: "codex-findings",
+      });
+    } catch (error) {
+      await rollbackOrphanedBrowserTabLeaseAcquisition(
+        error,
+        logger,
+        "Codex findings acquisition rollback",
+      );
+      throw error;
+    }
   }
 
   let chrome: BrowserChrome | null = null;
@@ -155,16 +181,20 @@ export async function runBrowserCodexFindings(
       userDataDir,
       effectiveKeepBrowser,
       logger,
-      { isInFlight: () => !completed, preserveUserDataDir: manualLogin },
+      {
+        isInFlight: () => !completed,
+        preserveUserDataDir: manualLogin,
+        forceProfileCleanup: usingCopiedProfile,
+      },
     );
 
-    const strictTabIsolation = Boolean(manualLogin && reusedChrome);
-    const devtoolsRetries = manualLogin ? 6 : 0;
-    const connection = await connectWithNewTab(chrome.port, logger, "about:blank", chromeHost, {
-      fallbackToDefault: !strictTabIsolation,
-      retries: devtoolsRetries,
-      retryDelayMs: 500,
-    });
+    const connection = await connectWithNewTab(
+      chrome.port,
+      logger,
+      "about:blank",
+      chromeHost,
+      resolveIsolatedTabConnectOptions(manualLogin),
+    );
     client = connection.client;
     isolatedTargetId = connection.targetId ?? null;
     if (tabLease && isolatedTargetId) {
@@ -294,7 +324,6 @@ export async function runBrowserCodexFindings(
     };
   } finally {
     removeDialogHandler?.();
-    removeTerminationHooks?.();
     const chromeHost = chrome?.host ?? "127.0.0.1";
     try {
       await client?.close();
@@ -329,6 +358,7 @@ export async function runBrowserCodexFindings(
 
     let keepBrowserOpen = effectiveKeepBrowser;
     let cleanupProfileLock: ProfileRunLock | null = null;
+    let terminatedRecordedChrome = false;
     if (!keepBrowserOpen && manualLogin && tabLease) {
       const cleanupLockTimeoutMs = Math.max(0, config.profileLockTimeoutMs ?? 0);
       if (cleanupLockTimeoutMs > 0) {
@@ -345,8 +375,10 @@ export async function runBrowserCodexFindings(
       if (keepBrowserOpen) {
         logger("[browser] Other ChatGPT tab leases still active; leaving shared Chrome running.");
       } else if (reusedChrome && !connectionClosedUnexpectedly) {
-        keepBrowserOpen = true;
-        logger("[browser] Reused shared Chrome; leaving browser process running.");
+        terminatedRecordedChrome = await terminateRecordedChromeForProfile(
+          userDataDir,
+          logger,
+        ).catch(() => false);
       }
     }
     if (tabLease && (preserveOwnedTargetOnError || !ownedTargetCleanupProved)) {
@@ -356,17 +388,15 @@ export async function runBrowserCodexFindings(
     } else if (tabLease) {
       const handle = tabLease;
       tabLease = null;
-      await handle.release().catch((error) => {
-        latchBrowserCleanupTaint(
-          `codex findings tab-lease release failed (${handle.id}): ${error instanceof Error ? error.message : String(error)}`,
-          logger,
-        );
-      });
+      await releaseBrowserTabLeaseOrTaint(handle, logger, "Codex findings cleanup");
     }
+    removeTerminationHooks?.();
     if (!keepBrowserOpen && chrome) {
       if (!connectionClosedUnexpectedly) {
         try {
-          await chrome.kill();
+          if (!terminatedRecordedChrome) {
+            await chrome.kill();
+          }
         } catch {
           // ignore kill failures
         }
@@ -522,7 +552,7 @@ async function acquireManualLoginChromeForCodexFindings(
     if (chrome.port) {
       await writeDevToolsActivePort(userDataDir, chrome.port);
       if (!reusedChrome && chrome.pid) {
-        await writeChromePid(userDataDir, chrome.pid);
+        await writeChromePid(userDataDir, chrome.pid, chrome.port);
       }
     }
     return { chrome, reusedChrome };
@@ -534,7 +564,11 @@ async function acquireManualLoginChromeForCodexFindings(
 async function maybeReuseCodexFindingsChrome(
   userDataDir: string,
   logger: BrowserLogger,
-  options: { waitForPortMs?: number; probe?: typeof verifyDevToolsReachable } = {},
+  options: {
+    waitForPortMs?: number;
+    probe?: typeof verifyDevToolsReachable;
+    verifyOwner?: typeof verifyChromeDebugTargetOwner;
+  } = {},
 ): Promise<LaunchedChrome | null> {
   const waitForPortMs = Math.max(0, options.waitForPortMs ?? 0);
   let port = await readDevToolsPort(userDataDir);
@@ -560,6 +594,17 @@ async function maybeReuseCodexFindingsChrome(
       }
       return null;
     }
+    const discoveredOwner = await (options.verifyOwner ?? verifyChromeDebugTargetOwner)(
+      userDataDir,
+      discovered.port,
+      { allowProcessDiscovery: true },
+    );
+    if (!discoveredOwner.ok || discoveredOwner.pid !== discovered.pid) {
+      logger(
+        `Discovered Chrome for ${userDataDir} failed owner verification (${discoveredOwner.ok ? "pid-mismatch" : discoveredOwner.reason}); launching new Chrome.`,
+      );
+      return null;
+    }
     const probe = await (options.probe ?? verifyDevToolsReachable)({ port: discovered.port });
     if (!probe.ok) {
       logger(
@@ -571,17 +616,30 @@ async function maybeReuseCodexFindingsChrome(
       return null;
     }
     await writeDevToolsActivePort(userDataDir, discovered.port);
-    await writeChromePid(userDataDir, discovered.pid);
+    await writeChromePid(userDataDir, discovered.pid, discovered.port);
+    port = discovered.port;
+    pid = discovered.pid;
     logger(
-      `Discovered running Chrome for ${userDataDir}; reusing (DevTools port ${discovered.port}, pid ${discovered.pid})`,
+      `Discovered running Chrome for ${userDataDir}; reusing (DevTools port ${port}, pid ${pid})`,
     );
     return {
-      port: discovered.port,
-      pid: discovered.pid,
+      port,
+      pid,
       kill: async () => {},
       process: undefined,
     } as unknown as LaunchedChrome;
   }
+  const owner = await (options.verifyOwner ?? resolveChromeDebugTargetOwner)(userDataDir, port, {
+    allowProcessDiscovery: true,
+  });
+  if (!owner.ok) {
+    logger(
+      `Recorded Chrome DevTools port ${port} failed owner verification (${owner.reason}); refusing to attach.`,
+    );
+    return null;
+  }
+  const recordedPort = port;
+  port = owner.port;
   const probe = await (options.probe ?? verifyDevToolsReachable)({ port });
   if (!probe.ok) {
     logger(
@@ -590,11 +648,27 @@ async function maybeReuseCodexFindingsChrome(
     await cleanupStaleProfileState(userDataDir, logger, { lockRemovalMode: "if_oracle_pid_dead" });
     return null;
   }
+  if (owner.source === "process-discovery" || port !== recordedPort) {
+    await writeDevToolsActivePort(userDataDir, port);
+    await writeChromePid(userDataDir, owner.pid, port);
+  }
   logger(`Reusing running Chrome on port ${port} with profile ${userDataDir}`);
   return {
     port,
-    pid: pid ?? undefined,
+    pid: owner.pid,
     kill: async () => {},
     process: undefined,
   } as unknown as LaunchedChrome;
+}
+
+export async function maybeReuseCodexFindingsChromeForTest(
+  userDataDir: string,
+  logger: BrowserLogger,
+  options: {
+    waitForPortMs?: number;
+    probe?: typeof verifyDevToolsReachable;
+    verifyOwner?: typeof verifyChromeDebugTargetOwner;
+  } = {},
+): Promise<LaunchedChrome | null> {
+  return maybeReuseCodexFindingsChrome(userDataDir, logger, options);
 }

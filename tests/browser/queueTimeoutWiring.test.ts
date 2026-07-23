@@ -12,6 +12,7 @@ describe("independent browser FIFO queue-timeout wiring", () => {
   test("every ordinary ChatGPT tab acquisition uses queueTimeoutMs, never the response timeout", async () => {
     const index = await source("src/browser/index.ts");
     const projectSources = await source("src/browser/projectSourcesRunner.ts");
+    const codexFindings = await source("src/browser/codexFindingsRunner.ts");
 
     const indexAcquisitions = [...index.matchAll(/acquireBrowserTabLease\([^]*?\n\s*\}\);/gu)];
     expect(indexAcquisitions).toHaveLength(2);
@@ -25,6 +26,24 @@ describe("independent browser FIFO queue-timeout wiring", () => {
     ];
     expect(projectAcquisitions).toHaveLength(1);
     expect(projectAcquisitions[0]?.[0]).toContain("timeoutMs: config.queueTimeoutMs");
+
+    const codexFindingsAcquisitions = [
+      ...codexFindings.matchAll(/acquireBrowserTabLease\([^]*?\n\s*\}\);/gu),
+    ];
+    expect(codexFindingsAcquisitions).toHaveLength(1);
+    expect(codexFindingsAcquisitions[0]?.[0]).toContain("timeoutMs: config.queueTimeoutMs");
+    expect(codexFindingsAcquisitions[0]?.[0]).not.toContain("timeoutMs: config.timeoutMs");
+  });
+
+  test("Codex findings exposes its independent queue timeout in command help", async () => {
+    const cli = await source("bin/oracle-cli.ts");
+    const codexStart = cli.indexOf("const codexCommand = program");
+    const codexEnd = cli.indexOf("const bridgeCommand = program", codexStart);
+    const codex = cli.slice(codexStart, codexEnd);
+
+    expect(codexStart).toBeGreaterThanOrEqual(0);
+    expect(codexEnd).toBeGreaterThan(codexStart);
+    expect(codex).toContain('option("--browser-queue-timeout <duration>"');
   });
 
   test("isolated recovery preserves the legacy lease timeout only as a fallback", async () => {
@@ -39,11 +58,15 @@ describe("independent browser FIFO queue-timeout wiring", () => {
   test("every production acquisition rolls back a durably committed orphan lease", async () => {
     const index = await source("src/browser/index.ts");
     const projectSources = await source("src/browser/projectSourcesRunner.ts");
+    const codexFindings = await source("src/browser/codexFindingsRunner.ts");
     const reattach = await source("src/browser/reattach.ts");
 
     expect(index.match(/await rollbackOrphanedBrowserTabLeaseAcquisition\(/gu)).toHaveLength(2);
     expect(
       projectSources.match(/await rollbackOrphanedBrowserTabLeaseAcquisition\(/gu),
+    ).toHaveLength(1);
+    expect(
+      codexFindings.match(/await rollbackOrphanedBrowserTabLeaseAcquisition\(/gu),
     ).toHaveLength(1);
     expect(reattach.match(/await rollbackOrphanedBrowserTabLeaseAcquisition\(/gu)).toHaveLength(1);
   });

@@ -5,6 +5,7 @@
 ### Added
 
 - CLI: add `oracle import-chatgpt-url` for registering a manually started ChatGPT conversation as an explicitly untrusted, local-only follow-up reference. Imports carry no answer, model/mode, lane, account, harvest, or recovery proof; `--force` can replace only another structurally pure import. Thanks @mustafa0x!
+- CLI: add read-only `oracle codex findings` access for listing ChatGPT Codex Cloud security findings and inspecting one finding with `--finding`, including paginated JSON output and default redaction of signed validation-artifact URLs. Thanks @umgbhalla!
 
 ### Fixed
 

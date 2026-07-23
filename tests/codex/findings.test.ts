@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { runInNewContext } from "node:vm";
+import { describe, expect, it, vi } from "vitest";
 import {
   aggregateFindingPages,
   parseFindingItem,
@@ -12,6 +13,7 @@ import {
   normalizeCodexFindingsUrl,
 } from "../../src/codex/url.js";
 import { CODEX_FINDINGS_URL } from "../../src/browser/constants.js";
+import { buildPaginationClickExpression } from "../../src/browser/actions/codexFindings.js";
 
 const ID_A = "ec67666608e481919bfa195fe60fa36e";
 
@@ -87,6 +89,42 @@ describe("shouldStopPaging", () => {
   });
   it("continues while more rows remain", () => {
     expect(shouldStopPaging({ from: 1, to: 20, total: 120 }, 1)).toBe(false);
+  });
+});
+
+describe("read-only findings pagination", () => {
+  it("clicks only the exact pagination target when a mutating action is adjacent", () => {
+    const nextPage = {
+      disabled: false,
+      textContent: "Next page",
+      getAttribute: vi.fn((name: string) => (name === "aria-label" ? "Next page" : null)),
+      scrollIntoView: vi.fn(),
+      click: vi.fn(),
+    };
+    const createPr = {
+      disabled: false,
+      textContent: "Create PR",
+      getAttribute: vi.fn((name: string) => (name === "aria-label" ? "Create PR" : null)),
+      scrollIntoView: vi.fn(),
+      click: vi.fn(),
+    };
+    const querySelector = vi.fn((selector: string) => {
+      if (selector === 'button[aria-label="Next page"]') return nextPage;
+      if (selector === 'button[aria-label="Create PR"]') return createPr;
+      return null;
+    });
+
+    const result = runInNewContext(buildPaginationClickExpression("Next page"), {
+      document: { querySelector },
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(querySelector).toHaveBeenCalledTimes(1);
+    expect(querySelector).toHaveBeenCalledWith('button[aria-label="Next page"]');
+    expect(nextPage.scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(nextPage.click).toHaveBeenCalledTimes(1);
+    expect(createPr.scrollIntoView).not.toHaveBeenCalled();
+    expect(createPr.click).not.toHaveBeenCalled();
   });
 });
 

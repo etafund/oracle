@@ -10,6 +10,7 @@ import {
   maybeReuseRunningChromeForTest,
 } from "../../src/browser/index.js";
 import { maybeReuseProjectSourcesChromeForTest } from "../../src/browser/projectSourcesRunner.js";
+import { maybeReuseCodexFindingsChromeForTest } from "../../src/browser/codexFindingsRunner.js";
 import { resolveBrowserConfig } from "../../src/browser/config.js";
 import type { LaunchedChrome } from "chrome-launcher";
 
@@ -17,6 +18,7 @@ const noopLogger = () => {};
 const reusePaths = [
   ["browser runs", maybeReuseRunningChromeForTest],
   ["Project Sources", maybeReuseProjectSourcesChromeForTest],
+  ["Codex findings", maybeReuseCodexFindingsChromeForTest],
 ] as const;
 
 async function writeChromeLocks(dir: string): Promise<string[]> {
