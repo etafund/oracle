@@ -669,7 +669,7 @@ program
   .addOption(
     new Option(
       "-m, --model <model>",
-      "Model to target. Prefer --lane for reviewed routes; legacy API/browser model aliases remain available.",
+      'Model to target. Prefer --lane for reviewed routes. GPT-5.6 aliases include gpt-5.6 and gpt-5.6-sol for OpenAI API or ChatGPT browser; compatibility aliases include gpt-5.5-pro, gpt-5.5, gpt-5.4-pro, gpt-5.4, gpt-5.1-pro, gpt-5-pro, gpt-5.1, API-only gpt-5.1-codex, gpt-5.2, gpt-5.2-instant, gpt-5.2-pro, gemini-3.1-flash-lite, gemini-3.5-flash, gemini-3.1-pro, legacy gemini-3-pro, claude-4.6-sonnet, claude-4.1-opus, and ChatGPT picker labels such as "5.5 Pro" or "5.2 Thinking".',
     )
       .argParser(normalizeModelOption)
       .hideHelp(),

@@ -38,6 +38,7 @@ const BROWSER_MODEL_LABELS: [ModelName, string][] = [
   ["chatgpt-pro", CURRENT_CHATGPT_PRO_MODEL_LABEL],
   ["pro", CURRENT_CHATGPT_PRO_MODEL_LABEL],
   ["gpt-5.6-sol", CURRENT_CHATGPT_PRO_MODEL_LABEL],
+  ["gpt-5.6", CURRENT_CHATGPT_PRO_MODEL_LABEL],
   ["gpt-5.5-pro", CURRENT_CHATGPT_PRO_MODEL_LABEL],
   ["gpt-5.5-instant", "GPT-5.5 Instant"],
   ["gpt-5.5", "GPT-5.5"],
@@ -111,6 +112,7 @@ export function normalizeChatGptModelForBrowser(model: ModelName): ModelName {
 
   if (
     normalized === "gpt-5.6-sol" ||
+    normalized === "gpt-5.6" ||
     normalized === "gpt-5.5-pro" ||
     normalized === "gpt-5.5-instant" ||
     normalized === "gpt-5.5" ||
@@ -348,14 +350,14 @@ export function mapModelToBrowserLabel(model: ModelName): string {
 }
 
 /**
- * Resolves ChatGPT's current two-axis browser target. The stable Pro aliases
- * select the GPT-5.6 Sol model first, then the checked bare Pro intelligence
- * mode through the existing thinking-time activation seam.
+ * Resolves ChatGPT's current two-axis browser target. Stable aliases that
+ * explicitly mean Pro select GPT-5.6 Sol plus the independent Pro mode. Plain
+ * GPT-5.6/Sol requests select only the model; the reviewed chatgpt-pro lane
+ * supplies its required extended/Pro mode separately.
  */
 export function resolveChatGptBrowserTarget(model: ModelName): ChatGptBrowserTarget {
   const normalized = normalizeChatGptModelForBrowser(model).toLowerCase();
   const currentProAlias =
-    normalized === "gpt-5.6-sol" ||
     normalized === "gpt-5.5-pro" ||
     normalized === "chatgpt-pro-latest" ||
     normalized === "chatgpt-pro" ||

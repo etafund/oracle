@@ -74,7 +74,7 @@ export function describeBrowserControlPlan(config: BrowserControlConfig = {}): B
   }
 
   if (config.hideWindow) {
-    guidance.push("Chrome may briefly focus while launching before Oracle hides it.");
+    guidance.push("On macOS, Oracle launches Chrome off-screen while keeping the page rendered.");
     guidance.push(
       "For the calmest shared-desktop flow, prefer --browser-attach-running or --remote-chrome.",
     );
@@ -82,7 +82,7 @@ export function describeBrowserControlPlan(config: BrowserControlConfig = {}): B
       mode: "hidden-window",
       launchesChrome: true,
       mayFocusWindow: true,
-      summary: "launch Chrome and hide the window after startup",
+      summary: "launch Chrome in hidden-window mode",
       guidance,
     };
   }

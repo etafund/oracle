@@ -33,6 +33,15 @@ describe("buildBrowserConfig", () => {
     expect(config.desiredModel).toBe("Thinking 5.4");
   });
 
+  test("maps the GPT-5.6 family and explicit Sol variant separately", async () => {
+    const config = await buildBrowserConfig({ model: "gpt-5.6" });
+    expect(config.desiredModel).toBe("GPT-5.6 Sol");
+    expect(config.thinkingTime).toBeUndefined();
+    const sol = await buildBrowserConfig({ model: "gpt-5.6-sol" });
+    expect(sol.desiredModel).toBe("GPT-5.6 Sol");
+    expect(sol.thinkingTime).toBeUndefined();
+  });
+
   test("keeps version signal for gpt-5.5 Instant browser runs", async () => {
     const config = await buildBrowserConfig({ model: "gpt-5.5-instant" });
     expect(config.desiredModel).toBe("GPT-5.5 Instant");
@@ -447,10 +456,19 @@ describe("resolveBrowserModelLabel", () => {
   });
 
   test("resolves stable Pro aliases to the GPT-5.6 Sol + Pro two-axis target", () => {
-    for (const model of ["chatgpt-pro-latest", "gpt-5.5-pro", "gpt-5.2-pro", "gpt-5.6-sol"]) {
+    for (const model of ["chatgpt-pro-latest", "gpt-5.5-pro", "gpt-5.2-pro"]) {
       expect(resolveChatGptBrowserTarget(model)).toEqual({
         modelLabel: "GPT-5.6 Sol",
         modeLabel: "Pro",
+      });
+    }
+  });
+
+  test("keeps GPT-5.6 Sol independent from the Pro mode", () => {
+    for (const model of ["gpt-5.6", "gpt-5.6-sol"]) {
+      expect(resolveChatGptBrowserTarget(model)).toEqual({
+        modelLabel: "GPT-5.6 Sol",
+        modeLabel: null,
       });
     }
   });

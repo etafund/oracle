@@ -15,7 +15,7 @@ import type { BrowserLogger, ChromeClient } from "./types.js";
 import {
   launchChrome,
   connectToChrome,
-  hideChromeWindow,
+  positionChromeWindowOffscreen,
   closeRemoteChromeTarget,
   connectWithNewTab,
   connectToRemoteChromeTarget,
@@ -1168,7 +1168,7 @@ async function resumeBrowserSessionViaNewChrome(
       await DOM.enable();
     }
     if (!resolved.headless && resolved.hideWindow) {
-      await hideChromeWindow(chrome, logger);
+      await positionChromeWindowOffscreen(client, logger);
     }
 
     let appliedCookies = 0;

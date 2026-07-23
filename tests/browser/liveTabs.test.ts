@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+  buildTabInspectionExpressionForTest,
   classifyTabState,
   formatBrowserTabState,
   isChatGptConversationUrlForTest,
@@ -23,6 +24,9 @@ function makeTab(overrides: Partial<ChatGptTabSummary> = {}): ChatGptTabSummary 
     authenticated: true,
     assistantCount: 1,
     lastAssistantText: "Answer",
+    assistantFollowsLatestUser: true,
+    lastAssistantTurnIndex: 1,
+    lastUserTurnIndex: 0,
     lastAssistantSnippet: "Answer",
     lastUserText: "Question",
     lastUserSnippet: "Question",
@@ -37,6 +41,13 @@ function makeTab(overrides: Partial<ChatGptTabSummary> = {}): ChatGptTabSummary 
 }
 
 describe("liveTabs helpers", () => {
+  test("excludes fallback answer nodes contained by the latest user turn", () => {
+    const expression = buildTabInspectionExpressionForTest();
+    expect(expression).toContain("!lastUserTurn.contains?.(node)");
+    expect(expression).toContain("!node.contains?.(lastUserTurn)");
+    expect(expression).toContain("assistantCandidates.reduce");
+  });
+
   test("classifies running/completed/detached states", () => {
     expect(
       classifyTabState({
@@ -91,10 +102,20 @@ describe("liveTabs helpers", () => {
     expect(formatBrowserTabState(makeTab({ state: "stalled" }))).toBe("stalled");
   });
 
-  test("resolves current/id/url/title refs against live tabs", () => {
+  test("resolves current/id/url/conversation/title refs against live tabs", () => {
     const tabs = [
-      makeTab({ targetId: "target-1", title: "Review A", url: "https://chatgpt.com/c/a" }),
-      makeTab({ targetId: "target-2", title: "Review B", url: "https://chatgpt.com/c/b" }),
+      makeTab({
+        targetId: "target-1",
+        title: "Review A",
+        url: "https://chatgpt.com/c/a",
+        conversationId: "a",
+      }),
+      makeTab({
+        targetId: "target-2",
+        title: "Review B",
+        url: "https://chatgpt.com/c/b",
+        conversationId: "b",
+      }),
     ];
     expect(resolveChatGptTabFromSummariesForTest(tabs, "current").targetId).toBe("target-1");
     expect(resolveChatGptTabFromSummariesForTest(tabs, "target-2").url).toBe(
@@ -103,6 +124,7 @@ describe("liveTabs helpers", () => {
     expect(resolveChatGptTabFromSummariesForTest(tabs, "https://chatgpt.com/c/a").targetId).toBe(
       "target-1",
     );
+    expect(resolveChatGptTabFromSummariesForTest(tabs, "b").targetId).toBe("target-2");
     expect(resolveChatGptTabFromSummariesForTest(tabs, "Review B").targetId).toBe("target-2");
   });
 

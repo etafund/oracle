@@ -1,5 +1,10 @@
 import type { ChromeClient, BrowserLogger } from "../types.js";
-import { CONVERSATION_TURN_SELECTOR, INPUT_SELECTORS } from "../constants.js";
+import {
+  CLOUDFLARE_SCRIPT_SELECTOR,
+  CLOUDFLARE_TITLE,
+  CONVERSATION_TURN_SELECTOR,
+  INPUT_SELECTORS,
+} from "../constants.js";
 import { delay } from "../utils.js";
 import { logDomFailure } from "../domDebug.js";
 import { assertFreshCaptureTarget } from "./captureBinding.js";
@@ -366,6 +371,201 @@ async function tripLegacyNavigationQuarantine(
   }
 }
 
+type ChatModeProbeResult = {
+  status:
+    | "chat-selected"
+    | "chat-conversation"
+    | "work-selected"
+    | "work-conversation"
+    | "conversation-unresolved"
+    | "controls-absent"
+    | "mode-unresolved";
+  chatPoint?: { x: number; y: number };
+};
+
+function buildChatModeProbeExpression(): string {
+  return `(() => {
+    const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+    const isVisible = (node) => {
+      if (!(node instanceof HTMLElement)) return false;
+      const rect = node.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return false;
+      const style = window.getComputedStyle(node);
+      return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+    };
+    const isSelected = (node) =>
+      node?.getAttribute?.('aria-checked') === 'true' ||
+      node?.getAttribute?.('data-state') === 'on';
+    const conversationIdFromPath = (value) => {
+      const match = String(value || '').match(/\\/c\\/([a-zA-Z0-9-]+)/);
+      return match?.[1] || null;
+    };
+    const isStructuredWorkBadge = (node) =>
+      node instanceof HTMLElement &&
+      node.tagName === 'SPAN' &&
+      normalize(node.textContent) === 'work' &&
+      node.childElementCount === 0 &&
+      !node.hasAttribute('dir') &&
+      node.classList.contains('shrink-0') &&
+      node.parentElement?.matches('span.flex.items-center');
+
+    const pathname = typeof location?.pathname === 'string' ? location.pathname : '';
+    const conversationId = conversationIdFromPath(pathname);
+    if (conversationId) {
+      // Conversation messages can contain same-origin links to the current thread. Only sidebar
+      // history items use ChatGPT's renderer-owned menu-item anchor class.
+      const activeHistoryLinks = Array.from(
+        document.querySelectorAll('a.__menu-item[href*="/c/"]'),
+      ).filter((node) => {
+        try {
+          const candidateUrl = new URL(node.getAttribute('href') || '', location.origin);
+          return candidateUrl.origin === location.origin && conversationIdFromPath(candidateUrl.pathname) === conversationId;
+        } catch {
+          return false;
+        }
+      });
+      if (activeHistoryLinks.length > 0) {
+        const hasWorkBadge = activeHistoryLinks.some((link) =>
+          Array.from(link.querySelectorAll('span')).some(isStructuredWorkBadge),
+        );
+        if (hasWorkBadge) return { status: 'work-conversation' };
+
+        const ariaLabels = activeHistoryLinks
+          .map((link) => normalize(link.getAttribute('aria-label')))
+          .filter(Boolean);
+        if (ariaLabels.length === 0 || ariaLabels.some((aria) => /,\\s*work\\s*$/.test(aria))) {
+          return { status: 'conversation-unresolved' };
+        }
+        return { status: 'chat-conversation' };
+      }
+      return { status: 'conversation-unresolved' };
+    }
+
+    const radios = Array.from(document.querySelectorAll('button[role="radio"]')).filter(isVisible);
+    const chat = radios.find((node) => normalize(node.textContent) === 'chat');
+    const work = radios.find((node) => normalize(node.textContent) === 'work');
+    if (!chat && !work) return { status: 'controls-absent' };
+    if (!chat || !work) return { status: 'mode-unresolved' };
+    if (isSelected(chat)) return { status: 'chat-selected' };
+    if (isSelected(work)) {
+      const rect = chat.getBoundingClientRect();
+      return {
+        status: 'work-selected',
+        chatPoint: { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 },
+      };
+    }
+    return { status: 'mode-unresolved' };
+  })()`;
+}
+
+export async function ensureChatMode(
+  Runtime: ChromeClient["Runtime"],
+  Input: ChromeClient["Input"],
+  timeoutMs: number,
+  logger: BrowserLogger,
+  options: { pollMs?: number; resetWorkConversation?: () => Promise<void> } = {},
+): Promise<"chat" | "switched" | "unavailable"> {
+  const verificationWindowMs = Math.min(Math.max(0, timeoutMs), 10_000);
+  let deadline = Date.now() + verificationWindowMs;
+  const pollMs = Math.max(0, options.pollMs ?? 200);
+  let changedFromWork = false;
+  let clickedChat = false;
+
+  for (;;) {
+    const outcome = await Runtime.evaluate({
+      expression: buildChatModeProbeExpression(),
+      returnByValue: true,
+    });
+    const probe = outcome.result?.value as ChatModeProbeResult | undefined;
+    if (probe?.status === "chat-selected" || probe?.status === "chat-conversation") {
+      logger(changedFromWork ? "ChatGPT mode: Chat (switched from Work)" : "ChatGPT mode: Chat");
+      return changedFromWork ? "switched" : "chat";
+    }
+    if (probe?.status === "conversation-unresolved") {
+      if (Date.now() < deadline) {
+        await delay(pollMs);
+        continue;
+      }
+      if (changedFromWork) break;
+      if (options.resetWorkConversation) {
+        logger("ChatGPT conversation mode unresolved; opening a new Chat");
+        await options.resetWorkConversation();
+        changedFromWork = true;
+        deadline = Date.now() + verificationWindowMs;
+        await delay(pollMs);
+        continue;
+      }
+      throw new BrowserAutomationError(
+        "Oracle could not verify whether the selected ChatGPT conversation uses Chat or Work mode, so it cannot safely resume that conversation.",
+        { stage: "chat-mode-selection", details: { mode: "conversation-unresolved" } },
+      );
+    }
+    if (probe?.status === "controls-absent") {
+      if (changedFromWork) {
+        if (Date.now() < deadline) {
+          await delay(pollMs);
+          continue;
+        }
+        break;
+      }
+      return "unavailable";
+    }
+    if (probe?.status === "work-conversation") {
+      if (changedFromWork) break;
+      if (options.resetWorkConversation) {
+        logger("ChatGPT mode: Work conversation; opening a new Chat");
+        await options.resetWorkConversation();
+        changedFromWork = true;
+        deadline = Date.now() + verificationWindowMs;
+        await delay(pollMs);
+        continue;
+      }
+      throw new BrowserAutomationError(
+        "The selected ChatGPT tab is an existing Work conversation and cannot be resumed as an ordinary Chat conversation. Start a new Chat conversation instead.",
+        { stage: "chat-mode-selection", details: { mode: "work-conversation" } },
+      );
+    }
+    if (probe?.status === "work-selected" && !clickedChat && probe.chatPoint) {
+      logger("ChatGPT mode: Work; switching to Chat");
+      const { x, y } = probe.chatPoint;
+      await Input.dispatchMouseEvent({ type: "mouseMoved", x, y });
+      await Input.dispatchMouseEvent({
+        type: "mousePressed",
+        x,
+        y,
+        button: "left",
+        clickCount: 1,
+      });
+      await Input.dispatchMouseEvent({
+        type: "mouseReleased",
+        x,
+        y,
+        button: "left",
+        clickCount: 1,
+      });
+      changedFromWork = true;
+      clickedChat = true;
+      deadline = Date.now() + verificationWindowMs;
+      await delay(pollMs);
+      continue;
+    }
+    if (Date.now() >= deadline) break;
+    await delay(pollMs);
+  }
+
+  await logDomFailure(Runtime, logger, "chat-mode-selection");
+  throw new BrowserAutomationError(
+    changedFromWork
+      ? "Oracle could not verify Chat mode after leaving Work."
+      : "ChatGPT exposed Chat/Work controls but Oracle could not verify the active mode.",
+    { stage: "chat-mode-selection", details: { changedFromWork, clickedChat } },
+  );
+}
+
+export function buildChatModeProbeExpressionForTest(): string {
+  return buildChatModeProbeExpression();
+}
+
 export async function ensureNotBlocked(
   Runtime: ChromeClient["Runtime"],
   headless: boolean,
@@ -377,7 +577,18 @@ export async function ensureNotBlocked(
   // heuristic. ChatGPT can load Cloudflare's challenge-platform script in a
   // healthy signed-in app; only a positively classified wall may quarantine.
   const access = await probeBrowserAccessState(Runtime);
-  if (access.state === "verification_interstitial") {
+  const hasAuthoritativeInterstitialEvidence =
+    access.signals.includes("interstitial-url-marker") ||
+    access.signals.includes("interstitial-text");
+  // The canonical access probe deliberately treats a script/title without a
+  // usable app as suspicious. Immediately after navigation, however, a
+  // healthy SPA can briefly have exactly that shape. Preserve the canonical
+  // URL/text verdicts, but require upstream's hydration-grace confirmation for
+  // script/title-only evidence before tripping the durable quarantine latch.
+  const verificationInterstitial =
+    access.state === "verification_interstitial" &&
+    (hasAuthoritativeInterstitialEvidence || (await isCloudflareInterstitial(Runtime)));
+  if (verificationInterstitial) {
     const message = headless
       ? "Cloudflare challenge detected in headless mode. Re-run with --headful so you can solve the challenge, then manually clear the account quarantine before retrying Oracle."
       : "Cloudflare challenge detected. Complete the “Just a moment…” check in the open browser, then manually clear the account quarantine before retrying Oracle.";
@@ -816,6 +1027,84 @@ async function waitForPrompt(
   }
   return false;
 }
+
+// A single injected verdict. The old check flagged a challenge whenever the
+// '/challenge-platform/' script was present, but Cloudflare bot-management injects that script on
+// NORMAL ChatGPT pages too (including the new GPT-5.6 "Work" UI), so it false-flagged healthy pages
+// as challenges (which then aborted the run). Classification by evidence strength:
+//   strong - the "Just a moment"/"Attention Required" title, a challenge widget, or
+//            verification copy on a short page: a real interstitial, classify immediately.
+//   shell  - the ChatGPT app shell rendered: never a challenge, regardless of injected scripts.
+//   weak   - only the bot-management script on a short, shell-less page. This is INFERENCE, and
+//            right after navigation it also matches a healthy SPA load mid-hydration (readyState
+//            fires before React renders the shell), so weak evidence must PERSIST through a
+//            hydration grace window before it counts (see isCloudflareInterstitial).
+export function buildCloudflareVerdictExpression(): string {
+  return `(() => {
+    const title = String(document.title || '').toLowerCase();
+    const titleSaysChallenge =
+      title.includes(${JSON.stringify(CLOUDFLARE_TITLE.toLowerCase())}) ||
+      (title.includes('attention required') && title.includes('cloudflare'));
+    const hasAppShell = Boolean(document.querySelector(
+      '#prompt-textarea, [data-testid="prompt-textarea"], [data-testid^="conversation-turn"], [data-testid="profile-button"], main form[data-type], nav a[href*="/c/"]'
+    ));
+    const bodyText = String((document.body && document.body.innerText) || '')
+      .toLowerCase().replace(/\\s+/g, ' ').trim();
+    const isShortPage = bodyText.length < 600;
+    const hasChallengeWidget = Boolean(document.querySelector(
+      '#challenge-form, #challenge-running, #cf-challenge-running, [class*="cf-challenge"], iframe[src*="challenges.cloudflare.com"], iframe[src*="/cdn-cgi/challenge-platform/"]'
+    ));
+    const saysVerifying = /verify(ing)? you are human|checking your browser|needs to review the security of your connection|just a moment/.test(bodyText);
+    const hasChallengeScript = Boolean(document.querySelector(${JSON.stringify(CLOUDFLARE_SCRIPT_SELECTOR)}));
+    return {
+      strong:
+        !hasAppShell &&
+        (titleSaysChallenge || hasChallengeWidget || (isShortPage && saysVerifying)),
+      shell: hasAppShell,
+      // A genuine interstitial is a SHORT page; the content-rich app never is. So the script
+      // only counts on a short page with no app shell.
+      weak: !hasAppShell && hasChallengeScript && isShortPage,
+    };
+  })()`;
+}
+
+// Boolean composition kept for tests/back-compat: what an instantaneous classifier would say.
+export function buildCloudflareInterstitialExpression(): string {
+  return `(() => { const v = ${buildCloudflareVerdictExpression()}; return v.strong || v.weak; })()`;
+}
+
+export const buildCloudflareInterstitialExpressionForTest = buildCloudflareInterstitialExpression;
+export const buildCloudflareVerdictExpressionForTest = buildCloudflareVerdictExpression;
+
+type CloudflareVerdict = { strong?: boolean; shell?: boolean; weak?: boolean };
+
+// Weak (script-only) evidence must persist through a hydration grace window: callers run this
+// right after navigation, when a healthy SPA load can briefly look exactly like the weak case
+// (script present, shell not yet rendered, short body). A real interstitial never grows an app
+// shell, so waiting converts the race into a correct answer at the cost of a few seconds only
+// on genuinely ambiguous pages. Strong evidence still classifies immediately.
+const CLOUDFLARE_HYDRATION_GRACE_MS = 12_000;
+
+async function isCloudflareInterstitial(
+  Runtime: ChromeClient["Runtime"],
+  graceMs: number = CLOUDFLARE_HYDRATION_GRACE_MS,
+): Promise<boolean> {
+  const deadline = Date.now() + Math.max(0, graceMs);
+  for (;;) {
+    const { result } = await Runtime.evaluate({
+      expression: buildCloudflareVerdictExpression(),
+      returnByValue: true,
+    });
+    const verdict = (result?.value ?? {}) as CloudflareVerdict;
+    if (verdict.strong) return true;
+    if (verdict.shell) return false;
+    if (!verdict.weak) return false;
+    if (Date.now() >= deadline) return true;
+    await delay(500);
+  }
+}
+
+export const isCloudflareInterstitialForTest = isCloudflareInterstitial;
 
 type LoginProbeResult = {
   ok: boolean;

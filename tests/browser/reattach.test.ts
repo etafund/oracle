@@ -836,6 +836,11 @@ describe("reattach helpers", () => {
         "https://chatgpt.com/c/WEB:fee7a622-991a-497a-bac4-a878b86f82f3",
       ),
     ).toBeUndefined();
+    expect(
+      extractConversationIdFromUrl(
+        "https://chatgpt.com/c/WEB:32229414-5afa-4478-890c-9ca80aa82430",
+      ),
+    ).toBeUndefined();
     expect(extractConversationIdFromUrl("")).toBeUndefined();
   });
 

@@ -13,12 +13,42 @@ import {
   sessionMatchesTab,
   type ChatGptTabSummary,
 } from "../browser/liveTabs.js";
-import { recoverConversationTab } from "../browser/recoverConversation.js";
+import {
+  isRecoveredConversationHarvestReady,
+  recoverConversationTab,
+} from "../browser/recoverConversation.js";
 import { normalizeChatGptConversationId } from "../browser/conversationIdentity.js";
 import { resolveOutputPath } from "./writeOutputPath.js";
 
 const LIVE_POLL_MS = 2000;
 const DEFAULT_STALL_THRESHOLD_MS = 60_000;
+
+function isRecoverableMissingTabError(message: string): boolean {
+  return (
+    message.includes("No ChatGPT tab matched") ||
+    message.includes("No live ChatGPT tabs found") ||
+    message.includes("ECONNREFUSED") ||
+    message.includes("Could not connect")
+  );
+}
+
+function finishRecoveredChrome(
+  recoveredChrome: { kill: () => void; process?: { unref?: () => void } } | null,
+  closeAfterRecover: boolean | undefined,
+): void {
+  if (!recoveredChrome) {
+    return;
+  }
+  try {
+    if (closeAfterRecover) {
+      recoveredChrome.kill();
+    } else {
+      recoveredChrome.process?.unref?.();
+    }
+  } catch {
+    // best-effort cleanup
+  }
+}
 
 export interface BrowserHarvestOptions {
   writeOutputPath?: string;
@@ -272,14 +302,15 @@ export async function harvestSessionBrowserOutput(
         : `Session ${sessionId} belongs to a remote browser account. Refusing --harvest local/default-CDP fallback; inspect the conversation in the originating ChatGPT account's history.`,
     );
   }
-  const initialEndpoint = sessionBrowserEndpoint(meta) ?? {
+  const recordedEndpoint = sessionBrowserEndpoint(meta);
+  const initialEndpoint = recordedEndpoint ?? {
     host: DEFAULT_REMOTE_CHROME_HOST,
     port: DEFAULT_REMOTE_CHROME_PORT,
   };
   const ref = options.browserTabRef ?? resolveSessionTabRef(meta);
-  const recoverIfMissing = options.recoverIfMissing !== false;
+  const recoverIfMissing = options.recoverIfMissing !== false && !options.browserTabRef;
 
-  let recoveredChrome: { kill: () => void } | null = null;
+  let recoveredChrome: { kill: () => void; process?: { unref?: () => void } } | null = null;
   try {
     let harvested: ChatGptTabSummary;
     try {
@@ -291,11 +322,7 @@ export async function harvestSessionBrowserOutput(
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const isMissingTabError =
-        message.includes("No ChatGPT tab matched") ||
-        message.includes("ECONNREFUSED") ||
-        message.includes("Could not connect");
-      if (!isMissingTabError || !recoverIfMissing) {
+      if (!isRecoverableMissingTabError(message) || !recoverIfMissing) {
         throw error;
       }
       console.log(
@@ -303,12 +330,14 @@ export async function harvestSessionBrowserOutput(
           `No live ChatGPT tab matched session "${sessionId}". Attempting recovery by reopening the saved conversation URL.`,
         ),
       );
-      const recovered = await recoverConversationTab(meta, (line) => console.log(line));
+      const recovered = await recoverConversationTab(meta, (line) => console.log(line), {
+        existingEndpoint: recordedEndpoint ?? undefined,
+      });
       recoveredChrome = recovered.chrome;
       harvested = await harvestChatGptTab({
         host: recovered.host,
         port: recovered.port,
-        ref: recovered.url,
+        ref: recovered.ref,
         stallWindowMs: options.stallWindowMs,
       });
     }
@@ -324,13 +353,7 @@ export async function harvestSessionBrowserOutput(
     }
     return harvested;
   } finally {
-    if (recoveredChrome && options.closeAfterRecover) {
-      try {
-        recoveredChrome.kill();
-      } catch {
-        // best-effort cleanup
-      }
-    }
+    finishRecoveredChrome(recoveredChrome, options.closeAfterRecover);
   }
 }
 
@@ -349,16 +372,19 @@ export async function liveTailSessionBrowserOutput(
         : `Session ${sessionId} belongs to a remote browser account. Refusing --live local/default-CDP fallback; inspect the conversation in the originating ChatGPT account's history.`,
     );
   }
-  let endpoint = sessionBrowserEndpoint(meta) ?? {
+  const recordedEndpoint = sessionBrowserEndpoint(meta);
+  let endpoint = recordedEndpoint ?? {
     host: DEFAULT_REMOTE_CHROME_HOST,
     port: DEFAULT_REMOTE_CHROME_PORT,
   };
   let browserTabRef = options.browserTabRef ?? resolveSessionTabRef(meta);
-  const recoverIfMissing = options.recoverIfMissing !== false;
-  let recoveredChrome: { kill: () => void } | null = null;
+  const recoverIfMissing = options.recoverIfMissing !== false && !options.browserTabRef;
+  let recoveredChrome: { kill: () => void; process?: { unref?: () => void } } | null = null;
   const stallThresholdMs = options.stallThresholdMs ?? DEFAULT_STALL_THRESHOLD_MS;
   let lastHash: string | null = null;
   let unchangedSince = Date.now();
+  let requireRecoveredContent = false;
+  let recoveredContentDeadlineMs = 0;
 
   try {
     // Probe once to see if the live tab is still alive; recover if not.
@@ -370,11 +396,7 @@ export async function liveTailSessionBrowserOutput(
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const isMissingTabError =
-        message.includes("No ChatGPT tab matched") ||
-        message.includes("ECONNREFUSED") ||
-        message.includes("Could not connect");
-      if (!isMissingTabError || !recoverIfMissing) {
+      if (!isRecoverableMissingTabError(message) || !recoverIfMissing) {
         throw error;
       }
       console.log(
@@ -382,10 +404,15 @@ export async function liveTailSessionBrowserOutput(
           `No live ChatGPT tab matched session "${sessionId}". Attempting recovery by reopening the saved conversation URL.`,
         ),
       );
-      const recovered = await recoverConversationTab(meta, (line) => console.log(line));
+      const recovered = await recoverConversationTab(meta, (line) => console.log(line), {
+        existingEndpoint: recordedEndpoint ?? undefined,
+        waitForReady: false,
+      });
       recoveredChrome = recovered.chrome;
       endpoint = { host: recovered.host, port: recovered.port };
-      browserTabRef = recovered.url;
+      browserTabRef = recovered.ref;
+      requireRecoveredContent = true;
+      recoveredContentDeadlineMs = Date.now() + stallThresholdMs;
     }
 
     while (true) {
@@ -395,6 +422,14 @@ export async function liveTailSessionBrowserOutput(
         ref: browserTabRef,
       });
       const fullText = harvested.lastAssistantMarkdown ?? harvested.lastAssistantText ?? "";
+      if (requireRecoveredContent && !isRecoveredConversationHarvestReady(harvested)) {
+        if (Date.now() < recoveredContentDeadlineMs) {
+          await new Promise((resolve) => setTimeout(resolve, LIVE_POLL_MS));
+          continue;
+        }
+        throw new Error("Recovered ChatGPT conversation did not become ready in time.");
+      }
+      requireRecoveredContent = false;
       const hash = createHash("sha1").update(fullText).digest("hex");
       if (hash !== lastHash) {
         lastHash = hash;
@@ -437,12 +472,6 @@ export async function liveTailSessionBrowserOutput(
       await new Promise((resolve) => setTimeout(resolve, LIVE_POLL_MS));
     }
   } finally {
-    if (recoveredChrome && options.closeAfterRecover) {
-      try {
-        recoveredChrome.kill();
-      } catch {
-        // best-effort cleanup
-      }
-    }
+    finishRecoveredChrome(recoveredChrome, options.closeAfterRecover);
   }
 }

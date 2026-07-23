@@ -14,6 +14,8 @@ const baseMeta = {
       manualLoginProfileDir: "/tmp/recover-profile",
     },
     runtime: {
+      chromeHost: "127.0.0.1",
+      chromePort: 9223,
       tabUrl: "https://chatgpt.com/c/saved-conversation",
       conversationId: "saved-conversation",
     },
@@ -30,6 +32,9 @@ const completedHarvest = {
   sendExists: true,
   assistantCount: 1,
   currentModelLabel: "GPT-5.5 Pro",
+  assistantFollowsLatestUser: true,
+  lastAssistantTurnIndex: 1,
+  lastUserTurnIndex: 0,
   lastAssistantMarkdown: "## Recovered answer\n\nFull response captured.",
   lastAssistantText: "Recovered answer. Full response captured.",
   lastAssistantSnippet: "Recovered answer.",
@@ -49,11 +54,12 @@ describe("harvestSessionBrowserOutput recovery fallback", () => {
       )
       .mockResolvedValueOnce(completedHarvest);
 
-    const fakeChrome = { kill: vi.fn() };
+    const fakeChrome = { kill: vi.fn(), process: { unref: vi.fn() } };
     const recoverConversationTab = vi.fn(async (meta: SessionMetadata) => ({
       host: "127.0.0.1",
       port: 53999,
       url: meta.browser?.runtime?.tabUrl ?? "",
+      ref: "saved-conversation",
       chrome: fakeChrome,
     }));
 
@@ -82,19 +88,22 @@ describe("harvestSessionBrowserOutput recovery fallback", () => {
 
     expect(harvestChatGptTab).toHaveBeenCalledTimes(2);
     expect(recoverConversationTab).toHaveBeenCalledTimes(1);
-    expect(recoverConversationTab).toHaveBeenCalledWith(baseMeta, expect.any(Function));
+    expect(recoverConversationTab).toHaveBeenCalledWith(baseMeta, expect.any(Function), {
+      existingEndpoint: { host: "127.0.0.1", port: 9223 },
+    });
     // After recovery, harvest is retried against the recovered endpoint/url.
     expect(harvestChatGptTab).toHaveBeenLastCalledWith(
       expect.objectContaining({
         host: "127.0.0.1",
         port: 53999,
-        ref: "https://chatgpt.com/c/saved-conversation",
+        ref: "saved-conversation",
       }),
     );
     expect(result.lastAssistantMarkdown).toBe(completedHarvest.lastAssistantMarkdown);
     expect(updateSession).toHaveBeenCalled();
     // Default closeAfterRecover is false — Chrome stays alive for the user.
     expect(fakeChrome.kill).not.toHaveBeenCalled();
+    expect(fakeChrome.process.unref).toHaveBeenCalledTimes(1);
   });
 
   test("does not recover when recoverIfMissing is false; surfaces the original error", async () => {
@@ -126,12 +135,51 @@ describe("harvestSessionBrowserOutput recovery fallback", () => {
     expect(recoverConversationTab).not.toHaveBeenCalled();
   });
 
+  test("recovers when the endpoint has no live ChatGPT tabs", async () => {
+    const harvestChatGptTab = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new Error("No live ChatGPT tabs found on the configured Chrome DevTools endpoint."),
+      )
+      .mockResolvedValueOnce(completedHarvest);
+
+    const recoverConversationTab = vi.fn(async () => ({
+      host: "127.0.0.1",
+      port: 53998,
+      url: "https://chatgpt.com/c/saved-conversation",
+      ref: "saved-conversation",
+      chrome: { kill: vi.fn() },
+    }));
+
+    vi.doMock("../../src/browser/liveTabs.js", () => ({
+      collectChatGptTabs: vi.fn(),
+      DEFAULT_REMOTE_CHROME_HOST: "127.0.0.1",
+      DEFAULT_REMOTE_CHROME_PORT: 9222,
+      extractConversationIdFromUrl: () => null,
+      formatBrowserTabState: () => "completed",
+      harvestChatGptTab,
+      sessionMatchesTab: () => false,
+    }));
+    vi.doMock("../../src/browser/recoverConversation.js", () => ({
+      recoverConversationTab,
+    }));
+    vi.doMock("../../src/sessionStore.js", () => ({
+      sessionStore: { readSession: async () => baseMeta, updateSession: async () => {} },
+    }));
+
+    const { harvestSessionBrowserOutput } = await import("../../src/cli/browserTabs.js");
+    await harvestSessionBrowserOutput("sess-recover", { quietOutput: true });
+
+    expect(recoverConversationTab).toHaveBeenCalledTimes(1);
+    expect(harvestChatGptTab).toHaveBeenCalledTimes(2);
+  });
+
   test("closes the recovered Chrome when closeAfterRecover is true", async () => {
     const harvestChatGptTab = vi
       .fn()
       .mockRejectedValueOnce(new Error("No ChatGPT tab matched"))
       .mockResolvedValueOnce(completedHarvest);
-    const fakeChrome = { kill: vi.fn() };
+    const fakeChrome = { kill: vi.fn(), process: { unref: vi.fn() } };
     vi.doMock("../../src/browser/liveTabs.js", () => ({
       collectChatGptTabs: vi.fn(),
       DEFAULT_REMOTE_CHROME_HOST: "127.0.0.1",
@@ -146,6 +194,7 @@ describe("harvestSessionBrowserOutput recovery fallback", () => {
         host: "127.0.0.1",
         port: 53777,
         url: "https://chatgpt.com/c/saved-conversation",
+        ref: "saved-conversation",
         chrome: fakeChrome,
       })),
     }));
@@ -159,6 +208,39 @@ describe("harvestSessionBrowserOutput recovery fallback", () => {
       quietOutput: true,
     });
     expect(fakeChrome.kill).toHaveBeenCalledTimes(1);
+    expect(fakeChrome.process.unref).not.toHaveBeenCalled();
+  });
+
+  test("does not recover an explicit browser tab override", async () => {
+    const harvestChatGptTab = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("No ChatGPT tab matched explicit-ref"));
+    const recoverConversationTab = vi.fn();
+
+    vi.doMock("../../src/browser/liveTabs.js", () => ({
+      collectChatGptTabs: vi.fn(),
+      DEFAULT_REMOTE_CHROME_HOST: "127.0.0.1",
+      DEFAULT_REMOTE_CHROME_PORT: 9222,
+      extractConversationIdFromUrl: () => null,
+      formatBrowserTabState: () => "completed",
+      harvestChatGptTab,
+      sessionMatchesTab: () => false,
+    }));
+    vi.doMock("../../src/browser/recoverConversation.js", () => ({
+      recoverConversationTab,
+    }));
+    vi.doMock("../../src/sessionStore.js", () => ({
+      sessionStore: { readSession: async () => baseMeta, updateSession: async () => {} },
+    }));
+
+    const { harvestSessionBrowserOutput } = await import("../../src/cli/browserTabs.js");
+    await expect(
+      harvestSessionBrowserOutput("sess-recover", {
+        browserTabRef: "explicit-ref",
+        quietOutput: true,
+      }),
+    ).rejects.toThrow(/explicit-ref/);
+    expect(recoverConversationTab).not.toHaveBeenCalled();
   });
 
   test.each([

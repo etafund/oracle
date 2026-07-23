@@ -45,7 +45,9 @@ export interface BrowserTabLeaseRecord {
 
 export interface BrowserTabLease {
   id: string;
-  release: () => Promise<void>;
+  release: (options?: {
+    onRelease?: (context: { isLastLease: boolean }) => Promise<void>;
+  }) => Promise<void>;
   update: (patch: Partial<BrowserTabLeaseRecord>) => Promise<void>;
 }
 
@@ -184,7 +186,8 @@ export async function acquireBrowserTabLease(
   let lastTargetReclaimProbeAt = Number.NEGATIVE_INFINITY;
   const createLeaseHandle = (): BrowserTabLease => ({
     id: leaseId,
-    release: async () => releaseBrowserTabLease(profileDir, leaseId, options.logger),
+    release: async (releaseOptions) =>
+      releaseBrowserTabLease(profileDir, leaseId, options.logger, releaseOptions),
     update: async (patch) => updateBrowserTabLease(profileDir, leaseId, patch, options.logger),
   });
 
@@ -525,6 +528,7 @@ export async function releaseBrowserTabLease(
   profileDir: string,
   leaseId: string,
   logger?: BrowserLogger,
+  options: { onRelease?: (context: { isLastLease: boolean }) => Promise<void> } = {},
 ): Promise<void> {
   await withRegistryLock(
     profileDir,
@@ -535,8 +539,24 @@ export async function releaseBrowserTabLease(
         // unverifiable registry, so surface the fault instead of pretending.
         throw new TabLeaseRegistryUnreadableError(profileDir, outcome.reason, outcome.cause);
       }
-      const remaining = outcome.valid.filter((lease) => lease.id !== leaseId);
-      await writeRegistry(profileDir, [...remaining, ...outcome.opaque]);
+      const pruneOptions = {
+        nowMs: Date.now(),
+        staleMs: DEFAULT_STALE_MS,
+        isProcessAlive,
+      };
+      const activeValid = pruneStaleLeases(outcome.valid, pruneOptions);
+      const activeOpaque = pruneOpaqueRecords(outcome.opaque, pruneOptions);
+      const ownsLease = activeValid.some((lease) => lease.id === leaseId);
+      const remaining = activeValid.filter((lease) => lease.id !== leaseId);
+      if (ownsLease) {
+        // Keep the lease advertised while the registry lock blocks new
+        // acquisitions. Publish its removal only after the cleanup callback
+        // succeeds; callback failure therefore retains capacity fail-closed.
+        await options.onRelease?.({
+          isLastLease: remaining.length === 0 && activeOpaque.length === 0,
+        });
+      }
+      await writeRegistry(profileDir, [...remaining, ...activeOpaque]);
     },
     logger,
     { timeoutMs: REGISTRY_MUTATION_LOCK_TIMEOUT_MS },

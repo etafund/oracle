@@ -247,6 +247,9 @@ function buildThinkingTimeExpression(
   const targetLevelLiteral = JSON.stringify(level.toLowerCase());
   const targetModelKindLiteral = JSON.stringify(inferThinkingTargetModelKind(desiredModel));
   const targetModelLabelLiteral = JSON.stringify(desiredModel ?? null);
+  const targetIsGpt56ModelLiteral = JSON.stringify(
+    /(?:^|[^0-9])5[._ -]6(?:[^0-9]|$)/i.test(desiredModel ?? ""),
+  );
 
   return `(async () => {
     ${buildClickDispatcher()}
@@ -257,13 +260,14 @@ function buildThinkingTimeExpression(
     const TARGET_LEVEL = ${targetLevelLiteral};
     const TARGET_MODEL_KIND = ${targetModelKindLiteral};
     const TARGET_MODEL_LABEL = ${targetModelLabelLiteral};
+    const TARGET_IS_GPT56_MODEL = ${targetIsGpt56ModelLiteral};
 
     // Bilingual matchers: English level token + observed Chinese variants.
     const LEVEL_TOKENS = {
-      light: ['light', 'instant', '轻'],
-      standard: ['standard', 'medium', '标准'],
-      extended: ['extended', 'high', '扩展', '深度', '加强'],
-      heavy: ['heavy', 'extra high', '重度', '加重', '高'],
+      light: ['light', 'instant', '轻', '极速'],
+      standard: ['standard', 'medium', '标准', '中'],
+      extended: ['extended', 'high', '扩展', '深度', '加强', '高'],
+      heavy: ['heavy', 'extra high', '重度', '加重', '极高'],
     };
     const targetTokens = LEVEL_TOKENS[TARGET_LEVEL] || [TARGET_LEVEL];
 
@@ -297,6 +301,13 @@ function buildThinkingTimeExpression(
         if (!token) return false;
         if (token === 'high') return hasToken(t, 'high') && !hasToken(t, 'extra');
         if (token === 'extra high') return hasToken(t, 'extra') && hasToken(t, 'high');
+        if (token === '极速') {
+          const suffix = t.slice(token.length);
+          return t === token || hasToken(t, token) || /^[0-9]/.test(suffix);
+        }
+        if (['中', '高', '极高'].includes(token)) {
+          return t === token || hasToken(t, token);
+        }
         return t === token || hasToken(t, token) || t.includes(token);
       });
     };
@@ -465,6 +476,9 @@ function buildThinkingTimeExpression(
       if (menu?.getAttribute?.('data-testid') === 'composer-intelligence-picker-content') {
         return true;
       }
+      if (menu?.querySelector?.(INTELLIGENCE_MENU_SELECTOR)) {
+        return true;
+      }
       const label = menu?.querySelector?.('.__menu-label, [class*="menu-label"]');
       return normalize(label?.textContent ?? '').includes('intelligence');
     };
@@ -478,6 +492,21 @@ function buildThinkingTimeExpression(
       const items = Array.from(menu.querySelectorAll(MENU_ITEM_SELECTOR));
       const modelKind = modelKindOverride || effectiveTargetModelKind();
       if (modelKind === 'pro') {
+        // GPT-5.6's unified Intelligence picker exposes Pro as the highest
+        // effort radio directly. It no longer has a nested "Pro Extended"
+        // row, so preserve the legacy request semantics by selecting Pro.
+        if (
+          TARGET_LEVEL === 'extended' &&
+          isIntelligenceEffortMenu(menu) &&
+          !document.querySelector(PRO_EFFORT_TRIGGER_SELECTOR)
+        ) {
+          for (const item of items) {
+            const itemText = normalize(
+              (item.textContent ?? '') + ' ' + (item.getAttribute?.('aria-label') ?? ''),
+            );
+            if (itemText === 'pro') return item;
+          }
+        }
         for (const item of items) {
           const itemText = normalize(
             (item.textContent ?? '') + ' ' + (item.getAttribute?.('aria-label') ?? ''),
@@ -498,7 +527,7 @@ function buildThinkingTimeExpression(
         const itemText = normalize(
           (item.textContent ?? '') + ' ' + (item.getAttribute?.('aria-label') ?? ''),
         );
-        if (modelKind && modelKind !== 'pro' && hasToken(itemText, 'pro')) {
+        if (modelKind !== 'pro' && hasToken(itemText, 'pro')) {
           continue;
         }
         if (
@@ -506,6 +535,16 @@ function buildThinkingTimeExpression(
           matchesLevel(item.getAttribute?.('aria-label') ?? '')
         ) {
           return item;
+        }
+      }
+      if (TARGET_LEVEL === 'heavy') {
+        // Older Chinese layouts used bare 高 for the highest effort. Keep it
+        // only as a second-pass exact fallback so a current 高 row can never
+        // win before the primary 极高 row.
+        for (const item of items) {
+          const itemText = normalize(item.textContent ?? '');
+          const ariaLabel = normalize(item.getAttribute?.('aria-label') ?? '');
+          if (itemText === '高' || ariaLabel === '高') return item;
         }
       }
       return null;
@@ -521,6 +560,7 @@ function buildThinkingTimeExpression(
     const isEffortMenu = (menu) => {
       if (!isVisible(menu)) return false;
       if (menu.getAttribute?.('data-testid') === 'composer-intelligence-picker-content') return true;
+      if (menu.querySelector?.(INTELLIGENCE_MENU_SELECTOR)) return true;
       const label = menu.querySelector?.('.__menu-label, [class*="menu-label"]');
       const labelText = normalize(label?.textContent ?? '');
       return (
@@ -581,8 +621,16 @@ function buildThinkingTimeExpression(
       }
       return null;
     };
+    const freshComposerTrigger = (trigger) => {
+      if (!trigger?.matches?.('button.__composer-pill')) return null;
+      // React can replace the composer pill after an effort click. Keep using
+      // the captured node while it is live, but re-query once it is detached so
+      // verification does not read its stale pre-click label.
+      if (trigger.isConnected !== false) return trigger;
+      return findComposerEffortPill() || findModelButton() || trigger;
+    };
     const currentProEffortPillMatchesTarget = (trigger, modelKindOverride = null) => {
-      const button = trigger?.matches?.('button.__composer-pill') ? trigger : findModelButton();
+      const button = freshComposerTrigger(trigger) || findModelButton();
       if ((modelKindOverride || TARGET_MODEL_KIND || modelKindFromNode(button)) !== 'pro') {
         return false;
       }
@@ -597,7 +645,7 @@ function buildThinkingTimeExpression(
     };
     const currentEffortPillMatchesTarget = (trigger, modelKindOverride = null) => {
       if (currentProEffortPillMatchesTarget(trigger, modelKindOverride)) return true;
-      const button = trigger?.matches?.('button.__composer-pill') ? trigger : findModelButton();
+      const button = freshComposerTrigger(trigger) || findModelButton();
       if ((modelKindOverride || TARGET_MODEL_KIND || modelKindFromNode(button)) === 'pro') {
         return false;
       }
@@ -630,8 +678,9 @@ function buildThinkingTimeExpression(
         return { status: 'switched', label };
       }
 
-      if (!refreshed && trigger && trigger.getAttribute?.('aria-expanded') !== 'true') {
-        dispatchClickSequence(trigger);
+      const reopenTrigger = freshComposerTrigger(trigger) || trigger;
+      if (!refreshed && reopenTrigger?.getAttribute?.('aria-expanded') !== 'true') {
+        dispatchClickSequence(reopenTrigger);
         await sleep(INITIAL_WAIT_MS);
       }
       const deadline = performance.now() + 2000;
@@ -808,6 +857,7 @@ function buildThinkingTimeExpression(
     ];
     const findComposerEffortPill = () => {
       const seen = new Set();
+      let gpt56Fallback = null;
       for (const selector of COMPOSER_EFFORT_PILL_SELECTORS) {
         for (const button of document.querySelectorAll(selector)) {
           if (seen.has(button) || !isVisible(button)) continue;
@@ -826,9 +876,16 @@ function buildThinkingTimeExpression(
           ) {
             return button;
           }
+          if (
+            TARGET_IS_GPT56_MODEL &&
+            button.matches?.('button.__composer-pill') &&
+            normalize(button.textContent ?? '') === 'pro'
+          ) {
+            gpt56Fallback ||= button;
+          }
         }
       }
-      return null;
+      return gpt56Fallback;
     };
     let composerEffortPill = findComposerEffortPill();
     let modelBtn = findModelButton();
@@ -886,7 +943,9 @@ function buildThinkingTimeExpression(
     }
     if (composerEffortPill) {
       if (attemptedModelButton && attemptedModelButton !== composerEffortPill) closeOpenMenus();
-      const composerModelKind = TARGET_MODEL_KIND || modelKindFromNode(composerEffortPill);
+      const composerModelKind =
+        TARGET_MODEL_KIND ||
+        (TARGET_IS_GPT56_MODEL ? 'versioned' : modelKindFromNode(composerEffortPill));
       if (composerEffortPill.getAttribute?.('aria-expanded') !== 'true') {
         dispatchClickSequence(composerEffortPill);
         await sleep(INITIAL_WAIT_MS);

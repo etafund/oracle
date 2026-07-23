@@ -7,6 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type {
   BrowserArchiveMode,
   BrowserArchiveResult,
+  BrowserCloseOwnedRunTargetPolicy,
   BrowserModelStrategy,
   BrowserResearchMode,
   CookieParam,
@@ -82,6 +83,8 @@ export interface BrowserSessionConfig {
   manualLogin?: boolean;
   manualLoginProfileDir?: string | null;
   manualLoginCookieSync?: boolean;
+  /** Host-owned policy for closing this run's exact tab while retaining shared Chrome. */
+  closeOwnedRunTargetAfterRun?: BrowserCloseOwnedRunTargetPolicy | null;
   /** Copy this signed-in Chrome user-data dir to a throwaway profile and run against it (login-free). */
   copyProfileSource?: string | null;
   /** Thinking time intensity: 'light', 'standard', 'extended', 'heavy' */

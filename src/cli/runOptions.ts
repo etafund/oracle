@@ -162,11 +162,15 @@ export function resolveRunOptionsFromConfig({
   // For browser-engine requests we accept the fork's Gemini Deep Think alias as a
   // passthrough model; resolveApiModel itself still rejects the alias for pure
   // API contexts so users hit a clear "browser-only today" error if they forget
-  // --engine browser.
+  // --engine browser. Browser label inference is engine-scoped so API ids such
+  // as gpt-5.6-luna remain untouched while browser mode rejects unknown picker
+  // variants.
   const apiModel = browserEngineRequested
     ? (inferModelFromLabel(cliModelArg) as ModelName)
     : resolveApiModel(cliModelArg);
-  const browserModel = normalizeChatGptModelForBrowser(inferModelFromLabel(cliModelArg));
+  const browserModel = browserEngineRequested
+    ? normalizeChatGptModelForBrowser(apiModel)
+    : apiModel;
   const isCodex = apiModel.startsWith("gpt-5.1-codex");
   const isClaude = apiModel.startsWith("claude");
   const isGrok = apiModel.startsWith("grok");

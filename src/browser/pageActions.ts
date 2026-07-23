@@ -4,6 +4,7 @@ export {
   ensureNotBlocked,
   ensureLoggedIn,
   ensurePromptReady,
+  ensureChatMode,
   waitForResumedConversationHydration,
   installJavaScriptDialogAutoDismissal,
   buildBlockingUiDismissalExpressionForTest,

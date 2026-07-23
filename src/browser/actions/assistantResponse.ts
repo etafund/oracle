@@ -5,11 +5,11 @@ import {
   CONVERSATION_TURN_SELECTOR,
   COPY_BUTTON_SELECTOR,
   FINISHED_ACTIONS_SELECTOR,
-  MIN_TRUSTWORTHY_ANSWER_CHARS,
   STOP_BUTTON_SELECTORS,
 } from "../constants.js";
 import { buildConversationTurnListExpression } from "../conversationTurns.js";
 import { chatgptSelectorList } from "../selectors/chatgpt/index.js";
+import { buildThinkingActivePredicateJs, readThinkingActivity } from "./thinkingStatus.js";
 import { delay } from "../utils.js";
 import {
   logDomFailure,
@@ -24,6 +24,7 @@ import { buildClickDispatcher } from "./domEvents.js";
 
 const ASSISTANT_POLL_TIMEOUT_ERROR = "assistant-response-watchdog-timeout";
 const STOP_CONTROL_SELECTOR = STOP_BUTTON_SELECTORS.join(", ");
+// Still used by the in-page settle heuristic's length buckets (see buildResponseObserverExpression).
 const MIN_CONFIDENT_ANSWER_LENGTH = 16;
 const PREAMBLE_SIZED_ANSWER_CHARS = 500;
 const PREAMBLE_COMPLETION_STABLE_MS = 60_000;
@@ -145,19 +146,95 @@ export function watchdogPollIntervalMsForTest(thinkingActive: boolean): number {
   return watchdogPollIntervalMs(thinkingActive);
 }
 
-function isImplausiblyShortAnswer(candidateLength: number): boolean {
-  return candidateLength > 0 && candidateLength < MIN_CONFIDENT_ANSWER_LENGTH;
+function readPositiveIntEnv(name: string, fallback: number): number {
+  const raw = Number(process.env[name]);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : fallback;
 }
 
-export function shouldConfirmAssistantCompletion(args: {
-  candidateLength: number;
+// Terminal-completion gate. A turn is finalized only on POSITIVE proof it is done — never on
+// the mere "stop control absent + text stable" inference, which a settled GPT-5.5 Pro preamble
+// satisfies during the brief gap before it enters its thinking/tool phase.
+// The finished-action bar must be present for barConfirmCycles consecutive stable cycles. This
+// debounces the transient mid-thinking action-bar flash, binds completion to the sampled turn,
+// and never treats elapsed quiet as proof: selector drift fails closed instead of finalizing a
+// stable preamble. Tunable via env for live calibration without a rebuild.
+export interface TerminalGateConfig {
+  barConfirmCycles: number;
+  minStableMs: number;
+}
+
+const TERMINAL_GATE_CONFIG: TerminalGateConfig = {
+  barConfirmCycles: readPositiveIntEnv("ORACLE_BAR_CONFIRM_CYCLES", 3),
+  minStableMs: readPositiveIntEnv("ORACLE_TERMINAL_MIN_STABLE_MS", 1_200),
+};
+
+export interface TerminalGateState {
+  lastKey: string;
+  lastChangeAt: number;
+  barStableCycles: number;
+  seen: boolean;
+}
+
+export interface TerminalSample {
+  now: number;
+  len: number;
+  // A fingerprint of the current answer (its text, ideally plus turn/message identity). ANY
+  // change (not just a length increase) is treated as the turn still moving: an equal-length
+  // or shorter rewrite, or a preamble replaced by the answer, resets the stability clocks.
+  contentKey: string;
   stopVisible: boolean;
-  completionVisible: boolean;
-}): boolean {
-  if (args.stopVisible || args.completionVisible) {
-    return true;
+  barVisible: boolean;
+  // Strong signals prove live work (stop/shimmer/aria-busy/status/progress). Weak activity is
+  // limited to a heuristic sidecar match that can linger after completion.
+  strongThinkingActive: boolean;
+}
+
+export function createTerminalGateState(now: number): TerminalGateState {
+  return {
+    lastKey: "",
+    lastChangeAt: now,
+    barStableCycles: 0,
+    seen: false,
+  };
+}
+
+// Pure, unit-testable per-cycle classifier. Feed it one sample every poll; when it returns
+// terminal:true the capture is proven complete and safe to finalize.
+export function classifyTurnTerminal(
+  state: TerminalGateState,
+  sample: TerminalSample,
+  config: TerminalGateConfig,
+): { state: TerminalGateState; terminal: boolean } {
+  const changed = !state.seen || sample.contentKey !== state.lastKey;
+  const lastChangeAt = changed ? sample.now : state.lastChangeAt;
+  // proofA debounce: weak/stale sidecar evidence may be overridden, but strong live activity
+  // must reset the debounce. It also resets on ANY content change so a bar that appears while
+  // the answer is still rendering (the transient-bar / first-tokens race) cannot finalize.
+  const barStableCycles =
+    sample.barVisible && !sample.stopVisible && !sample.strongThinkingActive && !changed
+      ? state.barStableCycles + 1
+      : 0;
+  const next: TerminalGateState = {
+    lastKey: sample.contentKey,
+    lastChangeAt,
+    barStableCycles,
+    seen: true,
+  };
+
+  let terminal = false;
+  if (!sample.stopVisible && sample.len > 0) {
+    const stableMs = sample.now - lastChangeAt;
+    // Debounced action bar AND content stable for a minimum time. The time-stability
+    // requirement guards the documented race where finished-action controls surface while only
+    // the first tokens have rendered. Weak sidecar evidence cannot hang a finished turn, but
+    // strong live activity vetoes this proof and restarts its debounce.
+    terminal =
+      sample.barVisible &&
+      !sample.strongThinkingActive &&
+      barStableCycles >= config.barConfirmCycles &&
+      stableMs >= config.minStableMs;
   }
-  return isImplausiblyShortAnswer(args.candidateLength);
+  return { state: next, terminal };
 }
 const THINKING_STATUS_LABELS = [
   "thinking",
@@ -187,12 +264,14 @@ const ANSWER_NOW_PLACEHOLDER_FRAGMENTS = [
 function matchesThinkingStatusLabel(trimmed: string): boolean {
   if (!trimmed) return false;
   if (THINKING_STATUS_LABELS.includes(trimmed)) return true;
-  if (trimmed.startsWith("thought for ") && trimmed.length <= 40) return true;
+  // includes, not startsWith: the completed summary can carry a heading prefix
+  // ("Reasoning Thought for 12s"); the length cap keeps real answers out.
+  if (trimmed.includes("thought for ") && trimmed.length <= 40) return true;
   return trimmed.startsWith("pro thinking") && trimmed.length <= 40;
 }
 
-function isAnswerNowPlaceholderText(normalized: string): boolean {
-  const text = normalized.toLowerCase().replace(/\s+/g, " ").trim();
+export function isAnswerNowPlaceholderText(value: string): boolean {
+  const text = value.toLowerCase().replace(/\s+/g, " ").trim();
   if (!text) return false;
   // Learned: "Pro thinking" shows a placeholder turn that contains "Answer now".
   // That is not the final answer and must be ignored in browser automation.
@@ -244,7 +323,7 @@ function buildActiveThinkingStatusPredicateJs(fnName: string): string {
     const labels = ${labelsLiteral};
     const matches =
       labels.includes(normalized) ||
-      (normalized.startsWith('thought for ') && normalized.length <= 40) ||
+      (normalized.includes('thought for ') && normalized.length <= 40) ||
       (normalized.startsWith('pro thinking') && normalized.length <= 40);
     // Pure thinking/status labels are placeholders even if ChatGPT has hidden the
     // stop button during a Pro thinking transition.
@@ -347,10 +426,21 @@ function buildThinkingGatePredicateJs(fnName: string): string {
         node.textContent,
         node.getAttribute?.('aria-label'),
         node.getAttribute?.('title'),
-        node.getAttribute?.('data-testid'),
       ].filter(Boolean).join(' '));
       if (!label) return false;
-      return KEYWORDS.some((keyword) => label.includes(keyword));
+      // Completed reasoning summaries persist after the answer. Long prose can
+      // also mention these words, so only compact present-tense status labels
+      // count here; Answer-now and structural markers remain authoritative.
+      if (/^(?:(?:reasoning|pro thinking)\s*)?thought for (?:\d|a |an )/.test(label)) {
+        return false;
+      }
+      if (label.length > 80) return false;
+      return KEYWORDS.some(
+        (keyword) =>
+          label === keyword ||
+          label.startsWith(keyword + ' ') ||
+          (keyword === 'thought for' && label.includes(keyword)),
+      );
     };
     // "Answer now" is an interrupt control shown while Pro is still thinking.
     // Visibility is authoritative regardless of where the UI mounts it. Detect
@@ -718,152 +808,44 @@ export async function waitForAssistantResponse(
     logger("Captured assistant generated image response");
     return candidate;
   }
-  // The evaluation path can race ahead of completion. If ChatGPT is still streaming, wait for the watchdog poller.
-  const localElapsedMs = Date.now() - start;
-  const totalElapsedMs = normalizedElapsedBaselineMs + localElapsedMs;
-  const remainingMs = Math.max(0, timeoutMs - localElapsedMs);
-  const candidateText = String(candidate?.text ?? "").trim();
-  const suspiciouslyShort = isImplausiblyShortAnswer(candidateText.length);
+  // The observer/refresh path can race ahead of true completion: a settled GPT-5.5 Pro
+  // preamble (or any mid-stream capture) looks done for a moment before the reasoning/tool
+  // phase begins. Re-confirm EVERY captured text through the terminal-only poller, which
+  // finalizes only on positive, turn-scoped proof from a debounced finished-action bar.
+  // We deliberately drop the old ">= candidate length" acceptance: the
+  // poller is turn-scoped (minTurnIndex), so whatever it proves terminal is the right turn,
+  // even when the real answer is shorter than a verbose preamble.
+  const elapsedMs = Date.now() - start;
+  const remainingMs = Math.max(0, timeoutMs - elapsedMs);
   if (remainingMs > 0) {
-    const [stopVisible, completionVisible, thinkingActive] = await Promise.all([
-      isStopButtonVisible(Runtime),
-      isCompletionVisible(Runtime),
-      isThinkingActive(Runtime),
-    ]);
-    // Completion controls can appear briefly while Pro is still replacing its thinking UI.
-    // Confirm every capture from that transition with the stability-based watchdog; a
-    // partial first paragraph can be arbitrarily long.
-    const ultraShortAnswer = candidateText.length === 1;
-    // At the thinking→answer transition there is a third state where BOTH the
-    // stop button and the finished-action controls are hidden. Returning the
-    // candidate untouched from that window is how a stale mid-thinking
-    // preamble becomes the archived answer, so preamble-sized candidates and
-    // live-thinking captures must also be confirmed by the watchdog.
-    const preambleSizedCandidate = candidateText.length < PREAMBLE_SIZED_ANSWER_CHARS;
-    if (
-      thinkingActive ||
-      preambleSizedCandidate ||
-      shouldConfirmAssistantCompletion({
-        candidateLength: candidateText.length,
-        stopVisible,
-        completionVisible,
-      })
-    ) {
-      logger(
-        stopVisible
-          ? "Assistant still generating; waiting for completion"
-          : thinkingActive
-            ? "Thinking indicator still active after capture; re-polling for completion"
-            : ultraShortAnswer
-              ? "Captured one-character assistant response; re-polling for completion"
-              : candidateText.length < MIN_TRUSTWORTHY_ANSWER_CHARS
-                ? "Captured suspiciously short answer at completion; re-polling for completion"
-                : preambleSizedCandidate && !completionVisible
-                  ? "Captured preamble-sized answer without completion controls; re-polling for completion"
-                  : "Completion controls surfaced; confirming stable assistant response",
-      );
-      // A calm page (no stop button, no completion controls, no thinking
-      // indicator) with a short candidate gets a bounded confirmation budget:
-      // some layouts (project view / markdown fallback) never render
-      // finished-action controls, and burning the entire response timeout
-      // there would stall legitimate short answers. Visible generation UI
-      // keeps the full budget because the page has told us it is not done.
-      const calmShortCandidate = !stopVisible && !completionVisible && !thinkingActive;
-      const confirmBudgetMs = calmShortCandidate ? Math.min(remainingMs, 90_000) : remainingMs;
-      const completed = await pollAssistantCompletion(
-        Runtime,
-        confirmBudgetMs,
-        minTurnIndex,
-        expectedConversationId,
-        undefined,
-        totalElapsedMs,
-      );
-      if (completed && String(completed.text ?? "").trim().length >= candidateText.length) {
-        return completed;
-      }
-      // Fail loud for the historical triggers: visible generation UI or a
-      // one-character fragment means the page never reached a trustworthy
-      // stable state. A silent teaser here is strictly worse than an error the
-      // caller can retry.
-      if (stopVisible || completionVisible || thinkingActive || ultraShortAnswer) {
-        await logDomFailure(Runtime, logger, "assistant-response-unconfirmed-completion");
-        throw new Error("Assistant response did not reach stable completion");
-      }
-      // Preamble-sized candidate on a calm page that the watchdog could not
-      // confirm within its budget. The initial calm classification is a single
-      // sample and can be wrong (indicator-teardown gap), so re-sample before
-      // trusting anything: if generation is visibly active again, spend the
-      // remaining real budget confirming and fail loud rather than archive a
-      // mid-stream partial.
-      const [stopNow, completionNow, thinkingNow] = await Promise.all([
-        isStopButtonVisible(Runtime),
-        isCompletionVisible(Runtime),
-        isThinkingActive(Runtime),
-      ]);
-      const lastResortRead = async () =>
-        normalizeAssistantSnapshot(
-          await readAssistantSnapshot(Runtime, minTurnIndex, expectedConversationId).catch(
-            () => null,
-          ),
-        );
-      const firstRead = await lastResortRead();
-      await delay(1500);
-      const secondRead = await lastResortRead();
-      const stillStreaming =
-        (firstRead?.text ?? "") !== (secondRead?.text ?? "") || stopNow || thinkingNow;
-      if (stillStreaming || completionNow) {
-        const lateLocalElapsedMs = Date.now() - start;
-        const remainingBudgetMs = Math.max(0, timeoutMs - lateLocalElapsedMs);
-        if (stillStreaming && remainingBudgetMs > 0) {
-          logger("Calm classification was stale; generation resumed — extending confirmation");
-          const lateCompleted = await pollAssistantCompletion(
-            Runtime,
-            remainingBudgetMs,
-            minTurnIndex,
-            expectedConversationId,
-            undefined,
-            normalizedElapsedBaselineMs + lateLocalElapsedMs,
-          );
-          if (
-            lateCompleted &&
-            String(lateCompleted.text ?? "").trim().length >= candidateText.length
-          ) {
-            return lateCompleted;
-          }
-          await logDomFailure(Runtime, logger, "assistant-response-unconfirmed-completion");
-          throw new Error("Assistant response did not reach stable completion");
-        }
-      }
-      // Genuinely calm and stable across both reads: prefer any strictly
-      // longer snapshot the page produced since capture. After the compact
-      // grace window, a preamble-sized calm capture is more likely a hidden
-      // Pro-thinking pause than a real final answer, so fail loud instead of
-      // returning the original teaser.
-      if (secondRead && secondRead.text.trim().length > candidateText.length) {
-        logger("Watchdog budget elapsed; returning the longer late snapshot");
-        return secondRead;
-      }
-      if (
-        suspiciouslyShort ||
-        (preambleSizedCandidate &&
-          normalizedElapsedBaselineMs + (Date.now() - start) >= COMPACT_BARE_ACCEPT_MAX_ELAPSED_MS)
-      ) {
-        await logDomFailure(Runtime, logger, "assistant-response-unconfirmed-completion");
-        throw new Error(
-          "assistant-response short capture could not be confirmed before timeout; refusing to finalize it",
-        );
-      }
-      logger("Short answer could not be re-confirmed by the watchdog; returning original capture");
+    logger("Confirming the capture is terminal (not a mid-stream/preamble capture)");
+    const completed = await pollAssistantCompletion(
+      Runtime,
+      remainingMs,
+      minTurnIndex,
+      expectedConversationId,
+      undefined,
+      normalizedElapsedBaselineMs + elapsedMs,
+    );
+    if (completed) {
+      return completed;
     }
-  }
-
-  if (suspiciouslyShort) {
+    // Could not prove completion within the budget: refuse rather than finalize a possibly
+    // incomplete capture. A clean, fast failure is recoverable (retry/salvage) and never
+    // ships a preamble as if it were the answer.
+    await logDomFailure(Runtime, logger, "assistant-response-unconfirmed");
     throw new Error(
-      "assistant-response short capture could not be confirmed before timeout; refusing to finalize it",
+      "assistant-response could not be confirmed complete before timeout; refusing to finalize a possibly-incomplete capture",
     );
   }
 
-  return candidate;
+  // Budget already exhausted before we could confirm: refuse rather than fall through and ship
+  // an unconfirmed capture. A settled preamble that arrived near the deadline must not be
+  // finalized just because there was no time left to prove it terminal.
+  await logDomFailure(Runtime, logger, "assistant-response-unconfirmed");
+  throw new Error(
+    "assistant-response could not be confirmed complete before the deadline; refusing to finalize a possibly-incomplete capture",
+  );
 }
 
 /**
@@ -1094,10 +1076,12 @@ async function recoverAssistantResponse(
     elapsedBaselineMs,
   );
   if (recovered) {
-    if (isImplausiblyShortAnswer(recovered.text.length)) {
-      logger("Recovered an implausibly short response; waiting for completion proof");
-      const remainingMs = Math.max(0, recoveryTimeoutMs - (Date.now() - recoveryStartedAt));
-      return pollAssistantCompletion(
+    // Route EVERY recovered snapshot through the terminal-only poller (not just short ones):
+    // a recovered long preamble is exactly the raw-return bug this gate exists to prevent.
+    logger("Recovered a candidate response; confirming it is terminal before finalizing");
+    const remainingMs = Math.max(0, recoveryTimeoutMs - (Date.now() - recoveryStartedAt));
+    if (remainingMs > 0) {
+      const confirmed = await pollAssistantCompletion(
         Runtime,
         remainingMs,
         minTurnIndex,
@@ -1105,9 +1089,19 @@ async function recoverAssistantResponse(
         undefined,
         recoveryElapsedBaseline(elapsedBaselineMs, recoveryStartedAt, Date.now()),
       );
+      if (confirmed) {
+        logger("Recovered and confirmed assistant response via polling fallback");
+        return confirmed;
+      }
+      // Unconfirmable within budget: refuse (return null) so the caller fails fast instead
+      // of finalizing a possibly-incomplete recovered capture.
+      await logConversationSnapshot(Runtime, logger).catch(() => undefined);
+      return null;
     }
-    logger("Recovered assistant response via polling fallback");
-    return recovered;
+    // No confirmation time left: refuse rather than return the unconfirmed recovered snapshot
+    // (returning it raw would reopen the recovered-long-preamble leak this gate closes).
+    await logConversationSnapshot(Runtime, logger).catch(() => undefined);
+    return null;
   }
   await logConversationSnapshot(Runtime, logger).catch(() => undefined);
   return null;
@@ -1351,19 +1345,12 @@ async function pollAssistantCompletion(
   html?: string;
   meta: { turnId?: string | null; messageId?: string | null };
 } | null> {
-  const pollStartedAt = Date.now();
-  const watchdogDeadline = pollStartedAt + timeoutMs;
-  let previousLength = 0;
-  let stableCycles = 0;
-  let lastChangeAt = Date.now();
-  // Consecutive samples for which the acceptance predicate held. A single
-  // 400ms sample can coincide with a finished-action flicker during a
-  // thinking pause; non-compact answers must hold acceptance across
-  // NONCOMPACT_ACCEPT_CONFIRM_SAMPLES samples (~3.2s) so the real answer
-  // streaming in right after the transition resets the decision.
-  let acceptStreak = 0;
-  // Sticky: a thinking indicator observed at any point during this poll.
-  let sawThinking = false;
+  // Retained for API compatibility with recovery/reattach callers. The
+  // positive terminal gate has no elapsed-time acceptance path, so elapsed
+  // quiet can never substitute for scoped completion proof.
+  void elapsedBaselineMs;
+  const watchdogDeadline = Date.now() + timeoutMs;
+  let gate = createTerminalGateState(Date.now());
   while (Date.now() < watchdogDeadline) {
     // Check abort signal to stop polling when another path won the race
     if (abortSignal?.aborted) {
@@ -1372,124 +1359,56 @@ async function pollAssistantCompletion(
     // ONE batched round-trip (snapshot + stop + completion + thinking) replaces
     // the previous four Runtime.evaluate calls per tick. The sub-probes embed the
     // same shared predicates in the same order, so acceptance is unchanged.
-    const { snapshot, stopVisible, completionVisible, thinkingActive } =
-      await readBatchedAssistantCompletion(Runtime, minTurnIndex, expectedConversationId);
+    const { snapshot, stopVisible, thinkingActive } = await readBatchedAssistantCompletion(
+      Runtime,
+      minTurnIndex,
+      expectedConversationId,
+    );
+    let adaptiveThinkingActive = thinkingActive;
     const normalized = normalizeAssistantSnapshot(snapshot);
     if (normalized) {
-      const currentLength = normalized.text.length;
-      if (currentLength > previousLength) {
-        previousLength = currentLength;
-        stableCycles = 0;
-        lastChangeAt = Date.now();
-      } else {
-        stableCycles += 1;
-      }
+      // Generated-image answers stream no text and mount no action bar; accept immediately.
       if (isGeneratedImageAssistantAnswer(normalized)) {
         return normalized;
       }
-      if (thinkingActive) {
-        // A live thinking indicator IS activity: the answer is not final and
-        // the current text is mid-stream. Without this reset, a >60s thinking
-        // pause pre-satisfies every idle window and acceptance collapses to a
-        // one-sample race at the thinking→answer transition (the 42-token
-        // teaser incident).
-        sawThinking = true;
-        stableCycles = 0;
-        lastChangeAt = Date.now();
-        acceptStreak = 0;
-      }
-      const shortAnswer = isImplausiblyShortAnswer(currentLength);
-      const mediumAnswer = currentLength >= MIN_CONFIDENT_ANSWER_LENGTH && currentLength < 40;
-      const longAnswer = currentLength >= 40 && currentLength < 500;
-      // Learned: short answers need a longer stability window or they truncate.
-      // Learned: long streaming responses (esp. thinking models) can pause mid-stream;
-      // use progressively longer windows to avoid truncation (#71).
-      const completionStableTarget = shortAnswer ? 12 : mediumAnswer ? 8 : longAnswer ? 6 : 8;
-      const requiredStableCycles = shortAnswer ? 12 : mediumAnswer ? 8 : longAnswer ? 8 : 10;
-      const stableMs = Date.now() - lastChangeAt;
-      const minStableMs = shortAnswer ? 8000 : mediumAnswer ? 1200 : longAnswer ? 2000 : 3000;
-      const elapsedMs = elapsedBaselineMs + (Date.now() - pollStartedAt);
-      const accepted = shouldAcceptStableAssistantSnapshot({
-        stopVisible,
-        completionVisible,
-        // The extractor computes this on the exact outer turn that supplied
-        // normalized.text. Keep it separate from completionVisible, whose
-        // independent last-turn lookup can miss during a ChatGPT DOM re-render.
-        exactTurnComplete: normalized.turnComplete === true,
-        thinkingActive,
-        currentLength,
-        stableCycles,
-        requiredStableCycles,
-        completionStableTarget,
-        stableMs,
-        minStableMs,
-        elapsedMs,
-        thinkingObserved: sawThinking,
-      });
-      if (accepted) {
-        acceptStreak += 1;
-        const compactAnswer = currentLength > 0 && currentLength < 40;
-        // Finished controls can flicker before the thinking/status detector has
-        // observed anything (live Sol + Pro incident: a substantial answer began
-        // after 26s, briefly looked finished, then kept streaming). Every
-        // non-compact answer therefore pays the ~3.2s confirmation streak; only
-        // compact exact replies retain the first-acceptance fast path.
-        if (compactAnswer || acceptStreak >= NONCOMPACT_ACCEPT_CONFIRM_SAMPLES) {
-          return normalized;
-        }
-      } else {
-        acceptStreak = 0;
+      const [barVisible, thinkingActivity] = await Promise.all([
+        isCompletionVisible(Runtime, normalized.meta, minTurnIndex),
+        readThinkingActivity(Runtime),
+      ]);
+      adaptiveThinkingActive = thinkingActivity.active || thinkingActive;
+      const decision = classifyTurnTerminal(
+        gate,
+        {
+          now: Date.now(),
+          len: normalized.text.length,
+          // Fingerprint = turn/message identity + the full text, so a same-length rewrite, a
+          // shorter final answer replacing a longer preamble, or a new turn all count as change.
+          contentKey: `${normalized.meta.messageId ?? normalized.meta.turnId ?? ""}::${normalized.text}`,
+          stopVisible,
+          barVisible,
+          // The fork adds Answer-now and localized live-status probes that the
+          // upstream detector does not cover. Its compact-label filter excludes
+          // persistent completed summaries, so either strong source vetoes.
+          strongThinkingActive: thinkingActivity.strong || thinkingActive,
+        },
+        TERMINAL_GATE_CONFIG,
+      );
+      gate = decision.state;
+      if (decision.terminal) {
+        return normalized;
       }
     } else {
-      previousLength = 0;
-      stableCycles = 0;
-      acceptStreak = 0;
+      // The turn disappeared/reset (navigation, re-render): restart the gate so a stale
+      // action-bar debounce cannot carry over onto a fresh turn.
+      gate = createTerminalGateState(Date.now());
     }
     // Adaptive cadence: widen the poll only while a thinking indicator is
     // confirmed active (the answer cannot be final yet); tighten straight back to
     // 400ms the moment thinking clears or text grows, so detection is never
     // delayed once thinking ends.
-    await delay(watchdogPollIntervalMs(thinkingActive));
+    await delay(watchdogPollIntervalMs(adaptiveThinkingActive));
   }
   return null;
-}
-
-async function isStopButtonVisible(Runtime: ChromeClient["Runtime"]): Promise<boolean> {
-  try {
-    const { result } = await Runtime.evaluate({
-      expression: buildStopButtonVisibilityExpression(),
-      returnByValue: true,
-    });
-    return result?.value === true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Detect an active ChatGPT "Pro thinking" / reasoning indicator.
- *
- * During a Pro thinking pause the stop button disappears while a short streamed
- * preamble may already be on screen. Relying on stop-button absence alone then
- * accepts the preamble as the final answer (truncation). A visible thinking /
- * reasoning indicator is an authoritative "still generating" signal, so callers
- * keep waiting while it is present. Evaluates the SAME shared gate predicate
- * the in-page observer embeds (buildThinkingGatePredicateJs) so the two
- * acceptance loops cannot drift apart again.
- */
-async function isThinkingActive(Runtime: ChromeClient["Runtime"]): Promise<boolean> {
-  try {
-    const { result } = await Runtime.evaluate({
-      expression: `(() => {
-        ${buildThinkingGatePredicateJs("isThinkingGateActive")}
-        return isThinkingGateActive();
-      })()`,
-      returnByValue: true,
-    });
-    return result?.value === true;
-  } catch {
-    return false;
-  }
 }
 
 function buildStopButtonVisibilityExpression(): string {
@@ -1519,10 +1438,83 @@ function buildStopButtonVisibilityPredicateJs(fnName: string): string {
 
 export const buildStopButtonVisibilityExpressionForTest = buildStopButtonVisibilityExpression;
 
-async function isCompletionVisible(Runtime: ChromeClient["Runtime"]): Promise<boolean> {
+function buildCompletionVisibilityExpression(
+  meta: { turnId?: string | null; messageId?: string | null },
+  minTurnIndex?: number,
+): string {
+  const expectedMessageId = meta.messageId ? JSON.stringify(meta.messageId) : "null";
+  const expectedTurnId = meta.turnId ? JSON.stringify(meta.turnId) : "null";
+  const minTurnLiteral =
+    typeof minTurnIndex === "number" && Number.isFinite(minTurnIndex) && minTurnIndex >= 0
+      ? Math.floor(minTurnIndex)
+      : -1;
+  return `(() => {
+    const EXPECTED_MESSAGE_ID = ${expectedMessageId};
+    const EXPECTED_TURN_ID = ${expectedTurnId};
+    const MIN_TURN_INDEX = ${minTurnLiteral};
+    ${buildVisibleFinishedActionPredicateJs("hasVisibleFinishedAction")}
+    // Find the LAST assistant turn to check completion status. Must match the same logic as
+    // buildAssistantExtractor, then correlate the controls to the sampled response.
+    const ASSISTANT_SELECTOR = '${ASSISTANT_ROLE_SELECTOR}';
+    const isAssistantTurn = (node) => {
+      if (!(node instanceof HTMLElement)) return false;
+      const turnAttr = (node.getAttribute('data-turn') || node.dataset?.turn || '').toLowerCase();
+      if (turnAttr === 'assistant') return true;
+      const role = (node.getAttribute('data-message-author-role') || node.dataset?.messageAuthorRole || '').toLowerCase();
+      if (role === 'assistant') return true;
+      const testId = (node.getAttribute('data-testid') || '').toLowerCase();
+      if (testId.includes('assistant')) return true;
+      return Boolean(node.querySelector(ASSISTANT_SELECTOR) || node.querySelector('[data-testid*="assistant"]'));
+    };
+
+    const turns = ${buildConversationTurnListExpression()};
+    let lastAssistantTurn = null;
+    let lastAssistantIndex = -1;
+    for (let i = turns.length - 1; i >= 0; i--) {
+      if (isAssistantTurn(turns[i])) {
+        lastAssistantTurn = turns[i];
+        lastAssistantIndex = i;
+        break;
+      }
+    }
+    if (!lastAssistantTurn) return false;
+
+    const hasExpectedIdentity = Boolean(EXPECTED_MESSAGE_ID || EXPECTED_TURN_ID);
+    if (hasExpectedIdentity) {
+      const identityNodes = [
+        lastAssistantTurn,
+        ...Array.from(lastAssistantTurn.querySelectorAll('[data-message-id], [data-testid]')),
+      ];
+      const identityMatches = identityNodes.some((node) =>
+        (EXPECTED_MESSAGE_ID && node.getAttribute?.('data-message-id') === EXPECTED_MESSAGE_ID) ||
+        (EXPECTED_TURN_ID && node.getAttribute?.('data-testid') === EXPECTED_TURN_ID),
+      );
+      if (!identityMatches) return false;
+    } else if (MIN_TURN_INDEX < 0 || lastAssistantIndex < MIN_TURN_INDEX) {
+      // Fallback/project snapshots without an identity may use the new-turn baseline, but an
+      // uncorrelated persistent action bar from an older turn must never prove completion.
+      return false;
+    }
+
+    if (hasVisibleFinishedAction(lastAssistantTurn)) return true;
+    const markdowns = lastAssistantTurn.querySelectorAll('.markdown');
+    return Array.from(markdowns).some((node) => (node.textContent || '').trim() === 'Done');
+  })()`;
+}
+
+async function isCompletionVisible(
+  Runtime: ChromeClient["Runtime"],
+  meta: {
+    turnId?: string | null;
+    messageId?: string | null;
+    completionVisible?: boolean;
+  },
+  minTurnIndex?: number,
+): Promise<boolean> {
+  if (hasScopedCompletionProof(meta)) return true;
   try {
     const { result } = await Runtime.evaluate({
-      expression: buildCompletionVisibleExpression(),
+      expression: buildCompletionVisibilityExpression(meta, minTurnIndex),
       returnByValue: true,
     });
     return result?.value === true;
@@ -1572,10 +1564,20 @@ function buildCompletionVisibleExpression(): string {
   })()`;
 }
 
+export function hasScopedCompletionProof(meta: { completionVisible?: boolean }): boolean {
+  return meta.completionVisible === true;
+}
+
+export const buildCompletionVisibilityExpressionForTest = buildCompletionVisibilityExpression;
+
 function normalizeAssistantSnapshot(snapshot: AssistantSnapshot | null): {
   text: string;
   html?: string;
-  meta: { turnId?: string | null; messageId?: string | null };
+  meta: {
+    turnId?: string | null;
+    messageId?: string | null;
+    completionVisible?: boolean;
+  };
   turnComplete?: boolean;
 } | null {
   const text = snapshot?.text ? cleanAssistantText(snapshot.text) : "";
@@ -1590,7 +1592,9 @@ function normalizeAssistantSnapshot(snapshot: AssistantSnapshot | null): {
   // genuine one-word answer and must survive.
   if (
     isAnswerNowPlaceholderText(normalized) ||
-    (isPureThinkingStatusText(text) && snapshot?.turnComplete !== true)
+    (isPureThinkingStatusText(text) &&
+      snapshot?.turnComplete !== true &&
+      snapshot?.completionVisible !== true)
   ) {
     return null;
   }
@@ -1601,7 +1605,13 @@ function normalizeAssistantSnapshot(snapshot: AssistantSnapshot | null): {
   return {
     text,
     html: snapshot?.html ?? undefined,
-    meta: { turnId: snapshot?.turnId ?? undefined, messageId: snapshot?.messageId ?? undefined },
+    meta: {
+      turnId: snapshot?.turnId ?? undefined,
+      messageId: snapshot?.messageId ?? undefined,
+      ...(snapshot?.completionVisible === true || snapshot?.turnComplete === true
+        ? { completionVisible: true }
+        : {}),
+    },
     turnComplete: snapshot?.turnComplete === true,
   };
 }
@@ -1714,6 +1724,7 @@ function buildResponseObserverExpression(
     };
     ${buildAnswerNowPlaceholderPredicateJs("isAnswerNowPlaceholder")}
     ${buildActiveThinkingStatusPredicateJs("isActiveThinkingStatus")}
+    ${buildThinkingActivePredicateJs("isThinkingActiveNow")}
     // A pure thinking-status label is a LIVE placeholder only while the turn is
     // still generating. A genuine one-word answer equal to a status label
     // ("Reading", "Working", …) renders with finished-action controls
@@ -1936,7 +1947,7 @@ function buildResponseObserverExpression(
         // compatibility fallback for layouts whose extractor lacks the flag.
         const finishedVisible =
           refreshed?.turnComplete === true || isLastAssistantTurnFinished();
-        const thinkingActive = isThinkingIndicatorActive();
+        const thinkingActive = isThinkingIndicatorActive() || isThinkingActiveNow();
         const idleMs = Date.now() - lastChangeAt;
 
         // Never accept while a Pro thinking / reasoning indicator is active.
@@ -2125,7 +2136,9 @@ function buildAssistantExtractor(functionName: string): string {
         return false;
       }
       const position = latestUserTurn.compareDocumentPosition(node);
-      return Boolean(position & Node.DOCUMENT_POSITION_FOLLOWING);
+      // Node.DOCUMENT_POSITION_FOLLOWING = 4. Keep injected helpers usable in
+      // stripped DOM test contexts without a global Node constructor.
+      return Boolean(position & 4);
     };
     for (let index = turns.length - 1; index >= 0; index -= 1) {
       const turn = turns[index];
@@ -2170,13 +2183,13 @@ function buildAssistantExtractor(functionName: string): string {
         normalizedText === 'edit' ||
         normalizedText === 'stopped thinking' ||
         normalizedText === 'stopped thinking edit' ||
-        /^thought for \\d+(?:\\.\\d+)?\\s*(?:s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)\\s+edit$/.test(normalizedText);
+        /^(?:reasoning\\s+|pro thinking\\s+)?thought for \\d+(?:\\.\\d+)?\\s*(?:s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)\\s+edit$/.test(normalizedText);
       if (generatedImages.length > 0 && imageOnlyChrome) {
         const label = generatedImages.length === 1 ? 'Generated image.' : \`Generated \${generatedImages.length} images.\`;
-        return { text: label, html: messageRoot?.innerHTML ?? html, messageId, turnId, turnIndex: index, afterLatestUser, turnComplete };
+        return { text: label, html: messageRoot?.innerHTML ?? html, messageId, turnId, turnIndex: index, afterLatestUser, turnComplete, completionVisible: turnComplete };
       }
       if (text.trim()) {
-        return { text, html, messageId, turnId, turnIndex: index, afterLatestUser, turnComplete };
+        return { text, html, messageId, turnId, turnIndex: index, afterLatestUser, turnComplete, completionVisible: turnComplete };
       }
     }
     return null;
@@ -2241,28 +2254,32 @@ function buildMarkdownFallbackExtractor(minTurnLiteral?: string): string {
       const idx = turnNodes.findIndex((turn) => turn === node || turn.contains?.(node));
       return idx >= 0 ? idx : null;
     };
+    const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+    const collectLastUser = (scope) => {
+      if (!scope?.querySelectorAll) return null;
+      const userTurns = Array.from(scope.querySelectorAll('[data-message-author-role="user"], [data-turn="user"]'));
+      return userTurns[userTurns.length - 1] ?? null;
+    };
+    // Prefer the canonical turn list, but project/wrapperless layouts may only
+    // expose a role-marked user node under the selected root.
+    const lastUser = latestUserTurn || collectLastUser(root) || collectLastUser(document);
+    const userText = lastUser ? normalize(lastUser.innerText || lastUser.textContent || '') : '';
     const isAfterLatestUserTurn = (node) => {
-      if (!latestUserTurn || !node || typeof latestUserTurn.compareDocumentPosition !== 'function') {
+      if (!lastUser || !node || typeof lastUser.compareDocumentPosition !== 'function') {
         return false;
       }
       const turn = node?.closest?.(CONVERSATION_SELECTOR) ?? node;
-      const position = latestUserTurn.compareDocumentPosition(turn);
-      return Boolean(position & Node.DOCUMENT_POSITION_FOLLOWING);
+      // Node.DOCUMENT_POSITION_FOLLOWING = 4. Use the numeric bit so the injected expression
+      // also works in stripped browser test contexts without a global Node constructor.
+      return Boolean(lastUser.compareDocumentPosition(turn) & 4);
     };
+    const isAfterCurrentUser = isAfterLatestUserTurn;
     const isAfterMinTurn = (node) => {
       if (__minTurn === null) return true;
-      if (!hasTurns) return true;
+      if (!hasTurns) return isAfterCurrentUser(node);
       const idx = resolveTurnIndex(node);
       return (idx !== null && idx >= __minTurn) || isAfterLatestUserTurn(node);
     };
-    const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
-    const collectUserText = (scope) => {
-      if (!scope?.querySelectorAll) return '';
-      const userTurns = Array.from(scope.querySelectorAll('[data-message-author-role="user"], [data-turn="user"]'));
-      const lastUser = userTurns[userTurns.length - 1];
-      return lastUser ? normalize(lastUser.innerText || lastUser.textContent || '') : '';
-    };
-    const userText = collectUserText(root) || collectUserText(document);
     const isUserEcho = (text) => {
       if (!userText) return false;
       const normalized = normalize(text);
@@ -2337,7 +2354,16 @@ function buildMarkdownFallbackExtractor(minTurnLiteral?: string): string {
       const turnContainer =
         node.closest?.(CONVERSATION_SELECTOR) || node.closest?.('[data-message-author-role], [data-turn]');
       const turnComplete = hasVisibleFinishedAction(turnContainer);
-      return { text, html, messageId: null, turnId: null, turnIndex, afterLatestUser, turnComplete };
+      return {
+        text,
+        html,
+        messageId: null,
+        turnId: null,
+        turnIndex,
+        afterLatestUser,
+        turnComplete,
+        completionVisible: turnComplete || actionMarkdowns.includes(node),
+      };
     }
     return null;
   })`;
@@ -2564,6 +2590,7 @@ interface AssistantSnapshot {
    * snapshot is only treated as a completed answer when this is true.
    */
   turnComplete?: boolean;
+  completionVisible?: boolean;
 }
 
 const LANGUAGE_TAGS = new Set(

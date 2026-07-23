@@ -130,6 +130,7 @@ describe("remote payload sanitization", () => {
         manualLogin: true,
         manualLoginProfileDir: "/server-owned/manual-profile",
         keepBrowser: true,
+        closeOwnedRunTargetAfterRun: "always",
       });
       expect(capturedConfig).not.toHaveProperty("chromePath");
       expect(capturedConfig).not.toHaveProperty("chromeCookiePath");

@@ -547,6 +547,20 @@ export function resolveApiModel(modelValue: string): ModelName {
   return normalized as ModelName;
 }
 
+function parseBrowserGpt56Label(modelValue: string): { variant: string } | null {
+  const normalized = normalizeModelOption(modelValue).toLowerCase();
+  if (!normalized || normalized.includes("/")) return null;
+  const match = normalized.match(/^(?:(?:chatgpt|gpt)[\s._-]*)?5[._-]6(?:[\s._-]+(.+))?$/);
+  if (!match) return null;
+  return {
+    variant: (match[1] ?? "").replace(/[^a-z0-9]+/g, " ").trim(),
+  };
+}
+
+export function isGpt56BrowserLabel(modelValue: string): boolean {
+  return parseBrowserGpt56Label(modelValue) !== null;
+}
+
 export function inferModelFromLabel(modelValue: string): ModelName {
   const normalized = normalizeModelOption(modelValue).toLowerCase();
   if (!normalized) {
@@ -593,8 +607,15 @@ export function inferModelFromLabel(modelValue: string): ModelName {
   if (normalized.includes("classic")) {
     return "gpt-5-pro";
   }
-  if ((normalized.includes("5.6") || normalized.includes("5_6")) && normalized.includes("sol")) {
-    return "gpt-5.6-sol" as ModelName;
+  // Browser label family currently exposed by ChatGPT as "GPT-5.6 Sol".
+  const gpt56Label = parseBrowserGpt56Label(normalized);
+  if (gpt56Label) {
+    const { variant } = gpt56Label;
+    if (!variant) return "gpt-5.6" as ModelName;
+    if (variant === "sol") return "gpt-5.6-sol" as ModelName;
+    throw new InvalidArgumentError(
+      `Unknown GPT-5.6 browser variant "${variant}". Use gpt-5.6 or gpt-5.6-sol.`,
+    );
   }
   if (normalized.includes("thinking") && normalized.includes("heavy")) {
     return "gpt-5.5";

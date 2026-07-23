@@ -2,15 +2,11 @@ import { rm } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import os from "node:os";
 import net from "node:net";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import CDP from "chrome-remote-interface";
 import type { LaunchedChrome, Launcher } from "chrome-launcher";
 import type { BrowserLogger, ResolvedBrowserConfig, ChromeClient } from "./types.js";
 import { cleanupStaleProfileState } from "./profileState.js";
 import { delay } from "./utils.js";
-
-const execFileAsync = promisify(execFile);
 
 // Load chrome-launcher (and its chrome-finder child-process/fs probing,
 // lighthouse-logger and is-wsl deps) lazily so importing this module for its
@@ -29,7 +25,11 @@ export async function launchChrome(
   const connectHost = resolveRemoteDebugHost();
   const debugBindAddress = connectHost && connectHost !== "127.0.0.1" ? "0.0.0.0" : connectHost;
   const debugPort = config.debugPort ?? parseDebugPortEnv();
-  const chromeFlags = buildChromeFlags(config.headless ?? false, debugBindAddress);
+  const chromeFlags = buildChromeFlags(
+    config.headless ?? false,
+    debugBindAddress,
+    config.hideWindow ?? false,
+  );
   const usePatchedLauncher = Boolean(connectHost && connectHost !== "127.0.0.1");
   // copy-profile reuses a copied signed-in profile whose cookies are
   // Keychain-encrypted, so it must launch with the real Keychain (not mocked):
@@ -68,6 +68,27 @@ export async function launchChrome(
   return Object.assign(launcher, { host: connectHost ?? "127.0.0.1" }) as LaunchedChrome & {
     host?: string;
   };
+}
+
+export async function positionChromeWindowOffscreen(
+  client: ChromeClient,
+  logger: BrowserLogger,
+): Promise<void> {
+  if (process.platform !== "darwin") {
+    logger("Window hiding is only supported on macOS");
+    return;
+  }
+  try {
+    const { windowId } = await client.Browser.getWindowForTarget();
+    await client.Browser.setWindowBounds({
+      windowId,
+      bounds: { left: -32_000, top: -32_000, windowState: "normal" },
+    });
+    logger("Chrome window positioned off-screen");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger(`Failed to position Chrome window off-screen: ${message}`);
+  }
 }
 
 export function registerTerminationHooks(
@@ -156,32 +177,6 @@ export function registerTerminationHooks(
       process.removeListener(signal, handleSignal);
     }
   };
-}
-
-export async function hideChromeWindow(
-  chrome: LaunchedChrome,
-  logger: BrowserLogger,
-): Promise<void> {
-  if (process.platform !== "darwin") {
-    logger("Window hiding is only supported on macOS");
-    return;
-  }
-  if (!chrome.pid) {
-    logger("Unable to hide window: missing Chrome PID");
-    return;
-  }
-  const script = `tell application "System Events"
-    try
-      set visible of (first process whose unix id is ${chrome.pid}) to false
-    end try
-  end tell`;
-  try {
-    await execFileAsync("osascript", ["-e", script]);
-    logger("Chrome window hidden (Cmd-H)");
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger(`Failed to hide Chrome window: ${message}`);
-  }
 }
 
 export async function connectToChrome(
@@ -695,9 +690,37 @@ export async function closeTab(
   const effectiveHost = host ?? "127.0.0.1";
   try {
     await CDP.Close({ host: effectiveHost, port, id: targetId });
-    logger(`Closed isolated browser tab (target=${targetId})`);
-    return true;
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      await delay(25);
+      let targets: Array<{ id?: string; targetId?: string }>;
+      try {
+        targets = (await CDP.List({ host: effectiveHost, port })) as Array<{
+          id?: string;
+          targetId?: string;
+        }>;
+      } catch {
+        continue;
+      }
+      if (!targets.some((target) => (target.targetId ?? target.id) === targetId)) {
+        logger(`Closed isolated browser tab (target=${targetId})`);
+        return true;
+      }
+    }
+    logger(`Browser tab close was not confirmed (target=${targetId})`);
+    return false;
   } catch (error) {
+    try {
+      const targets = (await CDP.List({ host: effectiveHost, port })) as Array<{
+        id?: string;
+        targetId?: string;
+      }>;
+      if (!targets.some((target) => (target.targetId ?? target.id) === targetId)) {
+        logger(`Closed isolated browser tab (target=${targetId})`);
+        return true;
+      }
+    } catch {
+      // Preserve the original close error below.
+    }
     const message = error instanceof Error ? error.message : String(error);
     logger(`Failed to close browser tab ${targetId}: ${message}`);
     return false;
@@ -715,6 +738,59 @@ export async function closeTab(
  */
 export const DEFAULT_BLANK_TAB_SWEEP_GRACE_MS = 3000;
 
+export async function createChromePageTarget(
+  port: number,
+  logger: BrowserLogger,
+  host?: string,
+): Promise<string | undefined> {
+  const effectiveHost = host ?? "127.0.0.1";
+  try {
+    const created = (await CDP.New({
+      host: effectiveHost,
+      port,
+      url: "about:blank",
+    })) as { id?: string; targetId?: string };
+    const createdTargetId = created.targetId ?? created.id;
+    if (!createdTargetId) {
+      logger("Failed to create a replacement Chrome tab.");
+      return undefined;
+    }
+    logger(`Opened replacement Chrome tab (target=${createdTargetId})`);
+    return createdTargetId;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger(`Failed to create a replacement Chrome tab: ${message}`);
+    return undefined;
+  }
+}
+
+export async function ensureChromePageTargetAfterClose(
+  port: number,
+  closingTargetId: string,
+  logger: BrowserLogger,
+  host?: string,
+): Promise<string | undefined> {
+  const effectiveHost = host ?? "127.0.0.1";
+  try {
+    const targets = (await CDP.List({ host: effectiveHost, port })) as Array<{
+      id?: string;
+      targetId?: string;
+      type?: string;
+    }>;
+    const existingPageTargetId = targets
+      .filter((target) => target.type === "page")
+      .map((target) => target.targetId ?? target.id)
+      .find((targetId): targetId is string => Boolean(targetId) && targetId !== closingTargetId);
+    if (existingPageTargetId) {
+      return existingPageTargetId;
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger(`Failed to inspect Chrome tabs before closing ${closingTargetId}: ${message}`);
+  }
+  return await createChromePageTarget(port, logger, host);
+}
+
 export async function closeBlankChromeTabs(
   port: number,
   logger: BrowserLogger,
@@ -723,6 +799,7 @@ export async function closeBlankChromeTabs(
     excludeTargetIds?: Iterable<string | null | undefined>;
     /** 0 disables the age-gate (close blank tabs from a single snapshot). */
     blankGraceMs?: number;
+    preserveOneBlank?: boolean;
   },
 ): Promise<void> {
   const effectiveHost = host ?? "127.0.0.1";
@@ -733,7 +810,8 @@ export async function closeBlankChromeTabs(
     ),
   );
   type TargetSummary = { id?: string; targetId?: string; type?: string; url?: string };
-  const listBlankCandidateIds = async (): Promise<Set<string> | null> => {
+  type BlankSnapshot = { all: Set<string>; candidates: Set<string> };
+  const listBlankSnapshot = async (): Promise<BlankSnapshot | null> => {
     let targets: TargetSummary[];
     try {
       targets = (await CDP.List({ host: effectiveHost, port })) as TargetSummary[];
@@ -742,20 +820,23 @@ export async function closeBlankChromeTabs(
       logger(`Failed to inspect blank Chrome tabs: ${message}`);
       return null;
     }
+    const all = new Set<string>();
     const candidates = new Set<string>();
     for (const target of targets) {
       const targetId = target.targetId ?? target.id;
-      if (targetId && !excluded.has(targetId) && isBlankPageTarget(target)) {
-        candidates.add(targetId);
-      }
+      if (!targetId || !isBlankPageTarget(target)) continue;
+      all.add(targetId);
+      if (!excluded.has(targetId)) candidates.add(targetId);
     }
-    return candidates;
+    return { all, candidates };
   };
 
-  let candidates = await listBlankCandidateIds();
-  if (candidates === null || candidates.size === 0) {
+  let snapshot = await listBlankSnapshot();
+  if (snapshot === null || snapshot.candidates.size === 0) {
     return;
   }
+  let candidates = snapshot.candidates;
+  let allBlankIds = snapshot.all;
   if (blankGraceMs > 0) {
     // Only tabs that are blank in BOTH snapshots are closed: a just-opened
     // tab that is mid-navigation (e.g. another lane's isolated tab whose
@@ -763,17 +844,22 @@ export async function closeBlankChromeTabs(
     // set) leaves the blank state before the second look and survives. A
     // tab created between the snapshots is never a candidate at all.
     await delay(blankGraceMs);
-    const confirmed = await listBlankCandidateIds();
+    const confirmed = await listBlankSnapshot();
     if (confirmed === null) {
       // Fail closed: without a confirming snapshot we cannot distinguish an
       // orphaned blank tab from one that is mid-navigation.
       return;
     }
-    candidates = new Set([...candidates].filter((targetId) => confirmed.has(targetId)));
+    candidates = new Set([...candidates].filter((targetId) => confirmed.candidates.has(targetId)));
+    allBlankIds = confirmed.all;
   }
 
+  const preservedBlankTargetId = options?.preserveOneBlank ? [...allBlankIds].sort()[0] : undefined;
   let closed = 0;
   for (const targetId of candidates) {
+    if (targetId === preservedBlankTargetId) {
+      continue;
+    }
     try {
       await CDP.Close({ host: effectiveHost, port, id: targetId });
       closed += 1;
@@ -795,7 +881,11 @@ function isBlankPageTarget(target: { type?: string; url?: string }): boolean {
   return url === "about:blank" || url === "chrome://newtab/" || url === "chrome://new-tab-page/";
 }
 
-function buildChromeFlags(headless: boolean, debugBindAddress?: string | null): string[] {
+function buildChromeFlags(
+  headless: boolean,
+  debugBindAddress?: string | null,
+  hideWindow = false,
+): string[] {
   const flags = [
     "--disable-background-networking",
     "--disable-background-timer-throttling",
@@ -834,9 +924,28 @@ function buildChromeFlags(headless: boolean, debugBindAddress?: string | null): 
 
   if (headless) {
     flags.push("--headless=new");
+  } else if (hideWindow && process.platform === "darwin") {
+    // Cmd-H stops macOS Chrome from compositing the page, which can swallow
+    // trusted CDP clicks and retain the prompt as a draft. Keeping the window
+    // off-screen avoids desktop disruption while preserving normal rendering.
+    flags.push("--window-position=-32000,-32000");
+  }
+
+  // Opt-in only: container/CI Chromium often cannot use the sandbox. Callers must
+  // set ORACLE_CHROME_NO_SANDBOX=1 explicitly (never default this on).
+  if (process.env.ORACLE_CHROME_NO_SANDBOX === "1") {
+    flags.push("--no-sandbox", "--disable-dev-shm-usage");
   }
 
   return flags;
+}
+
+export function buildChromeFlagsForTest(
+  headless: boolean,
+  debugBindAddress?: string | null,
+  hideWindow = false,
+): string[] {
+  return buildChromeFlags(headless, debugBindAddress, hideWindow);
 }
 
 function resolveChromeLaunchOptions(

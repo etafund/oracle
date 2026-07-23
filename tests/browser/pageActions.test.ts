@@ -10,15 +10,20 @@ import {
   navigateToChatGPT,
   navigateToPromptReadyWithFallback,
   ensurePromptReady,
+  ensureChatMode,
   waitForResumedConversationHydration,
   ensureNotBlocked,
   ensureLoggedIn,
   readAssistantSnapshot,
   buildBlockingUiDismissalExpressionForTest,
 } from "../../src/browser/pageActions.js";
+import { createContext, Script } from "node:vm";
 import {
+  buildCloudflareInterstitialExpressionForTest,
+  isCloudflareInterstitialForTest,
   buildLoginProbeExpressionForTest,
   buildWelcomeBackAccountPickerExpressionForTest,
+  buildChatModeProbeExpressionForTest,
 } from "../../src/browser/actions/navigation.js";
 import * as attachments from "../../src/browser/actions/attachments.js";
 import * as attachmentDataTransfer from "../../src/browser/actions/attachmentDataTransfer.js";
@@ -380,6 +385,434 @@ describe("ensurePromptReady", () => {
   });
 });
 
+describe("ensureChatMode", () => {
+  class FakeChatModeElement {
+    readonly classList: { contains: (value: string) => boolean };
+
+    constructor(
+      readonly tagName: string,
+      readonly textContent: string,
+      classes: string[] = [],
+      readonly childElementCount = 0,
+      private readonly attributes: Record<string, string> = {},
+      readonly parentElement: FakeChatModeElement | null = null,
+    ) {
+      const tokens = new Set(classes);
+      this.classList = { contains: (value: string) => tokens.has(value) };
+    }
+
+    hasAttribute(name: string) {
+      return Object.hasOwn(this.attributes, name);
+    }
+
+    matches(selector: string) {
+      return (
+        selector === "span.flex.items-center" &&
+        this.tagName === "SPAN" &&
+        this.classList.contains("flex") &&
+        this.classList.contains("items-center")
+      );
+    }
+  }
+
+  const structuredWorkBadge = (
+    overrides: {
+      tagName?: string;
+      textContent?: string;
+      classes?: string[];
+      childElementCount?: number;
+      attributes?: Record<string, string>;
+      parentClasses?: string[];
+    } = {},
+  ) => {
+    const parent = new FakeChatModeElement(
+      "SPAN",
+      "",
+      overrides.parentClasses ?? ["flex", "items-center"],
+    );
+    return new FakeChatModeElement(
+      overrides.tagName ?? "SPAN",
+      overrides.textContent ?? "Work",
+      overrides.classes ?? ["shrink-0"],
+      overrides.childElementCount ?? 0,
+      overrides.attributes ?? {},
+      parent,
+    );
+  };
+
+  const runConversationModeProbe = (
+    pathname: string,
+    links: Array<{
+      href: string;
+      ariaLabel?: string;
+      descendants?: FakeChatModeElement[];
+      trustedHistory?: boolean;
+    }>,
+  ) => {
+    const expression = buildChatModeProbeExpressionForTest();
+    const historyLinks = links.map(
+      ({ href, ariaLabel = "", descendants = [], trustedHistory = true }) => ({
+        trustedHistory,
+        getAttribute: (name: string) => {
+          if (name === "href") return href;
+          if (name === "aria-label") return ariaLabel;
+          return null;
+        },
+        querySelectorAll: (selector: string) => (selector === "span" ? descendants : []),
+      }),
+    );
+    const document = {
+      querySelectorAll: (selector: string) =>
+        selector === 'a.__menu-item[href*="/c/"]'
+          ? historyLinks.filter((link) => link.trustedHistory)
+          : [],
+    };
+    const evaluate = new Function(
+      "document",
+      "location",
+      "URL",
+      "HTMLElement",
+      `return ${expression};`,
+    ) as (
+      document: unknown,
+      location: unknown,
+      url: typeof URL,
+      htmlElement: typeof FakeChatModeElement,
+    ) => { status: string };
+
+    return evaluate(
+      document,
+      { origin: "https://chatgpt.com", pathname },
+      URL,
+      FakeChatModeElement,
+    );
+  };
+
+  test("uses a trusted click to switch Work to Chat and verifies the result", async () => {
+    const evaluate = vi
+      .fn()
+      .mockResolvedValueOnce({
+        result: { value: { status: "work-selected", chatPoint: { x: 120, y: 48 } } },
+      })
+      .mockResolvedValueOnce({ result: { value: { status: "chat-selected" } } });
+    const dispatchMouseEvent = vi.fn().mockResolvedValue(undefined);
+    const runtime = { evaluate } as unknown as ChromeClient["Runtime"];
+    const input = { dispatchMouseEvent } as unknown as ChromeClient["Input"];
+
+    await expect(ensureChatMode(runtime, input, 1_000, logger, { pollMs: 0 })).resolves.toBe(
+      "switched",
+    );
+
+    expect(dispatchMouseEvent).toHaveBeenNthCalledWith(1, {
+      type: "mouseMoved",
+      x: 120,
+      y: 48,
+    });
+    expect(dispatchMouseEvent).toHaveBeenNthCalledWith(2, {
+      type: "mousePressed",
+      x: 120,
+      y: 48,
+      button: "left",
+      clickCount: 1,
+    });
+    expect(dispatchMouseEvent).toHaveBeenNthCalledWith(3, {
+      type: "mouseReleased",
+      x: 120,
+      y: 48,
+      button: "left",
+      clickCount: 1,
+    });
+    expect(logger).toHaveBeenCalledWith("ChatGPT mode: Work; switching to Chat");
+    expect(logger).toHaveBeenCalledWith("ChatGPT mode: Chat (switched from Work)");
+    expect(String(evaluate.mock.calls[0]?.[0]?.expression)).toContain('button[role="radio"]');
+  });
+
+  test("does not click when Chat is already selected", async () => {
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({ result: { value: { status: "chat-selected" } } }),
+    } as unknown as ChromeClient["Runtime"];
+    const input = {
+      dispatchMouseEvent: vi.fn(),
+    } as unknown as ChromeClient["Input"];
+
+    await expect(ensureChatMode(runtime, input, 0, logger)).resolves.toBe("chat");
+    expect(input.dispatchMouseEvent).not.toHaveBeenCalled();
+  });
+
+  test("keeps compatibility when the Chat/Work selector is absent", async () => {
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({ result: { value: { status: "controls-absent" } } }),
+    } as unknown as ChromeClient["Runtime"];
+    const input = {
+      dispatchMouseEvent: vi.fn(),
+    } as unknown as ChromeClient["Input"];
+
+    await expect(ensureChatMode(runtime, input, 0, logger)).resolves.toBe("unavailable");
+    expect(input.dispatchMouseEvent).not.toHaveBeenCalled();
+  });
+
+  test("fails closed for an existing Work conversation", async () => {
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({ result: { value: { status: "work-conversation" } } }),
+    } as unknown as ChromeClient["Runtime"];
+    const input = {
+      dispatchMouseEvent: vi.fn(),
+    } as unknown as ChromeClient["Input"];
+
+    await expect(ensureChatMode(runtime, input, 0, logger)).rejects.toThrow(
+      /existing Work conversation/i,
+    );
+    expect(input.dispatchMouseEvent).not.toHaveBeenCalled();
+  });
+
+  test("recognizes a hydrated ordinary Chat conversation", async () => {
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({ result: { value: { status: "chat-conversation" } } }),
+    } as unknown as ChromeClient["Runtime"];
+    const input = {
+      dispatchMouseEvent: vi.fn(),
+    } as unknown as ChromeClient["Input"];
+
+    await expect(ensureChatMode(runtime, input, 0, logger)).resolves.toBe("chat");
+    expect(input.dispatchMouseEvent).not.toHaveBeenCalled();
+  });
+
+  test("waits for conversation metadata to hydrate before classifying Work", async () => {
+    const runtime = {
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({ result: { value: { status: "conversation-unresolved" } } })
+        .mockResolvedValueOnce({ result: { value: { status: "work-conversation" } } })
+        .mockResolvedValueOnce({ result: { value: { status: "chat-selected" } } }),
+    } as unknown as ChromeClient["Runtime"];
+    const input = {
+      dispatchMouseEvent: vi.fn(),
+    } as unknown as ChromeClient["Input"];
+    const resetWorkConversation = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      ensureChatMode(runtime, input, 1_000, logger, {
+        pollMs: 0,
+        resetWorkConversation,
+      }),
+    ).resolves.toBe("switched");
+
+    expect(resetWorkConversation).toHaveBeenCalledOnce();
+    expect(runtime.evaluate).toHaveBeenCalledTimes(3);
+  });
+
+  test("opens a new Chat when a non-resume run attaches to a Work conversation", async () => {
+    const runtime = {
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({ result: { value: { status: "work-conversation" } } })
+        .mockResolvedValueOnce({ result: { value: { status: "chat-selected" } } }),
+    } as unknown as ChromeClient["Runtime"];
+    const input = {
+      dispatchMouseEvent: vi.fn(),
+    } as unknown as ChromeClient["Input"];
+    const resetWorkConversation = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      ensureChatMode(runtime, input, 1_000, logger, {
+        pollMs: 0,
+        resetWorkConversation,
+      }),
+    ).resolves.toBe("switched");
+
+    expect(resetWorkConversation).toHaveBeenCalledOnce();
+    expect(logger).toHaveBeenCalledWith("ChatGPT mode: Work conversation; opening a new Chat");
+    expect(logger).toHaveBeenCalledWith("ChatGPT mode: Chat (switched from Work)");
+    expect(input.dispatchMouseEvent).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["root", "/c/root-work-thread", "/c/root-work-thread", "Root task, Work"],
+    [
+      "project",
+      "/g/example/project/c/project-work-thread",
+      "/c/project-work-thread",
+      "Project task, chat in project Example, Work",
+    ],
+  ])(
+    "classifies a structured Work badge on a %s conversation URL",
+    (_kind, pathname, href, ariaLabel) => {
+      expect(
+        runConversationModeProbe(pathname, [
+          {
+            href,
+            ariaLabel,
+            descendants: [structuredWorkBadge()],
+          },
+        ]),
+      ).toEqual({ status: "work-conversation" });
+    },
+  );
+
+  test.each([
+    ["comma-containing title", "Plan, Work, and travel", []],
+    ["title exactly Work", "Work", [structuredWorkBadge({ attributes: { dir: "auto" } })]],
+    ["arbitrary exact-text descendant", "Work notes", [structuredWorkBadge({ classes: [] })]],
+    [
+      "near-miss badge with nested content",
+      "Work notes",
+      [structuredWorkBadge({ childElementCount: 1 })],
+    ],
+    [
+      "near-miss badge under an ordinary parent",
+      "Work notes",
+      [structuredWorkBadge({ parentClasses: ["flex"] })],
+    ],
+  ])("keeps an ordinary Chat conversation for a %s", (_caseName, ariaLabel, descendants) => {
+    expect(
+      runConversationModeProbe("/c/chat-thread", [
+        { href: "/c/chat-thread", ariaLabel, descendants },
+      ]),
+    ).toEqual({ status: "chat-conversation" });
+  });
+
+  test("treats a terminal aria Work suffix as hydration evidence rather than authority", () => {
+    expect(
+      runConversationModeProbe("/c/pending-thread", [
+        {
+          href: "/c/pending-thread",
+          ariaLabel: "Ordinary title ending, Work",
+        },
+      ]),
+    ).toEqual({ status: "conversation-unresolved" });
+  });
+
+  test("opens a new Chat after persistent ambiguity on a non-resume attachment", async () => {
+    const runtime = {
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({ result: { value: { status: "conversation-unresolved" } } })
+        .mockResolvedValueOnce({ result: { value: { status: "chat-selected" } } }),
+    } as unknown as ChromeClient["Runtime"];
+    const input = { dispatchMouseEvent: vi.fn() } as unknown as ChromeClient["Input"];
+    const resetWorkConversation = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      ensureChatMode(runtime, input, 0, logger, { pollMs: 0, resetWorkConversation }),
+    ).resolves.toBe("switched");
+    expect(resetWorkConversation).toHaveBeenCalledOnce();
+    expect(logger).toHaveBeenCalledWith("ChatGPT conversation mode unresolved; opening a new Chat");
+  });
+
+  test("fails closed after persistent ambiguity on an explicit resume", async () => {
+    const runtime = {
+      evaluate: vi
+        .fn()
+        .mockResolvedValue({ result: { value: { status: "conversation-unresolved" } } }),
+    } as unknown as ChromeClient["Runtime"];
+    const input = { dispatchMouseEvent: vi.fn() } as unknown as ChromeClient["Input"];
+
+    await expect(ensureChatMode(runtime, input, 0, logger, { pollMs: 0 })).rejects.toThrow(
+      /cannot safely resume/i,
+    );
+    expect(input.dispatchMouseEvent).not.toHaveBeenCalled();
+  });
+
+  test("aggregates responsive duplicates for the exact conversation id", () => {
+    expect(
+      runConversationModeProbe("/c/duplicate-thread", [
+        { href: "/c/duplicate-thread", ariaLabel: "Hydrated title" },
+        {
+          href: "/c/duplicate-thread",
+          ariaLabel: "Hydrated title, Work",
+          descendants: [structuredWorkBadge()],
+        },
+      ]),
+    ).toEqual({ status: "work-conversation" });
+  });
+
+  test("ignores a matching conversation path from another origin", () => {
+    expect(
+      runConversationModeProbe("/c/same-thread", [
+        {
+          href: "https://example.test/c/same-thread",
+          ariaLabel: "External, Work",
+          descendants: [structuredWorkBadge()],
+        },
+        { href: "/c/same-thread", ariaLabel: "Local chat" },
+      ]),
+    ).toEqual({ status: "chat-conversation" });
+  });
+
+  test("ignores an exact-id link rendered outside trusted sidebar history", () => {
+    expect(
+      runConversationModeProbe("/c/same-thread", [
+        {
+          href: "/c/same-thread",
+          ariaLabel: "User-authored link",
+          descendants: [structuredWorkBadge()],
+          trustedHistory: false,
+        },
+      ]),
+    ).toEqual({ status: "conversation-unresolved" });
+  });
+
+  test("fails closed when post-reset Chat verification remains unavailable", async () => {
+    const runtime = {
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({ result: { value: { status: "work-conversation" } } })
+        .mockResolvedValueOnce({ result: { value: { status: "controls-absent" } } })
+        .mockResolvedValue({ result: { value: false } }),
+    } as unknown as ChromeClient["Runtime"];
+    const input = { dispatchMouseEvent: vi.fn() } as unknown as ChromeClient["Input"];
+    const resetWorkConversation = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      ensureChatMode(runtime, input, 0, logger, { pollMs: 0, resetWorkConversation }),
+    ).rejects.toThrow(/could not verify Chat mode after leaving Work/i);
+    expect(resetWorkConversation).toHaveBeenCalledOnce();
+  });
+
+  test("allocates a fresh verification window after resetting a Work conversation", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(0);
+      const runtime = {
+        evaluate: vi
+          .fn()
+          .mockResolvedValueOnce({ result: { value: { status: "work-conversation" } } })
+          .mockResolvedValueOnce({ result: { value: { status: "conversation-unresolved" } } })
+          .mockResolvedValueOnce({ result: { value: { status: "chat-selected" } } }),
+      } as unknown as ChromeClient["Runtime"];
+      const input = { dispatchMouseEvent: vi.fn() } as unknown as ChromeClient["Input"];
+      const resetWorkConversation = vi.fn().mockImplementation(async () => {
+        vi.setSystemTime(1_000);
+      });
+
+      const result = ensureChatMode(runtime, input, 1_000, logger, {
+        pollMs: 1,
+        resetWorkConversation,
+      });
+      await vi.runAllTimersAsync();
+
+      await expect(result).resolves.toBe("switched");
+      expect(runtime.evaluate).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("scopes detection to exact mode radios and the active conversation metadata", () => {
+    const expression = buildChatModeProbeExpressionForTest();
+    expect(expression).toContain('button[role="radio"]');
+    expect(expression).toContain("normalize(node.textContent) === 'chat'");
+    expect(expression).toContain("normalize(node.textContent) === 'work'");
+    expect(expression).toContain('a.__menu-item[href*="/c/"]');
+    expect(expression).toContain("candidateUrl.origin === location.origin");
+    expect(expression).toContain(
+      "conversationIdFromPath(candidateUrl.pathname) === conversationId",
+    );
+    expect(expression).toContain("node.classList.contains('shrink-0')");
+    expect(expression).not.toContain("document.body.innerText");
+  });
+});
+
 describe("waitForResumedConversationHydration", () => {
   test("waits until prior turns stop growing and rechecks the composer", async () => {
     vi.useFakeTimers();
@@ -497,6 +930,39 @@ describe("waitForResumedConversationHydration", () => {
   });
 });
 
+describe("isCloudflareInterstitial hydration grace", () => {
+  const verdicts = (...values: unknown[]) => {
+    const fn = vi.fn();
+    for (const value of values) fn.mockResolvedValueOnce({ result: { value } });
+    fn.mockResolvedValue({ result: { value: values[values.length - 1] } });
+    return { evaluate: fn } as unknown as ChromeClient["Runtime"];
+  };
+
+  test("weak-only evidence that resolves into the app shell is NOT a challenge", async () => {
+    // The post-navigation race: bot-management script present, React shell not yet hydrated,
+    // short body. The shell appearing during the grace window must clear the classification.
+    const runtime = verdicts({ weak: true }, { weak: true }, { shell: true });
+    await expect(isCloudflareInterstitialForTest(runtime, 5_000)).resolves.toBe(false);
+  });
+
+  test("weak-only evidence that persists through the grace window IS a challenge", async () => {
+    const runtime = verdicts({ weak: true });
+    await expect(isCloudflareInterstitialForTest(runtime, 1_200)).resolves.toBe(true);
+  });
+
+  test("strong evidence classifies immediately without waiting", async () => {
+    const runtime = verdicts({ strong: true });
+    const started = Date.now();
+    await expect(isCloudflareInterstitialForTest(runtime, 60_000)).resolves.toBe(true);
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  test("no evidence at all returns false immediately", async () => {
+    const runtime = verdicts({});
+    await expect(isCloudflareInterstitialForTest(runtime, 60_000)).resolves.toBe(false);
+  });
+});
+
 describe("ensureNotBlocked", () => {
   const healthyAccessFacts = {
     url: "https://chatgpt.com/",
@@ -515,18 +981,21 @@ describe("ensureNotBlocked", () => {
   test("throws descriptive error when cloudflare detected", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-navigation-quarantine-"));
     const runtime = {
-      evaluate: vi.fn().mockResolvedValue({
-        result: {
-          value: {
-            ...healthyAccessFacts,
-            title: "Just a moment...",
-            interstitialTitle: true,
-            composerPresent: false,
-            composerVisible: false,
-            accountSignal: false,
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({
+          result: {
+            value: {
+              ...healthyAccessFacts,
+              title: "Just a moment...",
+              interstitialTitle: true,
+              composerPresent: false,
+              composerVisible: false,
+              accountSignal: false,
+            },
           },
-        },
-      }),
+        })
+        .mockResolvedValue({ result: { value: { strong: true } } }),
     } as unknown as ChromeClient["Runtime"];
     await expect(
       ensureNotBlocked(runtime, true, logger, {
@@ -554,18 +1023,21 @@ describe("ensureNotBlocked", () => {
   test("throws structured browser error when headful cloudflare is detected", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-navigation-quarantine-"));
     const runtime = {
-      evaluate: vi.fn().mockResolvedValue({
-        result: {
-          value: {
-            ...healthyAccessFacts,
-            title: "Just a moment...",
-            interstitialTitle: true,
-            composerPresent: false,
-            composerVisible: false,
-            accountSignal: false,
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({
+          result: {
+            value: {
+              ...healthyAccessFacts,
+              title: "Just a moment...",
+              interstitialTitle: true,
+              composerPresent: false,
+              composerVisible: false,
+              accountSignal: false,
+            },
           },
-        },
-      }),
+        })
+        .mockResolvedValue({ result: { value: { strong: true } } }),
     } as unknown as ChromeClient["Runtime"];
     try {
       await ensureNotBlocked(runtime, false, logger, {
@@ -617,6 +1089,88 @@ describe("ensureNotBlocked", () => {
       quarantined: true,
       record: { reason: "account_security_block", source: "navigation-block-gate" },
     });
+  });
+});
+
+describe("cloudflare interstitial detection (DOM logic)", () => {
+  function evalCloudflare(opts: {
+    title?: string;
+    bodyText?: string;
+    appShell?: boolean;
+    widget?: boolean;
+    script?: boolean;
+  }): boolean {
+    const expr = buildCloudflareInterstitialExpressionForTest();
+    const context = createContext({
+      String,
+      Boolean,
+      document: {
+        title: opts.title ?? "",
+        body: { innerText: opts.bodyText ?? "" },
+        querySelector: (selector: string) => {
+          const s = String(selector);
+          if (
+            s.includes("prompt-textarea") ||
+            s.includes("conversation-turn") ||
+            s.includes("profile-button") ||
+            s.includes("form[data-type]") ||
+            s.includes('href*="/c/"')
+          ) {
+            return opts.appShell ? {} : null;
+          }
+          if (
+            s.includes("challenge-form") ||
+            s.includes("cf-challenge") ||
+            s.includes("challenges.cloudflare.com") ||
+            s.includes("cdn-cgi/challenge-platform")
+          ) {
+            return opts.widget ? {} : null;
+          }
+          if (s.includes("challenge-platform")) {
+            return opts.script ? {} : null; // the bot-management script
+          }
+          return null;
+        },
+      },
+    });
+    return new Script(expr).runInContext(context) as boolean;
+  }
+
+  test("does NOT flag a normal app page that merely carries the CF bot-management script", () => {
+    // The regression: the new GPT-5.6 "Work" UI (app shell present) + the challenge-platform
+    // script was wrongly detected as a Cloudflare challenge.
+    expect(evalCloudflare({ title: "ChatGPT", appShell: true, script: true })).toBe(false);
+  });
+
+  test("does NOT flag a content-rich page even without a recognized app shell", () => {
+    expect(
+      evalCloudflare({ title: "", appShell: false, script: true, bodyText: "x".repeat(1200) }),
+    ).toBe(false);
+  });
+
+  test("does NOT treat generic challenge copy as strong evidence on a content-rich page", () => {
+    expect(
+      evalCloudflare({
+        title: "ChatGPT",
+        appShell: false,
+        script: true,
+        bodyText: `A normal long-form answer says just a moment in passing. ${"x".repeat(1200)}`,
+      }),
+    ).toBe(false);
+  });
+
+  test("flags the real interstitial by title", () => {
+    expect(evalCloudflare({ title: "Just a moment..." })).toBe(true);
+  });
+
+  test("flags a real challenge widget with no app shell", () => {
+    expect(evalCloudflare({ title: "", appShell: false, widget: true })).toBe(true);
+  });
+
+  test("flags a short interstitial page carrying the script", () => {
+    expect(
+      evalCloudflare({ title: "", appShell: false, script: true, bodyText: "just a moment" }),
+    ).toBe(true);
   });
 });
 
@@ -1148,22 +1702,51 @@ describe("ensureLoggedIn", () => {
 
 describe("waitForAssistantResponse", () => {
   test("returns captured assistant payload", async () => {
-    const runtime = {
-      evaluate: vi.fn().mockResolvedValue({
-        result: {
-          type: "object",
-          value: {
-            text: "Answer to the question.",
-            html: "<p>Answer to the question.</p>",
-            messageId: "mid",
-            turnId: "tid",
-          },
-        },
-      }),
-    } as unknown as ChromeClient["Runtime"];
-    const result = await waitForAssistantResponse(runtime, 1000, logger);
-    expect(result.text).toBe("Answer to the question.");
-    expect(result.meta).toEqual({ messageId: "mid", turnId: "tid" });
+    vi.useFakeTimers();
+    try {
+      const payload = {
+        text: "Answer to the question.",
+        html: "<p>Answer to the question.</p>",
+        messageId: "mid",
+        turnId: "tid",
+      };
+      const evaluate = vi
+        .fn()
+        .mockImplementation(async (params: { expression?: string; awaitPromise?: boolean }) => {
+          if (params?.awaitPromise) {
+            return { result: { type: "object", value: payload } };
+          }
+          const expression = String(params?.expression ?? "");
+          if (expression.includes("stopVisible, completionVisible, thinkingActive")) {
+            return {
+              result: {
+                value: {
+                  snapshot: payload,
+                  stopVisible: false,
+                  completionVisible: true,
+                  thinkingActive: false,
+                },
+              },
+            };
+          }
+          if (expression.includes("extractAssistantTurn")) {
+            return { result: { value: payload } };
+          }
+          // A finished turn's action bar is present -> the terminal gate proves completion (proofA).
+          if (expression.includes("Find the LAST assistant turn")) {
+            return { result: { value: true } };
+          }
+          return { result: { value: false } };
+        });
+      const runtime = { evaluate } as unknown as ChromeClient["Runtime"];
+      const promise = waitForAssistantResponse(runtime, 30_000, logger);
+      await vi.advanceTimersByTimeAsync(4_000);
+      const result = await promise;
+      expect(result.text).toBe("Answer to the question.");
+      expect(result.meta).toEqual({ messageId: "mid", turnId: "tid" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("aborts poller when evaluation wins (no background polling)", async () => {
@@ -1214,17 +1797,20 @@ describe("waitForAssistantResponse", () => {
           if (expression.includes("extractAssistantTurn")) {
             return { result: { value: await readSnapshotValue() } };
           }
+          if (expression.includes("Find the LAST assistant turn")) {
+            return { result: { value: true } }; // action bar present -> proofA
+          }
           return { result: { value: false } };
         });
 
       const runtime = { evaluate } as unknown as ChromeClient["Runtime"];
       const promise = waitForAssistantResponse(runtime, 30_000, logger);
-      // The compact candidate is confirmed by the watchdog before returning
-      // (short answers need ~8s of stability), so advance past that window.
-      await vi.advanceTimersByTimeAsync(20_000);
+      await vi.advanceTimersByTimeAsync(4_000);
       const result = await promise;
       expect(result.text).toBe(answerText);
 
+      // The confirm re-poll is FOREGROUND; once the promise resolves there must be no further
+      // (background) polling — the poller is aborted when the evaluation path wins.
       const callsAtReturn = evaluate.mock.calls.length;
       await vi.advanceTimersByTimeAsync(5_000);
       expect(evaluate.mock.calls.length).toBe(callsAtReturn);
@@ -1276,7 +1862,8 @@ describe("waitForAssistantResponse", () => {
             };
           }
           if (expression.includes("Find the LAST assistant turn")) {
-            return { result: { value: true } };
+            const elapsed = Date.now() - startedAt;
+            return { result: { value: elapsed < 800 || elapsed >= 5_000 } };
           }
           return { result: { value: false } };
         });
@@ -1355,10 +1942,8 @@ describe("waitForAssistantResponse", () => {
       );
       await vi.advanceTimersByTimeAsync(12_000);
 
+      // The short stub must NOT be finalized; the grown, bar-proven answer is returned.
       await expect(promise).resolves.toMatchObject({ text: complete.text.trim() });
-      expect(logger).toHaveBeenCalledWith(
-        "Captured one-character assistant response; re-polling for completion",
-      );
     } finally {
       vi.useRealTimers();
     }
@@ -1386,7 +1971,7 @@ describe("waitForAssistantResponse", () => {
         15_000,
         logger,
       );
-      const assertion = expect(promise).rejects.toThrow(/stable completion/i);
+      const assertion = expect(promise).rejects.toThrow(/could not be confirmed complete/i);
       await vi.advanceTimersByTimeAsync(16_000);
       await assertion;
     } finally {
@@ -1497,7 +2082,7 @@ describe("waitForAssistantResponse", () => {
 
       await expect(promise).resolves.toMatchObject({ text: full.text.trim() });
       expect(logger).toHaveBeenCalledWith(
-        "Thinking indicator still active after capture; re-polling for completion",
+        "Confirming the capture is terminal (not a mid-stream/preamble capture)",
       );
     } finally {
       vi.useRealTimers();
@@ -1555,7 +2140,7 @@ describe("waitForAssistantResponse", () => {
     }
   });
 
-  test("rejects a calm-page preamble-sized capture after the bounded confirmation budget", async () => {
+  test("rejects a calm-page preamble-sized capture after the full confirmation budget", async () => {
     vi.useFakeTimers();
     try {
       const teaser = {
@@ -1578,24 +2163,22 @@ describe("waitForAssistantResponse", () => {
 
       const promise = waitForAssistantResponse(
         { evaluate } as unknown as ChromeClient["Runtime"],
-        1_200_000,
+        120_000,
         logger,
       );
       const assertion = expect(promise).rejects.toThrow(/refusing to finalize/i);
-      // The calm-page confirmation budget is capped at 90s; without the cap
-      // this would not resolve until the full 20-minute response timeout.
-      await vi.advanceTimersByTimeAsync(100_000);
+      await vi.advanceTimersByTimeAsync(121_000);
 
       await assertion;
       expect(logger).toHaveBeenCalledWith(
-        "Captured preamble-sized answer without completion controls; re-polling for completion",
+        "Confirming the capture is terminal (not a mid-stream/preamble capture)",
       );
     } finally {
       vi.useRealTimers();
     }
   });
 
-  test("prefers a longer late snapshot when the calm-page budget elapses mid-stream", async () => {
+  test("rejects a longer late snapshot when completion controls never appear", async () => {
     vi.useFakeTimers();
     try {
       const teaser = {
@@ -1624,14 +2207,15 @@ describe("waitForAssistantResponse", () => {
 
       const promise = waitForAssistantResponse(
         { evaluate } as unknown as ChromeClient["Runtime"],
-        1_200_000,
+        120_000,
         logger,
       );
-      await vi.advanceTimersByTimeAsync(100_000);
+      const assertion = expect(promise).rejects.toThrow(/refusing to finalize/i);
+      await vi.advanceTimersByTimeAsync(121_000);
 
-      await expect(promise).resolves.toMatchObject({ text: full.text.trim() });
+      await assertion;
       expect(logger).toHaveBeenCalledWith(
-        "Watchdog budget elapsed; returning the longer late snapshot",
+        "Confirming the capture is terminal (not a mid-stream/preamble capture)",
       );
     } finally {
       vi.useRealTimers();
@@ -1693,7 +2277,7 @@ describe("waitForAssistantResponse", () => {
 
       await expect(promise).resolves.toMatchObject({ text: complete.text.trim() });
       expect(logger).toHaveBeenCalledWith(
-        "Captured suspiciously short answer at completion; re-polling for completion",
+        "Confirming the capture is terminal (not a mid-stream/preamble capture)",
       );
     } finally {
       vi.useRealTimers();
@@ -1744,8 +2328,9 @@ describe("waitForAssistantResponse", () => {
           if (expression.includes("extractAssistantTurn")) {
             return { result: { value: await readSnapshotValue() } };
           }
+          // Still rendering while the first paragraph shows: no action bar until the turn finishes.
           if (expression.includes("Find the LAST assistant turn")) {
-            return { result: { value: true } };
+            return { result: { value: snapshotCalls > 5 } };
           }
           return { result: { value: false } };
         });
@@ -1755,12 +2340,10 @@ describe("waitForAssistantResponse", () => {
         30_000,
         logger,
       );
-      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(12_000);
 
+      // The long-but-partial first paragraph must not be finalized; the full answer is returned.
       await expect(promise).resolves.toMatchObject({ text: complete.text.trim() });
-      expect(logger).toHaveBeenCalledWith(
-        "Completion controls surfaced; confirming stable assistant response",
-      );
     } finally {
       vi.useRealTimers();
     }
@@ -1805,11 +2388,12 @@ describe("waitForAssistantResponse", () => {
         30_000,
         logger,
       );
-      await vi.advanceTimersByTimeAsync(15_000);
+      await vi.advanceTimersByTimeAsync(6_000);
 
+      // A legitimately short answer is kept once its action bar proves completion (proofA).
       await expect(promise).resolves.toMatchObject({ text: "Yes." });
-      expect(completionExpression).toContain("const turnScope");
-      expect(completionExpression).toContain("turnScope.querySelector");
+      expect(completionExpression).toContain("const EXPECTED_MESSAGE_ID");
+      expect(completionExpression).toContain("hasVisibleFinishedAction(lastAssistantTurn)");
     } finally {
       vi.useRealTimers();
     }
@@ -1891,15 +2475,10 @@ describe("waitForAssistantResponse", () => {
         2_000,
         logger,
       );
-      const expectation = expect(promise).rejects.toThrow(
-        "Assistant response did not reach stable completion",
-      );
+      const expectation = expect(promise).rejects.toThrow(/could not be confirmed complete/i);
       await vi.advanceTimersByTimeAsync(3_000);
 
       await expectation;
-      expect(logger).toHaveBeenCalledWith(
-        "Captured one-character assistant response; re-polling for completion",
-      );
     } finally {
       vi.useRealTimers();
     }
@@ -1991,6 +2570,9 @@ describe("waitForAssistantResponse", () => {
           }
           if (expression.includes("extractAssistantTurn")) {
             return { result: { value: recovered } };
+          }
+          if (expression.includes("Find the LAST assistant turn")) {
+            return { result: { value: true } };
           }
           return { result: { value: null } };
         });

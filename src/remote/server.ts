@@ -1214,7 +1214,6 @@ export async function createRemoteServer(
           }
           return;
         }
-
         if (attachOnly || isRecoveryRequest) {
           // This probe is intentionally after recovery capability/account
           // validation: forged, expired, or cross-account recovery requests
@@ -1488,6 +1487,14 @@ export async function createRemoteServer(
           payload.browserConfig.manualLogin = true;
           payload.browserConfig.manualLoginProfileDir = options.manualLoginProfileDir;
           payload.browserConfig.keepBrowser = true;
+          // Browser-process lifetime belongs to the host, and every run must
+          // release the exact tab/capacity it owns. Remote payload sanitizing
+          // intentionally strips client keepBrowser requests so a caller
+          // cannot accumulate unleased tabs in the shared fleet Chrome.
+          // Human-actionable challenge/capture failures still use the
+          // narrower preserved-target exception in browser cleanup and keep
+          // the corresponding lease.
+          payload.browserConfig.closeOwnedRunTargetAfterRun = "always";
           if (verbose) {
             logger(
               `[serve] Enforcing manual-login profile at ${options.manualLoginProfileDir ?? "default"} for remote run ${runId}`,
@@ -1541,6 +1548,9 @@ export async function createRemoteServer(
               attachments,
               fallbackSubmission,
               config: payload.browserConfig,
+              // Keep shared Chrome alive, but close the exact tab owned by
+              // every completed run. This host policy is not client-overridable.
+              closeOwnedTabOnComplete: Boolean(options.manualLoginDefault),
               log: automationLogger,
               heartbeatIntervalMs: payload.options.heartbeatIntervalMs,
               verbose: payload.options.verbose,
