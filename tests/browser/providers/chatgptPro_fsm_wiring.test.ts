@@ -231,6 +231,14 @@ describe("wireChatGptProFsm — adapter wrapper invariants (oracle-byl)", () => 
       classifyGpt56SolProRouteProbeForTest({
         routeModelSignals: ["GPT-5.6 Sol"],
         routeModeSignals: ["Pro"],
+        privateModelProofAttempted: true,
+        privateModelProofValid: false,
+      }),
+    ).toMatchObject({ verified: false, modelVerified: false, modeVerified: true });
+    expect(
+      classifyGpt56SolProRouteProbeForTest({
+        routeModelSignals: ["GPT-5.6 Sol"],
+        routeModeSignals: ["Pro"],
         composerBindingVerified: false,
       }),
     ).toMatchObject({

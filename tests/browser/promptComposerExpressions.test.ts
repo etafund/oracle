@@ -465,7 +465,7 @@ function evaluateDispatchBoundRouteProbe(
 function makeRouteComposer(args: {
   bindingToken?: string;
   composerBindingToken?: string;
-  model?: string;
+  model?: string | null;
   secondaryModel?: string;
   mode?: string;
   proPill?: boolean;
@@ -477,13 +477,17 @@ function makeRouteComposer(args: {
       contenteditable: "true",
       role: "textbox",
     }),
-    new FakeElement(
-      "button",
-      { "data-testid": "model-switcher-dropdown-button" },
-      [],
-      args.model ?? "GPT-5.6 Sol",
-    ),
   ];
+  if (args.model !== null) {
+    children.push(
+      new FakeElement(
+        "button",
+        { "data-testid": "model-switcher-dropdown-button" },
+        [],
+        args.model ?? "GPT-5.6 Sol",
+      ),
+    );
+  }
   if (args.secondaryModel) {
     children.push(
       new FakeElement("div", { "data-testid": "composer-model-label" }, [], args.secondaryModel),
@@ -510,6 +514,97 @@ function makeRouteComposer(args: {
     },
     children,
   );
+}
+
+interface FakeSelectedVersionEntry {
+  displayTextForIntelligence: string;
+}
+
+interface FakeReactFiber {
+  stateNode?: unknown;
+  return: FakeReactFiber | null;
+  alternate?: FakeReactFiber | null;
+  memoizedProps?: unknown;
+  pendingProps?: unknown;
+}
+
+function selectedVersionProps(entry: FakeSelectedVersionEntry | null): unknown {
+  return {
+    children: [
+      null,
+      {
+        props: {
+          children: {
+            props: {
+              children: {
+                props: entry
+                  ? {
+                      composerIntelligencePickerState: {
+                        selectedVersionEntry: entry,
+                      },
+                    }
+                  : {},
+              },
+            },
+          },
+        },
+      },
+    ],
+  };
+}
+
+function attachComposerSelectedVersionState(
+  composer: FakeElement,
+  args: {
+    currentLabel: string | null;
+    currentPendingLabel?: string | null;
+    alternateLabel?: string | null;
+    alternatePendingLabel?: string | null;
+    host?: FakeElement;
+    pill?: FakeElement;
+  },
+): {
+  entries: FakeSelectedVersionEntry[];
+  pill: FakeElement;
+} {
+  const pill =
+    args.pill ??
+    composer
+      .querySelectorAll("button.__composer-pill")
+      .find((candidate) => candidate.textContent.trim() === "Pro");
+  if (!pill) throw new Error("test composer requires a bare Pro pill");
+  const entries: FakeSelectedVersionEntry[] = [];
+  const entry = (label: string | null | undefined): FakeSelectedVersionEntry | null => {
+    if (label == null) return null;
+    const value = { displayTextForIntelligence: label };
+    entries.push(value);
+    return value;
+  };
+  const makeBranch = (
+    memoizedLabel: string | null,
+    pendingLabel: string | null | undefined,
+  ): FakeReactFiber => {
+    const hostFiber: FakeReactFiber = {
+      stateNode: args.host ?? composer,
+      return: null,
+    };
+    const ownerFiber: FakeReactFiber = {
+      memoizedProps: selectedVersionProps(entry(memoizedLabel)),
+      pendingProps: selectedVersionProps(entry(pendingLabel ?? memoizedLabel)),
+      return: hostFiber,
+    };
+    return { stateNode: pill, return: ownerFiber };
+  };
+  const current = makeBranch(args.currentLabel, args.currentPendingLabel);
+  const alternateLabel = args.alternateLabel ?? args.currentLabel;
+  const alternate = makeBranch(alternateLabel, args.alternatePendingLabel ?? alternateLabel);
+  current.alternate = alternate;
+  alternate.alternate = current;
+  Object.defineProperty(pill, "__reactFiber$oracleTest", {
+    configurable: true,
+    value: current,
+  });
+  return { entries, pill };
 }
 
 describe("prompt composer attachment expressions", () => {
@@ -1195,8 +1290,212 @@ describe("prompt composer attachment expressions", () => {
 describe("post-upload protected-route binding", () => {
   const bindingToken = "attachment-binding-exact-1";
 
+  test("verifies the live closed-composer shape from bound selected-version state", () => {
+    const composer = makeRouteComposer({ bindingToken, model: null, proPill: true });
+    attachComposerSelectedVersionState(composer, { currentLabel: "GPT-5.6 Sol" });
+    const document = new FakeDocument([composer]);
+
+    expect(evaluateBoundRouteProbe(document, bindingToken)).toMatchObject({
+      verified: true,
+      composerBindingVerified: true,
+      modelVerified: true,
+      modeVerified: true,
+      modelSignals: ["gpt 5 6 sol"],
+      modeSignals: ["pro"],
+      privateModelProofAttempted: true,
+      privateModelProofValid: true,
+    });
+  });
+
+  test("a bare Pro pill is mode-only when selected-version state is absent", () => {
+    const composer = makeRouteComposer({ bindingToken, model: null, proPill: true });
+    const document = new FakeDocument([composer]);
+
+    expect(evaluateBoundRouteProbe(document, bindingToken)).toMatchObject({
+      verified: false,
+      composerBindingVerified: true,
+      modelVerified: false,
+      modeVerified: true,
+      modelSignals: [],
+      modeSignals: ["pro"],
+      privateModelProofAttempted: true,
+      privateModelProofValid: false,
+    });
+  });
+
+  test("rejects a wrong or conflicting composer-owned selected version", () => {
+    const cases = [
+      { currentLabel: "GPT-5.6 Sol Mini" },
+      {
+        currentLabel: "GPT-5.6 Sol",
+        currentPendingLabel: "GPT-5.6 Sol Mini",
+      },
+    ];
+    for (const selection of cases) {
+      const composer = makeRouteComposer({ bindingToken, proPill: true });
+      attachComposerSelectedVersionState(composer, selection);
+      const evidence = evaluateBoundRouteProbe(new FakeDocument([composer]), bindingToken);
+      expect(evidence).toMatchObject({
+        verified: false,
+        composerBindingVerified: true,
+        modelVerified: false,
+        modeVerified: true,
+      });
+      expect(evidence.modelSignals).toContain("gpt 5 6 sol mini");
+    }
+  });
+
+  test("rejects current-versus-alternate selected-version drift", () => {
+    const composer = makeRouteComposer({ bindingToken, model: null, proPill: true });
+    attachComposerSelectedVersionState(composer, {
+      currentLabel: "GPT-5.6 Sol",
+      alternateLabel: "GPT-5.6 Sol Mini",
+    });
+
+    const evidence = evaluateBoundRouteProbe(new FakeDocument([composer]), bindingToken);
+    expect(evidence).toMatchObject({
+      verified: false,
+      composerBindingVerified: true,
+      modelVerified: false,
+      modeVerified: true,
+    });
+    expect(evidence.modelSignals).toEqual(
+      expect.arrayContaining(["gpt 5 6 sol", "gpt 5 6 sol mini"]),
+    );
+  });
+
+  test("cannot borrow private selected-version state from a foreign composer", () => {
+    const boundComposer = makeRouteComposer({ bindingToken, model: null, proPill: true });
+    const foreignComposer = makeRouteComposer({ model: null, proPill: true });
+    attachComposerSelectedVersionState(foreignComposer, { currentLabel: "GPT-5.6 Sol" });
+    const document = new FakeDocument([boundComposer, foreignComposer]);
+
+    expect(evaluateBoundRouteProbe(document, bindingToken)).toMatchObject({
+      verified: false,
+      composerBindingVerified: true,
+      modelVerified: false,
+      modeVerified: true,
+      modelSignals: [],
+    });
+  });
+
+  test("ignores a hidden stale Pro pill and rejects a fiber not owned by the bound composer", () => {
+    const hiddenComposer = makeRouteComposer({ bindingToken, model: null, proPill: true });
+    const hiddenPill = new FakeElement(
+      "button",
+      { class: "__composer-pill", "data-hidden": "true" },
+      [],
+      "Pro",
+    );
+    hiddenPill.parentElement = hiddenComposer;
+    hiddenComposer.children.push(hiddenPill);
+    attachComposerSelectedVersionState(hiddenComposer, {
+      currentLabel: "GPT-5.6 Sol",
+      pill: hiddenPill,
+    });
+    expect(evaluateBoundRouteProbe(new FakeDocument([hiddenComposer]), bindingToken)).toMatchObject(
+      {
+        verified: false,
+        modelVerified: false,
+        modelSignals: [],
+      },
+    );
+
+    const staleComposer = makeRouteComposer({ bindingToken, model: null, proPill: true });
+    attachComposerSelectedVersionState(staleComposer, {
+      currentLabel: "GPT-5.6 Sol",
+      host: new FakeElement("div", { "data-testid": "stale-composer" }),
+    });
+    expect(evaluateBoundRouteProbe(new FakeDocument([staleComposer]), bindingToken)).toMatchObject({
+      verified: false,
+      modelVerified: false,
+      modelSignals: [],
+    });
+  });
+
+  test("requires exactly one visible bare Pro pill for the private fallback", () => {
+    const composer = makeRouteComposer({ bindingToken, proPill: true });
+    attachComposerSelectedVersionState(composer, { currentLabel: "GPT-5.6 Sol" });
+    const duplicate = new FakeElement("button", { class: "__composer-pill" }, [], "Pro");
+    duplicate.parentElement = composer;
+    composer.children.push(duplicate);
+
+    expect(evaluateBoundRouteProbe(new FakeDocument([composer]), bindingToken)).toMatchObject({
+      verified: false,
+      modelVerified: false,
+      modeVerified: true,
+      modelSignals: ["gpt 5 6 sol"],
+    });
+  });
+
+  test("requires one unambiguous React fiber owner for the private fallback", () => {
+    const composer = makeRouteComposer({ bindingToken, proPill: true });
+    const { pill } = attachComposerSelectedVersionState(composer, {
+      currentLabel: "GPT-5.6 Sol",
+    });
+    const fiber = (pill as unknown as Record<string, unknown>)["__reactFiber$oracleTest"];
+    Object.defineProperty(pill, "__reactFiber$ambiguous", { value: fiber });
+
+    expect(evaluateBoundRouteProbe(new FakeDocument([composer]), bindingToken)).toMatchObject({
+      verified: false,
+      modelVerified: false,
+      modeVerified: true,
+      modelSignals: ["gpt 5 6 sol"],
+    });
+  });
+
+  test("rejects explicit empty or truncated selected-version state", () => {
+    const makeCase = (extraProps: unknown) => {
+      const composer = makeRouteComposer({ bindingToken, proPill: true });
+      const { pill } = attachComposerSelectedVersionState(composer, {
+        currentLabel: "GPT-5.6 Sol",
+      });
+      const leaf = (pill as unknown as Record<string, FakeReactFiber>)["__reactFiber$oracleTest"];
+      const owner = leaf.return!;
+      owner.memoizedProps = { children: [owner.memoizedProps, extraProps] };
+      const evidence = evaluateBoundRouteProbe(new FakeDocument([composer]), bindingToken);
+      expect(evidence.modelSignals).toContain("gpt 5 6 sol");
+      expect(evidence).toMatchObject({
+        privateModelProofAttempted: true,
+        privateModelProofValid: false,
+      });
+      return evidence;
+    };
+
+    expect(
+      makeCase({
+        composerIntelligencePickerState: { selectedVersionEntry: null },
+      }),
+    ).toMatchObject({ verified: false, modelVerified: false, modeVerified: true });
+
+    let deepState: unknown = {
+      composerIntelligencePickerState: {
+        selectedVersionEntry: { displayTextForIntelligence: "GPT-5.6 Sol Mini" },
+      },
+    };
+    for (let depth = 0; depth < 14; depth += 1) deepState = { props: deepState };
+    expect(makeCase(deepState)).toMatchObject({
+      verified: false,
+      modelVerified: false,
+      modeVerified: true,
+    });
+  });
+
+  test("rejects private current-state drift even when a public model label is exact", () => {
+    const composer = makeRouteComposer({ bindingToken, proPill: true });
+    attachComposerSelectedVersionState(composer, { currentLabel: "GPT-5.6 Sol Mini" });
+
+    expect(evaluateBoundRouteProbe(new FakeDocument([composer]), bindingToken)).toMatchObject({
+      verified: false,
+      modelVerified: false,
+      modelSignals: expect.arrayContaining(["gpt 5 6 sol", "gpt 5 6 sol mini"]),
+      modeSignals: ["pro"],
+    });
+  });
+
   test("uses only visible route signals from the exact token-bound active composer", () => {
     const boundComposer = makeRouteComposer({ bindingToken, proPill: true });
+    attachComposerSelectedVersionState(boundComposer, { currentLabel: "GPT-5.6 Sol" });
     const hiddenStaleComposer = makeRouteComposer({
       bindingToken,
       model: "GPT-5.6 Sol Mini",
@@ -1287,9 +1586,13 @@ describe("post-upload protected-route binding", () => {
   });
 
   test("fails closed after a composer remount drops the exact attachment token", () => {
-    const document = new FakeDocument([
-      makeRouteComposer({ bindingToken: "replacement-composer", proPill: true }),
-    ]);
+    const replacement = makeRouteComposer({
+      bindingToken: "replacement-composer",
+      model: null,
+      proPill: true,
+    });
+    attachComposerSelectedVersionState(replacement, { currentLabel: "GPT-5.6 Sol" });
+    const document = new FakeDocument([replacement]);
 
     expect(evaluateBoundRouteProbe(document, bindingToken)).toMatchObject({
       verified: false,
@@ -1304,17 +1607,26 @@ describe("post-upload protected-route binding", () => {
   test("route probe stays read-only", () => {
     const expression = buildChatGptProDomProbeExpressionForTest(bindingToken);
     expect(expression).not.toMatch(/\.click\(|dispatchClick|dispatchEvent|setAttribute/);
+    expect(expression).toContain("Object.getOwnPropertyNames(pill)");
+    expect(expression).not.toMatch(/defineProperty|\.children\s*=|\.props\s*=/u);
   });
 
-  function installDispatchGuard(exactPrompt?: string) {
+  function installDispatchGuard(exactPrompt?: string, privateComposerState = false) {
     const composerBindingToken = "dispatch-race-guard-1";
-    const composer = makeRouteComposer({ composerBindingToken, mode: "Pro" });
+    const composer = makeRouteComposer(
+      privateComposerState
+        ? { composerBindingToken, model: null, proPill: true }
+        : { composerBindingToken, mode: "Pro" },
+    );
+    const selectedVersionState = privateComposerState
+      ? attachComposerSelectedVersionState(composer, { currentLabel: "GPT-5.6 Sol" })
+      : null;
     const sendButton = composer.querySelector('[data-testid="send-button"]');
     const editor = composer.querySelector('[contenteditable="true"]');
     const modeButton = composer.querySelector('[data-testid="effort-picker-button"]');
     expect(sendButton).not.toBeNull();
     expect(editor).not.toBeNull();
-    expect(modeButton).not.toBeNull();
+    if (!privateComposerState) expect(modeButton).not.toBeNull();
     sendButton!.setAttribute("data-oracle-send-binding", composerBindingToken);
     editor!.setAttribute("data-oracle-send-editor-binding", composerBindingToken);
     if (exactPrompt !== undefined) editor!.setText(exactPrompt);
@@ -1367,6 +1679,7 @@ describe("post-upload protected-route binding", () => {
       evaluate,
       guard,
       modeButton: modeButton!,
+      selectedVersionEntries: selectedVersionState?.entries ?? [],
       sendButton: sendButton!,
       windowStub,
     };
@@ -1406,6 +1719,29 @@ describe("post-upload protected-route binding", () => {
     expect(fixture.composer.getAttribute("data-oracle-send-composer-binding")).toBeNull();
     expect(fixture.document.listenerCount("click")).toBe(0);
     expect(fixture.windowStub.listenerCount("click")).toBe(0);
+  });
+
+  test("trusted-event guard blocks bound selected-version drift in the live UI shape", () => {
+    const fixture = installDispatchGuard(undefined, true);
+    expect(fixture.selectedVersionEntries.length).toBeGreaterThan(0);
+    for (const entry of fixture.selectedVersionEntries) {
+      entry.displayTextForIntelligence = "GPT-5.6 Sol Mini";
+    }
+
+    const click = fixture.windowStub.dispatchDomEvent(
+      fixture.document,
+      "click",
+      fixture.sendButton,
+    );
+    expect(click.defaultPrevented).toBe(true);
+    expect(fixture.bindingPayloads).toHaveLength(1);
+    expect(
+      fixture.guard.verdictBinding?.parsePayload(fixture.bindingPayloads[0] ?? ""),
+    ).toMatchObject({ status: "blocked", reason: "protected-route-changed" });
+    expect(fixture.evaluate(fixture.guard.afterDispatchExpression!)).toMatchObject({
+      status: "blocked",
+      reason: "protected-route-changed",
+    });
   });
 
   test("trusted-event guard binds the exact focused prompt, not a stale sibling editor", () => {

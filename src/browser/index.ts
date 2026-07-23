@@ -1759,6 +1759,9 @@ async function assertProtectedSolProSelectionReadOnlyBeforeSubmit({
       composerBindingToken,
     );
     if (!evidence.verified) {
+      logger(
+        `Protected route verification failed at dispatch boundary: composer=${evidence.composerBindingVerified}; model=${JSON.stringify(evidence.modelSignals)}; mode=${JSON.stringify(evidence.modeSignals)}`,
+      );
       throw new BrowserAutomationError(
         "GPT-5.6 Sol + Pro could not be verified on the exact dispatch composer; refusing to submit.",
         {
@@ -1769,6 +1772,10 @@ async function assertProtectedSolProSelectionReadOnlyBeforeSubmit({
           modeVerified: evidence.modeVerified,
           modelSignalCount: evidence.modelSignals.length,
           modeSignalCount: evidence.modeSignals.length,
+          modelSignals: evidence.modelSignals,
+          modeSignals: evidence.modeSignals,
+          privateModelProofAttempted: evidence.privateModelProofAttempted,
+          privateModelProofValid: evidence.privateModelProofValid,
         },
       );
     }

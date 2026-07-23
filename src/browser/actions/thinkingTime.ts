@@ -2,6 +2,7 @@ import type { ChromeClient, BrowserLogger } from "../types.js";
 import type { ThinkingTimeLevel } from "../../oracle/types.js";
 import type { BrowserModelSelectionEvidence } from "../../sessionStore.js";
 import {
+  INPUT_SELECTORS,
   MENU_CONTAINER_SELECTOR,
   MENU_ITEM_SELECTOR,
   MODEL_BUTTON_SELECTOR,
@@ -100,7 +101,7 @@ export async function ensureThinkingTime(
     await logDomFailure(Runtime, logger, "thinking-gpt-5-6-sol-pro-unverified");
     logPickerDiagnostic(result, logger);
     throw new Error(
-      "Thinking time: GPT-5.6 Sol + Pro selection unverified; refusing to submit without a checked bare Pro mode paired with GPT-5.6 Sol in the same Intelligence menu.",
+      "Thinking time: GPT-5.6 Sol + Pro selection unverified; refusing to submit without exact active-composer GPT-5.6 Sol state plus a checked bare Pro mode in its open Intelligence menu.",
     );
   }
 
@@ -244,6 +245,7 @@ function buildThinkingTimeExpression(
   const menuContainerLiteral = JSON.stringify(MENU_CONTAINER_SELECTOR);
   const menuItemLiteral = JSON.stringify(MENU_ITEM_SELECTOR);
   const modelButtonLiteral = JSON.stringify(MODEL_BUTTON_SELECTOR);
+  const inputSelectorsLiteral = JSON.stringify(INPUT_SELECTORS);
   const targetLevelLiteral = JSON.stringify(level.toLowerCase());
   const targetModelKindLiteral = JSON.stringify(inferThinkingTargetModelKind(desiredModel));
   const targetModelLabelLiteral = JSON.stringify(desiredModel ?? null);
@@ -257,6 +259,7 @@ function buildThinkingTimeExpression(
     const MENU_CONTAINER_SELECTOR = ${menuContainerLiteral};
     const MENU_ITEM_SELECTOR = ${menuItemLiteral};
     const MODEL_BUTTON_SELECTOR = ${modelButtonLiteral};
+    const INPUT_SELECTORS = ${inputSelectorsLiteral};
     const TARGET_LEVEL = ${targetLevelLiteral};
     const TARGET_MODEL_KIND = ${targetModelKindLiteral};
     const TARGET_MODEL_LABEL = ${targetModelLabelLiteral};
@@ -383,6 +386,157 @@ function buildThinkingTimeExpression(
       if (!node || node.getAttribute?.('aria-hidden') === 'true') return false;
       const rect = node.getBoundingClientRect?.();
       return Boolean(rect && rect.width > 0 && rect.height > 0);
+    };
+    const isUsableComposerRoot = (node) => {
+      if (!(node instanceof HTMLElement)) return false;
+      const tagName = String(node.tagName || '').toLowerCase();
+      if (tagName === 'button' || tagName === 'textarea' || tagName === 'input') return false;
+      if (node.getAttribute?.('contenteditable') === 'true') return false;
+      const testId = String(node.getAttribute?.('data-testid') || '').toLowerCase();
+      if (!testId.includes('composer')) return false;
+      return !(
+        testId.includes('footer') ||
+        testId.includes('action') ||
+        testId.includes('plus') ||
+        testId.includes('input') ||
+        testId.includes('send')
+      );
+    };
+    const closestComposerRoot = (node) => {
+      let current = node instanceof HTMLElement ? node : null;
+      while (current) {
+        if (isUsableComposerRoot(current)) return current;
+        current = current.parentElement;
+      }
+      return null;
+    };
+    const findActiveComposerRoot = () => {
+      const promptCandidates = Array.from(new Set(
+        INPUT_SELECTORS.flatMap((selector) => Array.from(document.querySelectorAll(selector))),
+      ));
+      const visiblePrompts = promptCandidates.filter(isVisible);
+      const focused = document.activeElement;
+      const focusedPrompts = visiblePrompts.filter(
+        (node) => Boolean(focused && (node === focused || node.contains?.(focused))),
+      );
+      const activePrompt = focusedPrompts.length === 1
+        ? focusedPrompts[0]
+        : (visiblePrompts.length === 1 ? visiblePrompts[0] : null);
+      if (!activePrompt) return null;
+      const composer = closestComposerRoot(activePrompt) || activePrompt.closest?.('form') || null;
+      return composer?.contains?.(activePrompt) ? composer : null;
+    };
+    const findActiveComposerIntelligencePill = (composer) => {
+      if (!composer) return null;
+      const candidates = Array.from(composer.querySelectorAll('button.__composer-pill'))
+        .filter(isVisible)
+        .filter((node) => node.getAttribute?.('aria-haspopup') === 'menu');
+      return candidates.length === 1 ? candidates[0] : null;
+    };
+    const readActiveComposerSelectedVersion = (composer, pill) => {
+      if (!composer || !pill || !composer.contains?.(pill)) {
+        return { verified: false, label: null };
+      }
+      const fiberKeys = Object.getOwnPropertyNames(pill).filter((key) => /^__reactFiber\\$/.test(key));
+      if (fiberKeys.length !== 1) return { verified: false, label: null };
+      const MAX_FIBER_ANCESTORS = 64;
+      const MAX_PROPS_DEPTH = 12;
+      const MAX_PROPS_OBJECTS = 128;
+      const labelsFromProps = (root) => {
+        const labels = [];
+        let invalidState = false;
+        let truncated = false;
+        const queue = [{ value: root, depth: 0 }];
+        const seen = new Set();
+        let cursor = 0;
+        let visited = 0;
+        while (cursor < queue.length && visited < MAX_PROPS_OBJECTS) {
+          const item = queue[cursor++];
+          const value = item?.value;
+          if (!value || typeof value !== 'object' || seen.has(value)) continue;
+          seen.add(value);
+          visited += 1;
+          if (
+            !Array.isArray(value) &&
+            Object.prototype.hasOwnProperty.call(value, 'composerIntelligencePickerState')
+          ) {
+            const label = value.composerIntelligencePickerState
+              ?.selectedVersionEntry?.displayTextForIntelligence;
+            if (typeof label === 'string' && label.trim()) labels.push(label.trim());
+            else invalidState = true;
+          }
+          if (item.depth >= MAX_PROPS_DEPTH) {
+            const traversalChildren = Array.isArray(value)
+              ? value
+              : ['children', 'props']
+                  .filter((key) => Object.prototype.hasOwnProperty.call(value, key))
+                  .map((key) => value[key]);
+            if (traversalChildren.some((child) => child && typeof child === 'object')) {
+              truncated = true;
+            }
+            continue;
+          }
+          if (Array.isArray(value)) {
+            for (const child of value) queue.push({ value: child, depth: item.depth + 1 });
+            continue;
+          }
+          for (const key of ['children', 'props']) {
+            if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+            queue.push({ value: value[key], depth: item.depth + 1 });
+          }
+        }
+        truncated ||= cursor < queue.length;
+        return { labels, invalidState, truncated };
+      };
+      const inspectFiberBranch = (start) => {
+        const labels = [];
+        let invalidState = false;
+        let truncated = false;
+        const seenFibers = new Set();
+        let fiber = start;
+        let reachedComposerBoundary = false;
+        for (
+          let depth = 0;
+          fiber && typeof fiber === 'object' && depth < MAX_FIBER_ANCESTORS;
+          depth += 1
+        ) {
+          if (seenFibers.has(fiber)) break;
+          seenFibers.add(fiber);
+          for (const props of [fiber.memoizedProps, fiber.pendingProps]) {
+            const inspected = labelsFromProps(props);
+            labels.push(...inspected.labels);
+            invalidState ||= inspected.invalidState;
+            truncated ||= inspected.truncated;
+          }
+          if (fiber.stateNode === composer) {
+            reachedComposerBoundary = true;
+            break;
+          }
+          fiber = fiber.return;
+        }
+        return { labels, invalidState, truncated, reachedComposerBoundary };
+      };
+      const current = pill[fiberKeys[0]];
+      const branches = [current];
+      if (current?.alternate && current.alternate !== current) branches.push(current.alternate);
+      const labels = [];
+      let ownershipVerified = true;
+      let invalidState = false;
+      for (const branch of branches) {
+        const inspected = inspectFiberBranch(branch);
+        if (!inspected.reachedComposerBoundary || inspected.labels.length === 0) {
+          ownershipVerified = false;
+        }
+        invalidState ||= inspected.invalidState || inspected.truncated;
+        labels.push(...inspected.labels);
+      }
+      const normalizedLabels = Array.from(new Set(labels.map(normalize).filter(Boolean)));
+      const verified =
+        ownershipVerified &&
+        !invalidState &&
+        normalizedLabels.length === 1 &&
+        normalizedLabels[0] === 'gpt 5 6 sol';
+      return { verified, label: verified ? labels[0] : null };
     };
     const redactDiagnosticText = (value, maxLength = 120) =>
       String(value ?? '')
@@ -703,20 +857,20 @@ function buildThinkingTimeExpression(
 
     // Current ChatGPT Pro is a two-axis selection: the active model is
     // "GPT-5.6 Sol" and the checked Intelligence option is the bare "Pro"
-    // row. Both signals must come from the same visible Intelligence menu;
-    // subscription badges, composer pills, and detached effort menus are not
-    // proof of this route.
+    // row. The Sol submenu trigger proves only availability. The model proof
+    // must instead come from the exact active composer's Intelligence pill React
+    // state, while the mode proof comes from its currently open Intelligence
+    // owner. Subscription badges and detached effort menus are never proof.
     if (TARGET_IS_GPT56_SOL && TARGET_LEVEL === 'extended') {
-      const modelBtn = findModelButton();
-      if (!modelBtn) return failure('chip-not-found', {
-        modelKind: 'pro',
-        modelVerified: false,
-        modeVerified: false,
-        verifiedBeforePromptSubmit: false,
-      });
-      if (modelBtn.getAttribute?.('aria-expanded') !== 'true') {
-        dispatchClickSequence(modelBtn);
-        await sleep(INITIAL_WAIT_MS);
+      const activeComposer = findActiveComposerRoot();
+      const modelBtn = findActiveComposerIntelligencePill(activeComposer);
+      if (!modelBtn) {
+        return failure('chip-not-found', {
+          modelKind: 'pro',
+          modelVerified: false,
+          modeVerified: false,
+          verifiedBeforePromptSubmit: false,
+        });
       }
 
       const intelligenceItems = (menu) => Array.from(
@@ -728,12 +882,59 @@ function buildThinkingTimeExpression(
         normalize(node?.textContent ?? '') || normalize(node?.getAttribute?.('aria-label') ?? '');
       const isGpt56SolModelOption = (node) => {
         const label = itemLabel(node);
-        return label === 'gpt 5 6 sol' || label.startsWith('gpt 5 6 sol ');
+        return label === 'gpt 5 6 sol';
       };
       const isBareProOption = (node) => itemLabel(node) === 'pro';
+      const visibleIntelligenceOwners = () =>
+        Array.from(document.querySelectorAll(INTELLIGENCE_MENU_SELECTOR)).filter(isVisible);
+      let unownedMenuBaseline = new Set();
+      let fallbackOwnerOpenedByActivePill = false;
+      const openActiveComposerIntelligencePill = async () => {
+        let composer = findActiveComposerRoot();
+        let pill = findActiveComposerIntelligencePill(composer);
+        if (!pill) return false;
+        const hasExplicitOwner = Boolean(pill.getAttribute?.('aria-controls'));
+        if (!hasExplicitOwner && pill.getAttribute?.('aria-expanded') === 'true') {
+          // Without aria-controls, a pre-open menu cannot be causally tied to
+          // this composer. Close and reopen the exact active pill so only a
+          // newly visible owner can supply mode evidence.
+          dispatchClickSequence(pill);
+          await sleep(STEP_WAIT_MS);
+          composer = findActiveComposerRoot();
+          pill = findActiveComposerIntelligencePill(composer);
+          if (!pill || pill.getAttribute?.('aria-expanded') === 'true') return false;
+        }
+        if (!pill.getAttribute?.('aria-controls')) {
+          unownedMenuBaseline = new Set(visibleIntelligenceOwners());
+        }
+        if (pill.getAttribute?.('aria-expanded') !== 'true') {
+          fallbackOwnerOpenedByActivePill = !pill.getAttribute?.('aria-controls');
+          dispatchClickSequence(pill);
+          await sleep(INITIAL_WAIT_MS);
+        }
+        return true;
+      };
+      const findCurrentIntelligenceOwner = (pill) => {
+        if (!pill || pill.getAttribute?.('aria-expanded') !== 'true') return null;
+        const candidates = visibleIntelligenceOwners();
+        const controlledId = pill.getAttribute?.('aria-controls');
+        if (controlledId) {
+          const controlled = document.getElementById?.(controlledId) ?? null;
+          const owned = candidates.filter(
+            (menu) => menu === controlled || Boolean(controlled?.contains?.(menu)),
+          );
+          return owned.length === 1 ? owned[0] : null;
+        }
+        if (!fallbackOwnerOpenedByActivePill) return null;
+        const newlyVisible = candidates.filter((menu) => !unownedMenuBaseline.has(menu));
+        return newlyVisible.length === 1 ? newlyVisible[0] : null;
+      };
       const readGpt56SolProSnapshot = () => {
-        const menu = document.querySelector(INTELLIGENCE_MENU_SELECTOR);
-        if (!isVisible(menu)) return null;
+        const composer = findActiveComposerRoot();
+        const pill = findActiveComposerIntelligencePill(composer);
+        const selectedVersion = readActiveComposerSelectedVersion(composer, pill);
+        const menu = findCurrentIntelligenceOwner(pill);
+        if (!menu) return null;
         const items = intelligenceItems(menu);
         const modelOption = items.find(isGpt56SolModelOption) ?? null;
         const modeOption = items.find(isBareProOption) ?? null;
@@ -741,17 +942,27 @@ function buildThinkingTimeExpression(
           menu,
           modelOption,
           modeOption,
-          modelLabel: modelOption?.textContent?.trim?.() || null,
+          modelLabel: selectedVersion.label,
+          modelVerified: selectedVersion.verified,
           modeLabel: modeOption?.textContent?.trim?.() || null,
           modeSelected: optionIsSelected(modeOption),
         };
       };
+
+      if (!(await openActiveComposerIntelligencePill())) {
+        return failure('menu-not-found', {
+          modelKind: 'pro',
+          modelVerified: false,
+          modeVerified: false,
+          verifiedBeforePromptSubmit: false,
+        });
+      }
       const verifiedGpt56SolPro = (status, snapshot) => ({
         status,
         label: snapshot.modeLabel,
         modelKind: 'pro',
         modelLabel: snapshot.modelLabel,
-        modelVerified: true,
+        modelVerified: snapshot.modelVerified,
         modeLabel: snapshot.modeLabel,
         modeVerified: true,
         verifiedBeforePromptSubmit: true,
@@ -770,9 +981,9 @@ function buildThinkingTimeExpression(
         modeVerified: false,
         verifiedBeforePromptSubmit: false,
       });
-      if (!snapshot.modelOption) return failure('model-kind-not-found', {
+      if (!snapshot.modelOption || !snapshot.modelVerified) return failure('model-kind-not-found', {
         modelKind: 'pro',
-        modelLabel: null,
+        modelLabel: snapshot.modelLabel,
         modelVerified: false,
         modeLabel: snapshot.modeLabel,
         modeVerified: false,
@@ -781,7 +992,7 @@ function buildThinkingTimeExpression(
       if (!snapshot.modeOption) return failure('option-not-found', {
         modelKind: 'pro',
         modelLabel: snapshot.modelLabel,
-        modelVerified: true,
+        modelVerified: snapshot.modelVerified,
         modeLabel: null,
         modeVerified: false,
         verifiedBeforePromptSubmit: false,
@@ -798,12 +1009,19 @@ function buildThinkingTimeExpression(
       while (performance.now() < selectionDeadline) {
         snapshot = readGpt56SolProSnapshot();
         if (!snapshot && !reopened) {
-          dispatchClickSequence(modelBtn);
+          const currentComposer = findActiveComposerRoot();
+          const currentModelBtn = findActiveComposerIntelligencePill(currentComposer);
+          if (currentModelBtn) dispatchClickSequence(currentModelBtn);
           reopened = true;
           await sleep(INITIAL_WAIT_MS);
           snapshot = readGpt56SolProSnapshot();
         }
-        if (snapshot?.modelOption && snapshot?.modeOption && snapshot.modeSelected) {
+        if (
+          snapshot?.modelOption &&
+          snapshot.modelVerified &&
+          snapshot?.modeOption &&
+          snapshot.modeSelected
+        ) {
           closeOpenMenus();
           return verifiedGpt56SolPro('switched', snapshot);
         }
@@ -812,7 +1030,7 @@ function buildThinkingTimeExpression(
       const result = failure('selection-unverified', {
         modelKind: 'pro',
         modelLabel: snapshot?.modelLabel ?? null,
-        modelVerified: Boolean(snapshot?.modelOption),
+        modelVerified: snapshot?.modelVerified === true,
         modeLabel: snapshot?.modeLabel ?? null,
         modeVerified: false,
         verifiedBeforePromptSubmit: false,

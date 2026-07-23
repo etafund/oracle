@@ -115,6 +115,8 @@ interface ChatGptProDomProbe {
   selectedEffortLabel: string | null;
   routeModelSignals: readonly string[];
   routeModeSignals: readonly string[];
+  privateModelProofAttempted: boolean;
+  privateModelProofValid: boolean;
   hasProPill: boolean;
   composerBindingVerified: boolean;
   authenticated: boolean;
@@ -322,6 +324,8 @@ async function resolveChatGptProProbe(ctx: ProviderDomFlowContext): Promise<Chat
     selectedEffortLabel: domProbe?.selectedEffortLabel ?? null,
     routeModelSignals: domProbe?.routeModelSignals ?? [],
     routeModeSignals: domProbe?.routeModeSignals ?? [],
+    privateModelProofAttempted: domProbe?.privateModelProofAttempted === true,
+    privateModelProofValid: domProbe?.privateModelProofValid !== false,
     hasProPill: domProbe?.hasProPill === true,
     composerBindingVerified: domProbe?.composerBindingVerified ?? true,
     authenticated: domProbe?.authenticated ?? true,
@@ -363,6 +367,8 @@ function parseChatGptProDomProbe(value: unknown): ChatGptProDomProbe | null {
     routeModeSignals: Array.isArray(probe.routeModeSignals)
       ? probe.routeModeSignals.filter((label): label is string => typeof label === "string")
       : [],
+    privateModelProofAttempted: probe.privateModelProofAttempted === true,
+    privateModelProofValid: probe.privateModelProofValid === true,
     hasProPill: probe.hasProPill === true,
     composerBindingVerified: probe.composerBindingVerified === true,
     authenticated: probe.authenticated !== false,
@@ -517,17 +523,26 @@ function buildChatGptProDomProbeExpression(
     const fixtureSelectedEffort =
       text(byOracleRole('chatgpt-effort-option').find(selected)) || null;
     const composerPillTexts = collectTexts(['button.__composer-pill']);
+    const isBareProLabel = (label) => normalize(label).toLowerCase() === 'pro';
     const effortLikeComposerPills = composerPillTexts.filter((label) =>
       /\\b(extended\\s+pro|pro\\s+extended|heavy|ultra|max|standard|light)\\b/i.test(label)
     );
     const modelLikeComposerPill =
-      composerPillTexts.find((label) => /\\b(pro|gpt|chatgpt|thinking|instant)\\b/i.test(label)) || '';
+      composerPillTexts.find(
+        (label) =>
+          !isBareProLabel(label) && /\\b(pro|gpt|chatgpt|thinking|instant)\\b/i.test(label)
+      ) || '';
     const composerModelNode = queryVisible(routeRoot, [
       '[data-testid="composer-model-label"]',
       '[data-testid="model-label"]',
     ])[0];
     const composerModel = normalize(composerModelNode?.textContent || '');
-    const buttonModel = firstText(MODEL_PICKER_BUTTONS) || modelLikeComposerPill;
+    const modelButtonText = firstText(MODEL_PICKER_BUTTONS);
+    // The current unified Intelligence picker collapses to a bare "Pro" pill.
+    // That is a mode signal, never evidence for which versioned model owns it.
+    const buttonModel = isBareProLabel(modelButtonText)
+      ? modelLikeComposerPill
+      : (modelButtonText || modelLikeComposerPill);
     const selectedModel = selectedText(MODEL_ROWS);
     const selectedEffort =
       fixtureSelectedEffort ||
@@ -545,16 +560,156 @@ function buildChatGptProDomProbeExpression(
     const hasProPill =
       composerPillTexts.some((label) => normalize(label).toLowerCase() === 'pro') ||
       queryVisible(routeRoot, ['button[aria-label="Pro, click to remove" i]']).length > 0;
-    // These are deliberately limited to CURRENT-selection surfaces. Never add
-    // unselected menu rows here: this probe is the fail-closed, non-mutating
-    // check used after an attachment upload, where seeing an available model is
-    // not proof that it is still the active model.
-    const routeModelSignals = Array.from(new Set([
+    const publicModelSignals = Array.from(new Set([
       fixtureModel,
       selectedModel,
       composerModel,
       buttonModel,
     ].map(normalize).filter(Boolean)));
+    const collectComposerOwnedSelectedVersionLabels = () => {
+      // Private React state is deliberately scoped to the exact token-bound
+      // composer. Never walk a document/global root, a sibling fiber, or cache
+      // a prior proof across a composer remount.
+      if (
+        !composerBindingVerified ||
+        !routeRoot ||
+        routeRoot === document ||
+        (!ATTACHMENT_BINDING_TOKEN && !COMPOSER_BINDING_TOKEN)
+      ) {
+        return { signals: [], attempted: false, valid: true };
+      }
+      const bareProPills = queryVisible(routeRoot, ['button.__composer-pill'])
+        .filter((node) => isBareProLabel(text(node)));
+      if (bareProPills.length === 0) {
+        return { signals: [], attempted: false, valid: true };
+      }
+      if (bareProPills.length !== 1) {
+        return { signals: [], attempted: true, valid: false };
+      }
+      const pill = bareProPills[0];
+      const fiberKeys = Object.getOwnPropertyNames(pill)
+        .filter((key) => key.startsWith('__reactFiber$'));
+      if (fiberKeys.length !== 1) {
+        return { signals: [], attempted: true, valid: false };
+      }
+
+      const MAX_FIBER_ANCESTORS = 64;
+      const MAX_PROPS_DEPTH = 12;
+      const MAX_PROPS_OBJECTS = 128;
+      const labelsFromProps = (root) => {
+        const labels = [];
+        let invalidState = false;
+        let truncated = false;
+        const queue = [{ value: root, depth: 0 }];
+        const seen = new Set();
+        let cursor = 0;
+        let visited = 0;
+        while (cursor < queue.length && visited < MAX_PROPS_OBJECTS) {
+          const item = queue[cursor++];
+          const value = item?.value;
+          if (!value || typeof value !== 'object' || seen.has(value)) continue;
+          seen.add(value);
+          visited += 1;
+          if (
+            !Array.isArray(value) &&
+            Object.prototype.hasOwnProperty.call(value, 'composerIntelligencePickerState')
+          ) {
+            const label = value.composerIntelligencePickerState
+              ?.selectedVersionEntry?.displayTextForIntelligence;
+            if (typeof label === 'string' && normalize(label)) labels.push(normalize(label));
+            else invalidState = true;
+          }
+          if (item.depth >= MAX_PROPS_DEPTH) {
+            const traversalChildren = Array.isArray(value)
+              ? value
+              : ['children', 'props']
+                  .filter((key) => Object.prototype.hasOwnProperty.call(value, key))
+                  .map((key) => value[key]);
+            if (traversalChildren.some((child) => child && typeof child === 'object')) {
+              truncated = true;
+            }
+            continue;
+          }
+          if (Array.isArray(value)) {
+            for (const child of value) {
+              queue.push({ value: child, depth: item.depth + 1 });
+            }
+            continue;
+          }
+          for (const key of ['children', 'props']) {
+            if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+            queue.push({ value: value[key], depth: item.depth + 1 });
+          }
+        }
+        truncated ||= cursor < queue.length;
+        return { labels, invalidState, truncated };
+      };
+      const inspectFiberBranch = (start) => {
+        const labels = [];
+        let invalidState = false;
+        let truncated = false;
+        const seenFibers = new Set();
+        let fiber = start;
+        let reachedBoundComposer = false;
+        for (
+          let depth = 0;
+          fiber && typeof fiber === 'object' && depth < MAX_FIBER_ANCESTORS;
+          depth += 1
+        ) {
+          if (seenFibers.has(fiber)) break;
+          seenFibers.add(fiber);
+          for (const props of [fiber.memoizedProps, fiber.pendingProps]) {
+            const inspected = labelsFromProps(props);
+            labels.push(...inspected.labels);
+            invalidState ||= inspected.invalidState;
+            truncated ||= inspected.truncated;
+          }
+          if (fiber.stateNode === routeRoot) {
+            reachedBoundComposer = true;
+            break;
+          }
+          fiber = fiber.return;
+        }
+        return { labels, invalidState, truncated, reachedBoundComposer };
+      };
+
+      const gathered = [];
+      let ownershipVerified = true;
+      for (const fiberKey of fiberKeys) {
+        const current = pill[fiberKey];
+        const branches = [current];
+        if (current?.alternate && current.alternate !== current) branches.push(current.alternate);
+        for (const branch of branches) {
+          const inspected = inspectFiberBranch(branch);
+          if (
+            !inspected.reachedBoundComposer ||
+            inspected.labels.length === 0 ||
+            inspected.invalidState ||
+            inspected.truncated
+          ) {
+            ownershipVerified = false;
+          }
+          gathered.push(...inspected.labels);
+        }
+      }
+      return {
+        signals: ownershipVerified ? Array.from(new Set(gathered)) : [],
+        attempted: true,
+        valid: ownershipVerified,
+      };
+    };
+    const privateModelProof = collectComposerOwnedSelectedVersionLabels();
+    const privateModelSignals = privateModelProof.signals;
+    // These are deliberately limited to CURRENT-selection surfaces. Never add
+    // unselected menu rows here: this probe is the fail-closed, non-mutating
+    // check used after an attachment upload, where seeing an available model is
+    // not proof that it is still the active model.
+    // Public DOM labels remain independently sufficient when the private
+    // fallback is unavailable. When both surfaces exist, require unanimity so
+    // a stale public label cannot mask contradictory current composer state.
+    const routeModelSignals = Array.from(
+      new Set([...publicModelSignals, ...privateModelSignals]),
+    );
     const routeModeSignals = Array.from(new Set([
       fixtureSelectedEffort,
       selectedEffort,
@@ -572,7 +727,8 @@ function buildChatGptProDomProbeExpression(
     const hasProEffortSignal =
       Boolean(selectedEffort && (hasHighEffort(selectedEffort) || /\\bpro\\b/i.test(selectedEffort))) ||
       effortLabels.some((label) => hasHighEffort(label) || /\\bpro\\b/i.test(label));
-    const baseModel = fixtureModel || selectedModel || composerModel || buttonModel;
+    const baseModel =
+      fixtureModel || selectedModel || composerModel || buttonModel || routeModelSignals[0];
     const modelLabel = baseModel
       ? (effortLikeComposerPills.includes(baseModel) && /\\bpro\\b/i.test(baseModel)
           ? 'Pro'
@@ -588,6 +744,8 @@ function buildChatGptProDomProbeExpression(
       selectedEffortLabel: selectedEffort,
       routeModelSignals,
       routeModeSignals,
+      privateModelProofAttempted: privateModelProof.attempted,
+      privateModelProofValid: privateModelProof.valid,
       hasProPill,
       composerBindingVerified,
       authenticated: !/\\/auth\\/login|\\/login/i.test(url || ''),
@@ -608,6 +766,8 @@ export interface Gpt56SolProReadOnlyRouteEvidence {
   readonly modeVerified: boolean;
   readonly modelSignals: readonly string[];
   readonly modeSignals: readonly string[];
+  readonly privateModelProofAttempted: boolean;
+  readonly privateModelProofValid: boolean;
 }
 
 function normalizeProtectedRouteLabel(value: string): string {
@@ -621,7 +781,12 @@ function normalizeProtectedRouteLabel(value: string): string {
 function classifyGpt56SolProRouteProbe(
   probe: Pick<
     ChatGptProDomProbe,
-    "routeModelSignals" | "routeModeSignals" | "hasProPill" | "composerBindingVerified"
+    | "routeModelSignals"
+    | "routeModeSignals"
+    | "privateModelProofAttempted"
+    | "privateModelProofValid"
+    | "hasProPill"
+    | "composerBindingVerified"
   >,
 ): Gpt56SolProReadOnlyRouteEvidence {
   const modelSignals = Array.from(
@@ -639,6 +804,7 @@ function classifyGpt56SolProRouteProbe(
   // therefore fails closed.
   const modelVerified =
     probe.composerBindingVerified &&
+    (!probe.privateModelProofAttempted || probe.privateModelProofValid) &&
     modelSignals.length > 0 &&
     modelSignals.every((label) => label === "gpt 5 6 sol");
   const modeVerified =
@@ -652,6 +818,8 @@ function classifyGpt56SolProRouteProbe(
     modeVerified,
     modelSignals,
     modeSignals,
+    privateModelProofAttempted: probe.privateModelProofAttempted,
+    privateModelProofValid: probe.privateModelProofValid,
   };
 }
 
@@ -674,6 +842,8 @@ export async function readGpt56SolProRouteReadOnly(
       modeVerified: false,
       modelSignals: [],
       modeSignals: [],
+      privateModelProofAttempted: false,
+      privateModelProofValid: false,
     };
   }
   return classifyGpt56SolProRouteProbe(probe);
@@ -752,6 +922,7 @@ function buildProtectedDispatchGuardInstallExpression(
         : true;
       const modelVerified =
         !REQUIRE_PROTECTED_ROUTE || (composerBindingVerified &&
+        (probe?.privateModelProofAttempted !== true || probe?.privateModelProofValid === true) &&
         modelSignals.length > 0 &&
         modelSignals.every((label) => label === 'gpt 5 6 sol'));
       const modeVerified =
@@ -765,6 +936,8 @@ function buildProtectedDispatchGuardInstallExpression(
         modeVerified,
         modelSignals,
         modeSignals,
+        privateModelProofAttempted: probe?.privateModelProofAttempted === true,
+        privateModelProofValid: probe?.privateModelProofValid === true,
       };
     };
     const isVisible = (node) => {
@@ -1268,6 +1441,8 @@ export function buildGpt56SolProFinalDispatchGuard(
           modeVerified: evidence?.modeVerified === true,
           modelSignals: evidence?.modelSignals ?? [],
           modeSignals: evidence?.modeSignals ?? [],
+          privateModelProofAttempted: evidence?.privateModelProofAttempted === true,
+          privateModelProofValid: evidence?.privateModelProofValid === true,
           guardInstalled: result?.installed === true,
           guardStatus: typeof result?.status === "string" ? result.status : null,
           guardReason: typeof result?.reason === "string" ? result.reason : null,
@@ -1337,10 +1512,14 @@ export function classifyGpt56SolProRouteProbeForTest(args: {
   routeModeSignals?: readonly string[];
   hasProPill?: boolean;
   composerBindingVerified?: boolean;
+  privateModelProofAttempted?: boolean;
+  privateModelProofValid?: boolean;
 }): Gpt56SolProReadOnlyRouteEvidence {
   return classifyGpt56SolProRouteProbe({
     routeModelSignals: args.routeModelSignals ?? [],
     routeModeSignals: args.routeModeSignals ?? [],
+    privateModelProofAttempted: args.privateModelProofAttempted === true,
+    privateModelProofValid: args.privateModelProofValid !== false,
     hasProPill: args.hasProPill === true,
     composerBindingVerified: args.composerBindingVerified !== false,
   });
