@@ -106,6 +106,278 @@ export function normalizeRenderedPromptDomIdentity(value: unknown): string {
     .trim();
 }
 
+/**
+ * Canonicalize raw input against the logical plaintext read from the active
+ * composer. Unlike rendered-turn recovery identity, this comparison must
+ * preserve leading/trailing whitespace and zero-width Unicode characters:
+ * Chromium's editing-host Selection serializer preserves them byte-for-byte.
+ *
+ * Keep this closure-free: its source is embedded in CDP page expressions.
+ */
+export function normalizeExactComposerPromptIdentity(value: unknown): string {
+  return String(value ?? "")
+    .normalize("NFC")
+    .replace(/\r\n?/g, "\n");
+}
+
+export const EXACT_COMPOSER_PROMPT_IDENTITY_NORMALIZER_DECLARATION = `const normalizeExactComposerPromptIdentity = ${normalizeExactComposerPromptIdentity.toString()};`;
+
+export interface ExactComposerPromptTextRead {
+  ok: boolean;
+  value: string;
+  reason:
+    | null
+    | "editor-missing"
+    | "selection-api-unavailable"
+    | "selection-state-unsupported"
+    | "editor-not-focused"
+    | "selection-read-failed"
+    | "selection-restore-failed"
+    | "focus-changed"
+    | "editor-root-changed";
+  selectionRestored: boolean;
+  focusPreserved: boolean;
+}
+
+/**
+ * Read the logical plaintext of an editing host without relying on innerText.
+ *
+ * Chromium's `innerText` inserts an extra separator around empty block nodes:
+ * inserting `a\n\nb` into a contenteditable produces `a<div><br></div><div>b</div>`
+ * and reports `a\n\n\nb`. A temporary Selection, by contrast, uses the browser's
+ * editing-host plaintext serialization and returns the original `a\n\nb`.
+ *
+ * The caller gets a value only together with proof that the prior selection
+ * and focused node survived the temporary read. Keep this function
+ * closure-free: its source is embedded in CDP page expressions.
+ */
+export function readExactComposerPromptText(editor: unknown): ExactComposerPromptTextRead {
+  const failure = (
+    reason: Exclude<ExactComposerPromptTextRead["reason"], null>,
+    options: { selectionRestored?: boolean; focusPreserved?: boolean } = {},
+  ): ExactComposerPromptTextRead => ({
+    ok: false,
+    value: "",
+    reason,
+    selectionRestored: options.selectionRestored === true,
+    focusPreserved: options.focusPreserved === true,
+  });
+  if (!editor || typeof editor !== "object") return failure("editor-missing");
+  const element = editor as {
+    tagName?: unknown;
+    value?: unknown;
+    ownerDocument?: unknown;
+    getRootNode?: () => unknown;
+    contains?: (node: unknown) => boolean;
+  };
+  const tagName = String(element.tagName ?? "").toLowerCase();
+  if (tagName === "textarea" || tagName === "input") {
+    return {
+      ok: typeof element.value === "string",
+      value: typeof element.value === "string" ? element.value : "",
+      reason: typeof element.value === "string" ? null : "selection-read-failed",
+      selectionRestored: true,
+      focusPreserved: true,
+    };
+  }
+
+  const documentLike = element.ownerDocument as
+    | {
+        activeElement?: unknown;
+        createRange?: () => {
+          selectNodeContents?: (node: unknown) => void;
+          cloneRange?: () => unknown;
+          startContainer?: unknown;
+          startOffset?: number;
+          endContainer?: unknown;
+          endOffset?: number;
+        };
+        getSelection?: () => {
+          rangeCount?: number;
+          anchorNode?: unknown;
+          anchorOffset?: number;
+          focusNode?: unknown;
+          focusOffset?: number;
+          getRangeAt?: (index: number) => {
+            cloneRange?: () => unknown;
+            startContainer?: unknown;
+            startOffset?: number;
+            endContainer?: unknown;
+            endOffset?: number;
+          };
+          removeAllRanges?: () => void;
+          addRange?: (range: unknown) => void;
+          setBaseAndExtent?: (
+            anchorNode: unknown,
+            anchorOffset: number,
+            focusNode: unknown,
+            focusOffset: number,
+          ) => void;
+          toString?: () => string;
+        } | null;
+      }
+    | undefined;
+  if (
+    !documentLike ||
+    typeof documentLike.createRange !== "function" ||
+    typeof documentLike.getSelection !== "function"
+  ) {
+    return failure("selection-api-unavailable");
+  }
+  let root: unknown = documentLike;
+  try {
+    root = typeof element.getRootNode === "function" ? element.getRootNode() : documentLike;
+  } catch {
+    return failure("selection-api-unavailable");
+  }
+  const selectionOwner =
+    root === documentLike
+      ? documentLike
+      : root && typeof (root as { getSelection?: unknown }).getSelection === "function"
+        ? (root as typeof documentLike)
+        : null;
+  if (!selectionOwner || typeof selectionOwner.getSelection !== "function") {
+    return failure("selection-api-unavailable");
+  }
+  const rootFocusOwner = root as { activeElement?: unknown };
+  const initialActiveElement = documentLike.activeElement;
+  const initialRootActiveElement = rootFocusOwner.activeElement;
+  const effectiveActiveElement =
+    root === documentLike ? initialActiveElement : initialRootActiveElement;
+  if (
+    !effectiveActiveElement ||
+    (effectiveActiveElement !== editor && element.contains?.(effectiveActiveElement) !== true)
+  ) {
+    return failure("editor-not-focused", {
+      selectionRestored: true,
+      focusPreserved: true,
+    });
+  }
+  const selection = selectionOwner.getSelection();
+  if (
+    !selection ||
+    typeof selection.removeAllRanges !== "function" ||
+    typeof selection.addRange !== "function" ||
+    typeof selection.toString !== "function"
+  ) {
+    return failure("selection-api-unavailable");
+  }
+
+  const initialAnchorNode = selection.anchorNode;
+  const initialAnchorOffset = Number(selection.anchorOffset ?? 0);
+  const initialFocusNode = selection.focusNode;
+  const initialFocusOffset = Number(selection.focusOffset ?? 0);
+  const initialRangeCount = Number(selection.rangeCount ?? 0);
+  if (
+    !Number.isSafeInteger(initialRangeCount) ||
+    initialRangeCount < 0 ||
+    initialRangeCount > 1 ||
+    !Number.isSafeInteger(initialAnchorOffset) ||
+    initialAnchorOffset < 0 ||
+    !Number.isSafeInteger(initialFocusOffset) ||
+    initialFocusOffset < 0 ||
+    (initialRangeCount > 0 && typeof selection.getRangeAt !== "function") ||
+    (initialRangeCount === 0 && (initialAnchorNode != null || initialFocusNode != null)) ||
+    (initialRangeCount === 1 && (initialAnchorNode == null || initialFocusNode == null)) ||
+    ((initialAnchorNode != null || initialFocusNode != null) &&
+      (initialAnchorNode == null ||
+        initialFocusNode == null ||
+        typeof selection.setBaseAndExtent !== "function"))
+  ) {
+    return failure("selection-state-unsupported");
+  }
+  const savedRanges: unknown[] = [];
+  try {
+    for (let index = 0; index < initialRangeCount; index += 1) {
+      const range = selection.getRangeAt?.(index);
+      if (!range || typeof range.cloneRange !== "function") {
+        return failure("selection-api-unavailable");
+      }
+      savedRanges.push(range.cloneRange());
+    }
+  } catch {
+    return failure("selection-api-unavailable");
+  }
+
+  let value = "";
+  let readSucceeded = false;
+  let selectionRestored = false;
+  try {
+    const range = documentLike.createRange();
+    if (!range || typeof range.selectNodeContents !== "function") {
+      return failure("selection-api-unavailable");
+    }
+    range.selectNodeContents(editor);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    value = selection.toString();
+    readSucceeded = true;
+  } catch {
+    readSucceeded = false;
+  } finally {
+    try {
+      selection.removeAllRanges();
+      if (
+        initialAnchorNode != null &&
+        initialFocusNode != null &&
+        typeof selection.setBaseAndExtent === "function"
+      ) {
+        selection.setBaseAndExtent(
+          initialAnchorNode,
+          initialAnchorOffset,
+          initialFocusNode,
+          initialFocusOffset,
+        );
+      } else {
+        for (const range of savedRanges) selection.addRange(range);
+      }
+      if (initialAnchorNode != null && initialFocusNode != null) {
+        selectionRestored =
+          selection.anchorNode === initialAnchorNode &&
+          Number(selection.anchorOffset ?? 0) === initialAnchorOffset &&
+          selection.focusNode === initialFocusNode &&
+          Number(selection.focusOffset ?? 0) === initialFocusOffset;
+      } else {
+        selectionRestored = Number(selection.rangeCount ?? 0) === initialRangeCount;
+      }
+    } catch {
+      selectionRestored = false;
+    }
+  }
+
+  const focusPreserved =
+    documentLike.activeElement === initialActiveElement &&
+    rootFocusOwner.activeElement === initialRootActiveElement;
+  let rootPreserved = false;
+  try {
+    rootPreserved =
+      (typeof element.getRootNode === "function" ? element.getRootNode() : documentLike) === root;
+  } catch {
+    rootPreserved = false;
+  }
+  if (!readSucceeded) {
+    return failure("selection-read-failed", { selectionRestored, focusPreserved });
+  }
+  if (!selectionRestored) {
+    return failure("selection-restore-failed", { focusPreserved });
+  }
+  if (!focusPreserved) {
+    return failure("focus-changed", { selectionRestored });
+  }
+  if (!rootPreserved) {
+    return failure("editor-root-changed", { selectionRestored, focusPreserved });
+  }
+  return {
+    ok: true,
+    value,
+    reason: null,
+    selectionRestored: true,
+    focusPreserved: true,
+  };
+}
+
+export const EXACT_COMPOSER_PROMPT_TEXT_READER_DECLARATION = `const readExactComposerPromptText = ${readExactComposerPromptText.toString()};`;
+
 export interface RenderedPromptDomContentCandidate {
   /** Visible prompt text only (no link metadata). */
   text: string;

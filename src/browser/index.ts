@@ -1777,6 +1777,8 @@ async function proveProtectedSolProSelectionBeforeSubmit({
           modeSignals: evidence.modeSignals,
           privateModelProofAttempted: evidence.privateModelProofAttempted,
           privateModelProofValid: evidence.privateModelProofValid,
+          oracleErrorClass: "integrity_ui_unknown",
+          retryable: false,
         },
       );
     }
@@ -6180,6 +6182,7 @@ export const __test__ = {
   selectInitialModelWithRefreshRecovery,
   shouldRefreshInitialModelPicker,
   verifyProtectedSolProSelectionForSubmit,
+  proveProtectedSolProSelectionBeforeSubmit,
   prepareSubmissionComposerWithProtectedRoute,
   runWithRetainedAttachmentSnapshots,
   shouldCleanupBlankTabsAfterLastLease,

@@ -92,6 +92,7 @@ import { buildClaudeCodeCommand } from "../../src/claude-code/command.ts";
 import { ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR } from "../../src/claude-code/caamCommand.ts";
 import { ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS_ENV_VAR } from "../../src/claude-code/caamRotation.ts";
 import type { RemoteBrowserRecoveryCarrier } from "../../src/remote/client.ts";
+import { buildRemoteBrowserPreSubmitDiagnostic } from "../../src/remote/types.ts";
 
 const baseSessionMeta: SessionMetadata = {
   id: "sess-1",
@@ -1346,6 +1347,71 @@ describe("performSessionRun", () => {
         stage: "remote-run",
         errorClass: "transport_interrupted_before_submit",
         retryable: true,
+      },
+    });
+  });
+
+  test("persists only the closed remote pre-submit diagnostic", async () => {
+    let current: SessionMetadata = {
+      ...baseSessionMeta,
+      status: "pending",
+      mode: "browser",
+      model: "gpt-5.6-sol",
+      browser: { config: { chromePath: null } },
+    };
+    sessionStoreMock.updateSession.mockImplementation(
+      async (
+        _sessionId: string,
+        updates:
+          | Partial<SessionMetadata>
+          | ((metadata: SessionMetadata) => Partial<SessionMetadata>),
+      ) => {
+        const patch = typeof updates === "function" ? updates(current) : updates;
+        current = { ...current, ...patch };
+        return current;
+      },
+    );
+    sessionStoreMock.updateModelRun.mockResolvedValue({});
+    const preSubmitDiagnostic = buildRemoteBrowserPreSubmitDiagnostic({
+      stage: "model-selection",
+      code: "protected-route-changed-after-preflight",
+      guardReason: "exact-prompt-changed",
+      exactPromptVerified: false,
+      attachmentStateVerified: true,
+      focusVerified: true,
+      exactReadVerified: true,
+      selectionRestored: true,
+      focusPreserved: true,
+    })!;
+    vi.mocked(runBrowserSessionExecution).mockRejectedValueOnce(
+      new RemoteRunFailedError("exact protected submission changed", {
+        errorClass: "integrity_ui_unknown",
+        retryable: false,
+        preSubmitDiagnostic,
+      }),
+    );
+
+    await expect(
+      performSessionRun({
+        sessionMeta: current,
+        runOptions: { ...baseRunOptions, model: "gpt-5.6-sol" },
+        mode: "browser",
+        browserConfig: { chromePath: null },
+        cwd: "/tmp",
+        log,
+        write,
+        version: cliVersion,
+      }),
+    ).rejects.toBeInstanceOf(RemoteRunFailedError);
+
+    expect(current.error).toEqual({
+      category: "browser-automation",
+      message: "exact protected submission changed",
+      details: {
+        stage: "remote-run",
+        errorClass: "integrity_ui_unknown",
+        retryable: false,
+        preSubmitDiagnostic,
       },
     });
   });

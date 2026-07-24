@@ -6,6 +6,7 @@ import {
   MAX_REMOTE_ARTIFACT_BYTES,
   REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
   REMOTE_BROWSER_RECOVERY_PROTOCOL,
+  REMOTE_BROWSER_TERMINAL_RETRY_POLICY,
   REMOTE_BROWSER_RUN_PATH,
   type RemoteActiveRunInfo,
   type RemoteArtifactCapabilities,
@@ -22,6 +23,7 @@ export interface RemoteBrowserRecoveryCompatibility {
   promptPreviewAlgorithm: string | null;
   promptDomIdentityAlgorithm: string | null;
   durableClaimLookup: boolean | null;
+  terminalRetryPolicy: string | null;
 }
 
 export interface RemoteHealthResult {
@@ -414,6 +416,7 @@ function parseCapabilities(value: unknown): RemoteArtifactCapabilities | undefin
             promptPreviewAlgorithm: PROMPT_RECOVERY_PREVIEW_ALGORITHM,
             promptDomIdentityAlgorithm: PROMPT_DOM_IDENTITY_ALGORITHM,
             durableClaimLookup: true,
+            terminalRetryPolicy: REMOTE_BROWSER_TERMINAL_RETRY_POLICY,
           },
         }
       : {}),
@@ -439,16 +442,20 @@ export function inspectRemoteBrowserRecoveryCompatibility(
     typeof raw.promptDomIdentityAlgorithm === "string" ? raw.promptDomIdentityAlgorithm : null;
   const durableClaimLookup =
     typeof raw.durableClaimLookup === "boolean" ? raw.durableClaimLookup : null;
+  const terminalRetryPolicy =
+    typeof raw.terminalRetryPolicy === "string" ? raw.terminalRetryPolicy : null;
   return {
     compatible:
       protocol === REMOTE_BROWSER_RECOVERY_PROTOCOL &&
       promptPreviewAlgorithm === PROMPT_RECOVERY_PREVIEW_ALGORITHM &&
       promptDomIdentityAlgorithm === PROMPT_DOM_IDENTITY_ALGORITHM &&
-      durableClaimLookup === true,
+      durableClaimLookup === true &&
+      terminalRetryPolicy === REMOTE_BROWSER_TERMINAL_RETRY_POLICY,
     protocol,
     promptPreviewAlgorithm,
     promptDomIdentityAlgorithm,
     durableClaimLookup,
+    terminalRetryPolicy,
   };
 }
 

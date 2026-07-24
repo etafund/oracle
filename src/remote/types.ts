@@ -26,26 +26,332 @@ export const MAX_REMOTE_ARTIFACT_BYTES = 512 * 1024 * 1024;
  * browser; silently degrading to a legacy sidecar would make the resulting
  * failed session unrecoverable.
  */
-export const REMOTE_BROWSER_RECOVERY_PROTOCOL = "remote-browser-recovery.v4" as const;
+export const REMOTE_BROWSER_RECOVERY_PROTOCOL = "remote-browser-recovery.v5" as const;
+export const REMOTE_BROWSER_TERMINAL_RETRY_POLICY = "class-allowlist.v1" as const;
 // Keep the deployed router's exact `/runs`, `/recover`, and recovery-claim
 // locations while
 // versioning the upstream request target. nginx location matching excludes
 // the query string, but Node workers compare `req.url` including it: current
 // routers forward these targets, while legacy workers return 404 before body
 // parsing/browser execution instead of ignoring a new header and submitting.
-export const REMOTE_BROWSER_RUN_PATH = "/runs?protocol=remote-browser-recovery.v4" as const;
-export const REMOTE_BROWSER_RECOVERY_PATH = "/recover?protocol=remote-browser-recovery.v4" as const;
+export const REMOTE_BROWSER_RUN_PATH = "/runs?protocol=remote-browser-recovery.v5" as const;
+export const REMOTE_BROWSER_RECOVERY_PATH = "/recover?protocol=remote-browser-recovery.v5" as const;
 export const REMOTE_BROWSER_RECOVERY_CLAIM_LOOKUP_PATH =
-  "/recovery-claims?protocol=remote-browser-recovery.v4" as const;
-export const REMOTE_BROWSER_RUN_SCHEMA = "remote-browser-run.v4" as const;
+  "/recovery-claims?protocol=remote-browser-recovery.v5" as const;
+export const REMOTE_BROWSER_RUN_SCHEMA = "remote-browser-run.v5" as const;
 export const REMOTE_BROWSER_RECOVERY_CLAIM_SCHEMA = "remote-browser-recovery-claim.v1" as const;
 export const REMOTE_BROWSER_RECOVERY_CLAIM_ROUTE_HEADER = "x-oracle-recovery-claim-lookup" as const;
 export const REMOTE_BROWSER_RECOVERY_CLAIM_ROUTE_HEADER_VALUE = "v1" as const;
+export const REMOTE_BROWSER_PRE_SUBMIT_DIAGNOSTIC_SCHEMA =
+  "remote-browser-pre-submit-diagnostic.v1" as const;
+
+const REMOTE_BROWSER_PRE_SUBMIT_DIAGNOSTIC_CODES = [
+  "protected-route-public-proof-unverified",
+  "protected-route-changed-after-preflight",
+  "protected-dispatch-guard-not-armed",
+  "protected-route-dispatch-blocked",
+  "protected-route-dispatch-unproven",
+] as const;
+
+const REMOTE_BROWSER_PRE_SUBMIT_REASON_VALUES = [
+  "unrecognized",
+  "bound-send-target-changed",
+  "checked-row-not-exact",
+  "dispatch-composer-focus-rebind-failed",
+  "dispatch-composer-remounted-during-proof",
+  "dispatch-guard-already-blocked",
+  "dispatch-guard-expired",
+  "dispatch-guard-missing",
+  "duplicate-trusted-dispatch-event",
+  "event-guard-unavailable",
+  "exact-attachment-state-changed",
+  "exact-dispatch-composer-unavailable",
+  "exact-editor-focus-changed",
+  "exact-prompt-changed",
+  "exact-row-ambiguous",
+  "guard-registry-unavailable",
+  "guard-token-missing",
+  "model-submenu-owner-unverified",
+  "non-primary-dispatch-event",
+  "owned-menu-not-visible",
+  "parent-menu-owner-unverified",
+  "proof-menus-did-not-close",
+  "protected-route-changed",
+  "proved-route-pill-unavailable",
+  "public-route-proof-alternate-submit",
+  "public-route-proof-bound-node-changed",
+  "public-route-proof-burned",
+  "public-route-proof-consume-failed",
+  "public-route-proof-consumed-before-guard",
+  "public-route-proof-dispatch-before-guard",
+  "public-route-proof-dom-mutated",
+  "public-route-proof-expired",
+  "public-route-proof-guard-handoff-failed",
+  "public-route-proof-handoff-blocker-unavailable",
+  "public-route-proof-invalid",
+  "public-route-proof-invalid-at-mint",
+  "public-route-proof-key-event",
+  "public-route-proof-location-changed",
+  "public-route-proof-menu-set-changed",
+  "public-route-proof-missing",
+  "public-route-proof-navigation",
+  "public-route-proof-observer-failed",
+  "public-route-proof-observer-unavailable",
+  "public-route-proof-payload-event",
+  "public-route-proof-pill-changed",
+  "public-route-proof-prompt-changed",
+  "public-route-proof-result-missing",
+  "public-route-proof-route-event",
+  "public-route-proof-token-missing",
+  "public-route-proof-unavailable",
+  "sol-submenu-trigger-ambiguous",
+  "row-selection-state-contradictory",
+  "trusted-event-target-changed",
+  "untrusted-dispatch-event",
+  "verdict-binding-call-failed",
+  "verdict-binding-unavailable",
+] as const;
+
+const REMOTE_BROWSER_PRE_SUBMIT_GUARD_STATUS_VALUES = [
+  "unrecognized",
+  "allowed",
+  "armed",
+  "blocked",
+  "missing",
+] as const;
+
+const REMOTE_BROWSER_PRE_SUBMIT_EXACT_READ_REASON_VALUES = [
+  "unrecognized",
+  "editor-missing",
+  "selection-api-unavailable",
+  "selection-state-unsupported",
+  "editor-not-focused",
+  "selection-read-failed",
+  "selection-restore-failed",
+  "focus-changed",
+  "editor-root-changed",
+] as const;
+
+type RemoteBrowserPreSubmitDiagnosticCode =
+  (typeof REMOTE_BROWSER_PRE_SUBMIT_DIAGNOSTIC_CODES)[number];
+type RemoteBrowserPreSubmitReason = (typeof REMOTE_BROWSER_PRE_SUBMIT_REASON_VALUES)[number];
+type RemoteBrowserPreSubmitGuardStatus =
+  (typeof REMOTE_BROWSER_PRE_SUBMIT_GUARD_STATUS_VALUES)[number];
+type RemoteBrowserPreSubmitExactReadReason =
+  (typeof REMOTE_BROWSER_PRE_SUBMIT_EXACT_READ_REASON_VALUES)[number];
+
+/**
+ * Closed, non-sensitive explanation for a protected browser refusal before
+ * Send. Raw DOM text, prompts, URLs, paths, selectors, account identifiers,
+ * and signal labels are deliberately absent.
+ */
+export interface RemoteBrowserPreSubmitDiagnosticV1 {
+  schema: typeof REMOTE_BROWSER_PRE_SUBMIT_DIAGNOSTIC_SCHEMA;
+  stage: "model-selection";
+  code: RemoteBrowserPreSubmitDiagnosticCode;
+  reason: RemoteBrowserPreSubmitReason | null;
+  composerBindingVerified: boolean | null;
+  modelVerified: boolean | null;
+  modeVerified: boolean | null;
+  modelSignalCount: number | null;
+  modeSignalCount: number | null;
+  privateModelProofAttempted: boolean | null;
+  privateModelProofValid: boolean | null;
+  guardInstalled: boolean | null;
+  guardStatus: RemoteBrowserPreSubmitGuardStatus | null;
+  exactPromptVerified: boolean | null;
+  attachmentStateVerified: boolean | null;
+  focusVerified: boolean | null;
+  exactReadVerified: boolean | null;
+  exactReadReason: RemoteBrowserPreSubmitExactReadReason | null;
+  selectionRestored: boolean | null;
+  focusPreserved: boolean | null;
+}
+
+const REMOTE_BROWSER_PRE_SUBMIT_DIAGNOSTIC_KEYS = [
+  "schema",
+  "stage",
+  "code",
+  "reason",
+  "composerBindingVerified",
+  "modelVerified",
+  "modeVerified",
+  "modelSignalCount",
+  "modeSignalCount",
+  "privateModelProofAttempted",
+  "privateModelProofValid",
+  "guardInstalled",
+  "guardStatus",
+  "exactPromptVerified",
+  "attachmentStateVerified",
+  "focusVerified",
+  "exactReadVerified",
+  "exactReadReason",
+  "selectionRestored",
+  "focusPreserved",
+] as const;
+
+const remoteBrowserPreSubmitCodeSet = new Set<string>(REMOTE_BROWSER_PRE_SUBMIT_DIAGNOSTIC_CODES);
+const remoteBrowserPreSubmitReasonSet = new Set<string>(REMOTE_BROWSER_PRE_SUBMIT_REASON_VALUES);
+const remoteBrowserPreSubmitGuardStatusSet = new Set<string>(
+  REMOTE_BROWSER_PRE_SUBMIT_GUARD_STATUS_VALUES,
+);
+const remoteBrowserPreSubmitExactReadReasonSet = new Set<string>(
+  REMOTE_BROWSER_PRE_SUBMIT_EXACT_READ_REASON_VALUES,
+);
+
+function nullableBoolean(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+function nullableBoundedCount(value: unknown): number | null {
+  return Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= 64
+    ? (value as number)
+    : null;
+}
+
+function allowlistedValue<T extends string>(
+  value: unknown,
+  allowed: ReadonlySet<string>,
+): T | "unrecognized" | null {
+  if (value === null || value === undefined) return null;
+  return typeof value === "string" && allowed.has(value) ? (value as T) : "unrecognized";
+}
+
+/**
+ * Server-side projection from a typed browser error. Unknown strings become a
+ * fixed sentinel rather than crossing the remote boundary.
+ */
+export function buildRemoteBrowserPreSubmitDiagnostic(
+  details: unknown,
+): RemoteBrowserPreSubmitDiagnosticV1 | null {
+  if (!details || typeof details !== "object" || Array.isArray(details)) return null;
+  const raw = details as Record<string, unknown>;
+  if (
+    raw.stage !== "model-selection" ||
+    typeof raw.code !== "string" ||
+    !remoteBrowserPreSubmitCodeSet.has(raw.code)
+  ) {
+    return null;
+  }
+  const rawReason = raw.guardReason ?? raw.dispatchGuardReason ?? raw.proofReason;
+  const rawGuardStatus = raw.guardStatus ?? raw.dispatchGuardStatus;
+  return {
+    schema: REMOTE_BROWSER_PRE_SUBMIT_DIAGNOSTIC_SCHEMA,
+    stage: "model-selection",
+    code: raw.code as RemoteBrowserPreSubmitDiagnosticCode,
+    reason: allowlistedValue<RemoteBrowserPreSubmitReason>(
+      rawReason,
+      remoteBrowserPreSubmitReasonSet,
+    ),
+    composerBindingVerified: nullableBoolean(raw.composerBindingVerified),
+    modelVerified: nullableBoolean(raw.modelVerified),
+    modeVerified: nullableBoolean(raw.modeVerified),
+    modelSignalCount: nullableBoundedCount(raw.modelSignalCount),
+    modeSignalCount: nullableBoundedCount(raw.modeSignalCount),
+    privateModelProofAttempted: nullableBoolean(raw.privateModelProofAttempted),
+    privateModelProofValid: nullableBoolean(raw.privateModelProofValid),
+    guardInstalled: nullableBoolean(raw.guardInstalled),
+    guardStatus: allowlistedValue<RemoteBrowserPreSubmitGuardStatus>(
+      rawGuardStatus,
+      remoteBrowserPreSubmitGuardStatusSet,
+    ),
+    exactPromptVerified: nullableBoolean(raw.exactPromptVerified),
+    attachmentStateVerified: nullableBoolean(raw.attachmentStateVerified),
+    focusVerified: nullableBoolean(raw.focusVerified),
+    exactReadVerified: nullableBoolean(raw.exactReadVerified),
+    exactReadReason: allowlistedValue<RemoteBrowserPreSubmitExactReadReason>(
+      raw.exactReadReason,
+      remoteBrowserPreSubmitExactReadReasonSet,
+    ),
+    selectionRestored: nullableBoolean(raw.selectionRestored),
+    focusPreserved: nullableBoolean(raw.focusPreserved),
+  };
+}
+
+/**
+ * Client-side closed-schema validation. Unlike the server projection, unknown
+ * values or extra/missing keys reject the event instead of being normalized.
+ */
+export function parseRemoteBrowserPreSubmitDiagnostic(
+  value: unknown,
+): RemoteBrowserPreSubmitDiagnosticV1 | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  const keys = Object.keys(raw);
+  if (
+    keys.length !== REMOTE_BROWSER_PRE_SUBMIT_DIAGNOSTIC_KEYS.length ||
+    keys.some(
+      (key) => !(REMOTE_BROWSER_PRE_SUBMIT_DIAGNOSTIC_KEYS as readonly string[]).includes(key),
+    ) ||
+    raw.schema !== REMOTE_BROWSER_PRE_SUBMIT_DIAGNOSTIC_SCHEMA ||
+    raw.stage !== "model-selection" ||
+    typeof raw.code !== "string" ||
+    !remoteBrowserPreSubmitCodeSet.has(raw.code) ||
+    (raw.reason !== null &&
+      (typeof raw.reason !== "string" || !remoteBrowserPreSubmitReasonSet.has(raw.reason))) ||
+    (raw.guardStatus !== null &&
+      (typeof raw.guardStatus !== "string" ||
+        !remoteBrowserPreSubmitGuardStatusSet.has(raw.guardStatus))) ||
+    (raw.exactReadReason !== null &&
+      (typeof raw.exactReadReason !== "string" ||
+        !remoteBrowserPreSubmitExactReadReasonSet.has(raw.exactReadReason)))
+  ) {
+    return null;
+  }
+  for (const key of [
+    "composerBindingVerified",
+    "modelVerified",
+    "modeVerified",
+    "privateModelProofAttempted",
+    "privateModelProofValid",
+    "guardInstalled",
+    "exactPromptVerified",
+    "attachmentStateVerified",
+    "focusVerified",
+    "exactReadVerified",
+    "selectionRestored",
+    "focusPreserved",
+  ] as const) {
+    if (raw[key] !== null && typeof raw[key] !== "boolean") return null;
+  }
+  for (const key of ["modelSignalCount", "modeSignalCount"] as const) {
+    if (
+      raw[key] !== null &&
+      (!Number.isSafeInteger(raw[key]) || (raw[key] as number) < 0 || (raw[key] as number) > 64)
+    ) {
+      return null;
+    }
+  }
+  return {
+    schema: REMOTE_BROWSER_PRE_SUBMIT_DIAGNOSTIC_SCHEMA,
+    stage: "model-selection",
+    code: raw.code as RemoteBrowserPreSubmitDiagnosticCode,
+    reason: raw.reason as RemoteBrowserPreSubmitReason | null,
+    composerBindingVerified: raw.composerBindingVerified as boolean | null,
+    modelVerified: raw.modelVerified as boolean | null,
+    modeVerified: raw.modeVerified as boolean | null,
+    modelSignalCount: raw.modelSignalCount as number | null,
+    modeSignalCount: raw.modeSignalCount as number | null,
+    privateModelProofAttempted: raw.privateModelProofAttempted as boolean | null,
+    privateModelProofValid: raw.privateModelProofValid as boolean | null,
+    guardInstalled: raw.guardInstalled as boolean | null,
+    guardStatus: raw.guardStatus as RemoteBrowserPreSubmitGuardStatus | null,
+    exactPromptVerified: raw.exactPromptVerified as boolean | null,
+    attachmentStateVerified: raw.attachmentStateVerified as boolean | null,
+    focusVerified: raw.focusVerified as boolean | null,
+    exactReadVerified: raw.exactReadVerified as boolean | null,
+    exactReadReason: raw.exactReadReason as RemoteBrowserPreSubmitExactReadReason | null,
+    selectionRestored: raw.selectionRestored as boolean | null,
+    focusPreserved: raw.focusPreserved as boolean | null,
+  };
+}
 
 export const REMOTE_BROWSER_RECOVERY_ADMISSION_HEADERS = {
   protocol: "x-oracle-browser-recovery-protocol",
   promptPreviewAlgorithm: "x-oracle-prompt-preview-algorithm",
   promptDomIdentityAlgorithm: "x-oracle-prompt-dom-identity-algorithm",
+  terminalRetryPolicy: "x-oracle-terminal-retry-policy",
 } as const;
 
 export const REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES = {
@@ -54,6 +360,8 @@ export const REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES = {
     PROMPT_RECOVERY_PREVIEW_ALGORITHM,
   [REMOTE_BROWSER_RECOVERY_ADMISSION_HEADERS.promptDomIdentityAlgorithm]:
     PROMPT_DOM_IDENTITY_ALGORITHM,
+  [REMOTE_BROWSER_RECOVERY_ADMISSION_HEADERS.terminalRetryPolicy]:
+    REMOTE_BROWSER_TERMINAL_RETRY_POLICY,
 } as const;
 
 /** Private request/response headers used only for the out-of-band durable claim lookup. */
@@ -138,6 +446,8 @@ export interface RemoteBrowserRecoveryCapabilities {
   promptDomIdentityAlgorithm: typeof PROMPT_DOM_IDENTITY_ALGORITHM;
   /** A severed run stream can recover its capability through a durable authenticated lookup. */
   durableClaimLookup: true;
+  /** Terminal retry advice is derived only from Oracle's closed error-class allowlist. */
+  terminalRetryPolicy: typeof REMOTE_BROWSER_TERMINAL_RETRY_POLICY;
 }
 
 export interface RemoteArtifactDescriptor {
@@ -339,6 +649,7 @@ export type RemoteRunEvent =
       errorClass?: RunErrorClass | null;
       errorMessage?: string;
       retryable?: boolean | null;
+      preSubmitDiagnostic?: RemoteBrowserPreSubmitDiagnosticV1;
       provenance?: RemoteRunProvenanceSummary;
       recovery?: RemoteRunRecoveryHint;
       result?: BrowserRunResult;
@@ -395,6 +706,7 @@ export interface RemoteBrowserEndpointV1 {
     prompt_preview_algorithm: string | null;
     prompt_dom_identity_algorithm: string | null;
     durable_claim_lookup: boolean | null;
+    terminal_retry_policy: string | null;
   } | null;
   busy?: boolean;
   activeRun?: RemoteActiveRunInfo | null;

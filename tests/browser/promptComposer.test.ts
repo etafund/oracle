@@ -288,20 +288,21 @@ describe("promptComposer", () => {
         assistantVisible: false,
         composerCleared: true,
         inConversation: false,
-        editorValue: "",
-        lastTurn: "previous turn text",
+        editorValue: "sensitive composer text",
+        lastTurn: "sensitive previous turn text",
       };
       const runtime = {
         evaluate: vi.fn().mockResolvedValue({ result: { value: probe } }),
       } as unknown as {
         evaluate: (args: { expression: string; returnByValue?: boolean }) => Promise<unknown>;
       };
+      const logger = Object.assign(vi.fn(), { verbose: false });
 
       const promise = promptComposer.verifyPromptCommitted(
         runtime as never,
         "hello",
         150,
-        undefined,
+        logger,
         10,
       );
       const assertion = promise.then(
@@ -326,13 +327,19 @@ describe("promptComposer", () => {
           hasNewTurn: false,
           composerCleared: true,
           turnsCount: 10,
-          lastTurnLength: "previous turn text".length,
+          editorLength: "sensitive composer text".length,
+          lastTurnLength: "sensitive previous turn text".length,
         }),
       });
       // Free text must not leak into the structured details.
       const commitProbe = error.details?.commitProbe as Record<string, unknown>;
       expect(commitProbe).not.toHaveProperty("lastTurn");
       expect(commitProbe).not.toHaveProperty("editorValue");
+      const logged = logger.mock.calls.flat().join("\n");
+      expect(logged).toContain(`"editorLength":${"sensitive composer text".length}`);
+      expect(logged).toContain(`"lastTurnLength":${"sensitive previous turn text".length}`);
+      expect(logged).not.toContain("sensitive composer text");
+      expect(logged).not.toContain("sensitive previous turn text");
     } finally {
       vi.useRealTimers();
     }
@@ -687,7 +694,42 @@ describe("promptComposer", () => {
         vi.fn().mockResolvedValue(undefined),
       ),
     ).rejects.toMatchObject({
-      details: { code: "send-target-changed-after-preflight" },
+      details: {
+        code: "send-target-changed-after-preflight",
+        oracleErrorClass: "integrity_ui_unknown",
+        retryable: false,
+      },
+    });
+    expect(input.dispatchMouseEvent).not.toHaveBeenCalled();
+    expect(input.dispatchKeyEvent).not.toHaveBeenCalled();
+  });
+
+  test("an attachment-state change after preflight is a non-retryable integrity refusal", async () => {
+    const input = { dispatchMouseEvent: vi.fn(), dispatchKeyEvent: vi.fn() };
+    const runtime = {
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({ result: { value: true } })
+        .mockResolvedValueOnce({ result: { value: { status: "point", x: 10, y: 20 } } })
+        .mockResolvedValueOnce({ result: { value: false } }),
+    };
+
+    await expect(
+      promptComposer.attemptSendButton(
+        runtime as never,
+        input as never,
+        undefined,
+        ["review.md"],
+        undefined,
+        "attachment-binding-1",
+        vi.fn().mockResolvedValue(undefined),
+      ),
+    ).rejects.toMatchObject({
+      details: {
+        code: "attachment-state-changed-after-preflight",
+        oracleErrorClass: "integrity_ui_unknown",
+        retryable: false,
+      },
     });
     expect(input.dispatchMouseEvent).not.toHaveBeenCalled();
     expect(input.dispatchKeyEvent).not.toHaveBeenCalled();
@@ -777,7 +819,8 @@ describe("promptComposer", () => {
     ).rejects.toMatchObject({
       details: {
         code: "prompt-inline-fallback-mismatch",
-        retryable: true,
+        oracleErrorClass: "integrity_ui_unknown",
+        retryable: false,
         observedLength: 9,
       },
     });
@@ -809,7 +852,7 @@ describe("promptComposer", () => {
                 observedLength: 24,
                 inputFileCount: 0,
                 residualAttachmentCount: 1,
-                residualAttachmentKinds: ["attachment-preview"],
+                residualAttachmentKinds: ["private-filename.pdf"],
               },
             },
           },
@@ -831,9 +874,10 @@ describe("promptComposer", () => {
     ).rejects.toMatchObject({
       details: {
         code: "prompt-inline-fallback-residual-attachment",
-        retryable: true,
+        oracleErrorClass: "integrity_ui_unknown",
+        retryable: false,
         residualAttachmentCount: 1,
-        residualAttachmentKinds: ["attachment-preview"],
+        residualAttachmentKinds: ["attachment-node"],
       },
     });
 
@@ -952,7 +996,8 @@ describe("promptComposer", () => {
         throw new BrowserAutomationError("Dispatch guard expired.", {
           stage: "model-selection",
           code: "protected-dispatch-guard-not-armed",
-          retryable: true,
+          oracleErrorClass: "integrity_ui_unknown",
+          retryable: false,
         });
       },
     };
@@ -995,7 +1040,11 @@ describe("promptComposer", () => {
         onDispatchAttempt,
       ),
     ).rejects.toMatchObject({
-      details: { code: "protected-dispatch-guard-not-armed", retryable: true },
+      details: {
+        code: "protected-dispatch-guard-not-armed",
+        oracleErrorClass: "integrity_ui_unknown",
+        retryable: false,
+      },
     });
 
     expect(onDispatchAttempt).toHaveBeenCalledTimes(1);
@@ -1283,7 +1332,8 @@ describe("promptComposer", () => {
         details: {
           stage: "submit-prompt",
           code: "prompt-inline-fallback-mismatch",
-          retryable: true,
+          oracleErrorClass: "integrity_ui_unknown",
+          retryable: false,
         },
       });
       await vi.advanceTimersByTimeAsync(1_000);
@@ -1369,7 +1419,11 @@ describe("promptComposer", () => {
           logger as never,
         );
         const assertion = expect(submission).rejects.toMatchObject({
-          details: { code: "prompt-inline-fallback-mismatch", retryable: true },
+          details: {
+            code: "prompt-inline-fallback-mismatch",
+            oracleErrorClass: "integrity_ui_unknown",
+            retryable: false,
+          },
         });
         await vi.advanceTimersByTimeAsync(1_000);
         await assertion;
@@ -1455,6 +1509,11 @@ describe("promptComposer", () => {
                 editorText: "hello",
                 fallbackValue: "",
                 activeValue: "hello",
+                activeExactValue: "hello",
+                activeExactVerified: true,
+                activeExactReason: null,
+                selectionRestored: true,
+                focusPreserved: true,
                 activeVisible: true,
                 activeFocused: true,
               },

@@ -153,6 +153,7 @@ class FakeMutationObserver {
 }
 
 class FakeElement extends FakeEventTarget {
+  ownerDocument: FakeDocument | null = null;
   parentElement: FakeElement | null = null;
   readonly children: FakeElement[];
   readonly tagName: string;
@@ -175,11 +176,19 @@ class FakeElement extends FakeEventTarget {
   }
 
   get innerText(): string {
-    return this.textContent;
+    return this.getAttribute("data-inner-text") ?? this.textContent;
+  }
+
+  get innerHTML(): string {
+    return this.getAttribute("data-inner-html") ?? this.selectionText;
   }
 
   get textContent(): string {
     return `${this.ownText}${this.children.map((child) => child.textContent).join("")}`;
+  }
+
+  get selectionText(): string {
+    return this.getAttribute("data-selection-text") ?? this.textContent;
   }
 
   get hidden(): boolean {
@@ -270,6 +279,10 @@ class FakeElement extends FakeEventTarget {
     return this.parentElement?.closest(selector) ?? null;
   }
 
+  matches(selector: string): boolean {
+    return matchesSelector(this, selector);
+  }
+
   querySelector(selector: string): FakeElement | null {
     return this.querySelectorAll(selector)[0] ?? null;
   }
@@ -291,16 +304,133 @@ class FakeButtonElement extends FakeElement {
   readonly disabled = false;
 }
 
+class FakeRange {
+  selectedNode: FakeElement | null = null;
+  selectedContents = false;
+  startContainer: FakeElement | null = null;
+  startOffset = 0;
+  endContainer: FakeElement | null = null;
+  endOffset = 0;
+
+  constructor(caretNode?: FakeElement | null) {
+    if (!caretNode) return;
+    this.startContainer = caretNode;
+    this.endContainer = caretNode;
+    this.startOffset = caretNode.selectionText.length;
+    this.endOffset = caretNode.selectionText.length;
+  }
+
+  selectNodeContents(node: FakeElement): void {
+    this.selectedNode = node;
+    this.selectedContents = true;
+    this.startContainer = node;
+    this.startOffset = 0;
+    this.endContainer = node;
+    this.endOffset = node.selectionText.length;
+  }
+
+  cloneRange(): FakeRange {
+    const clone = new FakeRange();
+    clone.selectedNode = this.selectedNode;
+    clone.selectedContents = this.selectedContents;
+    clone.startContainer = this.startContainer;
+    clone.startOffset = this.startOffset;
+    clone.endContainer = this.endContainer;
+    clone.endOffset = this.endOffset;
+    return clone;
+  }
+}
+
+class FakeSelection {
+  private ranges: FakeRange[] = [];
+  anchorNode: FakeElement | null = null;
+  anchorOffset = 0;
+  focusNode: FakeElement | null = null;
+  focusOffset = 0;
+
+  constructor(
+    initialNode: FakeElement | null,
+    private readonly setActiveElement: (node: FakeElement) => void,
+  ) {
+    if (!initialNode) return;
+    const range = new FakeRange(initialNode);
+    this.ranges = [range];
+    this.anchorNode = initialNode;
+    this.anchorOffset = range.startOffset;
+    this.focusNode = initialNode;
+    this.focusOffset = range.endOffset;
+  }
+
+  get rangeCount(): number {
+    return this.ranges.length;
+  }
+
+  getRangeAt(index: number): FakeRange {
+    const range = this.ranges[index];
+    if (!range) throw new Error("range missing");
+    return range;
+  }
+
+  removeAllRanges(): void {
+    this.ranges = [];
+    this.anchorNode = null;
+    this.anchorOffset = 0;
+    this.focusNode = null;
+    this.focusOffset = 0;
+  }
+
+  addRange(range: FakeRange): void {
+    this.ranges.push(range);
+    this.anchorNode = range.startContainer;
+    this.anchorOffset = range.startOffset;
+    this.focusNode = range.endContainer;
+    this.focusOffset = range.endOffset;
+    if (range.selectedContents && range.selectedNode) {
+      this.setActiveElement(range.selectedNode);
+    }
+  }
+
+  setBaseAndExtent(
+    anchorNode: FakeElement,
+    anchorOffset: number,
+    focusNode: FakeElement,
+    focusOffset: number,
+  ): void {
+    const range = new FakeRange();
+    range.startContainer = anchorNode;
+    range.startOffset = anchorOffset;
+    range.endContainer = focusNode;
+    range.endOffset = focusOffset;
+    this.ranges = [range];
+    this.anchorNode = anchorNode;
+    this.anchorOffset = anchorOffset;
+    this.focusNode = focusNode;
+    this.focusOffset = focusOffset;
+  }
+
+  toString(): string {
+    return this.ranges
+      .map((range) =>
+        range.selectedContents && range.selectedNode ? range.selectedNode.selectionText : "",
+      )
+      .join("");
+  }
+}
+
 class FakeDocument extends FakeEventTarget {
   readonly body: FakeElement;
   readonly documentElement: FakeElement;
   activeElement: FakeElement | null;
   private hitTarget: FakeElement | null = null;
+  private readonly selection: FakeSelection;
 
   constructor(children: FakeElement[]) {
     super();
     this.body = new FakeElement("body", {}, children);
     this.documentElement = this.body;
+    for (const element of [this.body, ...flattenElements(this.body.children)]) {
+      element.ownerDocument = this;
+    }
     const promptCandidates = flattenElements(this.body.children).filter(
       (element) =>
         (element.getAttribute("id") === "prompt-textarea" ||
@@ -310,6 +440,17 @@ class FakeDocument extends FakeEventTarget {
         element.getBoundingClientRect().height > 0,
     );
     this.activeElement = promptCandidates.length === 1 ? promptCandidates[0] : null;
+    this.selection = new FakeSelection(this.activeElement, (node) => {
+      this.activeElement = node;
+    });
+  }
+
+  createRange(): FakeRange {
+    return new FakeRange();
+  }
+
+  getSelection(): FakeSelection {
+    return this.selection;
   }
 
   querySelector(selector: string): FakeElement | null {
@@ -421,6 +562,22 @@ class FakeWindow extends FakeEventTarget {
         this.propagationStopped = true;
       },
     };
+    this.invokeListeners(event);
+    if (!event.propagationStopped) document.invokeListeners(event);
+    if (!event.propagationStopped) target.invokeListeners(event);
+    return event;
+  }
+
+  redispatchDomEvent(
+    document: FakeDocument,
+    target: FakeElement,
+    event: FakeDomEvent,
+  ): FakeDomEvent {
+    event.currentTarget = null;
+    event.isTrusted = false;
+    event.defaultPrevented = false;
+    event.immediatePropagationStopped = false;
+    event.propagationStopped = false;
     this.invokeListeners(event);
     if (!event.propagationStopped) document.invokeListeners(event);
     if (!event.propagationStopped) target.invokeListeners(event);
@@ -624,7 +781,7 @@ describe("prompt composer attachment expressions", () => {
         "data-state": "uploading",
       }),
     );
-    expect(evaluateAttachmentReadyExpression([expectedName], uploading)).toBe(true);
+    expect(evaluateAttachmentReadyExpression([expectedName], uploading)).toBe(false);
     expect(
       evaluateAttachmentReadyExpression(
         [expectedName],
@@ -635,6 +792,11 @@ describe("prompt composer attachment expressions", () => {
         true,
       ),
     ).toBe(false);
+
+    const textOnlyUploading = makeDocument(
+      new FakeElement("div", { "data-testid": "attachment-upload" }, [], "Uploading"),
+    );
+    expect(evaluateAttachmentReadyExpression([expectedName], textOnlyUploading)).toBe(false);
 
     const unlabeled = makeDocument(new FakeElement("div", { "data-testid": "attachment-chip" }));
     expect(
@@ -648,6 +810,147 @@ describe("prompt composer attachment expressions", () => {
       ),
     ).toBe(false);
   });
+
+  test("exact attachment readiness ignores unrelated labelled control groups", () => {
+    const genericGroup = () =>
+      new FakeElement("div", { role: "group", "aria-label": "Voice mode controls" }, [
+        new FakeElement("button", { "aria-label": "Start voice mode" }),
+      ]);
+    const prompt = () =>
+      new FakeElement(
+        "div",
+        { id: "prompt-textarea", contenteditable: "true", role: "textbox" },
+        [],
+        "review",
+      );
+    const textOnly = new FakeDocument([
+      new FakeElement("div", { "data-testid": "unified-composer" }, [
+        genericGroup(),
+        prompt(),
+        new FakeElement("button", { "data-testid": "send-button" }),
+      ]),
+    ]);
+    expect(evaluateAttachmentReadyExpression([], textOnly, undefined, false, undefined, true)).toBe(
+      true,
+    );
+
+    const fileName = "expected-review.md";
+    const withAttachment = new FakeDocument([
+      new FakeElement("div", { "data-testid": "unified-composer" }, [
+        genericGroup(),
+        new FakeElement("div", { "data-testid": "attachment-chip" }, [
+          new FakeElement("span", {}, [], fileName),
+          new FakeElement("button", { "aria-label": `Remove file 1: ${fileName}` }),
+        ]),
+        prompt(),
+        new FakeElement("button", { "data-testid": "send-button" }),
+      ]),
+    ]);
+    expect(
+      evaluateAttachmentReadyExpression(
+        [fileName],
+        withAttachment,
+        undefined,
+        false,
+        undefined,
+        true,
+      ),
+    ).toBe(true);
+  });
+
+  test("exact empty attachment readiness still rejects a file-like labelled group", () => {
+    const document = new FakeDocument([
+      new FakeElement("div", { "data-testid": "unified-composer" }, [
+        new FakeElement("div", { role: "group", "aria-label": "unexpected-report.pdf" }),
+        new FakeElement(
+          "div",
+          { id: "prompt-textarea", contenteditable: "true", role: "textbox" },
+          [],
+          "review",
+        ),
+        new FakeElement("button", { "data-testid": "send-button" }),
+      ]),
+    ]);
+
+    expect(evaluateAttachmentReadyExpression([], document, undefined, false, undefined, true)).toBe(
+      false,
+    );
+  });
+
+  test("exact empty attachment readiness rejects a generated bundle tile without an extension", () => {
+    const document = new FakeDocument([
+      new FakeElement("div", { "data-testid": "unified-composer" }, [
+        new FakeElement("div", { role: "group", "aria-label": "attachments-bundle" }, [
+          new FakeElement("span", {}, [], "Document"),
+        ]),
+        new FakeElement(
+          "div",
+          { id: "prompt-textarea", contenteditable: "true", role: "textbox" },
+          [],
+          "review",
+        ),
+        new FakeElement("button", { "data-testid": "send-button" }),
+      ]),
+    ]);
+
+    expect(evaluateAttachmentReadyExpression([], document, undefined, false, undefined, true)).toBe(
+      false,
+    );
+  });
+
+  test.each([
+    ["aria-busy", "true"],
+    ["data-state", "uploading"],
+  ] as const)(
+    "exact empty attachment readiness ignores generic hidden %s=%s",
+    (attribute, value) => {
+      const document = new FakeDocument([
+        new FakeElement("div", { "data-testid": "unified-composer" }, [
+          new FakeElement("div", { [attribute]: value, "data-hidden": "true" }),
+          new FakeElement(
+            "div",
+            { id: "prompt-textarea", contenteditable: "true", role: "textbox" },
+            [],
+            "review",
+          ),
+          new FakeElement("button", { "data-testid": "send-button" }),
+        ]),
+      ]);
+
+      expect(
+        evaluateAttachmentReadyExpression([], document, undefined, false, undefined, true),
+      ).toBe(true);
+    },
+  );
+
+  test.each([
+    ["aria-busy", "true"],
+    ["data-state", "uploading"],
+  ] as const)(
+    "exact empty attachment readiness rejects hidden attachment-anchored %s=%s",
+    (attribute, value) => {
+      const document = new FakeDocument([
+        new FakeElement("div", { "data-testid": "unified-composer" }, [
+          new FakeElement("div", {
+            "data-testid": "attachment-upload",
+            [attribute]: value,
+            "data-hidden": "true",
+          }),
+          new FakeElement(
+            "div",
+            { id: "prompt-textarea", contenteditable: "true", role: "textbox" },
+            [],
+            "review",
+          ),
+          new FakeElement("button", { "data-testid": "send-button" }),
+        ]),
+      ]);
+
+      expect(
+        evaluateAttachmentReadyExpression([], document, undefined, false, undefined, true),
+      ).toBe(false);
+    },
+  );
 
   test("exact attachment readiness proves file multiplicity without reusing one match", () => {
     const document = new FakeDocument([
@@ -1253,6 +1556,7 @@ interface PublicRouteFixtureOptions {
   modelOptionalMarkerConflict?: boolean;
   modelStateContradiction?: boolean;
   prompt?: string;
+  renderedInnerText?: string;
   proChecked?: boolean;
   proMarkerMissing?: boolean;
   proOptionalMarkerConflict?: boolean;
@@ -1265,6 +1569,7 @@ interface PublicRouteFixtureOptions {
   solRowText?: string;
   solOpensOnDelayedHover?: boolean;
   solTriggerText?: string;
+  selectionText?: string;
   wrapComposerInForm?: boolean;
 }
 
@@ -1279,6 +1584,12 @@ function makePublicRouteFixture(options: PublicRouteFixtureOptions = {}) {
       contenteditable: "true",
       role: "textbox",
       "data-oracle-send-editor-binding": composerBindingToken,
+      ...(options.renderedInnerText === undefined
+        ? {}
+        : { "data-inner-text": options.renderedInnerText }),
+      ...(options.selectionText === undefined
+        ? {}
+        : { "data-selection-text": options.selectionText }),
     },
     [],
     prompt,
@@ -1933,13 +2244,22 @@ describe("public controlled-submenu protected-route proof", () => {
     });
   });
 
-  test("the trusted button capture consumes the proof before application click handlers", async () => {
+  test("window capture consumes the proof before descendant application capture handlers", async () => {
     const fixture = await installPublicRouteDispatchGuard();
     const applicationObservations: string[] = [];
+    fixture.document.addEventListener(
+      "click",
+      () => {
+        const status = fixture.evaluate(fixture.guard.immediatelyBeforeDispatchExpression!);
+        expect(status).toMatchObject({ status: "allowed", routeProofStatus: "consumed" });
+        applicationObservations.push("document-capture");
+      },
+      { capture: true },
+    );
     fixture.sendButton.addEventListener("click", () => {
       const status = fixture.evaluate(fixture.guard.immediatelyBeforeDispatchExpression!);
       expect(status).toMatchObject({ status: "allowed", routeProofStatus: "consumed" });
-      applicationObservations.push("click");
+      applicationObservations.push("button");
     });
     for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup"]) {
       const event = fixture.windowStub.dispatchDomEvent(fixture.document, type, fixture.sendButton);
@@ -1951,7 +2271,7 @@ describe("public controlled-submenu protected-route proof", () => {
       fixture.sendButton,
     );
     expect(click.defaultPrevented).toBe(false);
-    expect(applicationObservations).toEqual(["click"]);
+    expect(applicationObservations).toEqual(["document-capture", "button"]);
     expect(fixture.bindingPayloads).toHaveLength(1);
     expect(
       fixture.guard.verdictBinding?.parsePayload(fixture.bindingPayloads[0] ?? ""),
@@ -1959,6 +2279,180 @@ describe("public controlled-submenu protected-route proof", () => {
     const verdict = fixture.evaluate(fixture.guard.afterDispatchExpression!);
     expect(verdict).toMatchObject({ status: "allowed", lastEvent: "click" });
     expect(() => fixture.guard.assertAfterDispatchResult?.(verdict)).not.toThrow();
+  });
+
+  test("blocks asynchronous redispatch of the exact trusted click Event", async () => {
+    const fixture = await installPublicRouteDispatchGuard();
+    let applicationClicks = 0;
+    let capturedClick: FakeDomEvent | null = null;
+    fixture.sendButton.addEventListener("click", (event) => {
+      applicationClicks += 1;
+      capturedClick = event;
+    });
+    for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup"]) {
+      const event = fixture.windowStub.dispatchDomEvent(fixture.document, type, fixture.sendButton);
+      expect(event.defaultPrevented).toBe(false);
+    }
+    const click = fixture.windowStub.dispatchDomEvent(
+      fixture.document,
+      "click",
+      fixture.sendButton,
+    );
+    expect(click.defaultPrevented).toBe(false);
+    expect(applicationClicks).toBe(1);
+    expect(capturedClick).toBe(click);
+
+    const replay = fixture.windowStub.redispatchDomEvent(
+      fixture.document,
+      fixture.sendButton,
+      click,
+    );
+    expect(replay.isTrusted).toBe(false);
+    expect(replay.defaultPrevented).toBe(true);
+    expect(applicationClicks).toBe(1);
+    expect(fixture.bindingPayloads).toHaveLength(1);
+    expect(
+      fixture.guard.verdictBinding?.parsePayload(fixture.bindingPayloads[0] ?? ""),
+    ).toMatchObject({ status: "allowed", lastEvent: "click" });
+    const verdict = fixture.evaluate(fixture.guard.afterDispatchExpression!);
+    expect(verdict).toMatchObject({
+      status: "blocked",
+      reason: "duplicate-trusted-dispatch-event",
+      lastEvent: "click",
+    });
+  });
+
+  test("accepts exact multiline composer text when innerText adds blank-line separators", async () => {
+    const prompt = [
+      "Review this carefully.",
+      "",
+      "Preserve both blank lines:",
+      "",
+      "```ts",
+      "const answer = 42;",
+      "```",
+    ].join("\n");
+    const renderedInnerText = prompt
+      .replace("carefully.\n\nPreserve", "carefully.\n\n\nPreserve")
+      .replace("lines:\n\n```", "lines:\n\n\n```");
+    const fixture = await installPublicRouteDispatchGuard({ prompt, renderedInnerText });
+    const selection = fixture.document.getSelection();
+    const originalSelection = {
+      anchorNode: selection.anchorNode,
+      anchorOffset: selection.anchorOffset,
+      focusNode: selection.focusNode,
+      focusOffset: selection.focusOffset,
+    };
+
+    expect(fixture.installed).toMatchObject({
+      installed: true,
+      exactPromptVerified: true,
+      exactReadVerified: true,
+      selectionRestored: true,
+      focusPreserved: true,
+    });
+    expect(fixture.document.activeElement).toBe(fixture.editor);
+    expect(selection).toMatchObject(originalSelection);
+
+    for (const type of ["pointerdown", "mousedown"]) {
+      const event = fixture.windowStub.dispatchDomEvent(fixture.document, type, fixture.sendButton);
+      expect(event.defaultPrevented).toBe(false);
+    }
+    // Chromium's mousedown default focuses the send button before pointerup.
+    // Re-selecting the editor after this point would steal focus and cancel
+    // the trusted click, so the guard must use its exact DOM continuity proof.
+    fixture.document.activeElement = fixture.sendButton;
+    for (const type of ["pointerup", "mouseup", "click"]) {
+      const event = fixture.windowStub.dispatchDomEvent(fixture.document, type, fixture.sendButton);
+      expect(event.defaultPrevented).toBe(false);
+      expect(fixture.document.activeElement).toBe(fixture.sendButton);
+    }
+    expect(fixture.evaluate(fixture.guard.afterDispatchExpression!)).toMatchObject({
+      status: "allowed",
+      lastEvent: "click",
+    });
+    expect(fixture.document.activeElement).toBe(fixture.sendButton);
+    expect(selection).toMatchObject(originalSelection);
+  });
+
+  test("blocks a composer DOM change after the send button takes focus", async () => {
+    const fixture = await installPublicRouteDispatchGuard({
+      prompt: "exact protected prompt",
+    });
+    for (const type of ["pointerdown", "mousedown"]) {
+      const event = fixture.windowStub.dispatchDomEvent(fixture.document, type, fixture.sendButton);
+      expect(event.defaultPrevented).toBe(false);
+    }
+    fixture.document.activeElement = fixture.sendButton;
+    fixture.editor.setAttribute("data-inner-html", "changed protected prompt");
+
+    const pointerUp = fixture.windowStub.dispatchDomEvent(
+      fixture.document,
+      "pointerup",
+      fixture.sendButton,
+    );
+    expect(pointerUp.defaultPrevented).toBe(true);
+    expect(fixture.document.activeElement).toBe(fixture.sendButton);
+    expect(
+      fixture.guard.verdictBinding?.parsePayload(fixture.bindingPayloads[0] ?? ""),
+    ).toMatchObject({
+      status: "blocked",
+      reason: "exact-prompt-changed",
+      lastEvent: "pointerup",
+    });
+  });
+
+  test("fails closed when the editing-host plaintext differs despite matching innerText", async () => {
+    const fixture = makePublicRouteFixture({
+      prompt: "expected prompt",
+      renderedInnerText: "expected prompt",
+      selectionText: "different prompt",
+    });
+    await expect(fixture.mint()).resolves.toMatchObject({
+      verified: true,
+      proofMinted: true,
+    });
+    const guard = buildGpt56SolProFinalDispatchGuard(
+      fixture.attachmentToken,
+      fixture.composerBindingToken,
+      {
+        exactSubmission: {
+          prompt: "expected prompt",
+          attachments: [],
+        },
+      },
+    );
+    const bindingPayloads: string[] = [];
+    windowStubSetBinding(fixture.windowStub, guard.verdictBinding!.name, bindingPayloads);
+    const installed = fixture.evaluate(guard.expression);
+
+    expect(installed).toMatchObject({
+      installed: false,
+      status: "blocked",
+      reason: "exact-prompt-changed",
+      exactPromptVerified: false,
+      exactReadVerified: true,
+      selectionRestored: true,
+      focusPreserved: true,
+    });
+    let failure: unknown;
+    try {
+      guard.assertResult(installed);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
+      message: expect.stringContaining(
+        "The exact ChatGPT submission changed after protected preflight",
+      ),
+      details: expect.objectContaining({
+        code: "protected-route-changed-after-preflight",
+        guardReason: "exact-prompt-changed",
+        oracleErrorClass: "integrity_ui_unknown",
+        retryable: false,
+      }),
+    });
+    expect(bindingPayloads).toEqual([]);
   });
 
   test.each([

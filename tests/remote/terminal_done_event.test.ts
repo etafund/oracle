@@ -7,11 +7,13 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createRemoteServer, parseCaptureBindingVerifiedQuality } from "../../src/remote/server.js";
 import {
   buildCaptureBindingFailureError,
+  computePromptSha256,
   formatCaptureBindingVerifiedLog,
 } from "../../src/browser/actions/captureBinding.js";
 import {
   createRemoteBrowserExecutor,
   getRemoteBrowserRecoveryFromError,
+  recoverRemoteBrowserSession,
   RemoteRunFailedError,
 } from "../../src/remote/client.js";
 import { BrowserAutomationError } from "../../src/oracle/errors.js";
@@ -21,8 +23,13 @@ import {
   PROMPT_RECOVERY_PREVIEW_ALGORITHM,
 } from "../../src/browser/promptDomMatch.js";
 import {
+  buildRemoteBrowserPreSubmitDiagnostic,
+  parseRemoteBrowserPreSubmitDiagnostic,
   REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
+  REMOTE_BROWSER_RECOVERY_PATH,
+  REMOTE_BROWSER_RECOVERY_PROTOCOL,
   REMOTE_BROWSER_RUN_PATH,
+  type RemoteBrowserRecoveryRequest,
 } from "../../src/remote/types.js";
 import {
   serveCompatibleRecoveryHealth,
@@ -70,6 +77,25 @@ const MINIMAL_RESULT: BrowserRunResult = {
 };
 
 const STRONG_SUCCESS_PROVENANCE = strongRemoteSuccessProvenance("x");
+const EXACT_PROMPT_PRE_SUBMIT_DIAGNOSTIC = buildRemoteBrowserPreSubmitDiagnostic({
+  stage: "model-selection",
+  code: "protected-route-changed-after-preflight",
+  guardReason: "exact-prompt-changed",
+  composerBindingVerified: true,
+  modelVerified: true,
+  modeVerified: true,
+  privateModelProofAttempted: false,
+  privateModelProofValid: true,
+  guardInstalled: false,
+  guardStatus: "blocked",
+  exactPromptVerified: false,
+  attachmentStateVerified: true,
+  focusVerified: true,
+  exactReadVerified: true,
+  exactReadReason: null,
+  selectionRestored: true,
+  focusPreserved: true,
+})!;
 
 const savedFleetDir = process.env.ORACLE_FLEET_DIR;
 const tempDirs: string[] = [];
@@ -478,6 +504,136 @@ describe("server: terminal done event", () => {
   );
 
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "protected pre-submit failures emit only a closed diagnostic and cannot remain retryable",
+    async () => {
+      await isolatedFleetDir();
+      const secretPrompt = "SECRET_PROMPT_MUST_NOT_CROSS";
+      const secretPath = "/private/worker/profile/SECRET_PATH_MUST_NOT_CROSS";
+      const secretSignal = "SECRET_MODEL_LABEL_MUST_NOT_CROSS";
+      const logs: string[] = [];
+      const server = await createRemoteServer(
+        {
+          host: "127.0.0.1",
+          port: 0,
+          token: "secret",
+          logger: (message) => logs.push(message),
+          attachOnly: false,
+        },
+        {
+          runBrowser: async () => {
+            throw new BrowserAutomationError(
+              "The exact ChatGPT submission changed after protected preflight " +
+                `${secretPrompt} ${secretPath} ${secretSignal}.`,
+              {
+                stage: "model-selection",
+                code: "protected-route-changed-after-preflight",
+                guardReason: "exact-prompt-changed",
+                composerBindingVerified: true,
+                modelVerified: true,
+                modeVerified: true,
+                modelSignals: [secretSignal],
+                modeSignals: ["Pro"],
+                modelSignalCount: 1,
+                modeSignalCount: 1,
+                privateModelProofAttempted: false,
+                privateModelProofValid: true,
+                guardInstalled: false,
+                guardStatus: "blocked",
+                exactPromptVerified: false,
+                attachmentStateVerified: true,
+                focusVerified: true,
+                exactReadVerified: true,
+                exactReadReason: null,
+                selectionRestored: true,
+                focusPreserved: true,
+                prompt: secretPrompt,
+                path: secretPath,
+                oracleErrorClass: "integrity_ui_unknown",
+                // The central allowlist must override a contradictory producer.
+                retryable: true,
+              },
+            );
+          },
+        },
+      );
+      try {
+        const response = await rawRun(server.port, "secret");
+        const done = lastEvent(response.body);
+        expect(done).toMatchObject({
+          type: "done",
+          ok: false,
+          errorClass: "integrity_ui_unknown",
+          errorMessage:
+            "Protected browser pre-submit integrity proof failed; no prompt was submitted.",
+          retryable: false,
+          preSubmitDiagnostic: {
+            schema: "remote-browser-pre-submit-diagnostic.v1",
+            stage: "model-selection",
+            code: "protected-route-changed-after-preflight",
+            reason: "exact-prompt-changed",
+            composerBindingVerified: true,
+            modelVerified: true,
+            modeVerified: true,
+            modelSignalCount: 1,
+            modeSignalCount: 1,
+            guardStatus: "blocked",
+            exactPromptVerified: false,
+            attachmentStateVerified: true,
+            focusVerified: true,
+            exactReadVerified: true,
+            selectionRestored: true,
+            focusPreserved: true,
+          },
+        });
+        expect(response.body).not.toContain(secretPrompt);
+        expect(response.body).not.toContain(secretPath);
+        expect(response.body).not.toContain(secretSignal);
+        expect(response.body).not.toContain("modelSignals");
+        expect(response.body).not.toContain('"prompt"');
+        const journal = logs.join("\n");
+        expect(journal).not.toContain(secretPrompt);
+        expect(journal).not.toContain(secretPath);
+        expect(journal).not.toContain(secretSignal);
+        expect(journal).toContain(
+          "protected browser pre-submit integrity proof failed; no prompt was submitted",
+        );
+      } finally {
+        await server.close();
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "an invalid declared error class fails closed instead of falling through to transport",
+    async () => {
+      await isolatedFleetDir();
+      const server = await createRemoteServer(
+        { host: "127.0.0.1", port: 0, token: "secret", logger: () => {}, attachOnly: false },
+        {
+          runBrowser: async () => {
+            throw new BrowserAutomationError("pre-submit failure", {
+              stage: "model-selection",
+              oracleErrorClass: "integrity_ui_typo",
+              retryable: true,
+            });
+          },
+        },
+      );
+      try {
+        const response = await rawRun(server.port, "secret");
+        expect(lastEvent(response.body)).toMatchObject({
+          type: "done",
+          ok: false,
+          errorClass: "integrity_ui_unknown",
+          retryable: false,
+        });
+      } finally {
+        await server.close();
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
     "failure without a declared class falls back to submit-aware transport classes",
     async () => {
       await isolatedFleetDir();
@@ -513,6 +669,31 @@ describe("server: terminal done event", () => {
 });
 
 describe("client: terminal done enforcement", () => {
+  test.each([
+    "row-selection-state-contradictory",
+    "checked-row-not-exact",
+    "public-route-proof-result-missing",
+    "verdict-binding-call-failed",
+  ] as const)("preserves the fixed provider diagnostic reason %s", (reason) => {
+    const diagnostic = buildRemoteBrowserPreSubmitDiagnostic({
+      stage: "model-selection",
+      code: "protected-route-dispatch-unproven",
+      guardReason: reason,
+    });
+    expect(diagnostic?.reason).toBe(reason);
+    expect(parseRemoteBrowserPreSubmitDiagnostic(diagnostic)).toEqual(diagnostic);
+  });
+
+  test("normalizes arbitrary provider diagnostic reasons to the fixed sentinel", () => {
+    const diagnostic = buildRemoteBrowserPreSubmitDiagnostic({
+      stage: "model-selection",
+      code: "protected-route-dispatch-unproven",
+      guardReason: "SECRET_dynamic_provider_reason",
+    });
+    expect(diagnostic?.reason).toBe("unrecognized");
+    expect(parseRemoteBrowserPreSubmitDiagnostic(diagnostic)).toEqual(diagnostic);
+  });
+
   test.skipIf(!CAN_LISTEN_LOCALHOST)("resolves only on done.ok", async () => {
     const fake = await startFakeRunServer(
       [
@@ -836,7 +1017,7 @@ describe("client: terminal done enforcement", () => {
   });
 
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
-    "does not trust retry advice from a legacy 409 without v4 route headers",
+    "does not trust retry advice from a legacy 409 without current route headers",
     async () => {
       const fake = await startStaticRunServer({
         statusCode: 409,
@@ -859,7 +1040,7 @@ describe("client: terminal done enforcement", () => {
         );
         expect(failure).toBeInstanceOf(RemoteRunFailedError);
         expect((failure as RemoteRunFailedError).message).toMatch(
-          /lacked the exact authenticated remote-browser-recovery\.v4 protocol and route identity/i,
+          /lacked the exact authenticated remote-browser-recovery\.v5 protocol and route identity/i,
         );
         expect((failure as RemoteRunFailedError).errorClass).toBe("integrity_ui_unknown");
         expect((failure as RemoteRunFailedError).retryable).toBe(false);
@@ -1024,6 +1205,231 @@ describe("client: terminal done enforcement", () => {
   );
 
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "a valid closed pre-submit diagnostic reaches the typed caller",
+    async () => {
+      const fake = await startFakeRunServer([
+        {
+          type: "done",
+          ok: false,
+          errorClass: "integrity_ui_unknown",
+          errorMessage: "exact protected submission changed",
+          retryable: false,
+          preSubmitDiagnostic: EXACT_PROMPT_PRE_SUBMIT_DIAGNOSTIC,
+        },
+      ]);
+      try {
+        const executor = createRemoteBrowserExecutor({
+          host: `127.0.0.1:${fake.port}`,
+          token: "secret",
+        });
+        const failure = await executor({ prompt: "x", config: {} }).then(
+          () => null,
+          (error: unknown) => error,
+        );
+        expect(failure).toBeInstanceOf(RemoteRunFailedError);
+        expect((failure as RemoteRunFailedError).errorClass).toBe("integrity_ui_unknown");
+        expect((failure as RemoteRunFailedError).retryable).toBe(false);
+        expect((failure as RemoteRunFailedError).preSubmitDiagnostic).toEqual(
+          EXACT_PROMPT_PRE_SUBMIT_DIAGNOSTIC,
+        );
+      } finally {
+        await fake.close();
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "malformed or contradictory pre-submit diagnostics fail closed",
+    async () => {
+      const cases = [
+        {
+          label: "extra arbitrary field",
+          event: {
+            type: "done",
+            ok: false,
+            errorClass: "integrity_ui_unknown",
+            errorMessage: "failed",
+            retryable: false,
+            preSubmitDiagnostic: {
+              ...EXACT_PROMPT_PRE_SUBMIT_DIAGNOSTIC,
+              prompt: "SECRET_PROMPT",
+            },
+          },
+        },
+        {
+          label: "retryable transport contradiction",
+          event: {
+            type: "done",
+            ok: false,
+            errorClass: "transport_interrupted_before_submit",
+            errorMessage: "failed",
+            retryable: true,
+            preSubmitDiagnostic: EXACT_PROMPT_PRE_SUBMIT_DIAGNOSTIC,
+          },
+        },
+      ];
+      for (const { label, event } of cases) {
+        const fake = await startFakeRunServer([event]);
+        try {
+          const executor = createRemoteBrowserExecutor({
+            host: `127.0.0.1:${fake.port}`,
+            token: "secret",
+          });
+          const failure = await executor({ prompt: "x", config: {} }).then(
+            () => null,
+            (error: unknown) => error,
+          );
+          expect(failure, label).toBeInstanceOf(RemoteRunFailedError);
+          expect((failure as RemoteRunFailedError).message, label).toMatch(
+            /pre-submit diagnostic was malformed/i,
+          );
+          expect((failure as RemoteRunFailedError).errorClass, label).toBe("integrity_ui_unknown");
+          expect((failure as RemoteRunFailedError).retryable, label).toBe(false);
+          expect((failure as RemoteRunFailedError).preSubmitDiagnostic, label).toBeNull();
+        } finally {
+          await fake.close();
+        }
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "new clients clamp legacy contradictory retryability to the central class allowlist",
+    async () => {
+      const cases = [
+        {
+          label: "integrity failures are never retryable",
+          errorClass: "integrity_ui_unknown",
+          retryable: true,
+          expectedRetryable: false,
+        },
+        {
+          label: "pre-submit transport remains retryable when explicitly declared",
+          errorClass: "transport_interrupted_before_submit",
+          retryable: true,
+          expectedRetryable: true,
+        },
+      ] as const;
+      for (const testCase of cases) {
+        const fake = await startFakeRunServer([
+          {
+            type: "done",
+            ok: false,
+            errorClass: testCase.errorClass,
+            errorMessage: "legacy worker failure",
+            retryable: testCase.retryable,
+          },
+        ]);
+        try {
+          const executor = createRemoteBrowserExecutor({
+            host: `127.0.0.1:${fake.port}`,
+            token: "secret",
+          });
+          const failure = await executor({ prompt: "x", config: {} }).then(
+            () => null,
+            (error: unknown) => error,
+          );
+          expect(failure, testCase.label).toBeInstanceOf(RemoteRunFailedError);
+          expect((failure as RemoteRunFailedError).retryable, testCase.label).toBe(
+            testCase.expectedRetryable,
+          );
+        } finally {
+          await fake.close();
+        }
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "unknown terminal error classes are replaced by a fixed integrity failure",
+    async () => {
+      const rawClass = "SECRET_legacy_unknown_failure";
+      const fake = await startFakeRunServer([
+        {
+          type: "done",
+          ok: false,
+          errorClass: rawClass,
+          retryable: true,
+        },
+      ]);
+      try {
+        const executor = createRemoteBrowserExecutor({
+          host: `127.0.0.1:${fake.port}`,
+          token: "secret",
+        });
+        const failure = await executor({ prompt: "x", config: {} }).then(
+          () => null,
+          (error: unknown) => error,
+        );
+        expect(failure).toBeInstanceOf(RemoteRunFailedError);
+        expect((failure as RemoteRunFailedError).errorClass).toBe("integrity_ui_unknown");
+        expect((failure as RemoteRunFailedError).retryable).toBe(false);
+        expect((failure as RemoteRunFailedError).message).toMatch(/unrecognized error class/i);
+        expect((failure as RemoteRunFailedError).message).not.toContain(rawClass);
+      } finally {
+        await fake.close();
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "capture-only recovery also clamps contradictory retry advice",
+    async () => {
+      const promptPreview = "exact recovery prompt preview";
+      const request: RemoteBrowserRecoveryRequest = {
+        schema: REMOTE_BROWSER_RECOVERY_PROTOCOL,
+        recovery: {
+          category: "browser-automation",
+          stage: "assistant-recheck",
+          originRunId: "origin-recovery-clamp",
+          expiresAt: "2099-01-01T00:00:00.000Z",
+          capability: `v2.${"A".repeat(43)}`,
+          promptPreviewAlgorithm: PROMPT_RECOVERY_PREVIEW_ALGORITHM,
+          promptPreviewSha256: computePromptSha256(promptPreview),
+          promptDomIdentityAlgorithm: PROMPT_DOM_IDENTITY_ALGORITHM,
+          promptDomSha256: "d".repeat(64),
+          runtime: {
+            tabUrl: "https://chatgpt.com/c/recovery-clamp",
+            conversationId: "recovery-clamp",
+            promptSubmitted: true,
+          },
+        },
+        promptPreview,
+        browserConfig: { timeoutMs: 60_000 },
+        options: {},
+      };
+      const fake = await startFakeRecoveryFailureServer({
+        type: "done",
+        ok: false,
+        errorClass: "integrity_ui_unknown",
+        errorMessage: "legacy recovery integrity failure",
+        retryable: true,
+      });
+      try {
+        // A wrapper keeps this fixture focused on the versioned /recover
+        // parser instead of invoking the production /health preflight.
+        const requestFn = ((...args: Parameters<typeof http.request>) =>
+          http.request(...args)) as typeof http.request;
+        const failure = await recoverRemoteBrowserSession({
+          host: `127.0.0.1:${fake.port}`,
+          token: "secret",
+          accountId: "acct1",
+          request,
+          requestFn,
+        }).then(
+          () => null,
+          (error: unknown) => error,
+        );
+        expect(failure).toBeInstanceOf(RemoteRunFailedError);
+        expect((failure as RemoteRunFailedError).errorClass).toBe("integrity_ui_unknown");
+        expect((failure as RemoteRunFailedError).retryable).toBe(false);
+      } finally {
+        await fake.close();
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
     "a recoverable remote failure preserves only logical conversation metadata",
     async () => {
       const fake = await startFakeRunServer(
@@ -1034,7 +1440,9 @@ describe("client: terminal done enforcement", () => {
             runId: "run-recovery-1",
             errorClass: "transport_interrupted_after_submit",
             errorMessage: "Assistant response timed out before completion.",
-            retryable: false,
+            // A contradictory legacy producer must not make the wrapped
+            // BrowserAutomationError retry-safe.
+            retryable: true,
             recovery: {
               category: "browser-automation",
               stage: "assistant-timeout",
@@ -1244,6 +1652,43 @@ async function startFakeRunServer(
   const address = server.address();
   if (!address || typeof address === "string") {
     throw new Error("fake run server did not bind");
+  }
+  return {
+    port: address.port,
+    close: async () =>
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      }),
+  };
+}
+
+async function startFakeRecoveryFailureServer(
+  event: Record<string, unknown>,
+): Promise<{ port: number; close: () => Promise<void> }> {
+  const server = http.createServer((req, res) => {
+    if (req.method !== "POST" || req.url !== REMOTE_BROWSER_RECOVERY_PATH) {
+      res.writeHead(404).end();
+      return;
+    }
+    req.resume();
+    req.on("end", () => {
+      setCompatibleRecoveryResponseHeaders(res);
+      res.writeHead(200, {
+        "content-type": "application/x-ndjson",
+        "x-oracle-run-id": "recovery-clamp-run",
+        "x-oracle-account-id": "acct1",
+        "x-oracle-lane-id": "acct1-9473",
+      });
+      res.end(`${JSON.stringify({ runId: "recovery-clamp-run", ...event })}\n`);
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("fake recovery server did not bind");
   }
   return {
     port: address.port,

@@ -12,7 +12,11 @@ import {
   type ExactSubmissionExpectation,
   type FinalPreDispatchDomGuard,
 } from "../actions/promptComposer.js";
-import { normalizeRenderedPromptDomIdentity } from "../promptDomMatch.js";
+import {
+  EXACT_COMPOSER_PROMPT_IDENTITY_NORMALIZER_DECLARATION,
+  EXACT_COMPOSER_PROMPT_TEXT_READER_DECLARATION,
+  normalizeRenderedPromptDomIdentity,
+} from "../promptDomMatch.js";
 // Capture must flow through the pageActions facade so the structural
 // run-binding validation (captureBinding.ts) covers this provider path too.
 import { waitForAssistantResponse } from "../pageActions.js";
@@ -1644,6 +1648,8 @@ function buildProtectedDispatchGuardInstallExpression(
     const EXPECTED_PROMPT = ${exactPromptLiteral};
     const INPUT_SELECTORS = ${inputSelectorsLiteral};
     const EVENT_TYPES = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+    ${EXACT_COMPOSER_PROMPT_TEXT_READER_DECLARATION}
+    ${EXACT_COMPOSER_PROMPT_IDENTITY_NORMALIZER_DECLARATION}
     const normalizeRenderedPromptDomIdentity = ${normalizeRenderedPromptDomIdentity.toString()};
     const readAttachmentState = () => (${attachmentStateExpression});
     const readPublicRouteProof = () => {
@@ -1752,11 +1758,10 @@ function buildProtectedDispatchGuardInstallExpression(
       );
       return { verified, button, composer, editor, currentButton };
     };
-    const readEditorValue = (editor) => {
-      if (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement) {
-        return editor.value || '';
-      }
-      return editor?.innerText ?? editor?.textContent ?? '';
+    let exactEditorDomIdentity = null;
+    const readEditorDomIdentity = (editor) => {
+      if (!editor || typeof editor.innerHTML !== 'string') return null;
+      return editor.innerHTML;
     };
     const inspect = (allowButtonFocus = false) => {
       const routeProof = readPublicRouteProof();
@@ -1781,11 +1786,47 @@ function buildProtectedDispatchGuardInstallExpression(
         allowButtonFocus && target.button && focused &&
         (focused === target.button || target.button.contains?.(focused))
       );
-      const exactPromptVerified = !HAS_EXACT_SUBMISSION || Boolean(
-        target.editor &&
-        normalizeRenderedPromptDomIdentity(readEditorValue(target.editor)) ===
-          normalizeRenderedPromptDomIdentity(EXPECTED_PROMPT)
+      const editorTagName = String(target.editor?.tagName || '').toLowerCase();
+      const textControl =
+        editorTagName === 'textarea' ||
+        editorTagName === 'input';
+      const currentEditorDomIdentity = readEditorDomIdentity(target.editor);
+      const useDomContinuity =
+        HAS_EXACT_SUBMISSION &&
+        buttonFocused &&
+        !editorFocused &&
+        !textControl;
+      const exactRead = !HAS_EXACT_SUBMISSION || useDomContinuity
+        ? {
+            ok: !HAS_EXACT_SUBMISSION,
+            value: '',
+            reason: null,
+            selectionRestored: true,
+            focusPreserved: true,
+          }
+        : readExactComposerPromptText(target.editor);
+      const exactPromptVerified = !HAS_EXACT_SUBMISSION || (
+        useDomContinuity
+          ? (
+              exactEditorDomIdentity !== null &&
+              currentEditorDomIdentity !== null &&
+              currentEditorDomIdentity === exactEditorDomIdentity
+            )
+          : Boolean(
+              target.editor &&
+              exactRead.ok &&
+              normalizeExactComposerPromptIdentity(exactRead.value) ===
+                normalizeExactComposerPromptIdentity(EXPECTED_PROMPT)
+            )
       );
+      if (
+        HAS_EXACT_SUBMISSION &&
+        !useDomContinuity &&
+        exactPromptVerified &&
+        currentEditorDomIdentity !== null
+      ) {
+        exactEditorDomIdentity = currentEditorDomIdentity;
+      }
       let attachmentStateVerified = !HAS_EXACT_SUBMISSION;
       if (HAS_EXACT_SUBMISSION) {
         try { attachmentStateVerified = readAttachmentState() === true; } catch {}
@@ -1806,12 +1847,12 @@ function buildProtectedDispatchGuardInstallExpression(
             ? (routeProof.reason || 'protected-route-changed')
             : !target.verified
               ? 'bound-send-target-changed'
-              : !exactPromptVerified
-                ? 'exact-prompt-changed'
-                : !attachmentStateVerified
+              : !focusVerified
+                ? 'exact-editor-focus-changed'
+                : !exactPromptVerified
+                  ? 'exact-prompt-changed'
+                  : !attachmentStateVerified
                   ? 'exact-attachment-state-changed'
-                  : !focusVerified
-                    ? 'exact-editor-focus-changed'
               : null,
         probe,
         route,
@@ -1822,6 +1863,10 @@ function buildProtectedDispatchGuardInstallExpression(
         exactPromptVerified,
         attachmentStateVerified,
         focusVerified,
+        exactReadVerified: exactRead.ok || (useDomContinuity && exactPromptVerified),
+        exactReadReason: exactRead.reason,
+        selectionRestored: exactRead.selectionRestored,
+        focusPreserved: exactRead.focusPreserved,
       };
     };
     const removeOwnedAttributes = () => {
@@ -1866,6 +1911,10 @@ function buildProtectedDispatchGuardInstallExpression(
         exactPromptVerified: initial.exactPromptVerified,
         attachmentStateVerified: initial.attachmentStateVerified,
         focusVerified: initial.focusVerified,
+        exactReadVerified: initial.exactReadVerified,
+        exactReadReason: initial.exactReadReason,
+        selectionRestored: initial.selectionRestored,
+        focusPreserved: initial.focusPreserved,
       };
     }
     let registry = root[REGISTRY_KEY];
@@ -1893,6 +1942,7 @@ function buildProtectedDispatchGuardInstallExpression(
       status: 'armed',
       reason: null,
       lastEvent: null,
+      allowedEvent: null,
       requireProtectedRoute: REQUIRE_PROTECTED_ROUTE,
       routeProofRecord: initial.routeProofRecord,
       reported: false,
@@ -1946,6 +1996,17 @@ function buildProtectedDispatchGuardInstallExpression(
         return;
       }
       if (state.status === 'allowed') {
+        // The same trusted click continues from window capture through document
+        // and target capture. It was already authorized at the first capture
+        // boundary, so later listeners for that exact Event must not mistake
+        // its continued propagation for a duplicate dispatch attempt.
+        if (event === state.allowedEvent && event.currentTarget !== root) {
+          // The button is the final guard-owned capture boundary. Forget the
+          // Event there so an asynchronous dispatchEvent(event) replay cannot
+          // inherit the original trusted authorization.
+          if (event.currentTarget === initial.button) state.allowedEvent = null;
+          return;
+        }
         cancel(event, 'duplicate-trusted-dispatch-event');
         return;
       }
@@ -1999,7 +2060,10 @@ function buildProtectedDispatchGuardInstallExpression(
         }
         return;
       }
-      if (event.currentTarget !== initial.button) return;
+      // Capture propagation runs window -> document -> ancestors -> target.
+      // Consume at the first (window) boundary so application capture handlers
+      // on the composer/form cannot observe the click while the proof is armed.
+      if (event.currentTarget !== root) return;
       if (REQUIRE_PROTECTED_ROUTE) {
         let consumed = null;
         try { consumed = current.routeProofRecord?.consume?.(); } catch {}
@@ -2009,8 +2073,10 @@ function buildProtectedDispatchGuardInstallExpression(
         }
       }
       state.status = 'allowed';
+      state.allowedEvent = event;
       if (!reportTerminal()) {
         state.status = 'blocked';
+        state.allowedEvent = null;
         state.reason = 'verdict-binding-call-failed';
         cancel(event, state.reason);
       }
@@ -2066,6 +2132,10 @@ function buildProtectedDispatchGuardInstallExpression(
         exactPromptVerified: initial.exactPromptVerified,
         attachmentStateVerified: initial.attachmentStateVerified,
         focusVerified: initial.focusVerified,
+        exactReadVerified: initial.exactReadVerified,
+        exactReadReason: initial.exactReadReason,
+        selectionRestored: initial.selectionRestored,
+        focusPreserved: initial.focusPreserved,
       };
     }
     return {
@@ -2076,6 +2146,10 @@ function buildProtectedDispatchGuardInstallExpression(
       exactPromptVerified: initial.exactPromptVerified,
       attachmentStateVerified: initial.attachmentStateVerified,
       focusVerified: initial.focusVerified,
+      exactReadVerified: initial.exactReadVerified,
+      exactReadReason: initial.exactReadReason,
+      selectionRestored: initial.selectionRestored,
+      focusPreserved: initial.focusPreserved,
     };
   })()`;
 }
@@ -2169,8 +2243,9 @@ function buildProtectedDispatchGuardVerdictExpression(
  * Build the synchronous consumer for the public route proof minted by
  * proveGpt56SolProPublicRoute(). Menu discovery is deliberately asynchronous;
  * this guard does not claim same-task atomicity with it. Instead, the trusted
- * click's capture listener requires the exact short-lived proof, revalidates
- * its bound nodes/payload, and consumes it before application handlers run.
+ * click's window-capture listener requires the exact short-lived proof,
+ * revalidates its bound nodes/payload, and consumes it before descendant
+ * application capture handlers run.
  */
 export function buildGpt56SolProFinalDispatchGuard(
   attachmentBindingToken?: string,
@@ -2226,6 +2301,10 @@ export function buildGpt56SolProFinalDispatchGuard(
               exactPromptVerified?: unknown;
               attachmentStateVerified?: unknown;
               focusVerified?: unknown;
+              exactReadVerified?: unknown;
+              exactReadReason?: unknown;
+              selectionRestored?: unknown;
+              focusPreserved?: unknown;
             })
           : null;
       const evidence = evidenceFromInstallResult(value);
@@ -2263,6 +2342,13 @@ export function buildGpt56SolProFinalDispatchGuard(
           exactPromptVerified: result?.exactPromptVerified === true,
           attachmentStateVerified: result?.attachmentStateVerified === true,
           focusVerified: result?.focusVerified === true,
+          exactReadVerified: result?.exactReadVerified === true,
+          exactReadReason:
+            typeof result?.exactReadReason === "string" ? result.exactReadReason : null,
+          selectionRestored: result?.selectionRestored === true,
+          focusPreserved: result?.focusPreserved === true,
+          oracleErrorClass: "integrity_ui_unknown",
+          retryable: false,
         },
       );
     },
@@ -2279,7 +2365,8 @@ export function buildGpt56SolProFinalDispatchGuard(
         {
           stage: "model-selection",
           code: "protected-dispatch-guard-not-armed",
-          retryable: true,
+          oracleErrorClass: "integrity_ui_unknown",
+          retryable: false,
           guardStatus: typeof result?.status === "string" ? result.status : null,
           guardReason: typeof result?.reason === "string" ? result.reason : null,
           guardLastEvent: typeof result?.lastEvent === "string" ? result.lastEvent : null,
@@ -2306,6 +2393,7 @@ export function buildGpt56SolProFinalDispatchGuard(
             result?.status === "blocked"
               ? "protected-route-dispatch-blocked"
               : "protected-route-dispatch-unproven",
+          oracleErrorClass: "integrity_ui_unknown",
           retryable: false,
           dispatchGuardStatus: typeof result?.status === "string" ? result.status : null,
           dispatchGuardReason: typeof result?.reason === "string" ? result.reason : null,

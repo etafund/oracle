@@ -7,9 +7,11 @@ import {
   buildPromptRecoveryOwnershipPreview,
   computeRenderedPromptDomSha256,
   normalizePromptForDomMatch,
+  normalizeExactComposerPromptIdentity,
   normalizeRenderedPromptDomIdentity,
   PROMPT_DOM_IDENTITY_NORMALIZER_DECLARATION,
   PROMPT_DOM_NORMALIZER_DECLARATION,
+  readExactComposerPromptText,
   readRenderedPromptDomIdentity,
 } from "../../src/browser/promptDomMatch.js";
 import { __test__ as reattachTest } from "../../src/browser/reattach.js";
@@ -29,6 +31,226 @@ const LINK_DESTINATION = `https://example.com/${"deep/".repeat(24)}artifact`;
 const MARKDOWN_LINK_PREVIEW = `${LINK_PADDING} [${LINK_LABEL}](${LINK_DESTINATION}) trailing text`;
 const RENDERED_LINK_PREVIEW = `${LINK_PADDING} ${LINK_LABEL} trailing text`;
 const RAW_SAVED_LINK_PREVIEW = MARKDOWN_LINK_PREVIEW.slice(0, 160);
+
+function makeExactTextHarness(options: {
+  logicalText: string;
+  innerText?: string;
+  anchorOffset?: number;
+  focusOffset?: number;
+  rangeCount?: number;
+  shadowRoot?: boolean;
+  unsupportedShadowRoot?: boolean;
+  throwOnRead?: boolean;
+}) {
+  let selectedNode: { logicalText: string } | null = null;
+  const editor = {
+    tagName: "DIV",
+    innerText: options.innerText ?? options.logicalText,
+    logicalText: options.logicalText,
+    ownerDocument: null as unknown,
+    getRootNode: () => root,
+  };
+  const anchorOffset = options.anchorOffset ?? options.logicalText.length;
+  const focusOffset = options.focusOffset ?? options.logicalText.length;
+  const range = {
+    cloneRange: () => ({ ...range }),
+  };
+  const selection = {
+    rangeCount: options.rangeCount ?? 1,
+    anchorNode: editor as unknown,
+    anchorOffset,
+    focusNode: editor as unknown,
+    focusOffset,
+    getRangeAt: vi.fn(() => range),
+    removeAllRanges: vi.fn(() => {
+      selection.rangeCount = 0;
+      selection.anchorNode = null as unknown as typeof editor;
+      selection.anchorOffset = 0;
+      selection.focusNode = null as unknown as typeof editor;
+      selection.focusOffset = 0;
+    }),
+    addRange: vi.fn(
+      (candidate: {
+        selectedNode?: { logicalText: string };
+        startContainer?: typeof editor;
+        startOffset?: number;
+        endContainer?: typeof editor;
+        endOffset?: number;
+      }) => {
+        selectedNode = candidate.selectedNode ?? null;
+        selection.rangeCount = 1;
+        selection.anchorNode = candidate.startContainer ?? editor;
+        selection.anchorOffset = candidate.startOffset ?? 0;
+        selection.focusNode = candidate.endContainer ?? editor;
+        selection.focusOffset = candidate.endOffset ?? options.logicalText.length;
+      },
+    ),
+    setBaseAndExtent: vi.fn(
+      (
+        restoredAnchorNode: typeof editor,
+        restoredAnchorOffset: number,
+        restoredFocusNode: typeof editor,
+        restoredFocusOffset: number,
+      ) => {
+        selectedNode = null;
+        selection.rangeCount = 1;
+        selection.anchorNode = restoredAnchorNode;
+        selection.anchorOffset = restoredAnchorOffset;
+        selection.focusNode = restoredFocusNode;
+        selection.focusOffset = restoredFocusOffset;
+      },
+    ),
+    toString: vi.fn(() => {
+      if (options.throwOnRead) throw new Error("injected selection read failure");
+      return selectedNode?.logicalText ?? "";
+    }),
+  };
+  const document = {
+    activeElement: editor,
+    createRange: () => {
+      const temporaryRange = {
+        selectedNode: null as { logicalText: string } | null,
+        startContainer: editor,
+        startOffset: 0,
+        endContainer: editor,
+        endOffset: options.logicalText.length,
+        selectNodeContents(node: { logicalText: string }) {
+          this.selectedNode = node;
+        },
+      };
+      return temporaryRange;
+    },
+    getSelection: () => selection,
+  };
+  const root = options.unsupportedShadowRoot
+    ? {}
+    : options.shadowRoot
+      ? { activeElement: editor, getSelection: () => selection }
+      : document;
+  editor.ownerDocument = document;
+  return { document, editor, selection };
+}
+
+describe("exact composer editing-host plaintext", () => {
+  test("reads textarea and input values without requiring Selection APIs", () => {
+    expect(readExactComposerPromptText({ tagName: "TEXTAREA", value: "a\n\nb" })).toEqual({
+      ok: true,
+      value: "a\n\nb",
+      reason: null,
+      selectionRestored: true,
+      focusPreserved: true,
+    });
+    expect(readExactComposerPromptText({ tagName: "INPUT", value: "one line" })).toMatchObject({
+      ok: true,
+      value: "one line",
+    });
+  });
+
+  test("uses editing-host plaintext instead of distorted innerText and restores direction", () => {
+    const harness = makeExactTextHarness({
+      logicalText: "a\n\nb",
+      innerText: "a\n\n\nb",
+      anchorOffset: 4,
+      focusOffset: 1,
+    });
+
+    expect(readExactComposerPromptText(harness.editor)).toEqual({
+      ok: true,
+      value: "a\n\nb",
+      reason: null,
+      selectionRestored: true,
+      focusPreserved: true,
+    });
+    expect(harness.document.activeElement).toBe(harness.editor);
+    expect(harness.selection).toMatchObject({
+      rangeCount: 1,
+      anchorNode: harness.editor,
+      anchorOffset: 4,
+      focusNode: harness.editor,
+      focusOffset: 1,
+    });
+    expect(harness.selection.setBaseAndExtent).toHaveBeenCalledWith(
+      harness.editor,
+      4,
+      harness.editor,
+      1,
+    );
+  });
+
+  test("uses a supported shadow-root selection and rejects unsupported roots before mutation", () => {
+    const supported = makeExactTextHarness({ logicalText: "shadow text", shadowRoot: true });
+    expect(readExactComposerPromptText(supported.editor)).toMatchObject({
+      ok: true,
+      value: "shadow text",
+    });
+
+    const unsupported = makeExactTextHarness({
+      logicalText: "shadow text",
+      unsupportedShadowRoot: true,
+    });
+    expect(readExactComposerPromptText(unsupported.editor)).toMatchObject({
+      ok: false,
+      reason: "selection-api-unavailable",
+    });
+    expect(unsupported.selection.removeAllRanges).not.toHaveBeenCalled();
+  });
+
+  test("rejects unsupported multi-range state before mutation", () => {
+    const harness = makeExactTextHarness({ logicalText: "text", rangeCount: 2 });
+    expect(readExactComposerPromptText(harness.editor)).toMatchObject({
+      ok: false,
+      reason: "selection-state-unsupported",
+    });
+    expect(harness.selection.removeAllRanges).not.toHaveBeenCalled();
+  });
+
+  test("refuses an unfocused contenteditable before mutating Selection", () => {
+    const harness = makeExactTextHarness({ logicalText: "text" });
+    harness.document.activeElement = { tagName: "BUTTON" } as unknown as typeof harness.editor;
+    expect(readExactComposerPromptText(harness.editor)).toMatchObject({
+      ok: false,
+      reason: "editor-not-focused",
+      selectionRestored: true,
+      focusPreserved: true,
+    });
+    expect(harness.selection.removeAllRanges).not.toHaveBeenCalled();
+    expect(harness.selection.addRange).not.toHaveBeenCalled();
+  });
+
+  test("restores selection and focus when the plaintext read throws", () => {
+    const harness = makeExactTextHarness({
+      logicalText: "text",
+      anchorOffset: 3,
+      focusOffset: 1,
+      throwOnRead: true,
+    });
+    expect(readExactComposerPromptText(harness.editor)).toEqual({
+      ok: false,
+      value: "",
+      reason: "selection-read-failed",
+      selectionRestored: true,
+      focusPreserved: true,
+    });
+    expect(harness.selection).toMatchObject({
+      anchorNode: harness.editor,
+      anchorOffset: 3,
+      focusNode: harness.editor,
+      focusOffset: 1,
+    });
+  });
+});
+
+describe("exact composer prompt identity", () => {
+  test("normalizes browser line endings without trimming composer content", () => {
+    expect(normalizeExactComposerPromptIdentity(" x \r\n")).toBe(" x \n");
+    expect(normalizeExactComposerPromptIdentity("x\r")).toBe("x\n");
+  });
+
+  test("preserves zero-width and joiner characters used by exact input", () => {
+    const value = "\u200B\u200C👩‍💻\uFEFF";
+    expect(normalizeExactComposerPromptIdentity(value)).toBe(value);
+  });
+});
 
 class FakeHTMLElement {}
 

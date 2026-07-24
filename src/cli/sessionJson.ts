@@ -39,6 +39,10 @@ import {
   isSuccessTerminalStatus,
   isTerminalSessionStatus,
 } from "./sessionStatus.js";
+import {
+  parseRemoteBrowserPreSubmitDiagnostic,
+  type RemoteBrowserPreSubmitDiagnosticV1,
+} from "../remote/types.js";
 
 export const ORACLE_SESSION_SCHEMA_VERSION = "oracle_session.v1" as const;
 export const INVALID_IMPORTED_SESSION_ERROR_CODE = "invalid_imported_session" as const;
@@ -56,6 +60,7 @@ export interface SessionUsageSummary {
 export interface SessionErrorSummary {
   readonly code: string;
   readonly message: string;
+  readonly pre_submit_diagnostic?: RemoteBrowserPreSubmitDiagnosticV1;
 }
 
 /** The pinned `oracle_session.v1` payload shape. */
@@ -200,7 +205,14 @@ function buildErrorSummary(metadata: SessionMetadata): SessionErrorSummary | nul
   const errorClass = classifySessionErrorClass(metadata);
   const code = errorClass ?? readString(metadata.error?.details, "error_code") ?? "run_error";
   const message = metadata.errorMessage ?? metadata.error?.message ?? "Session failed.";
-  return { code, message };
+  const preSubmitDiagnostic = parseRemoteBrowserPreSubmitDiagnostic(
+    metadata.error?.details?.preSubmitDiagnostic,
+  );
+  return {
+    code,
+    message,
+    ...(preSubmitDiagnostic ? { pre_submit_diagnostic: preSubmitDiagnostic } : {}),
+  };
 }
 
 /** Build the pinned `oracle_session.v1` payload. Pure — no I/O, no clock. */

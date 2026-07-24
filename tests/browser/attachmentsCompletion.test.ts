@@ -225,16 +225,20 @@ describe("attachment cleanup proof", () => {
     useFakeTime();
     try {
       const runtime = {
-        evaluate: vi.fn().mockResolvedValue({
-          result: {
-            value: {
-              removeClicks: 0,
-              chipCount: 0,
-              inputCount: 0,
-              hadAttachments: false,
-              residualKinds: [],
+        evaluate: vi.fn(async ({ expression }: { expression: string }) => {
+          expect(expression).toContain("function readAttachmentDomEvidence");
+          expect(expression).not.toContain("node.matches('[role=\"group\"][aria-label]') ||");
+          return {
+            result: {
+              value: {
+                removeClicks: 0,
+                chipCount: 0,
+                inputCount: 0,
+                hadAttachments: false,
+                residualKinds: [],
+              },
             },
-          },
+          };
         }),
       } as unknown as ChromeClient["Runtime"];
 

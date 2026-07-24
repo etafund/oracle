@@ -60,6 +60,7 @@ interface MockHealth {
     promptPreviewAlgorithm: string | null;
     promptDomIdentityAlgorithm: string | null;
     durableClaimLookup: boolean | null;
+    terminalRetryPolicy: string | null;
   };
 }
 
@@ -234,6 +235,7 @@ describe("runRemoteDoctor --json", () => {
         promptPreviewAlgorithm: null,
         promptDomIdentityAlgorithm: null,
         durableClaimLookup: null,
+        terminalRetryPolicy: null,
       },
     });
     await runRemoteDoctor({ json: true });
@@ -258,11 +260,13 @@ describe("runRemoteDoctor --json", () => {
         promptPreviewAlgorithm: "oracle.prompt-recovery-preview.v2",
         promptDomIdentityAlgorithm: "oracle.rendered-prompt-dom-identity.v2",
         durableClaimLookup: null,
+        terminalRetryPolicy: null,
       },
     });
     await runRemoteDoctor({ json: false });
     const raw = logSpy.mock.calls.map((args: unknown[]) => String(args[0])).join("\n");
     expect(raw).toMatch(/missing durable claim lookup/i);
+    expect(raw).toMatch(/missing terminal retry policy/i);
     expect(process.exitCode).toBe(1);
   });
 

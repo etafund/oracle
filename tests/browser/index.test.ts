@@ -518,6 +518,46 @@ describe("GPT-5.6 Sol + Pro evidence integration", () => {
     expect(refreshPage).toHaveBeenCalledTimes(1);
   });
 
+  test("classifies a protected public-proof refusal as nonretryable integrity", async () => {
+    const Runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: {
+            verified: false,
+            proofMinted: false,
+            reason: "model-submenu-owner-unverified",
+            composerBindingVerified: true,
+            modelVerified: false,
+            modeVerified: true,
+            modelSignals: [],
+            modeSignals: ["Pro"],
+          },
+        },
+      }),
+    } as unknown as ChromeClient["Runtime"];
+
+    const failure = await __test__
+      .proveProtectedSolProSelectionBeforeSubmit({
+        desiredModel: "gpt-5.6-sol",
+        runtime: Runtime,
+        logger: vi.fn() as unknown as BrowserLogger,
+        composerBindingToken: "bound-composer",
+      })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+    expect(failure).toBeInstanceOf(BrowserAutomationError);
+    expect((failure as BrowserAutomationError).details).toMatchObject({
+      stage: "model-selection",
+      code: "protected-route-public-proof-unverified",
+      proofReason: "model-submenu-owner-unverified",
+      oracleErrorClass: "integrity_ui_unknown",
+      retryable: false,
+    });
+  });
+
   test("merges the independently verified model and Pro mode before submit", () => {
     const evidence = __test__.mergeModeSelectionEvidence(
       {

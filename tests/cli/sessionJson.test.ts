@@ -25,6 +25,7 @@ import {
   V18_BUNDLE_VERSION,
   jsonEnvelopeSchema,
 } from "../../src/oracle/v18/index.ts";
+import { buildRemoteBrowserPreSubmitDiagnostic } from "../../src/remote/types.ts";
 
 function meta(overrides: Partial<SessionMetadata> = {}): SessionMetadata {
   return {
@@ -202,6 +203,34 @@ describe("buildSessionJsonPayload", () => {
     expect(payload.final_answer_path).toBe(
       "/tmp/.oracle/sessions/sess-1/artifacts/claude-code-final.md",
     );
+  });
+
+  test("surfaces a validated closed remote pre-submit diagnostic on failed sessions", () => {
+    const preSubmitDiagnostic = buildRemoteBrowserPreSubmitDiagnostic({
+      stage: "model-selection",
+      code: "protected-route-changed-after-preflight",
+      guardReason: "exact-prompt-changed",
+      exactPromptVerified: false,
+    })!;
+    const payload = buildSessionJsonPayload(
+      meta({
+        status: "error",
+        error: {
+          category: "browser-automation",
+          message: "Protected browser pre-submit integrity proof failed.",
+          details: {
+            errorClass: "integrity_ui_unknown",
+            retryable: false,
+            preSubmitDiagnostic,
+          },
+        },
+      }),
+      PATHS,
+    );
+    expect(payload.error).toMatchObject({
+      code: "run_error",
+      pre_submit_diagnostic: preSubmitDiagnostic,
+    });
   });
 
   test("an imported reference exposes no synthetic output or completion timestamp", () => {

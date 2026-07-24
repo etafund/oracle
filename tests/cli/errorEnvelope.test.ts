@@ -10,6 +10,7 @@ import {
   PromptValidationError,
 } from "../../src/oracle/errors.js";
 import { RemoteRunFailedError } from "../../src/remote/client.js";
+import { buildRemoteBrowserPreSubmitDiagnostic } from "../../src/remote/types.js";
 
 function envelopeFor(error: unknown, exitCode = 1) {
   return buildTopLevelCliErrorEnvelope({ error, command: "oracle", exitCode });
@@ -103,6 +104,26 @@ describe("normalizeTopLevelError closed code set (machine-output#3)", () => {
     expect(envelope.meta.exit_code).toBe(1);
     expect(envelope.error.code).toBe("top_level_error");
     expect(envelope.blocked_reason).toBe("top_level_error");
+    expect(envelope.retry_safe).toBe(false);
+  });
+
+  test("a remote integrity refusal exposes only its validated closed diagnostic", () => {
+    const preSubmitDiagnostic = buildRemoteBrowserPreSubmitDiagnostic({
+      stage: "model-selection",
+      code: "protected-route-changed-after-preflight",
+      guardReason: "exact-prompt-changed",
+      exactPromptVerified: false,
+      prompt: "must never appear",
+    })!;
+    const envelope = envelopeFor(
+      new RemoteRunFailedError("Protected browser pre-submit integrity proof failed.", {
+        errorClass: "integrity_ui_unknown",
+        retryable: false,
+        preSubmitDiagnostic,
+      }),
+    );
+    expect(envelope.error.details?.pre_submit_diagnostic).toEqual(preSubmitDiagnostic);
+    expect(JSON.stringify(envelope)).not.toContain("must never appear");
     expect(envelope.retry_safe).toBe(false);
   });
 

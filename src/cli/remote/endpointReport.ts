@@ -209,6 +209,7 @@ function applyHealthMetadata(
         prompt_preview_algorithm: recovery.promptPreviewAlgorithm,
         prompt_dom_identity_algorithm: recovery.promptDomIdentityAlgorithm,
         durable_claim_lookup: recovery.durableClaimLookup,
+        terminal_retry_policy: recovery.terminalRetryPolicy,
       }
     : null;
 }

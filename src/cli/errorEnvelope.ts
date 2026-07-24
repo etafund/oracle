@@ -11,6 +11,7 @@ import {
 } from "./exitCodes.js";
 import type { TransportFailureReason } from "../oracle/types.js";
 import { JSON_ENVELOPE_SCHEMA_VERSION, type JsonEnvelope } from "../oracle/v18/contracts.js";
+import { parseRemoteBrowserPreSubmitDiagnostic } from "../remote/types.js";
 
 /**
  * The closed set of normalized error codes the top-level `oracle --json` error
@@ -272,11 +273,17 @@ function normalizeTopLevelError(error: unknown): NormalizedTopLevelError {
   const message =
     error instanceof Error ? error.message : typeof error === "string" ? error : String(error);
   const commanderHelp = code.startsWith("commander.") ? "Run `oracle --help` for usage." : null;
+  const preSubmitDiagnostic = parseRemoteBrowserPreSubmitDiagnostic(record?.preSubmitDiagnostic);
   return {
     code,
     message,
     help: commanderHelp,
-    details: record ? { code } : undefined,
+    details: record
+      ? {
+          code,
+          ...(preSubmitDiagnostic ? { pre_submit_diagnostic: preSubmitDiagnostic } : {}),
+        }
+      : undefined,
     nextCommand: commanderHelp ? "oracle --help" : null,
     fixCommand: null,
     retrySafe: errorClass ? isRetrySafeErrorClass(errorClass) : false,

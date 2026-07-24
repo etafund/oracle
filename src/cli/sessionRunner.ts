@@ -1568,6 +1568,9 @@ export async function performSessionRun({
               stage: "remote-run",
               errorClass: error.errorClass,
               retryable: error.retryable,
+              ...(error.preSubmitDiagnostic
+                ? { preSubmitDiagnostic: error.preSubmitDiagnostic }
+                : {}),
             },
           }
         : undefined;

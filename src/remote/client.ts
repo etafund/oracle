@@ -27,11 +27,14 @@ import {
   REMOTE_BROWSER_RECOVERY_CLAIM_SCHEMA,
   REMOTE_BROWSER_RECOVERY_PATH,
   REMOTE_BROWSER_RECOVERY_PROTOCOL,
+  REMOTE_BROWSER_TERMINAL_RETRY_POLICY,
   REMOTE_BROWSER_RUN_SCHEMA,
   REMOTE_BROWSER_RUN_PATH,
   REMOTE_SESSION_RECOVERY_STAGES,
+  parseRemoteBrowserPreSubmitDiagnostic,
   type RemoteBrowserRecoveryRequest,
   type RemoteBrowserRecoveryClaimLookupResponse,
+  type RemoteBrowserPreSubmitDiagnosticV1,
   type RemoteArtifactDescriptor,
   type RemoteRunPayload,
   type RemoteRunEvent,
@@ -62,6 +65,7 @@ import {
   MAX_DATA_TRANSFER_BYTES,
   readBoundedRegularFile,
 } from "../browser/actions/attachmentDataTransfer.js";
+import { isRetryableRunErrorClass, isRunErrorClass } from "./run_event_sink.js";
 
 const EXECUTABLE_RECOVERY_STAGE_SET: ReadonlySet<string> = new Set(REMOTE_SESSION_RECOVERY_STAGES);
 
@@ -142,15 +146,21 @@ function resolveDefaultStreamIdleTimeoutMs(env: NodeJS.ProcessEnv = process.env)
 export class RemoteRunFailedError extends Error {
   readonly errorClass: string | null;
   readonly retryable: boolean | null;
+  readonly preSubmitDiagnostic: RemoteBrowserPreSubmitDiagnosticV1 | null;
 
   constructor(
     message: string,
-    options: { errorClass?: string | null; retryable?: boolean | null } = {},
+    options: {
+      errorClass?: string | null;
+      retryable?: boolean | null;
+      preSubmitDiagnostic?: RemoteBrowserPreSubmitDiagnosticV1 | null;
+    } = {},
   ) {
     super(message);
     this.name = "RemoteRunFailedError";
     this.errorClass = options.errorClass ?? null;
     this.retryable = options.retryable ?? null;
+    this.preSubmitDiagnostic = options.preSubmitDiagnostic ?? null;
   }
 }
 
@@ -945,11 +955,13 @@ async function assertRemoteWorkerRecoveryCompatibility(params: {
       compatibility?.durableClaimLookup === true
         ? "durable claim lookup"
         : "missing durable claim lookup",
+      compatibility?.terminalRetryPolicy ?? "missing terminal retry policy",
     ].join(", ");
     throw new RemoteRunFailedError(
       `Remote browser worker recovery protocol is incompatible (${observed}). Expected ` +
         `${REMOTE_BROWSER_RECOVERY_PROTOCOL}, ${PROMPT_RECOVERY_PREVIEW_ALGORITHM}, and ` +
-        `${PROMPT_DOM_IDENTITY_ALGORITHM}; upgrade the client and worker before starting a run.`,
+        `${PROMPT_DOM_IDENTITY_ALGORITHM}, with ${REMOTE_BROWSER_TERMINAL_RETRY_POLICY} terminal retries; ` +
+        "upgrade the client and worker before starting a run.",
       { errorClass: "integrity_ui_unknown", retryable: false },
     );
   }
@@ -1980,14 +1992,21 @@ export async function recoverRemoteBrowserSession({
           }
           doneObserved = true;
           if (event.ok !== true) {
+            const errorClass =
+              typeof event.errorClass === "string" && isRunErrorClass(event.errorClass)
+                ? event.errorClass
+                : null;
             fail(
               new RemoteRunFailedError(
                 typeof event.errorMessage === "string"
                   ? event.errorMessage.slice(0, 4_096)
                   : "Remote browser recovery failed.",
                 {
-                  errorClass: typeof event.errorClass === "string" ? event.errorClass : null,
-                  retryable: event.retryable === true,
+                  errorClass,
+                  retryable:
+                    event.retryable === true &&
+                    errorClass !== null &&
+                    isRetryableRunErrorClass(errorClass),
                 },
               ),
             );
@@ -2443,6 +2462,7 @@ function handleEvent(params: {
         "errorClass",
         "errorMessage",
         "retryable",
+        "preSubmitDiagnostic",
         "provenance",
         "recovery",
         "result",
@@ -2452,6 +2472,26 @@ function handleEvent(params: {
     ) {
       params.onError(
         new RemoteRunFailedError("Terminal done event was malformed.", {
+          errorClass: "integrity_ui_unknown",
+          retryable: false,
+        }),
+      );
+      return null;
+    }
+    const preSubmitDiagnostic =
+      event.preSubmitDiagnostic === undefined
+        ? null
+        : parseRemoteBrowserPreSubmitDiagnostic(event.preSubmitDiagnostic);
+    if (
+      event.preSubmitDiagnostic !== undefined &&
+      (!preSubmitDiagnostic ||
+        event.ok !== false ||
+        event.errorClass !== "integrity_ui_unknown" ||
+        event.retryable !== false ||
+        event.recovery !== undefined)
+    ) {
+      params.onError(
+        new RemoteRunFailedError("Remote pre-submit diagnostic was malformed.", {
           errorClass: "integrity_ui_unknown",
           retryable: false,
         }),
@@ -2572,11 +2612,22 @@ function handleEvent(params: {
       );
       return null;
     }
-    const message =
-      event.errorMessage ?? `Remote run failed (${event.errorClass ?? "unclassified"})`;
+    if (!isRunErrorClass(event.errorClass)) {
+      params.onError(
+        new RemoteRunFailedError("Remote failure event carried an unrecognized error class.", {
+          errorClass: "integrity_ui_unknown",
+          retryable: false,
+          preSubmitDiagnostic,
+        }),
+      );
+      return null;
+    }
+    const message = event.errorMessage ?? `Remote run failed (${event.errorClass})`;
+    const retryable = event.retryable === true && isRetryableRunErrorClass(event.errorClass);
     const remoteFailure = new RemoteRunFailedError(message, {
       errorClass: event.errorClass ?? null,
-      retryable: event.retryable ?? false,
+      retryable,
+      preSubmitDiagnostic,
     });
     const recovery = sanitizeRemoteRunRecoveryHint(event.recovery);
     if (recovery && EXECUTABLE_RECOVERY_STAGE_SET.has(recovery.stage)) {
@@ -2601,7 +2652,7 @@ function handleEvent(params: {
           stage: recovery.stage,
           runtime: recovery.runtime,
           errorClass: event.errorClass ?? null,
-          retryable: event.retryable ?? false,
+          retryable,
           remoteRun: {
             runId: event.runId ?? params.routeIdentity.runId,
             accountId: params.routeIdentity.accountId,

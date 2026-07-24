@@ -15,6 +15,7 @@ import {
   REMOTE_BROWSER_RECOVERY_CLAIM_ROUTE_HEADER_VALUE,
   REMOTE_BROWSER_RECOVERY_CLAIM_SCHEMA,
   REMOTE_BROWSER_RECOVERY_PROTOCOL,
+  REMOTE_BROWSER_TERMINAL_RETRY_POLICY,
   REMOTE_BROWSER_RUN_PATH,
 } from "../../src/remote/types.js";
 import { computePromptSha256 } from "../../src/browser/actions/captureBinding.js";
@@ -47,6 +48,7 @@ const EXACT_BROWSER_RECOVERY_CAPABILITY = {
   promptPreviewAlgorithm: PROMPT_RECOVERY_PREVIEW_ALGORITHM,
   promptDomIdentityAlgorithm: PROMPT_DOM_IDENTITY_ALGORITHM,
   durableClaimLookup: true,
+  terminalRetryPolicy: REMOTE_BROWSER_TERMINAL_RETRY_POLICY,
 };
 
 describe("remote browser recovery mixed-version admission", () => {
@@ -171,6 +173,51 @@ describe("remote browser recovery mixed-version admission", () => {
   );
 
   test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "client refuses a v4 worker that lacks the terminal retry-policy capability",
+    async () => {
+      const paths: string[] = [];
+      const fake = await listen(
+        http.createServer((req, res) => {
+          paths.push(req.url ?? "");
+          res.writeHead(200, { "content-type": "application/json" });
+          const legacyCapability = { ...EXACT_BROWSER_RECOVERY_CAPABILITY } as Record<
+            string,
+            unknown
+          >;
+          delete legacyCapability.terminalRetryPolicy;
+          res.end(
+            JSON.stringify({
+              ok: true,
+              capabilities: {
+                artifactTransfer: true,
+                artifactProtocolVersion: 1,
+                maxArtifactBytes: 1024,
+                browserRecovery: legacyCapability,
+              },
+            }),
+          );
+        }),
+      );
+      try {
+        const execute = createRemoteBrowserExecutor({
+          host: `127.0.0.1:${fake.port}`,
+          token: "secret",
+        });
+        const failure = await execute({ prompt: "must not submit", config: {} }).then(
+          () => null,
+          (error: unknown) => error,
+        );
+        expect(failure).toBeInstanceOf(RemoteRunFailedError);
+        expect((failure as RemoteRunFailedError).message).toMatch(/terminal retry policy/i);
+        expect((failure as RemoteRunFailedError).retryable).toBe(false);
+        expect(paths).toEqual(["/health"]);
+      } finally {
+        await fake.close();
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
     "compatible client sends the exact contract again on POST /runs",
     async () => {
       let runHeaders: http.IncomingHttpHeaders | null = null;
@@ -216,9 +263,20 @@ describe("remote browser recovery mixed-version admission", () => {
           if (serveCompatibleRecoveryHealth(req, res)) return;
           // Simulates a load balancer routing /health and the route probe to
           // current peers, but /runs to an
-          // old worker which ignores the request contract. It deliberately
-          // omits all response echoes even though it claims success.
-          res.writeHead(200, { "content-type": "application/x-ndjson" });
+          // old worker which ignores the request contract. Simulate a router
+          // preserving the current protocol/identity echoes while the backend
+          // omits the terminal retry-policy echo.
+          const oldAdmissionHeaders = {
+            ...REMOTE_BROWSER_RECOVERY_ADMISSION_HEADER_VALUES,
+          } as Record<string, string>;
+          delete oldAdmissionHeaders["x-oracle-terminal-retry-policy"];
+          res.writeHead(200, {
+            "content-type": "application/x-ndjson",
+            ...oldAdmissionHeaders,
+            "x-oracle-run-id": "old-worker-run",
+            "x-oracle-account-id": "acct1",
+            "x-oracle-lane-id": "acct1-9473",
+          });
           res.end(
             `${JSON.stringify({
               type: "done",
@@ -253,7 +311,7 @@ describe("remote browser recovery mixed-version admission", () => {
           { method: "GET", path: "/health" },
           {
             method: "OPTIONS",
-            path: "/recovery-claims?protocol=remote-browser-recovery.v4",
+            path: "/recovery-claims?protocol=remote-browser-recovery.v5",
           },
           { method: "POST", path: REMOTE_BROWSER_RUN_PATH },
         ]);

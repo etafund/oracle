@@ -50,6 +50,7 @@ interface MockHealth {
     promptPreviewAlgorithm: string | null;
     promptDomIdentityAlgorithm: string | null;
     durableClaimLookup: boolean | null;
+    terminalRetryPolicy: string | null;
   };
 }
 
@@ -227,6 +228,7 @@ describe("buildRemoteEndpointReport — status precedence", () => {
         promptPreviewAlgorithm: "oracle.prompt-recovery-preview.v1",
         promptDomIdentityAlgorithm: null,
         durableClaimLookup: false,
+        terminalRetryPolicy: null,
       },
     });
     const { report } = await buildRemoteEndpointReport({
@@ -240,6 +242,7 @@ describe("buildRemoteEndpointReport — status precedence", () => {
       prompt_preview_algorithm: "oracle.prompt-recovery-preview.v1",
       prompt_dom_identity_algorithm: null,
       durable_claim_lookup: false,
+      terminal_retry_policy: null,
     });
     expect(report.error).toMatch(/upgrade.*client.*worker/i);
     expect(isHealthyReport(report)).toBe(false);
@@ -255,6 +258,7 @@ describe("buildRemoteEndpointReport — status precedence", () => {
         promptPreviewAlgorithm: "oracle.prompt-recovery-preview.v2",
         promptDomIdentityAlgorithm: "oracle.rendered-prompt-dom-identity.v2",
         durableClaimLookup: null,
+        terminalRetryPolicy: null,
       },
     });
     const { report } = await buildRemoteEndpointReport({

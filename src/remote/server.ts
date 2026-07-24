@@ -34,6 +34,7 @@ import type {
   RemoteRunRecoveryHint,
   RemoteRunPayload,
   RemoteRunEvent,
+  RemoteBrowserPreSubmitDiagnosticV1,
   RemoteRunProvenanceSummary,
   RemoteRunReadinessState,
   RemoteUploadIntegrity,
@@ -48,9 +49,11 @@ import {
   REMOTE_BROWSER_RECOVERY_CLAIM_SCHEMA,
   REMOTE_BROWSER_RECOVERY_PATH,
   REMOTE_BROWSER_RECOVERY_PROTOCOL,
+  REMOTE_BROWSER_TERMINAL_RETRY_POLICY,
   REMOTE_BROWSER_RUN_SCHEMA,
   REMOTE_BROWSER_RUN_PATH,
   REMOTE_SESSION_RECOVERY_STAGES,
+  buildRemoteBrowserPreSubmitDiagnostic,
 } from "./types.js";
 import {
   ACCOUNT_QUARANTINE_ERROR_CLASS,
@@ -85,6 +88,7 @@ import { countActiveBrowserTabLeases } from "../browser/tabLeaseRegistry.js";
 import {
   appendOracleRunEvent,
   classifyRunErrorClass,
+  isRetryableRunErrorClass,
   isRunErrorClass,
   type RunAttachmentDigest,
   type RunErrorClass,
@@ -304,6 +308,7 @@ const ARTIFACT_CAPABILITIES: RemoteArtifactCapabilities = {
     promptPreviewAlgorithm: PROMPT_RECOVERY_PREVIEW_ALGORITHM,
     promptDomIdentityAlgorithm: PROMPT_DOM_IDENTITY_ALGORITHM,
     durableClaimLookup: true,
+    terminalRetryPolicy: REMOTE_BROWSER_TERMINAL_RETRY_POLICY,
   },
 };
 
@@ -2280,9 +2285,12 @@ export async function createRemoteServer(
         }
         const declaredClass = details?.oracleErrorClass;
         const declaredRetryable = details?.retryable;
+        const hasDeclaredClass = declaredClass !== undefined && declaredClass !== null;
         const declaredRunErrorClass = isRunErrorClass(declaredClass) ? declaredClass : null;
         runErrorClass =
-          declaredRunErrorClass ?? classifyRunErrorClass(message, submittedAt !== null);
+          hasDeclaredClass && !declaredRunErrorClass
+            ? "integrity_ui_unknown"
+            : (declaredRunErrorClass ?? classifyRunErrorClass(message, submittedAt !== null));
         if (
           submittedAt !== null &&
           (runErrorClass === "transport_interrupted_before_submit" ||
@@ -2334,12 +2342,16 @@ export async function createRemoteServer(
           });
         }
         runRetryable =
-          submittedAt !== null || runErrorClass === "account_quarantine"
-            ? false
-            : typeof declaredRetryable === "boolean"
-              ? declaredRetryable
-              : runErrorClass === "capacity_busy" ||
-                runErrorClass === "transport_interrupted_before_submit";
+          submittedAt === null &&
+          declaredRetryable !== false &&
+          isRetryableRunErrorClass(runErrorClass);
+        const preSubmitDiagnostic: RemoteBrowserPreSubmitDiagnosticV1 | null =
+          error instanceof BrowserAutomationError &&
+          submittedAt === null &&
+          runErrorClass === "integrity_ui_unknown" &&
+          runRetryable === false
+            ? buildRemoteBrowserPreSubmitDiagnostic(details)
+            : null;
         const latestPromptOwnership = submittedPromptOwnership.current;
         let recovery: RemoteRunRecoveryHint | undefined;
         if (!recoveryRequest && requestRecoveryClaim) {
@@ -2396,11 +2408,13 @@ export async function createRemoteServer(
           type: "done",
           ok: false,
           errorClass: runErrorClass,
-          errorMessage:
-            runErrorClass === "account_quarantine"
+          errorMessage: preSubmitDiagnostic
+            ? "Protected browser pre-submit integrity proof failed; no prompt was submitted."
+            : runErrorClass === "account_quarantine"
               ? "Account quarantined; human review and manual clearance are required."
               : sanitizeErrorMessage(message),
           retryable: runRetryable,
+          ...(preSubmitDiagnostic ? { preSubmitDiagnostic } : {}),
           ...(recovery ? { recovery } : {}),
           provenance: await buildRunProvenance({
             result: runResult,
@@ -2411,8 +2425,9 @@ export async function createRemoteServer(
             submission: failureSubmission,
           }),
         });
-        const logMessage =
-          runErrorClass === "account_quarantine"
+        const logMessage = preSubmitDiagnostic
+          ? "protected browser pre-submit integrity proof failed; no prompt was submitted"
+          : runErrorClass === "account_quarantine"
             ? "account quarantine hard stop"
             : sanitizeErrorMessage(message);
         logger(

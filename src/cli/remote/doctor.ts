@@ -76,6 +76,7 @@ export async function runRemoteDoctor(options: RemoteDoctorCliOptions): Promise<
         recovery.durableClaimLookup === true
           ? "durable claim lookup"
           : "missing durable claim lookup",
+        recovery.terminalRetryPolicy ?? "missing terminal retry policy",
       ].join("; ");
       lines.push(
         `Browser recovery: ${recovery.compatible ? chalk.green("compatible") : chalk.red("incompatible")} (${observed})`,

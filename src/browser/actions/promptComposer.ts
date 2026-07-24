@@ -20,8 +20,11 @@ import {
 } from "./captureBinding.js";
 import { BrowserAutomationError } from "../../oracle/errors.js";
 import { randomUUID } from "node:crypto";
+import { ATTACHMENT_DOM_EVIDENCE_READER_DECLARATION } from "../attachmentDomState.js";
 import {
-  normalizeRenderedPromptDomIdentity,
+  EXACT_COMPOSER_PROMPT_IDENTITY_NORMALIZER_DECLARATION,
+  EXACT_COMPOSER_PROMPT_TEXT_READER_DECLARATION,
+  normalizeExactComposerPromptIdentity,
   PROMPT_DOM_EXACT_MATCH_DECLARATION,
   PROMPT_DOM_IDENTITY_NORMALIZER_DECLARATION,
   PROMPT_DOM_NORMALIZER_DECLARATION,
@@ -226,6 +229,8 @@ export async function submitPrompt(
   const promptLength = prompt.length;
   const postVerification = await runtime.evaluate({
     expression: `(() => {
+      ${EXACT_COMPOSER_PROMPT_TEXT_READER_DECLARATION}
+      ${EXACT_COMPOSER_PROMPT_IDENTITY_NORMALIZER_DECLARATION}
       const editor = document.querySelector(${primarySelectorLiteral});
       const fallback = document.querySelector(${fallbackSelectorLiteral});
       const inputSelectors = ${JSON.stringify(INPUT_SELECTORS)};
@@ -247,12 +252,26 @@ export async function submitPrompt(
         (node) => node === focused || (focused && node.contains?.(focused)),
       );
       const active = focusedCandidate || candidates.find((node) => isVisible(node)) || candidates[0] || null;
+      const exactActive = active
+        ? readExactComposerPromptText(active)
+        : {
+            ok: false,
+            value: '',
+            reason: 'editor-missing',
+            selectionRestored: false,
+            focusPreserved: false,
+          };
       return {
         editorText: editor?.innerText ?? '',
         fallbackValue: fallback?.value ?? '',
         activeValue: active ? readValue(active) : '',
         activeVisible: Boolean(active && isVisible(active)),
         activeFocused: Boolean(active && focusedCandidate === active),
+        activeExactValue: exactActive.value,
+        activeExactVerified: exactActive.ok,
+        activeExactReason: exactActive.reason,
+        selectionRestored: exactActive.selectionRestored,
+        focusPreserved: exactActive.focusPreserved,
       };
     })()`,
     returnByValue: true,
@@ -260,18 +279,26 @@ export async function submitPrompt(
   const observedEditor = postVerification.result?.value?.editorText ?? "";
   const observedFallback = postVerification.result?.value?.fallbackValue ?? "";
   const observedActive = postVerification.result?.value?.activeValue ?? "";
+  const observedExactActive = postVerification.result?.value?.activeExactValue ?? "";
+  const activeExactVerified = postVerification.result?.value?.activeExactVerified === true;
   const activeVisible = postVerification.result?.value?.activeVisible === true;
   const activeFocused = postVerification.result?.value?.activeFocused === true;
   // The focused visible editor is the only composer that can receive the
   // dispatch. A stale hidden editor containing the full prompt must never mask
   // truncation in the active one.
-  const observedLength = activeVisible && activeFocused ? observedActive.length : 0;
+  const observedLength =
+    activeVisible && activeFocused
+      ? activeExactVerified
+        ? observedExactActive.length
+        : observedActive.length
+      : 0;
   if (deps.requireExactPromptRoundTrip) {
-    const normalizedPrompt = normalizeRenderedPromptDomIdentity(prompt);
+    const normalizedPrompt = normalizeExactComposerPromptIdentity(prompt);
     const exactRoundTrip =
       activeVisible &&
       activeFocused &&
-      normalizeRenderedPromptDomIdentity(observedActive) === normalizedPrompt;
+      activeExactVerified &&
+      normalizeExactComposerPromptIdentity(observedExactActive) === normalizedPrompt;
     if (!exactRoundTrip) {
       await logDomFailure(runtime, logger, "prompt-inline-fallback-mismatch");
       throw new BrowserAutomationError(
@@ -279,9 +306,13 @@ export async function submitPrompt(
         {
           stage: "submit-prompt",
           code: "prompt-inline-fallback-mismatch",
-          retryable: true,
+          oracleErrorClass: "integrity_ui_unknown",
+          retryable: false,
           promptLength,
           observedLengths: [observedEditor.length, observedFallback.length, observedActive.length],
+          exactReadReason: postVerification.result?.value?.activeExactReason ?? null,
+          selectionRestored: postVerification.result?.value?.selectionRestored === true,
+          focusPreserved: postVerification.result?.value?.focusPreserved === true,
         },
       );
     }
@@ -541,6 +572,7 @@ export function buildAttachmentReadyExpression(
     const bindToken = ${bindTokenLiteral};
     const sendBindingToken = ${sendBindingTokenLiteral};
     const sendSelectors = ${JSON.stringify(SEND_BUTTON_SELECTORS)};
+    ${ATTACHMENT_DOM_EVIDENCE_READER_DECLARATION}
     const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
     const hasNameBoundary = (text, name) => {
       if (!name) return false;
@@ -655,6 +687,10 @@ export function buildAttachmentReadyExpression(
       'button[aria-label*="Remove attachment"]',
       '[aria-label*="remove attachment"]',
       'button[aria-label*="remove attachment"]',
+      '[aria-busy="true"]',
+      '[data-state="loading"]',
+      '[data-state="uploading"]',
+      '[data-state="pending"]',
     ];
     const isVisible = (node) => {
       if (!(node instanceof HTMLElement)) return false;
@@ -871,31 +907,15 @@ export function buildAttachmentReadyExpression(
 
     const selectedFileCount = selectedFiles.length;
     const residualAttachmentNodes = chipNodes.filter((node) => {
-      if (!isVisible(node)) return false;
-      const testid = (node.getAttribute('data-testid') || '').toLowerCase();
-      const aria = (node.getAttribute('aria-label') || '').toLowerCase();
-      const state = (node.getAttribute('data-state') || '').toLowerCase();
-      const text = (node.textContent || '').trim();
-      const removeControl =
-        /remove[-_ ]?(?:file|attachment)/.test(testid + ' ' + aria) ||
-        Boolean(node.querySelector?.(
-          '[aria-label*="Remove file"], [aria-label*="remove file"], [aria-label*="Remove attachment"], [aria-label*="remove attachment"], [data-testid*="remove-attachment"], [data-testid*="attachment-remove"]',
-        ));
-      const uploadState =
-        node.getAttribute('aria-busy') === 'true' ||
-        ['loading', 'uploading', 'pending'].includes(state) ||
-        /\\b(?:uploading|processing)\\b/i.test(text);
-      const genericTrigger =
-        node.matches?.('button,[role="button"]') === true && !removeControl && !uploadState;
-      if (genericTrigger) return false;
-      return (
-        node.matches?.('[role="group"][aria-label]') === true ||
-        removeControl ||
-        uploadState ||
-        testid.includes('attachment') ||
-        testid.includes('chip') ||
-        ((testid.includes('upload') || testid.includes('file')) && text.length > 0)
-      );
+      const evidence = readAttachmentDomEvidence(node);
+      const ownLabel = collectOwnLabelHaystack(node);
+      const labelledGroupHasAttachmentEvidence =
+        evidence.labelledGroup &&
+        expected.some((item) => matchesExpected(ownLabel, item));
+      if (!isVisible(node) && !evidence.uploadState && !labelledGroupHasAttachmentEvidence) {
+        return false;
+      }
+      return evidence.attachmentState || labelledGroupHasAttachmentEvidence;
     });
     const hasUploadingResidual = residualAttachmentNodes.some((node) => {
       const state = (node.getAttribute('data-state') || '').toLowerCase();
@@ -903,7 +923,7 @@ export function buildAttachmentReadyExpression(
       return (
         node.getAttribute('aria-busy') === 'true' ||
         ['loading', 'uploading', 'pending'].includes(state) ||
-        /\b(?:uploading|processing)\b/i.test(text)
+        /\\b(?:uploading|processing)\\b/i.test(text)
       );
     });
     const attachmentOwnerSelector = [
@@ -942,6 +962,7 @@ export function buildAttachmentReadyExpression(
         ? exactAttachmentSetReady
         : (
             (chipsReady || inputsReady || countReady) &&
+            !hasUploadingResidual &&
             visibleExtensionLabelsMatchExpected &&
             !visibleStemOnlyMismatch &&
             (removeAffordances.length === 0 || removeAffordances.length === expected.length)
@@ -1295,6 +1316,10 @@ type ExactComposerPreDispatchProof = {
   activeFocused?: boolean;
   promptMatches?: boolean;
   observedLength?: number;
+  exactReadVerified?: boolean;
+  exactReadReason?: string | null;
+  selectionRestored?: boolean;
+  focusPreserved?: boolean;
   inputFileCount?: number;
   residualAttachmentCount?: number;
   residualAttachmentKinds?: string[];
@@ -1304,6 +1329,25 @@ type ExactComposerPreDispatchProof = {
   sendX?: number | null;
   sendY?: number | null;
 };
+
+const EXACT_COMPOSER_RESIDUAL_ATTACHMENT_KINDS = new Set([
+  "attachment-node",
+  "labelled-group",
+  "remove-control",
+  "tile-testid",
+  "upload-state",
+]);
+
+function sanitizeResidualAttachmentKinds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .slice(0, 8)
+    .map((kind) =>
+      typeof kind === "string" && EXACT_COMPOSER_RESIDUAL_ATTACHMENT_KINDS.has(kind)
+        ? kind
+        : "attachment-node",
+    );
+}
 
 /**
  * Build the last-moment proof used by the exact upload-to-inline fallback.
@@ -1324,19 +1368,14 @@ function buildExactComposerPreDispatchExpression(
     true,
   );
   return `(() => {
-    const normalizeRenderedPromptDomIdentity = ${normalizeRenderedPromptDomIdentity.toString()};
+    ${EXACT_COMPOSER_PROMPT_TEXT_READER_DECLARATION}
+    ${EXACT_COMPOSER_PROMPT_IDENTITY_NORMALIZER_DECLARATION}
+    ${ATTACHMENT_DOM_EVIDENCE_READER_DECLARATION}
     const inputSelectors = ${JSON.stringify(INPUT_SELECTORS)};
     const sendSelectors = ${JSON.stringify(SEND_BUTTON_SELECTORS)};
     const expected = ${JSON.stringify(expectedPrompt)};
     const sendBindingToken = ${JSON.stringify(sendBindingToken ?? null)};
     const expectedAttachmentCount = ${JSON.stringify(expectedAttachments.length)};
-    const readValue = (node) => {
-      if (!node) return '';
-      if (node instanceof HTMLTextAreaElement || node instanceof HTMLInputElement) {
-        return node.value ?? '';
-      }
-      return node.innerText ?? node.textContent ?? '';
-    };
     const visible = (node) => {
       if (!(node instanceof HTMLElement) || node.isConnected === false) return false;
       const rect = node.getBoundingClientRect();
@@ -1447,32 +1486,33 @@ function buildExactComposerPreDispatchExpression(
       if (!(node instanceof HTMLElement) || seen.has(node)) continue;
       seen.add(node);
       if (node instanceof HTMLInputElement && node.type === 'file') continue;
-      const testid = (node.getAttribute('data-testid') ?? '').toLowerCase();
-      const aria = (node.getAttribute('aria-label') ?? '').toLowerCase();
-      const state = (node.getAttribute('data-state') ?? '').toLowerCase();
-      const busy = node.getAttribute('aria-busy') === 'true';
-      const text = (node.textContent ?? '').trim();
-      const removeControl =
-        /remove[-_ ]?(?:file|attachment)/.test(testid + ' ' + aria) ||
-        Boolean(node.querySelector('[aria-label*="Remove file"],[aria-label*="remove file"],[data-testid*="remove-attachment"],[data-testid*="attachment-remove"]'));
-      const uploadState = busy || ['loading', 'uploading', 'pending'].includes(state) ||
-        /\b(?:uploading|processing)\b/i.test(text);
-      if (!visible(node) && !uploadState) continue;
-      const isGenericControl = node.matches('button,[role="button"]') && !removeControl && !uploadState;
-      if (isGenericControl) continue;
-      const attachmentState =
-        node.matches('[role="group"][aria-label]') ||
-        removeControl ||
-        uploadState ||
-        testid.includes('attachment') ||
-        testid.includes('chip') ||
-        ((testid.includes('upload') || testid.includes('file')) && text.length > 0);
-      if (!attachmentState) continue;
-      residualAttachmentKinds.push(testid || aria || state || node.tagName.toLowerCase());
+      const evidence = readAttachmentDomEvidence(node);
+      if (!visible(node) && !evidence.uploadState) continue;
+      if (!evidence.attachmentState) continue;
+      residualAttachmentKinds.push(
+        evidence.uploadState
+          ? 'upload-state'
+          : evidence.removeControl
+            ? 'remove-control'
+            : evidence.labelledGroup
+              ? 'labelled-group'
+              : evidence.testId
+                ? 'tile-testid'
+                : 'attachment-node'
+      );
     }
     const activeVisible = Boolean(active && visible(active));
     const activeFocused = Boolean(active && (active === focused || active.contains?.(focused)));
-    const observed = active ? readValue(active) : '';
+    const exactRead = active
+      ? readExactComposerPromptText(active)
+      : {
+          ok: false,
+          value: '',
+          reason: 'editor-missing',
+          selectionRestored: false,
+          focusPreserved: false,
+        };
+    const observed = exactRead.value;
     let attachmentExpectationSatisfied = false;
     try {
       attachmentExpectationSatisfied = (${exactAttachmentStateExpression}) === true;
@@ -1483,9 +1523,14 @@ function buildExactComposerPreDispatchExpression(
       promptMatches:
         activeVisible &&
         activeFocused &&
-        normalizeRenderedPromptDomIdentity(observed) ===
-          normalizeRenderedPromptDomIdentity(expected),
+        exactRead.ok &&
+        normalizeExactComposerPromptIdentity(observed) ===
+          normalizeExactComposerPromptIdentity(expected),
       observedLength: observed.length,
+      exactReadVerified: exactRead.ok,
+      exactReadReason: exactRead.reason,
+      selectionRestored: exactRead.selectionRestored,
+      focusPreserved: exactRead.focusPreserved,
       inputFileCount,
       residualAttachmentCount: residualAttachmentKinds.length,
       residualAttachmentKinds: residualAttachmentKinds.slice(0, 8),
@@ -1515,11 +1560,16 @@ function assertExactComposerPreDispatchProof(
       {
         stage: "submit-prompt",
         code: "prompt-inline-fallback-mismatch",
-        retryable: true,
+        oracleErrorClass: "integrity_ui_unknown",
+        retryable: false,
         promptLength,
         observedLength: proof?.observedLength ?? null,
         activeVisible: proof?.activeVisible ?? false,
         activeFocused: proof?.activeFocused ?? false,
+        exactReadVerified: proof?.exactReadVerified ?? false,
+        exactReadReason: proof?.exactReadReason ?? null,
+        selectionRestored: proof?.selectionRestored ?? false,
+        focusPreserved: proof?.focusPreserved ?? false,
       },
     );
   }
@@ -1531,10 +1581,11 @@ function assertExactComposerPreDispatchProof(
       {
         stage: "submit-prompt",
         code: "prompt-inline-fallback-residual-attachment",
-        retryable: true,
+        oracleErrorClass: "integrity_ui_unknown",
+        retryable: false,
         inputFileCount,
         residualAttachmentCount,
-        residualAttachmentKinds: proof.residualAttachmentKinds ?? [],
+        residualAttachmentKinds: sanitizeResidualAttachmentKinds(proof.residualAttachmentKinds),
       },
     );
   }
@@ -1550,7 +1601,8 @@ function assertExactComposerPreDispatchProof(
       {
         stage: "submit-prompt",
         code: "prompt-inline-fallback-send-binding-mismatch",
-        retryable: true,
+        oracleErrorClass: "integrity_ui_unknown",
+        retryable: false,
         sendBindingMatches: proof.sendBindingMatches ?? null,
         sendTargetReady: proof.sendTargetReady ?? null,
       },
@@ -1684,6 +1736,8 @@ async function attemptSendButton(
                 {
                   stage: "submit-prompt",
                   code: "attachment-state-changed-after-preflight",
+                  oracleErrorClass: "integrity_ui_unknown",
+                  retryable: false,
                 },
               );
             }
@@ -1724,6 +1778,8 @@ async function attemptSendButton(
               {
                 stage: "submit-prompt",
                 code: "send-target-changed-after-preflight",
+                oracleErrorClass: "integrity_ui_unknown",
+                retryable: false,
                 sendTargetStatus: verifiedValue?.status ?? null,
                 sendTargetReason: verifiedValue?.reason ?? null,
               },
@@ -2059,7 +2115,9 @@ async function verifyPromptCommitted(
   const probe = finalProbe && typeof finalProbe === "object" ? finalProbe : lastProbe;
   if (logger) {
     logger(
-      `Prompt commit check failed; latest state: ${probe ? JSON.stringify(probe) : "unavailable"}`,
+      `Prompt commit check failed; latest state: ${
+        probe ? JSON.stringify(summarizeCommitProbe(probe)) : "unavailable"
+      }`,
     );
     await logDomFailure(Runtime, logger, "prompt-commit");
   }

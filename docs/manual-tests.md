@@ -36,6 +36,29 @@ Outputs land in `.oracle-v18-validation/` by default (override with `tsx scripts
 
 - `pnpm test:browser` — launches headful Chrome and checks the DevTools endpoint is reachable. Set `ORACLE_BROWSER_PORT` (or `ORACLE_BROWSER_DEBUG_PORT`) to reuse a fixed port when you’ve already opened a firewall rule.
 
+### Offline exact-composer Chromium replay
+
+Run this whenever changing prompt insertion or exact composer text reading. It
+launches a new network-disabled headless Chromium against a local blank page;
+it does not use ChatGPT, an account, or a paid API. Changes to the complete
+protected send guard also require the offline guard fixtures in
+`tests/browser/promptComposerExpressions.test.ts` and
+`tests/browser/promptComposer.test.ts`.
+
+```bash
+ORACLE_CHROMIUM_EXACT_PROMPT_TEST=1 \
+ORACLE_CHROMIUM_PATH=/absolute/path/to/chrome \
+pnpm vitest run tests/browser/promptDomMatch.chromium.test.ts
+```
+
+The replay drives the production `Input.insertText` path through the 39-line,
+13-blank incident shape plus leading/trailing-blank, list, and fenced-code
+canaries. It must prove exact logical plaintext, selection restoration, editor
+focus continuity, and that an unfocused read cannot steal focus from Send. It
+also drives the production guard with trusted CDP mouse input to prove
+window-capture consumption, benign blur continuity, and refusal of an
+asynchronous redispatch of the original click `Event`.
+
 ### Opt-in live browser smoke tests (ChatGPT Pro + Gemini Deep Think)
 
 Run these only when intentionally validating signed-in browser automation. They

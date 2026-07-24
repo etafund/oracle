@@ -20,6 +20,7 @@ import {
   readBoundedRegularFile,
   transferAttachmentViaDataTransfer,
 } from "./attachmentDataTransfer.js";
+import { ATTACHMENT_DOM_EVIDENCE_READER_DECLARATION } from "../attachmentDomState.js";
 
 interface PreparedAttachmentUpload {
   attachment: BrowserAttachment;
@@ -1304,6 +1305,7 @@ export async function clearComposerAttachments(
 ): Promise<void> {
   const deadline = Date.now() + Math.max(0, timeoutMs);
   const expression = `(() => {
+    ${ATTACHMENT_DOM_EVIDENCE_READER_DECLARATION}
     const promptSelectors = ${JSON.stringify(INPUT_SELECTORS)};
     const sendSelectors = ${JSON.stringify(SEND_BUTTON_SELECTORS)};
     const findPromptNode = () => {
@@ -1413,28 +1415,15 @@ export async function clearComposerAttachments(
       if (!(node instanceof HTMLElement) || seen.has(node)) continue;
       seen.add(node);
       if (node instanceof HTMLInputElement && node.type === 'file') continue;
-      const testid = (node.getAttribute('data-testid') ?? '').toLowerCase();
-      const aria = (node.getAttribute('aria-label') ?? '').toLowerCase();
-      const state = (node.getAttribute('data-state') ?? '').toLowerCase();
-      const busy = node.getAttribute('aria-busy') === 'true';
-      const text = (node.textContent ?? '').trim();
-      const removeControl =
-        /remove[-_ ]?(?:file|attachment)/.test(testid + ' ' + aria) ||
-        Boolean(node.querySelector('[aria-label*="Remove file"],[aria-label*="remove file"],[data-testid*="remove-attachment"],[data-testid*="attachment-remove"]'));
-      const uploadState = busy || ['loading', 'uploading', 'pending'].includes(state) ||
-        /\b(?:uploading|processing)\b/i.test(text);
-      if (!visible(node) && !uploadState) continue;
-      const genericControl = node.matches('button,[role="button"]') && !removeControl && !uploadState;
-      if (genericControl) continue;
-      const attachmentState =
-        node.matches('[role="group"][aria-label]') ||
-        removeControl ||
-        uploadState ||
-        testid.includes('attachment') ||
-        testid.includes('chip') ||
-        ((testid.includes('upload') || testid.includes('file')) && text.length > 0);
-      if (!attachmentState) continue;
-      residualKinds.push(testid || aria || state || node.tagName.toLowerCase());
+      const evidence = readAttachmentDomEvidence(node);
+      if (!visible(node) && !evidence.uploadState) continue;
+      if (!evidence.attachmentState) continue;
+      residualKinds.push(
+        evidence.testId ||
+        evidence.ariaLabel ||
+        evidence.state ||
+        node.tagName.toLowerCase()
+      );
     }
     const chipCount = residualKinds.length;
     const hadAttachments = chipCount > 0 || inputCount > 0 || removeButtons.length > 0;

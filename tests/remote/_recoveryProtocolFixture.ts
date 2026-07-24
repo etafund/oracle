@@ -7,6 +7,7 @@ import {
   REMOTE_BROWSER_RECOVERY_CLAIM_ROUTE_HEADER,
   REMOTE_BROWSER_RECOVERY_CLAIM_ROUTE_HEADER_VALUE,
   REMOTE_BROWSER_RECOVERY_PROTOCOL,
+  REMOTE_BROWSER_TERMINAL_RETRY_POLICY,
   MAX_REMOTE_ARTIFACT_BYTES,
 } from "../../src/remote/types.js";
 import {
@@ -43,6 +44,7 @@ export function serveCompatibleRecoveryHealth(
           promptPreviewAlgorithm: PROMPT_RECOVERY_PREVIEW_ALGORITHM,
           promptDomIdentityAlgorithm: PROMPT_DOM_IDENTITY_ALGORITHM,
           durableClaimLookup: true,
+          terminalRetryPolicy: REMOTE_BROWSER_TERMINAL_RETRY_POLICY,
         },
       },
     }),
