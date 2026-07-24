@@ -40,14 +40,47 @@ function makeExactTextHarness(options: {
   rangeCount?: number;
   shadowRoot?: boolean;
   unsupportedShadowRoot?: boolean;
-  throwOnRead?: boolean;
+  domShape?: "prosemirror" | "mixed-blocks";
 }) {
-  let selectedNode: { logicalText: string } | null = null;
+  const textNode = (value: string) => ({
+    nodeType: 3,
+    nodeName: "#text",
+    nodeValue: value,
+    childNodes: [],
+  });
+  const trailingBreak = {
+    nodeType: 1,
+    nodeName: "BR",
+    tagName: "BR",
+    childNodes: [],
+    getAttribute: (name: string) => (name === "class" ? "ProseMirror-trailingBreak" : null),
+  };
+  const blockNode = (tagName: "P" | "DIV", value: string) => ({
+    nodeType: 1,
+    nodeName: tagName,
+    tagName,
+    childNodes: value.length > 0 ? [textNode(value)] : [trailingBreak],
+    getAttribute: () => null,
+  });
+  const childNodes = options.logicalText
+    .split("\n")
+    .map((line, index) =>
+      blockNode(options.domShape === "mixed-blocks" && index === 1 ? "DIV" : "P", line),
+    );
   const editor = {
+    nodeType: 1,
+    nodeName: "DIV",
     tagName: "DIV",
     innerText: options.innerText ?? options.logicalText,
-    logicalText: options.logicalText,
+    innerHTML: options.logicalText,
+    childNodes,
     ownerDocument: null as unknown,
+    getAttribute: (name: string) =>
+      name === "class"
+        ? "ProseMirror ProseMirror-focused"
+        : name === "contenteditable"
+          ? "true"
+          : null,
     getRootNode: () => root,
   };
   const anchorOffset = options.anchorOffset ?? options.logicalText.length;
@@ -71,13 +104,11 @@ function makeExactTextHarness(options: {
     }),
     addRange: vi.fn(
       (candidate: {
-        selectedNode?: { logicalText: string };
         startContainer?: typeof editor;
         startOffset?: number;
         endContainer?: typeof editor;
         endOffset?: number;
       }) => {
-        selectedNode = candidate.selectedNode ?? null;
         selection.rangeCount = 1;
         selection.anchorNode = candidate.startContainer ?? editor;
         selection.anchorOffset = candidate.startOffset ?? 0;
@@ -92,7 +123,6 @@ function makeExactTextHarness(options: {
         restoredFocusNode: typeof editor,
         restoredFocusOffset: number,
       ) => {
-        selectedNode = null;
         selection.rangeCount = 1;
         selection.anchorNode = restoredAnchorNode;
         selection.anchorOffset = restoredAnchorOffset;
@@ -100,26 +130,10 @@ function makeExactTextHarness(options: {
         selection.focusOffset = restoredFocusOffset;
       },
     ),
-    toString: vi.fn(() => {
-      if (options.throwOnRead) throw new Error("injected selection read failure");
-      return selectedNode?.logicalText ?? "";
-    }),
+    toString: vi.fn(() => "selection serializer must not be used"),
   };
   const document = {
     activeElement: editor,
-    createRange: () => {
-      const temporaryRange = {
-        selectedNode: null as { logicalText: string } | null,
-        startContainer: editor,
-        startOffset: 0,
-        endContainer: editor,
-        endOffset: options.logicalText.length,
-        selectNodeContents(node: { logicalText: string }) {
-          this.selectedNode = node;
-        },
-      };
-      return temporaryRange;
-    },
     getSelection: () => selection,
   };
   const root = options.unsupportedShadowRoot
@@ -146,7 +160,7 @@ describe("exact composer editing-host plaintext", () => {
     });
   });
 
-  test("uses editing-host plaintext instead of distorted innerText and restores direction", () => {
+  test("uses structural editing-host plaintext instead of distorted innerText without touching selection", () => {
     const harness = makeExactTextHarness({
       logicalText: "a\n\nb",
       innerText: "a\n\n\nb",
@@ -169,12 +183,10 @@ describe("exact composer editing-host plaintext", () => {
       focusNode: harness.editor,
       focusOffset: 1,
     });
-    expect(harness.selection.setBaseAndExtent).toHaveBeenCalledWith(
-      harness.editor,
-      4,
-      harness.editor,
-      1,
-    );
+    expect(harness.selection.removeAllRanges).not.toHaveBeenCalled();
+    expect(harness.selection.addRange).not.toHaveBeenCalled();
+    expect(harness.selection.setBaseAndExtent).not.toHaveBeenCalled();
+    expect(harness.selection.toString).not.toHaveBeenCalled();
   });
 
   test("uses a supported shadow-root selection and rejects unsupported roots before mutation", () => {
@@ -217,17 +229,17 @@ describe("exact composer editing-host plaintext", () => {
     expect(harness.selection.addRange).not.toHaveBeenCalled();
   });
 
-  test("restores selection and focus when the plaintext read throws", () => {
+  test("fails closed on a mixed block DOM without touching selection or focus", () => {
     const harness = makeExactTextHarness({
-      logicalText: "text",
+      logicalText: "alpha\nbeta",
       anchorOffset: 3,
       focusOffset: 1,
-      throwOnRead: true,
+      domShape: "mixed-blocks",
     });
     expect(readExactComposerPromptText(harness.editor)).toEqual({
       ok: false,
       value: "",
-      reason: "selection-read-failed",
+      reason: "editor-dom-ambiguous",
       selectionRestored: true,
       focusPreserved: true,
     });
@@ -236,6 +248,96 @@ describe("exact composer editing-host plaintext", () => {
       anchorOffset: 3,
       focusNode: harness.editor,
       focusOffset: 1,
+    });
+    expect(harness.document.activeElement).toBe(harness.editor);
+    expect(harness.selection.removeAllRanges).not.toHaveBeenCalled();
+    expect(harness.selection.addRange).not.toHaveBeenCalled();
+    expect(harness.selection.setBaseAndExtent).not.toHaveBeenCalled();
+    expect(harness.selection.toString).not.toHaveBeenCalled();
+  });
+
+  test("preserves literal NBSP and fails closed on ambiguous or nested editor shapes", () => {
+    const nbsp = makeExactTextHarness({ logicalText: "left\u00a0right" });
+    expect(readExactComposerPromptText(nbsp.editor)).toMatchObject({
+      ok: true,
+      value: "left\u00a0right",
+    });
+    expect(readExactComposerPromptText(nbsp.editor).value).not.toBe("left right");
+
+    const terminalBreak = makeExactTextHarness({ logicalText: "text" });
+    (terminalBreak.editor.childNodes[0] as { childNodes: unknown[] }).childNodes.push({
+      nodeType: 1,
+      nodeName: "BR",
+      tagName: "BR",
+      childNodes: [],
+      getAttribute: () => null,
+    });
+    expect(readExactComposerPromptText(terminalBreak.editor)).toMatchObject({
+      ok: false,
+      reason: "editor-dom-ambiguous",
+    });
+
+    const nestedBlock = makeExactTextHarness({ logicalText: "text" });
+    (nestedBlock.editor.childNodes[0] as { childNodes: unknown[] }).childNodes = [
+      {
+        nodeType: 1,
+        nodeName: "DIV",
+        tagName: "DIV",
+        childNodes: [],
+        getAttribute: () => null,
+      },
+    ];
+    expect(readExactComposerPromptText(nestedBlock.editor)).toMatchObject({
+      ok: false,
+      reason: "editor-dom-unsupported",
+    });
+
+    const lockedBlock = makeExactTextHarness({ logicalText: "text" });
+    (
+      lockedBlock.editor.childNodes[0] as { getAttribute: (name: string) => string | null }
+    ).getAttribute = (name) => (name === "contenteditable" ? "false" : null);
+    expect(readExactComposerPromptText(lockedBlock.editor)).toMatchObject({
+      ok: false,
+      reason: "editor-dom-unsupported",
+    });
+
+    const prosemirrorDivs = makeExactTextHarness({ logicalText: "alpha\nbeta" });
+    for (const block of prosemirrorDivs.editor.childNodes) {
+      (block as { nodeName: string }).nodeName = "DIV";
+      (block as { tagName: string }).tagName = "DIV";
+    }
+    expect(readExactComposerPromptText(prosemirrorDivs.editor)).toMatchObject({
+      ok: false,
+      reason: "editor-dom-unsupported",
+    });
+
+    const unreconciledProseMirror = makeExactTextHarness({ logicalText: "text" });
+    (unreconciledProseMirror.editor as { childNodes: unknown[] }).childNodes = [
+      {
+        nodeType: 3,
+        nodeName: "#text",
+        nodeValue: "text",
+        childNodes: [],
+      },
+    ];
+    expect(readExactComposerPromptText(unreconciledProseMirror.editor)).toMatchObject({
+      ok: false,
+      reason: "editor-dom-unsupported",
+    });
+
+    const plainDiv = makeExactTextHarness({ logicalText: "text" });
+    plainDiv.editor.getAttribute = (name) =>
+      name === "class" ? "ProseMirror ProseMirror-focused" : null;
+    expect(readExactComposerPromptText(plainDiv.editor)).toMatchObject({
+      ok: false,
+      reason: "editor-dom-unsupported",
+    });
+
+    const missingDomSnapshot = makeExactTextHarness({ logicalText: "text" });
+    delete (missingDomSnapshot.editor as { innerHTML?: string }).innerHTML;
+    expect(readExactComposerPromptText(missingDomSnapshot.editor)).toMatchObject({
+      ok: false,
+      reason: "editor-dom-unavailable",
     });
   });
 });

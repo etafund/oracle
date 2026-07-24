@@ -4,6 +4,7 @@ import puppeteer, { type Browser, type CDPSession, type Page } from "puppeteer-c
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
 import { readExactComposerPromptText } from "../../src/browser/promptDomMatch.js";
+import { formatFileSection } from "../../src/oracle/markdown.js";
 import {
   buildGpt56SolProFinalDispatchGuard,
   buildGpt56SolProPublicRouteProofExpressionForTest,
@@ -98,6 +99,120 @@ describe.skipIf(!enabled)("exact composer plaintext in real Chromium", () => {
     }, readExactComposerPromptText.toString());
   }
 
+  async function reconcileProseMirrorParagraphsAndRead(prompt: string) {
+    await page.setContent(`
+      <!doctype html>
+      <button id="send" type="button">Send</button>
+      <div id="editor" class="ProseMirror ProseMirror-focused"
+           role="textbox" contenteditable="true"
+           style="white-space: pre-wrap"></div>
+    `);
+    await page.evaluate((value) => {
+      const editor = document.querySelector("#editor") as HTMLElement;
+      const paragraphs = value.split("\n").map((line) => {
+        const paragraph = document.createElement("p");
+        if (line.length === 0) {
+          paragraph.append(document.createElement("br"));
+        } else {
+          paragraph.textContent = line;
+        }
+        return paragraph;
+      });
+      editor.replaceChildren(...paragraphs);
+      editor.focus();
+      const selection = document.getSelection()!;
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      range.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }, prompt);
+    return await page.evaluate((readerSource) => {
+      const reader = Function(`return (${readerSource})`)() as (editor: Element) => {
+        ok: boolean;
+        value: string;
+        reason: string | null;
+        selectionRestored: boolean;
+        focusPreserved: boolean;
+      };
+      const editor = document.querySelector("#editor")!;
+      const selection = document.getSelection()!;
+      const before = {
+        rangeCount: selection.rangeCount,
+        anchorNode: selection.anchorNode,
+        anchorOffset: selection.anchorOffset,
+        focusNode: selection.focusNode,
+        focusOffset: selection.focusOffset,
+      };
+      const read = reader(editor);
+      return {
+        read,
+        paragraphCount: editor.querySelectorAll(":scope > p").length,
+        emptyParagraphCount: editor.querySelectorAll(":scope > p > br:only-child").length,
+        selectionRestored:
+          selection.rangeCount === before.rangeCount &&
+          selection.anchorNode === before.anchorNode &&
+          selection.anchorOffset === before.anchorOffset &&
+          selection.focusNode === before.focusNode &&
+          selection.focusOffset === before.focusOffset,
+        activeId: (document.activeElement as HTMLElement | null)?.id ?? null,
+      };
+    }, readExactComposerPromptText.toString());
+  }
+
+  async function insertIntoSeededProseMirrorAndRead(prompt: string) {
+    await page.setContent(`
+      <!doctype html>
+      <button id="send" type="button">Send</button>
+      <div id="editor" class="ProseMirror ProseMirror-focused"
+           role="textbox" contenteditable="true"
+           style="white-space: pre-wrap"><p><br class="ProseMirror-trailingBreak"></p></div>
+    `);
+    await page.evaluate(() => {
+      const editor = document.querySelector("#editor") as HTMLElement;
+      const paragraph = editor.querySelector("p")!;
+      editor.focus();
+      const selection = document.getSelection()!;
+      const range = document.createRange();
+      range.selectNodeContents(paragraph);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    });
+    await cdp.send("Input.insertText", { text: prompt });
+    return await page.evaluate((readerSource) => {
+      const reader = Function(`return (${readerSource})`)() as (editor: Element) => {
+        ok: boolean;
+        value: string;
+        reason: string | null;
+        selectionRestored: boolean;
+        focusPreserved: boolean;
+      };
+      const editor = document.querySelector("#editor")!;
+      const selection = document.getSelection()!;
+      const before = {
+        rangeCount: selection.rangeCount,
+        anchorNode: selection.anchorNode,
+        anchorOffset: selection.anchorOffset,
+        focusNode: selection.focusNode,
+        focusOffset: selection.focusOffset,
+      };
+      const read = reader(editor);
+      return {
+        read,
+        html: editor.innerHTML,
+        paragraphCount: editor.querySelectorAll(":scope > p").length,
+        emptyParagraphCount: editor.querySelectorAll(":scope > p > br:only-child").length,
+        selectionRestored:
+          selection.rangeCount === before.rangeCount &&
+          selection.anchorNode === before.anchorNode &&
+          selection.anchorOffset === before.anchorOffset &&
+          selection.focusNode === before.focusNode &&
+          selection.focusOffset === before.focusOffset,
+        activeId: (document.activeElement as HTMLElement | null)?.id ?? null,
+      };
+    }, readExactComposerPromptText.toString());
+  }
+
   async function evaluateExpression<T>(expression: string): Promise<T> {
     const response = await cdp.send("Runtime.evaluate", {
       expression,
@@ -124,11 +239,20 @@ describe.skipIf(!enabled)("exact composer plaintext in real Chromium", () => {
       </style>
       <form id="composer" data-testid="unified-composer">
         <div id="editor" class="ProseMirror ProseMirror-focused"
-             role="textbox" contenteditable="true"></div>
+             role="textbox" contenteditable="true"><p><br class="ProseMirror-trailingBreak"></p></div>
         <button id="send" data-testid="send-button" type="button">Send</button>
       </form>
     `);
-    await page.focus("#editor");
+    await page.evaluate(() => {
+      const editor = document.querySelector("#editor") as HTMLElement;
+      const paragraph = editor.querySelector("p")!;
+      editor.focus();
+      const selection = document.getSelection()!;
+      const range = document.createRange();
+      range.selectNodeContents(paragraph);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    });
     await cdp.send("Input.insertText", { text: prompt });
 
     const guard = buildGpt56SolProFinalDispatchGuard(undefined, token, {
@@ -308,6 +432,114 @@ describe.skipIf(!enabled)("exact composer plaintext in real Chromium", () => {
     const distorted = await insertAndRead("a\n\nb");
     expect(distorted.innerText).not.toBe("a\n\nb");
     expect(distorted.read.value).toBe("a\n\nb");
+  });
+
+  test("round-trips the exact inline-file canary after ProseMirror paragraph reconciliation", async () => {
+    const prompt = [
+      "Read the attached file. Respond with exactly the value after REPLY_TOKEN= and nothing else.",
+      "",
+      "### File: ../../../tmp/oracle_recovery_canary_20260724T214215Z.txt",
+      "Lines: 1-3",
+      "```",
+      "1 | CANARY_ID=00000000-0000-4000-8000-000000000000",
+      "2 | REPLY_TOKEN=ORACLE_CANARY_OK_0000000000000000",
+      "3 | ",
+      "```",
+    ].join("\n");
+    expect(prompt).toHaveLength(284);
+
+    const result = await reconcileProseMirrorParagraphsAndRead(prompt);
+    expect(result).toMatchObject({
+      paragraphCount: 9,
+      emptyParagraphCount: 1,
+      selectionRestored: true,
+      activeId: "editor",
+    });
+
+    const oneByteMutation = prompt.replace("REPLY_TOKEN=", "REPLY_TOKFN=");
+    const blankLineMutation = prompt.replace("\n\n### File:", "\n### File:");
+    expect(result.read.value).not.toBe(oneByteMutation);
+    expect(result.read.value).not.toBe(blankLineMutation);
+    expect(result.read).toEqual({
+      ok: true,
+      value: prompt,
+      reason: null,
+      selectionRestored: true,
+      focusPreserved: true,
+    });
+  });
+
+  test("round-trips the repaired inline-file canary through real CDP insertion", async () => {
+    const fileBody = [
+      "CANARY_ID=00000000-0000-4000-8000-000000000000",
+      "REPLY_TOKEN=ORACLE_CANARY_OK_0000000000000000",
+      "",
+    ].join("\n");
+    const prompt = [
+      "Read the attached file. Respond with exactly the value after REPLY_TOKEN= and nothing else.",
+      formatFileSection("../../../tmp/oracle_recovery_canary_20260724T214215Z.txt", fileBody, {
+        lineNumbers: true,
+        preserveTrailingWhitespace: true,
+      }).trimEnd(),
+    ].join("\n\n");
+    expect(prompt).toHaveLength(283);
+    expect(prompt.split("\n").some((line) => line.startsWith(" ") || line.endsWith(" "))).toBe(
+      false,
+    );
+
+    const result = await insertIntoSeededProseMirrorAndRead(prompt);
+    expect(result).toMatchObject({
+      paragraphCount: 9,
+      emptyParagraphCount: 1,
+      selectionRestored: true,
+      activeId: "editor",
+    });
+    expect(result.read).toEqual({
+      ok: true,
+      value: prompt,
+      reason: null,
+      selectionRestored: true,
+      focusPreserved: true,
+    });
+    expect(result.html).not.toContain("&nbsp;");
+  });
+
+  test("never aliases a literal NBSP to ASCII space", async () => {
+    const literalNbsp = await reconcileProseMirrorParagraphsAndRead("left\u00a0right");
+    expect(literalNbsp.read).toMatchObject({ ok: true, value: "left\u00a0right" });
+    expect(literalNbsp.read.value).not.toBe("left right");
+  });
+
+  test("fails exact equality instead of guessing after Chromium rewrites a boundary space", async () => {
+    await page.setContent(`
+      <!doctype html>
+      <div id="editor" class="ProseMirror ProseMirror-focused"
+           role="textbox" contenteditable="true"><p><br class="ProseMirror-trailingBreak"></p></div>
+    `);
+    await page.evaluate(() => {
+      const editor = document.querySelector("#editor") as HTMLElement;
+      const paragraph = editor.querySelector("p")!;
+      editor.focus();
+      const selection = document.getSelection()!;
+      const range = document.createRange();
+      range.selectNodeContents(paragraph);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    });
+    const expected = "trailing ";
+    await cdp.send("Input.insertText", { text: expected });
+    const observed = await page.evaluate((readerSource) => {
+      const reader = Function(`return (${readerSource})`)() as (editor: Element) => {
+        ok: boolean;
+        value: string;
+      };
+      const editor = document.querySelector("#editor")!;
+      return { read: reader(editor), html: editor.innerHTML };
+    }, readExactComposerPromptText.toString());
+
+    expect(observed.read).toMatchObject({ ok: true, value: "trailing\u00a0" });
+    expect(observed.read.value).not.toBe(expected);
+    expect(observed.html).toContain("&nbsp;");
   });
 
   test("arms the exact guard ten times with a 24,677-character multiline prompt", async () => {

@@ -418,6 +418,13 @@ describe("manual-login profile setup gate", () => {
 // step now always runs; ensureThinkingTime handles the already-selected case.
 
 describe("GPT-5.6 Sol + Pro evidence integration", () => {
+  test("requires an exact composer round trip for every protected Sol submission", () => {
+    expect(__test__.requiresExactComposerRoundTrip("gpt-5.6-sol", false)).toBe(true);
+    expect(__test__.requiresExactComposerRoundTrip("GPT-5.6 Sol", undefined)).toBe(true);
+    expect(__test__.requiresExactComposerRoundTrip("gpt-5.1", true)).toBe(true);
+    expect(__test__.requiresExactComposerRoundTrip("gpt-5.1", false)).toBe(false);
+  });
+
   test("refresh recovery is limited to Oracle-owned new-chat tabs", () => {
     expect(__test__.shouldRefreshInitialModelPicker({})).toBe(true);
     expect(

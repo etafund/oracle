@@ -302,7 +302,7 @@ export async function submitPrompt(
     if (!exactRoundTrip) {
       await logDomFailure(runtime, logger, "prompt-inline-fallback-mismatch");
       throw new BrowserAutomationError(
-        "Inline attachment fallback did not round-trip the complete prompt; refusing to dispatch.",
+        "The active composer did not round-trip the complete prompt exactly; refusing to dispatch.",
         {
           stage: "submit-prompt",
           code: "prompt-inline-fallback-mismatch",
@@ -1556,7 +1556,7 @@ function assertExactComposerPreDispatchProof(
     proof.promptMatches !== true
   ) {
     throw new BrowserAutomationError(
-      "Inline attachment fallback changed after its initial round-trip proof; refusing to dispatch.",
+      "The exact composer prompt changed after its initial round-trip proof; refusing to dispatch.",
       {
         stage: "submit-prompt",
         code: "prompt-inline-fallback-mismatch",

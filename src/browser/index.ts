@@ -1654,6 +1654,13 @@ function isDesiredGpt56SolModel(model: string | null | undefined): boolean {
   return isGpt56SolModelLabel(model);
 }
 
+function requiresExactComposerRoundTrip(
+  model: string | null | undefined,
+  explicitlyRequired: boolean | undefined,
+): boolean {
+  return isDesiredGpt56SolModel(model) || explicitlyRequired === true;
+}
+
 function mergeModeSelectionEvidence(
   current: BrowserModelSelectionEvidence | undefined,
   mode: NonNullable<Awaited<ReturnType<typeof ensureThinkingTime>>>,
@@ -2965,7 +2972,10 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           isDesiredGpt56SolModel(config.desiredModel) ||
           submissionAttachments.length > 0 ||
           submissionOptions?.requireExactPromptRoundTrip === true,
-        requireExactPromptRoundTrip: submissionOptions?.requireExactPromptRoundTrip === true,
+        requireExactPromptRoundTrip: requiresExactComposerRoundTrip(
+          config.desiredModel,
+          submissionOptions?.requireExactPromptRoundTrip,
+        ),
         onPromptSubmitted: () => markPromptSubmitted(submissionOptions!.submissionProvenance),
         onPromptBound: markPromptBound,
         // Authoritative account id (server: options.accountId ?? env) so the
@@ -5202,7 +5212,10 @@ async function runRemoteBrowserMode(
           isDesiredGpt56SolModel(config.desiredModel) ||
           submissionAttachments.length > 0 ||
           submissionOptions?.requireExactPromptRoundTrip === true,
-        requireExactPromptRoundTrip: submissionOptions?.requireExactPromptRoundTrip === true,
+        requireExactPromptRoundTrip: requiresExactComposerRoundTrip(
+          config.desiredModel,
+          submissionOptions?.requireExactPromptRoundTrip,
+        ),
         onPromptSubmitted: () => markPromptSubmitted(submissionOptions!.submissionProvenance),
         onPromptBound: markPromptBound,
         // Authoritative account id (server: options.accountId ?? env) so the
@@ -6181,6 +6194,7 @@ export const __test__ = {
   assertProtectedSolProEvidence,
   selectInitialModelWithRefreshRecovery,
   shouldRefreshInitialModelPicker,
+  requiresExactComposerRoundTrip,
   verifyProtectedSolProSelectionForSubmit,
   proveProtectedSolProSelectionBeforeSubmit,
   prepareSubmissionComposerWithProtectedRoute,

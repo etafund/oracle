@@ -110,7 +110,7 @@ export function normalizeRenderedPromptDomIdentity(value: unknown): string {
  * Canonicalize raw input against the logical plaintext read from the active
  * composer. Unlike rendered-turn recovery identity, this comparison must
  * preserve leading/trailing whitespace and zero-width Unicode characters:
- * Chromium's editing-host Selection serializer preserves them byte-for-byte.
+ * the structural editing-host reader intentionally does not collapse them.
  *
  * Keep this closure-free: its source is embedded in CDP page expressions.
  */
@@ -128,6 +128,10 @@ export interface ExactComposerPromptTextRead {
   reason:
     | null
     | "editor-missing"
+    | "editor-dom-unavailable"
+    | "editor-dom-unsupported"
+    | "editor-dom-ambiguous"
+    | "editor-dom-changed"
     | "selection-api-unavailable"
     | "selection-state-unsupported"
     | "editor-not-focused"
@@ -140,16 +144,20 @@ export interface ExactComposerPromptTextRead {
 }
 
 /**
- * Read the logical plaintext of an editing host without relying on innerText.
+ * Read the logical plaintext of a known editing-host DOM without `innerText`
+ * or `Selection.toString()`.
  *
- * Chromium's `innerText` inserts an extra separator around empty block nodes:
- * inserting `a\n\nb` into a contenteditable produces `a<div><br></div><div>b</div>`
- * and reports `a\n\n\nb`. A temporary Selection, by contrast, uses the browser's
- * editing-host plaintext serialization and returns the original `a\n\nb`.
+ * Both browser serializers are lossy for ProseMirror paragraph roots:
+ * `Selection.toString()` turns each `<p>` boundary into two linefeeds, while
+ * `innerText` can add still more separators around empty blocks. This reader
+ * instead accepts a deliberately small grammar for the browser's bare
+ * contenteditable `<div>/<br>` shape and ProseMirror's top-level `<p>/<br>`
+ * shape, emitting exactly one logical linefeed per block boundary. Unknown or
+ * mixed block structures fail closed.
  *
- * The caller gets a value only together with proof that the prior selection
- * and focused node survived the temporary read. Keep this function
- * closure-free: its source is embedded in CDP page expressions.
+ * DOM reads must not disturb the current selection, focus, or editor root; the
+ * caller gets a value only together with proof that all three survived. Keep
+ * this function closure-free: its source is embedded in CDP page expressions.
  */
 export function readExactComposerPromptText(editor: unknown): ExactComposerPromptTextRead {
   const failure = (
@@ -162,6 +170,158 @@ export function readExactComposerPromptText(editor: unknown): ExactComposerPromp
     selectionRestored: options.selectionRestored === true,
     focusPreserved: options.focusPreserved === true,
   });
+  type DomReadFailureReason =
+    | "editor-dom-unavailable"
+    | "editor-dom-unsupported"
+    | "editor-dom-ambiguous";
+  type DomReadResult =
+    | { ok: true; value: string }
+    | { ok: false; value: ""; reason: DomReadFailureReason };
+  type NodeLike = {
+    nodeType?: unknown;
+    nodeName?: unknown;
+    tagName?: unknown;
+    nodeValue?: unknown;
+    innerHTML?: unknown;
+    childNodes?: unknown;
+    getAttribute?: (name: string) => string | null;
+  };
+  const domFailure = (reason: DomReadFailureReason): DomReadResult => ({
+    ok: false,
+    value: "",
+    reason,
+  });
+  const childNodesOf = (node: NodeLike): NodeLike[] | null => {
+    const list = node.childNodes as
+      | { length?: unknown; [index: number]: unknown }
+      | null
+      | undefined;
+    const length = Number(list?.length);
+    if (!list || !Number.isSafeInteger(length) || length < 0 || length > 1_000_000) {
+      return null;
+    }
+    const children: NodeLike[] = [];
+    for (let index = 0; index < length; index += 1) {
+      const child = list[index];
+      if (!child || typeof child !== "object") return null;
+      children.push(child as NodeLike);
+    }
+    return children;
+  };
+  const tagNameOf = (node: NodeLike): string =>
+    String(node.tagName ?? node.nodeName ?? "").toLowerCase();
+  const hasClass = (node: NodeLike, className: string): boolean =>
+    String(node.getAttribute?.("class") ?? "")
+      .split(/\s+/u)
+      .includes(className);
+  const isContentEditableFalse = (node: NodeLike): boolean =>
+    String(node.getAttribute?.("contenteditable") ?? "").toLowerCase() === "false";
+  const serializeInlineChildren = (
+    node: NodeLike,
+    options: { allowPlaceholderBreak: boolean },
+  ): DomReadResult => {
+    if (isContentEditableFalse(node)) return domFailure("editor-dom-unsupported");
+    const children = childNodesOf(node);
+    if (!children) return domFailure("editor-dom-unavailable");
+    let value = "";
+    for (let index = 0; index < children.length; index += 1) {
+      const child = children[index]!;
+      const nodeType = Number(child.nodeType);
+      if (nodeType === 3) {
+        if (typeof child.nodeValue !== "string") {
+          return domFailure("editor-dom-unavailable");
+        }
+        // Preserve every code point. Chromium rewrites some boundary ASCII
+        // spaces to U+00A0; a DOM-only read cannot reverse that rewrite without
+        // also accepting a genuinely different literal NBSP prompt.
+        value += child.nodeValue;
+        continue;
+      }
+      if (nodeType !== 1) return domFailure("editor-dom-unsupported");
+      if (isContentEditableFalse(child)) return domFailure("editor-dom-unsupported");
+      const tagName = tagNameOf(child);
+      if (tagName === "br") {
+        const isTrailingBreak = hasClass(child, "ProseMirror-trailingBreak");
+        if (isTrailingBreak && index !== children.length - 1) {
+          return domFailure("editor-dom-ambiguous");
+        }
+        if (
+          (children.length === 1 && options.allowPlaceholderBreak) ||
+          (isTrailingBreak && index === children.length - 1)
+        ) {
+          continue;
+        }
+        // A terminal ordinary <br> can be either an editing placeholder or a
+        // content newline. Refuse instead of guessing.
+        if (index === children.length - 1) return domFailure("editor-dom-ambiguous");
+        value += "\n";
+        continue;
+      }
+      if (!["a", "b", "code", "em", "i", "mark", "s", "span", "strong", "u"].includes(tagName)) {
+        return domFailure("editor-dom-unsupported");
+      }
+      const nested = serializeInlineChildren(child, { allowPlaceholderBreak: false });
+      if (!nested.ok) return nested;
+      value += nested.value;
+    }
+    return { ok: true, value };
+  };
+  const serializeEditingHost = (host: NodeLike): DomReadResult => {
+    const children = childNodesOf(host);
+    if (!children) return domFailure("editor-dom-unavailable");
+    if (children.length === 0) return { ok: true, value: "" };
+
+    const meaningful = children.filter((node) => {
+      if (Number(node.nodeType) !== 3) return true;
+      return typeof node.nodeValue !== "string" || node.nodeValue.length > 0;
+    });
+    if (meaningful.length === 0) return { ok: true, value: "" };
+
+    const blockIndexes = meaningful
+      .map((node, index) => ({
+        index,
+        tagName: Number(node.nodeType) === 1 ? tagNameOf(node) : "",
+      }))
+      .filter(({ tagName }) => tagName === "p" || tagName === "div");
+    if (blockIndexes.length === 0) {
+      if (hasClass(host, "ProseMirror")) return domFailure("editor-dom-unsupported");
+      return serializeInlineChildren(host, { allowPlaceholderBreak: true });
+    }
+
+    const blockTags = new Set(blockIndexes.map(({ tagName }) => tagName));
+    if (blockTags.size !== 1) return domFailure("editor-dom-ambiguous");
+    const blockTag = blockIndexes[0]!.tagName;
+    if (blockTag === "p" && !hasClass(host, "ProseMirror")) {
+      return domFailure("editor-dom-unsupported");
+    }
+    if (blockTag === "div" && hasClass(host, "ProseMirror")) {
+      return domFailure("editor-dom-unsupported");
+    }
+    const firstBlockIndex = blockIndexes[0]!.index;
+    const segments: string[] = [];
+
+    if (firstBlockIndex > 0) {
+      // Chromium's bare contenteditable insertion shape is a direct first
+      // inline segment followed by <div> blocks. ProseMirror paragraph roots
+      // never mix direct inline children with <p> blocks.
+      if (blockTag !== "div") return domFailure("editor-dom-ambiguous");
+      const prefixHost: NodeLike = { childNodes: meaningful.slice(0, firstBlockIndex) };
+      const prefix = serializeInlineChildren(prefixHost, { allowPlaceholderBreak: false });
+      if (!prefix.ok) return prefix;
+      segments.push(prefix.value);
+    }
+
+    for (let index = firstBlockIndex; index < meaningful.length; index += 1) {
+      const child = meaningful[index]!;
+      if (Number(child.nodeType) !== 1 || tagNameOf(child) !== blockTag) {
+        return domFailure("editor-dom-ambiguous");
+      }
+      const block = serializeInlineChildren(child, { allowPlaceholderBreak: true });
+      if (!block.ok) return block;
+      segments.push(block.value);
+    }
+    return { ok: true, value: segments.join("\n") };
+  };
   if (!editor || typeof editor !== "object") return failure("editor-missing");
   const element = editor as {
     tagName?: unknown;
@@ -169,6 +329,10 @@ export function readExactComposerPromptText(editor: unknown): ExactComposerPromp
     ownerDocument?: unknown;
     getRootNode?: () => unknown;
     contains?: (node: unknown) => boolean;
+    childNodes?: unknown;
+    innerHTML?: unknown;
+    isContentEditable?: unknown;
+    getAttribute?: (name: string) => string | null;
   };
   const tagName = String(element.tagName ?? "").toLowerCase();
   if (tagName === "textarea" || tagName === "input") {
@@ -180,48 +344,29 @@ export function readExactComposerPromptText(editor: unknown): ExactComposerPromp
       focusPreserved: true,
     };
   }
+  const contentEditableAttribute = element.getAttribute?.("contenteditable");
+  if (
+    element.isContentEditable !== true &&
+    contentEditableAttribute !== "" &&
+    contentEditableAttribute !== "true" &&
+    contentEditableAttribute !== "plaintext-only"
+  ) {
+    return failure("editor-dom-unsupported");
+  }
 
   const documentLike = element.ownerDocument as
     | {
         activeElement?: unknown;
-        createRange?: () => {
-          selectNodeContents?: (node: unknown) => void;
-          cloneRange?: () => unknown;
-          startContainer?: unknown;
-          startOffset?: number;
-          endContainer?: unknown;
-          endOffset?: number;
-        };
         getSelection?: () => {
           rangeCount?: number;
           anchorNode?: unknown;
           anchorOffset?: number;
           focusNode?: unknown;
           focusOffset?: number;
-          getRangeAt?: (index: number) => {
-            cloneRange?: () => unknown;
-            startContainer?: unknown;
-            startOffset?: number;
-            endContainer?: unknown;
-            endOffset?: number;
-          };
-          removeAllRanges?: () => void;
-          addRange?: (range: unknown) => void;
-          setBaseAndExtent?: (
-            anchorNode: unknown,
-            anchorOffset: number,
-            focusNode: unknown,
-            focusOffset: number,
-          ) => void;
-          toString?: () => string;
         } | null;
       }
     | undefined;
-  if (
-    !documentLike ||
-    typeof documentLike.createRange !== "function" ||
-    typeof documentLike.getSelection !== "function"
-  ) {
+  if (!documentLike || typeof documentLike.getSelection !== "function") {
     return failure("selection-api-unavailable");
   }
   let root: unknown = documentLike;
@@ -254,14 +399,7 @@ export function readExactComposerPromptText(editor: unknown): ExactComposerPromp
     });
   }
   const selection = selectionOwner.getSelection();
-  if (
-    !selection ||
-    typeof selection.removeAllRanges !== "function" ||
-    typeof selection.addRange !== "function" ||
-    typeof selection.toString !== "function"
-  ) {
-    return failure("selection-api-unavailable");
-  }
+  if (!selection) return failure("selection-api-unavailable");
 
   const initialAnchorNode = selection.anchorNode;
   const initialAnchorOffset = Number(selection.anchorOffset ?? 0);
@@ -276,74 +414,40 @@ export function readExactComposerPromptText(editor: unknown): ExactComposerPromp
     initialAnchorOffset < 0 ||
     !Number.isSafeInteger(initialFocusOffset) ||
     initialFocusOffset < 0 ||
-    (initialRangeCount > 0 && typeof selection.getRangeAt !== "function") ||
     (initialRangeCount === 0 && (initialAnchorNode != null || initialFocusNode != null)) ||
-    (initialRangeCount === 1 && (initialAnchorNode == null || initialFocusNode == null)) ||
-    ((initialAnchorNode != null || initialFocusNode != null) &&
-      (initialAnchorNode == null ||
-        initialFocusNode == null ||
-        typeof selection.setBaseAndExtent !== "function"))
+    (initialRangeCount === 1 && (initialAnchorNode == null || initialFocusNode == null))
   ) {
     return failure("selection-state-unsupported");
   }
-  const savedRanges: unknown[] = [];
-  try {
-    for (let index = 0; index < initialRangeCount; index += 1) {
-      const range = selection.getRangeAt?.(index);
-      if (!range || typeof range.cloneRange !== "function") {
-        return failure("selection-api-unavailable");
-      }
-      savedRanges.push(range.cloneRange());
-    }
-  } catch {
-    return failure("selection-api-unavailable");
-  }
 
-  let value = "";
-  let readSucceeded = false;
-  let selectionRestored = false;
+  let initialInnerHtml = "";
   try {
-    const range = documentLike.createRange();
-    if (!range || typeof range.selectNodeContents !== "function") {
-      return failure("selection-api-unavailable");
+    if (typeof element.innerHTML !== "string") {
+      return failure("editor-dom-unavailable", {
+        selectionRestored: true,
+        focusPreserved: true,
+      });
     }
-    range.selectNodeContents(editor);
-    selection.removeAllRanges();
-    selection.addRange(range);
-    value = selection.toString();
-    readSucceeded = true;
+    initialInnerHtml = element.innerHTML;
   } catch {
-    readSucceeded = false;
-  } finally {
-    try {
-      selection.removeAllRanges();
-      if (
-        initialAnchorNode != null &&
-        initialFocusNode != null &&
-        typeof selection.setBaseAndExtent === "function"
-      ) {
-        selection.setBaseAndExtent(
-          initialAnchorNode,
-          initialAnchorOffset,
-          initialFocusNode,
-          initialFocusOffset,
-        );
-      } else {
-        for (const range of savedRanges) selection.addRange(range);
-      }
-      if (initialAnchorNode != null && initialFocusNode != null) {
-        selectionRestored =
-          selection.anchorNode === initialAnchorNode &&
-          Number(selection.anchorOffset ?? 0) === initialAnchorOffset &&
-          selection.focusNode === initialFocusNode &&
-          Number(selection.focusOffset ?? 0) === initialFocusOffset;
-      } else {
-        selectionRestored = Number(selection.rangeCount ?? 0) === initialRangeCount;
-      }
-    } catch {
-      selectionRestored = false;
-    }
+    return failure("editor-dom-unavailable", {
+      selectionRestored: true,
+      focusPreserved: true,
+    });
   }
+  const domRead = serializeEditingHost(element);
+  let domPreserved = true;
+  try {
+    domPreserved = typeof element.innerHTML === "string" && element.innerHTML === initialInnerHtml;
+  } catch {
+    domPreserved = false;
+  }
+  const selectionRestored =
+    Number(selection.rangeCount ?? 0) === initialRangeCount &&
+    selection.anchorNode === initialAnchorNode &&
+    Number(selection.anchorOffset ?? 0) === initialAnchorOffset &&
+    selection.focusNode === initialFocusNode &&
+    Number(selection.focusOffset ?? 0) === initialFocusOffset;
 
   const focusPreserved =
     documentLike.activeElement === initialActiveElement &&
@@ -355,9 +459,6 @@ export function readExactComposerPromptText(editor: unknown): ExactComposerPromp
   } catch {
     rootPreserved = false;
   }
-  if (!readSucceeded) {
-    return failure("selection-read-failed", { selectionRestored, focusPreserved });
-  }
   if (!selectionRestored) {
     return failure("selection-restore-failed", { focusPreserved });
   }
@@ -367,9 +468,15 @@ export function readExactComposerPromptText(editor: unknown): ExactComposerPromp
   if (!rootPreserved) {
     return failure("editor-root-changed", { selectionRestored, focusPreserved });
   }
+  if (!domPreserved) {
+    return failure("editor-dom-changed", { selectionRestored, focusPreserved });
+  }
+  if (!domRead.ok) {
+    return failure(domRead.reason, { selectionRestored, focusPreserved });
+  }
   return {
     ok: true,
-    value,
+    value: domRead.value,
     reason: null,
     selectionRestored: true,
     focusPreserved: true,

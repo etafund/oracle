@@ -34,7 +34,7 @@ describe("buildAttachmentPlan", () => {
     );
 
     expect(plain.inlineBlock).not.toBe(newline.inlineBlock);
-    expect(newline.inlineBlock).toContain("2 | ");
+    expect(newline.inlineBlock).toContain("2 |");
   });
 
   test("bundles when over max attachments", () => {

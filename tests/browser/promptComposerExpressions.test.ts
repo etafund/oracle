@@ -152,7 +152,15 @@ class FakeMutationObserver {
   }
 }
 
+class FakeTextNode {
+  readonly nodeName = "#text";
+  readonly nodeType = 3;
+
+  constructor(readonly nodeValue: string) {}
+}
+
 class FakeElement extends FakeEventTarget {
+  readonly nodeType = 1;
   ownerDocument: FakeDocument | null = null;
   parentElement: FakeElement | null = null;
   readonly children: FakeElement[];
@@ -181,6 +189,14 @@ class FakeElement extends FakeEventTarget {
 
   get innerHTML(): string {
     return this.getAttribute("data-inner-html") ?? this.selectionText;
+  }
+
+  get childNodes(): Array<FakeElement | FakeTextNode> {
+    return [...(this.ownText.length > 0 ? [new FakeTextNode(this.ownText)] : []), ...this.children];
+  }
+
+  get nodeName(): string {
+    return this.tagName;
   }
 
   get textContent(): string {
@@ -1607,13 +1623,26 @@ interface PublicRouteFixtureOptions {
   wrapComposerInForm?: boolean;
 }
 
+function makeProseMirrorParagraphs(value: string): FakeElement[] {
+  return value
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) =>
+      line.length > 0
+        ? new FakeElement("p", {}, [], line)
+        : new FakeElement("p", {}, [new FakeElement("br", { class: "ProseMirror-trailingBreak" })]),
+    );
+}
+
 function makePublicRouteFixture(options: PublicRouteFixtureOptions = {}) {
   const composerBindingToken = options.composerBindingToken ?? "public-route-binding-1";
   const attachmentToken = options.attachmentToken;
   const prompt = options.prompt ?? "exact protected prompt";
+  const editingHostText = options.selectionText ?? prompt;
   const editor = new FakeElement(
     "div",
     {
+      class: "ProseMirror",
       id: "prompt-textarea",
       contenteditable: "true",
       role: "textbox",
@@ -1625,8 +1654,7 @@ function makePublicRouteFixture(options: PublicRouteFixtureOptions = {}) {
         ? {}
         : { "data-selection-text": options.selectionText }),
     },
-    [],
-    prompt,
+    makeProseMirrorParagraphs(editingHostText),
   );
   let pill = new FakeElement(
     "button",

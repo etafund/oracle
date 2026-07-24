@@ -73,9 +73,12 @@ function addLineNumbers(content: string): { text: string; lineCount: number } {
   }
 
   const lines = content.split("\n");
-  const width = String(lines.length).length;
   const numbered = lines
-    .map((line, index) => `${String(index + 1).padStart(width, " ")} | ${line}`)
+    // Avoid synthesizing whitespace at editing-block boundaries. Chromium
+    // rewrites such ASCII spaces to U+00A0 in contenteditable/ProseMirror,
+    // which makes an exact DOM-only round trip information-theoretically
+    // ambiguous. Source whitespace remains untouched after the delimiter.
+    .map((line, index) => `${index + 1} |${line.length > 0 ? ` ${line}` : ""}`)
     .join("\n");
   return { text: numbered, lineCount: lines.length };
 }

@@ -14,7 +14,20 @@ describe("formatFileSection", () => {
   test("can render citation-friendly line numbers", () => {
     const out = formatFileSection("notes.txt", "first\n\nthird\n", { lineNumbers: true });
     expect(out).toContain("Lines: 1-3");
-    expect(out).toContain("1 | first\n2 | \n3 | third");
+    expect(out).toContain("1 | first\n2 |\n3 | third");
+  });
+
+  test("does not synthesize editing-boundary whitespace around line numbers", () => {
+    const content = Array.from({ length: 12 }, (_, index) =>
+      index === 1 ? "" : `line ${index + 1}`,
+    ).join("\n");
+    const out = formatFileSection("many.txt", content, { lineNumbers: true });
+    const numberedLines = out.split("\n").filter((line) => /^\d+ \|/u.test(line));
+
+    expect(numberedLines).toHaveLength(12);
+    expect(numberedLines).toContain("2 |");
+    expect(numberedLines).toContain("10 | line 10");
+    expect(numberedLines.every((line) => !line.startsWith(" ") && !line.endsWith(" "))).toBe(true);
   });
 
   test("renders empty files without fake source lines", () => {
