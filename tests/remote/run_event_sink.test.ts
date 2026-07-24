@@ -118,7 +118,7 @@ function minimalInput(overrides: Partial<OracleRunEventInput> = {}): OracleRunEv
     busy_workers: null,
     error_class: null,
     done_ok: true,
-    challenge_detected: null,
+    challenge_detected: false,
     model_verified: null,
     max_active_before_first_token: null,
     mean_active_during_ttft: null,
@@ -152,6 +152,7 @@ describe("oracle.run.v1 sink", () => {
     // Null-not-omit: unknowns are literal nulls in the serialized line.
     expect(parsed.submitted_at).toBeNull();
     expect(parsed.overlap_ms_at_c3).toBeNull();
+    expect(parsed.challenge_detected).toBe(false);
 
     // The entry hash is recomputable from the canonical entry minus itself.
     const { entry_hash, ...rest } = parsed;
@@ -285,6 +286,7 @@ describe("serve emits one sink line per accepted run", () => {
         expect(okLine.port).toBe(server.port);
         expect(okLine.done_ok).toBe(true);
         expect(okLine.error_class).toBeNull();
+        expect(okLine.challenge_detected).toBe(false);
         expect(okLine.model_verified).toBe(true);
         expect(okLine.conversation_id_hash).toBe(
           createHash("sha256").update("conv-123").digest("hex"),
@@ -311,6 +313,7 @@ describe("serve emits one sink line per accepted run", () => {
         expect(failLine.run_id).toBe(failedRun.headers["x-oracle-run-id"]);
         expect(failLine.done_ok).toBe(false);
         expect(failLine.error_class).toBe("transport_interrupted_before_submit");
+        expect(failLine.challenge_detected).toBe(false);
         expect(failLine.submitted_at).toBeNull();
         // No streamed output and no scheduler bucket => nulls preserved.
         expect(failLine.first_token_at).toBeNull();

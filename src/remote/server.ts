@@ -2445,7 +2445,7 @@ export async function createRemoteServer(
             : null;
           const challengeMatched = runErrorMessage
             ? /challenge|captcha|interstitial/i.test(runErrorMessage)
-            : null;
+            : false;
           await appendOracleRunEvent(
             {
               run_id: runId,
