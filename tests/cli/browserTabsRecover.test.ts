@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { SessionMetadata } from "../../src/sessionStore.js";
+import { buildRemoteBrowserPreSubmitDiagnostic } from "../../src/remote/types.js";
 
 const baseMeta = {
   id: "sess-recover",
@@ -40,6 +41,31 @@ const completedHarvest = {
   lastAssistantSnippet: "Recovered answer.",
   lastUserSnippet: "original prompt",
 } as const;
+
+function storedPreSubmitError(): NonNullable<SessionMetadata["error"]> {
+  const diagnostic = buildRemoteBrowserPreSubmitDiagnostic({
+    stage: "model-selection",
+    code: "protected-route-changed-after-preflight",
+    guardReason: "exact-prompt-changed",
+    exactPromptVerified: false,
+    attachmentStateVerified: true,
+    focusVerified: true,
+    exactReadVerified: true,
+    selectionRestored: true,
+    focusPreserved: true,
+  });
+  if (!diagnostic) throw new Error("failed to build pre-submit diagnostic fixture");
+  return {
+    category: "browser-automation",
+    message: "Protected browser pre-submit integrity proof failed; no prompt was submitted.",
+    details: {
+      stage: "remote-run",
+      errorClass: "integrity_ui_unknown",
+      retryable: false,
+      preSubmitDiagnostic: diagnostic,
+    },
+  };
+}
 
 describe("harvestSessionBrowserOutput recovery fallback", () => {
   beforeEach(() => {
@@ -295,4 +321,62 @@ describe("harvestSessionBrowserOutput recovery fallback", () => {
       expect(updateSession).not.toHaveBeenCalled();
     },
   );
+
+  test("uses the terminal pre-submit refusal for harvest and live instead of account history", async () => {
+    const remoteMeta: SessionMetadata = {
+      ...baseMeta,
+      status: "error",
+      browser: {
+        ...baseMeta.browser,
+        remoteRun: {
+          runId: "remote-pre-submit",
+          accountId: "acct1",
+          laneId: "acct1-9473",
+          terminalDoneOk: false,
+          provenance: null,
+        },
+      },
+      error: storedPreSubmitError(),
+    };
+    const harvestChatGptTab = vi.fn();
+    const recoverConversationTab = vi.fn();
+    const updateSession = vi.fn();
+
+    vi.doMock("../../src/browser/liveTabs.js", () => ({
+      collectChatGptTabs: vi.fn(),
+      DEFAULT_REMOTE_CHROME_HOST: "127.0.0.1",
+      DEFAULT_REMOTE_CHROME_PORT: 9222,
+      extractConversationIdFromUrl: () => null,
+      formatBrowserTabState: () => "completed",
+      harvestChatGptTab,
+      sessionMatchesTab: () => false,
+    }));
+    vi.doMock("../../src/browser/recoverConversation.js", () => ({
+      recoverConversationTab,
+    }));
+    vi.doMock("../../src/sessionStore.js", () => ({
+      sessionStore: { readSession: async () => remoteMeta, updateSession },
+    }));
+
+    const { harvestSessionBrowserOutput, liveTailSessionBrowserOutput } =
+      await import("../../src/cli/browserTabs.js");
+    const harvestError = await harvestSessionBrowserOutput(remoteMeta.id, {
+      quietOutput: true,
+    }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    const liveError = await liveTailSessionBrowserOutput(remoteMeta.id).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    for (const error of [harvestError, liveError]) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toMatch(/validated pre-submit.*no prompt was submitted/i);
+      expect((error as Error).message).not.toMatch(/account.*history/i);
+    }
+    expect(harvestChatGptTab).not.toHaveBeenCalled();
+    expect(recoverConversationTab).not.toHaveBeenCalled();
+    expect(updateSession).not.toHaveBeenCalled();
+  });
 });

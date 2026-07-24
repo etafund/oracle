@@ -36,6 +36,13 @@ export function evaluateBrowserRestart(metadata: SessionMetadata): BrowserRestar
   if (submitted === true || metadata.browser?.remoteRecovery) {
     return { allowed: false, reason: "prompt-submitted" };
   }
+  // A persisted pre-submit diagnostic is terminal evidence for the failed
+  // attempt, not permission to create another paid submission. Presence is
+  // enough to fail closed here: malformed envelopes must not regain restart
+  // authority by also claiming a retryable transport class.
+  if (Object.prototype.hasOwnProperty.call(details, "preSubmitDiagnostic")) {
+    return { allowed: false, reason: "not-proven-pre-submit" };
+  }
 
   const errorClassValue = details.errorClass ?? details.oracleErrorClass;
   const explicitlyRetryable = details.retryable === true;

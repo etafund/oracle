@@ -54,6 +54,21 @@ import {
   parsePureImportedChatgptConversationSession,
 } from "../browser/importedConversation.js";
 import { isTerminalSessionStatus } from "./sessionStatus.js";
+import {
+  classifyStoredRemotePreSubmitState,
+  formatStoredRemotePreSubmitRecoveryBlock,
+} from "../remote/storedPreSubmitState.js";
+import {
+  claimLocalBrowserReattachCompletion,
+  ownsLocalBrowserReattachCompletion,
+  releaseLocalBrowserReattachCompletion,
+} from "./localBrowserReattachClaim.js";
+
+export {
+  classifyStoredRemotePreSubmitState,
+  formatStoredRemotePreSubmitRecoveryBlock,
+  type StoredRemotePreSubmitState,
+} from "../remote/storedPreSubmitState.js";
 
 const isTty = (): boolean => Boolean(process.stdout.isTTY);
 const dim = (text: string): string => (isTty() ? kleur.dim(text) : text);
@@ -272,6 +287,42 @@ type LiveRenderState = {
   noticedFallback: boolean;
 };
 
+function patchBrowserCaptureModel(
+  models: SessionMetadata["models"],
+  model: string | undefined,
+  patch:
+    | {
+        status: "completed";
+        completedAt: string;
+        usage: NonNullable<SessionMetadata["usage"]>;
+        response: { status: "completed" };
+      }
+    | {
+        status: "error";
+        completedAt: string;
+        response: { status: "incomplete"; incompleteReason: "incomplete-capture" };
+        error: { category: "browser-automation"; message: string };
+      },
+): SessionMetadata["models"] {
+  if (!model) return models;
+  let found = false;
+  const next = (models ?? []).map((run) => {
+    if (run.model !== model) return run;
+    found = true;
+    const {
+      completedAt: _completedAt,
+      usage: _usage,
+      response: _response,
+      transport: _transport,
+      error: _error,
+      ...preserved
+    } = run;
+    return { ...preserved, ...patch };
+  });
+  if (!found) next.push({ model, ...patch });
+  return next;
+}
+
 export async function attachSession(
   sessionId: string,
   options?: AttachSessionOptions,
@@ -362,7 +413,17 @@ export async function attachSession(
       completedDeepResearchPlaceholder ||
       (runtime?.controllerPid && !controllerAlive));
 
+  const storedPreSubmitState = classifyStoredRemotePreSubmitState(metadata);
+  const recoveryBlockedByStoredPreSubmitState =
+    metadata.mode === "browser" && storedPreSubmitState !== null;
+  if (recoveryBlockedByStoredPreSubmitState) {
+    console.error(
+      chalk.red(formatStoredRemotePreSubmitRecoveryBlock(sessionId, storedPreSubmitState)),
+    );
+    process.exitCode = 1;
+  }
   const incompleteMultiTurnBrowserRun =
+    !recoveryBlockedByStoredPreSubmitState &&
     metadata.mode === "browser" &&
     (metadata.options.browserFollowUps?.length ?? 0) > 0 &&
     (canReattach || isFailedRemoteBrowserOrigin(metadata));
@@ -375,6 +436,7 @@ export async function attachSession(
     process.exitCode = 1;
   }
   const canRecoverRemote =
+    !recoveryBlockedByStoredPreSubmitState &&
     !incompleteMultiTurnBrowserRun &&
     metadata.mode === "browser" &&
     isFailedRemoteBrowserOrigin(metadata);
@@ -398,6 +460,12 @@ export async function attachSession(
           );
         }
         metadata = refreshed;
+        const refreshedPreSubmitState = classifyStoredRemotePreSubmitState(metadata);
+        if (refreshedPreSubmitState) {
+          throw new RemoteBrowserRecoveryUnavailableError(
+            formatStoredRemotePreSubmitRecoveryBlock(sessionId, refreshedPreSubmitState),
+          );
+        }
       }
       const coordinate = metadata.browser?.remoteRecovery;
       const failedRun = metadata.browser?.remoteRun;
@@ -415,6 +483,7 @@ export async function attachSession(
       attemptedOriginRunId = coordinate.originRunId;
       const recoveryBrowserMetadata = metadata.browser;
       const recoveryRuntime = metadata.browser?.runtime;
+      const recoveryModel = metadata.model;
       console.log(
         chalk.yellow(
           `Attempting capture-only recovery on originating account ${coordinate.accountId} (conversation=${coordinate.runtime.conversationId ?? "unknown"})...`,
@@ -432,6 +501,18 @@ export async function attachSession(
           if (message) console.log(dim(message));
         },
       });
+      let recoverySideEffectsAllowed = false;
+      await sessionStore.updateSession(sessionId, (current) => {
+        recoverySideEffectsAllowed = Boolean(
+          completionClaim && ownsRemoteBrowserRecoveryCompletion(current, completionClaim),
+        );
+        return {};
+      });
+      if (!recoverySideEffectsAllowed) {
+        throw new RemoteBrowserRecoveryUnavailableError(
+          "Recovery completion ownership changed before durable capture output; refusing stale artifact and log writes.",
+        );
+      }
       const reattachResult = {
         answerText: result.answerText,
         answerMarkdown: result.answerMarkdown,
@@ -443,10 +524,13 @@ export async function attachSession(
         reattachResult,
         true,
       );
-      // The origin-bound claim above is the CAS boundary. Logging after it is
-      // safe from stale contenders while still leaving the coordinate
-      // retryable if this local write fails before final metadata commit.
-      await writeReattachAnswer(sessionId, reattachResult, false);
+      const completedAt = new Date().toISOString();
+      const usage = {
+        inputTokens: 0,
+        outputTokens,
+        reasoningTokens: 0,
+        totalTokens: outputTokens,
+      };
       let completionApplied = false;
       try {
         await sessionStore.updateSession(sessionId, (current) => {
@@ -464,14 +548,15 @@ export async function attachSession(
           completionApplied = true;
           return {
             status: "completed",
-            completedAt: new Date().toISOString(),
-            usage: {
-              inputTokens: 0,
-              outputTokens,
-              reasoningTokens: 0,
-              totalTokens: outputTokens,
-            },
+            completedAt,
+            usage,
             errorMessage: undefined,
+            models: patchBrowserCaptureModel(current.models, recoveryModel, {
+              status: "completed",
+              completedAt,
+              usage,
+              response: { status: "completed" },
+            }),
             browser: {
               ...freshBrowser,
               config: current.browser?.config ?? recoveryBrowserMetadata?.config,
@@ -502,6 +587,7 @@ export async function attachSession(
         }
         recoveryCommitted = true;
       }
+      await writeReattachAnswer(sessionId, reattachResult, false);
       await deleteRemoteBrowserRecoverySecret(sessionId, coordinate.originRunId).catch((error) => {
         console.log(
           dim(
@@ -520,6 +606,7 @@ export async function attachSession(
             () => false,
           );
         }
+        metadata = (await sessionStore.readSession(sessionId).catch(() => null)) ?? metadata;
         const message = error instanceof Error ? error.message : String(error);
         console.log(
           chalk.yellow(
@@ -541,102 +628,179 @@ export async function attachSession(
     }
   }
 
-  if (canReattach && !attemptedRemoteRecovery && !incompleteMultiTurnBrowserRun) {
+  if (
+    canReattach &&
+    !attemptedRemoteRecovery &&
+    !incompleteMultiTurnBrowserRun &&
+    !recoveryBlockedByStoredPreSubmitState
+  ) {
+    const localReattachMetadata = metadata;
+    const localReattachModel = localReattachMetadata.model;
+    const localReattachBrowserConfig = localReattachMetadata.browser?.config;
     const portInfo = runtime?.chromePort ? `port ${runtime.chromePort}` : "unknown port";
     const urlInfo = runtime?.tabUrl ? `url=${runtime.tabUrl}` : "url=unknown";
-    console.log(
-      chalk.yellow(
-        `Attempting to reattach to the existing Chrome session (${portInfo}, ${urlInfo})...`,
-      ),
-    );
-    try {
-      const result = await resumeBrowserSession(
-        runtime as NonNullable<typeof runtime>,
-        metadata.browser?.config,
-        Object.assign(
-          ((message?: string) => {
-            if (message) {
-              console.log(dim(message));
-            }
-          }) as unknown as BrowserLogger,
-          { verbose: true },
+    const localReattachClaim = await claimLocalBrowserReattachCompletion(localReattachMetadata);
+    if (!localReattachClaim) {
+      console.log(
+        chalk.yellow(
+          "Another local reattach owner or a newer session generation won; refusing a concurrent stale capture.",
         ),
-        {
-          promptPreview:
-            metadata.browser?.submittedPromptPreview ??
-            metadata.options?.prompt ??
-            metadata.promptPreview,
-          promptDomSha256: metadata.browser?.submittedPromptDomSha256,
-          requirePromptPreviewMatch: runtime?.promptSubmitted === true,
-        },
       );
-      const outputTokens = estimateTokenCount(result.answerMarkdown);
-      const artifacts = await saveReattachBrowserArtifacts(sessionId, metadata, result);
-      await writeReattachAnswer(
-        sessionId,
-        result,
-        completedDeepResearchPlaceholder ||
-          (hasIncompleteCapture && deepResearchPlaceholderCapture),
+      metadata = (await sessionStore.readSession(sessionId)) ?? metadata;
+    } else {
+      let localReattachCommitted = false;
+      console.log(
+        chalk.yellow(
+          `Attempting to reattach to the existing Chrome session (${portInfo}, ${urlInfo})...`,
+        ),
       );
-      if (metadata.model) {
-        await sessionStore.updateModelRun(metadata.id, metadata.model, {
-          status: "completed",
-          usage: {
-            inputTokens: 0,
-            outputTokens,
-            reasoningTokens: 0,
-            totalTokens: outputTokens,
+      try {
+        const result = await resumeBrowserSession(
+          runtime as NonNullable<typeof runtime>,
+          localReattachBrowserConfig,
+          Object.assign(
+            ((message?: string) => {
+              if (message) {
+                console.log(dim(message));
+              }
+            }) as unknown as BrowserLogger,
+            { verbose: true },
+          ),
+          {
+            promptPreview:
+              localReattachMetadata.browser?.submittedPromptPreview ??
+              localReattachMetadata.options?.prompt ??
+              localReattachMetadata.promptPreview,
+            promptDomSha256: localReattachMetadata.browser?.submittedPromptDomSha256,
+            requirePromptPreviewMatch: runtime?.promptSubmitted === true,
           },
-          completedAt: new Date().toISOString(),
+        );
+        let localSideEffectsAllowed = false;
+        await sessionStore.updateSession(sessionId, (current) => {
+          localSideEffectsAllowed = ownsLocalBrowserReattachCompletion(current, localReattachClaim);
+          return {};
         });
-      }
-      await sessionStore.updateSession(sessionId, {
-        status: "completed",
-        completedAt: new Date().toISOString(),
-        usage: {
+        if (!localSideEffectsAllowed) {
+          throw new Error(
+            "Local reattach ownership changed before durable capture output; refusing stale artifact and log writes.",
+          );
+        }
+        const outputTokens = estimateTokenCount(result.answerMarkdown);
+        const artifacts = await saveReattachBrowserArtifacts(
+          sessionId,
+          localReattachMetadata,
+          result,
+          true,
+        );
+        const completedAt = new Date().toISOString();
+        const usage = {
           inputTokens: 0,
           outputTokens,
           reasoningTokens: 0,
           totalTokens: outputTokens,
-        },
-        errorMessage: undefined,
-        browser: {
-          config: metadata.browser?.config,
-          runtime,
-          modelSelection: metadata.browser?.modelSelection,
-          warnings: metadata.browser?.warnings,
-        },
-        artifacts,
-        response: { status: "completed" },
-        error: undefined,
-        transport: undefined,
-      });
-      console.log(chalk.green("Reattach succeeded; session marked completed."));
-      metadata = (await sessionStore.readSession(sessionId)) ?? metadata;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.log(chalk.red(`Reattach failed: ${message}`));
-      if (completedDeepResearchPlaceholder) {
-        if (metadata.model) {
-          await sessionStore.updateModelRun(metadata.id, metadata.model, {
-            status: "error",
-            response: { status: "incomplete", incompleteReason: "incomplete-capture" },
-            error: {
-              category: "browser-automation",
-              message: `Deep Research capture incomplete: ${message}`,
+        };
+        let completionApplied = false;
+        await sessionStore.updateSession(sessionId, (current) => {
+          completionApplied = false;
+          if (!ownsLocalBrowserReattachCompletion(current, localReattachClaim)) {
+            return {};
+          }
+          const { localReattachCompletionClaim: _localClaim, ...browser } = current.browser ?? {};
+          completionApplied = true;
+          return {
+            status: "completed",
+            completedAt,
+            usage,
+            errorMessage: undefined,
+            models: patchBrowserCaptureModel(current.models, localReattachModel, {
+              status: "completed",
+              completedAt,
+              usage,
+              response: { status: "completed" },
+            }),
+            browser: {
+              ...browser,
+              config: browser.config ?? localReattachBrowserConfig,
+              runtime: browser.runtime ?? runtime,
             },
-          });
-        }
-        await sessionStore.updateSession(sessionId, {
-          status: "error",
-          errorMessage: `Deep Research capture incomplete: ${message}`,
-          response: { status: "incomplete", incompleteReason: "incomplete-capture" },
-          error: {
-            category: "browser-automation",
-            message: `Deep Research capture incomplete: ${message}`,
-          },
+            artifacts: appendArtifacts(current.artifacts, artifacts ?? []),
+            response: { status: "completed" },
+            error: undefined,
+            transport: undefined,
+          };
         });
+        if (!completionApplied) {
+          throw new Error(
+            "Session state changed while local reattach was capturing; refusing a stale completion commit.",
+          );
+        }
+        localReattachCommitted = true;
+        await writeReattachAnswer(
+          sessionId,
+          result,
+          completedDeepResearchPlaceholder ||
+            (hasIncompleteCapture && deepResearchPlaceholderCapture),
+        );
+        console.log(chalk.green("Reattach succeeded; session marked completed."));
         metadata = (await sessionStore.readSession(sessionId)) ?? metadata;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (localReattachCommitted) {
+          metadata = (await sessionStore.readSession(sessionId).catch(() => null)) ?? metadata;
+          console.log(
+            chalk.yellow(
+              `Reattach completion was committed, but writing its display log failed: ${message}`,
+            ),
+          );
+        } else {
+          console.log(chalk.red(`Reattach failed: ${message}`));
+        }
+        if (!localReattachCommitted && completedDeepResearchPlaceholder) {
+          const failureMessage = `Deep Research capture incomplete: ${message}`;
+          const completedAt = new Date().toISOString();
+          let failureApplied = false;
+          await sessionStore.updateSession(sessionId, (current) => {
+            failureApplied = false;
+            if (!ownsLocalBrowserReattachCompletion(current, localReattachClaim)) {
+              return {};
+            }
+            const { localReattachCompletionClaim: _localClaim, ...browser } = current.browser ?? {};
+            failureApplied = true;
+            return {
+              status: "error",
+              completedAt,
+              errorMessage: failureMessage,
+              models: patchBrowserCaptureModel(current.models, localReattachModel, {
+                status: "error",
+                completedAt,
+                response: { status: "incomplete", incompleteReason: "incomplete-capture" },
+                error: {
+                  category: "browser-automation",
+                  message: failureMessage,
+                },
+              }),
+              response: { status: "incomplete", incompleteReason: "incomplete-capture" },
+              error: {
+                category: "browser-automation",
+                message: failureMessage,
+              },
+              browser,
+            };
+          });
+          if (!failureApplied) {
+            console.log(
+              dim(
+                "A newer session result superseded this failed local reattach; preserving the fresher stored state.",
+              ),
+            );
+          }
+          metadata = (await sessionStore.readSession(sessionId)) ?? metadata;
+        }
+        if (!localReattachCommitted) {
+          await releaseLocalBrowserReattachCompletion(sessionId, localReattachClaim).catch(
+            () => false,
+          );
+        }
       }
     }
   }

@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 import type { SessionMetadata } from "../../src/sessionStore.js";
+import { buildRemoteBrowserPreSubmitDiagnostic } from "../../src/remote/types.js";
 import {
   resolveBrowserFollowupReference,
   resolveBrowserResumeConversationUrl,
@@ -15,6 +16,31 @@ const baseMetadata: SessionMetadata = {
   status: "completed",
   options: {},
 };
+
+function storedPreSubmitError(): NonNullable<SessionMetadata["error"]> {
+  const diagnostic = buildRemoteBrowserPreSubmitDiagnostic({
+    stage: "model-selection",
+    code: "protected-route-changed-after-preflight",
+    guardReason: "exact-prompt-changed",
+    exactPromptVerified: false,
+    attachmentStateVerified: true,
+    focusVerified: true,
+    exactReadVerified: true,
+    selectionRestored: true,
+    focusPreserved: true,
+  });
+  if (!diagnostic) throw new Error("failed to build pre-submit diagnostic fixture");
+  return {
+    category: "browser-automation",
+    message: "Protected browser pre-submit integrity proof failed; no prompt was submitted.",
+    details: {
+      stage: "remote-run",
+      errorClass: "integrity_ui_unknown",
+      retryable: false,
+      preSubmitDiagnostic: diagnostic,
+    },
+  };
+}
 
 describe("browser follow-up resolution", () => {
   test("derives a resume URL from conversationId", () => {
@@ -121,6 +147,35 @@ describe("browser follow-up resolution", () => {
       );
     },
   );
+
+  test("uses the terminal pre-submit refusal instead of directing follow-up to account history", async () => {
+    const metadata: SessionMetadata = {
+      ...baseMetadata,
+      id: "remote-pre-submit",
+      status: "error",
+      mode: "browser",
+      browser: {
+        config: { url: "https://chatgpt.com/" },
+        remoteRun: {
+          runId: "remote-pre-submit-run",
+          accountId: "acct1",
+          laneId: "acct1-9473",
+          terminalDoneOk: false,
+          provenance: null,
+        },
+      },
+      error: storedPreSubmitError(),
+    };
+    const store = { readSession: vi.fn(async () => metadata) };
+
+    const error = await resolveBrowserFollowupReference(metadata.id, store).then(
+      () => null,
+      (failure: unknown) => failure,
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/validated pre-submit.*no prompt was submitted/i);
+    expect((error as Error).message).not.toMatch(/account.*history/i);
+  });
 
   test("leaves stored API sessions on the existing API follow-up path", async () => {
     const metadata: SessionMetadata = {

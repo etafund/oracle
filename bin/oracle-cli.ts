@@ -128,6 +128,10 @@ import {
   validateCaamBasePath,
 } from "../src/claude-code/caamCommand.js";
 import { evaluateBrowserRestart } from "../src/cli/sessionRestartPolicy.js";
+import {
+  classifyStoredRemotePreSubmitState,
+  formatStoredRemotePreSubmitRecoveryBlock,
+} from "../src/remote/storedPreSubmitState.js";
 
 // Standard EPIPE handling, wired before anything writes. When Oracle output
 // is piped into a consumer that closes the read end early (`oracle --help |
@@ -3910,6 +3914,15 @@ async function restartSession(sessionId: string, options: RestartCommandOptions)
 
   if (sessionMode === "claude-code") {
     const message = `oracle restart does not replay Claude Code/Fable sessions because a restart must re-prove the original CAAM account identity. Start a fresh reviewed run instead: oracle -p "<prompt>" --lane fable-local --caam-profile <name>`;
+    console.error(chalk.red(message));
+    emitJsonError(message);
+    process.exitCode = 1;
+    return;
+  }
+
+  const storedPreSubmitState = classifyStoredRemotePreSubmitState(metadata);
+  if (storedPreSubmitState) {
+    const message = formatStoredRemotePreSubmitRecoveryBlock(sessionId, storedPreSubmitState);
     console.error(chalk.red(message));
     emitJsonError(message);
     process.exitCode = 1;

@@ -20,6 +20,10 @@ import {
   writeRemoteBrowserRecoverySecret,
 } from "./sessionRecoveryStore.js";
 import { REMOTE_BROWSER_RECOVERY_PROTOCOL } from "./types.js";
+import {
+  classifyStoredRemotePreSubmitState,
+  hasStoredModelRunSuccessEvidence,
+} from "./storedPreSubmitState.js";
 
 export interface RecoverStoredRemoteBrowserSessionOptions {
   log?: (message?: string) => void;
@@ -57,7 +61,7 @@ function readProcessStartToken(pid: number): string | undefined {
   }
 }
 
-function completionClaimIsStale(claim: BrowserRemoteRecoveryCompletionClaim): boolean {
+function completionClaimIsStale(claim: { ownerPid: number; ownerStartToken?: string }): boolean {
   if (!Number.isInteger(claim.ownerPid) || claim.ownerPid <= 0) return true;
   try {
     process.kill(claim.ownerPid, 0);
@@ -86,6 +90,75 @@ function currentRecoveryRouteIsBound(metadata: SessionMetadata, originRunId: str
   );
 }
 
+function storedRecoveryIsBlocked(metadata: SessionMetadata): boolean {
+  return (
+    classifyStoredRemotePreSubmitState(metadata) !== null ||
+    hasStoredModelRunSuccessEvidence(metadata)
+  );
+}
+
+function hasRecoveryStateForOrigin(metadata: SessionMetadata, originRunId: string): boolean {
+  const browser = metadata.browser;
+  return (
+    browser?.remoteRun?.runId === originRunId ||
+    browser?.remoteRecovery?.originRunId === originRunId ||
+    browser?.remoteRecoveryCompletionClaim?.originRunId === originRunId
+  );
+}
+
+function stripExecutableRecoveryState(
+  metadata: SessionMetadata,
+  originRunId: string,
+): SessionMetadata["browser"] {
+  const browser = metadata.browser;
+  if (!browser) return browser;
+  let next = browser;
+  if (next.remoteRecovery?.originRunId === originRunId) {
+    const { remoteRecovery: _remoteRecovery, ...withoutRecovery } = next;
+    next = withoutRecovery;
+  }
+  if (next.remoteRecoveryCompletionClaim?.originRunId === originRunId) {
+    const { remoteRecoveryCompletionClaim: _completionClaim, ...withoutCompletionClaim } = next;
+    next = withoutCompletionClaim;
+  }
+  return next;
+}
+
+function stripFailedRecoveryStateForModelSuccess(
+  metadata: SessionMetadata,
+  originRunId: string,
+): SessionMetadata["browser"] {
+  const withoutExecutable = stripExecutableRecoveryState(metadata, originRunId);
+  if (
+    withoutExecutable?.remoteRun?.terminalDoneOk !== false ||
+    withoutExecutable.remoteRun.runId !== originRunId
+  ) {
+    return withoutExecutable;
+  }
+  const { remoteRun: _remoteRun, ...withoutFailedRun } = withoutExecutable;
+  return withoutFailedRun;
+}
+
+function stripBlockedRecoveryState(
+  metadata: SessionMetadata,
+  originRunId: string,
+  modelSuccess: boolean,
+): SessionMetadata["browser"] {
+  return modelSuccess
+    ? stripFailedRecoveryStateForModelSuccess(metadata, originRunId)
+    : stripExecutableRecoveryState(metadata, originRunId);
+}
+
+async function deleteSupersededRecoverySidecars(
+  sessionId: string,
+  originRunId: string,
+): Promise<void> {
+  await Promise.all([
+    deleteRemoteBrowserRecoverySecret(sessionId, originRunId).catch(() => false),
+    deleteRemoteBrowserPendingRecoveryClaim(sessionId, originRunId).catch(() => false),
+  ]);
+}
+
 /**
  * Atomically reserve the right to dispatch and persist a recovery. Callers
  * acquire this before /recover so a replayable capability cannot operate on
@@ -95,6 +168,7 @@ function currentRecoveryRouteIsBound(metadata: SessionMetadata, originRunId: str
 export async function claimRemoteBrowserRecoveryCompletion(
   sessionId: string,
   originRunId: string | undefined,
+  options: { ownedRunAttemptClaimId?: string } = {},
 ): Promise<BrowserRemoteRecoveryCompletionClaim | null> {
   if (!originRunId) return null;
   const claim: BrowserRemoteRecoveryCompletionClaim = {
@@ -106,27 +180,52 @@ export async function claimRemoteBrowserRecoveryCompletion(
     ownerStartToken: readProcessStartToken(process.pid),
   };
   let claimed = false;
+  let cleanupBlockedSidecars = false;
   await sessionStore.updateSession(sessionId, (current) => {
     // updateSession may re-run this updater after an optimistic-concurrency
     // conflict. Reset on every invocation so the final invocation decides.
     claimed = false;
+    cleanupBlockedSidecars = false;
     const browser = current.browser;
     const existingClaim = browser?.remoteRecoveryCompletionClaim;
+    const runAttemptClaim = browser?.runAttemptClaim;
+    const ownsRunAttempt = runAttemptClaim?.claimId === options.ownedRunAttemptClaimId;
+    const foreignLiveRunAttempt =
+      runAttemptClaim && !ownsRunAttempt && !completionClaimIsStale(runAttemptClaim);
+    const modelSuccess = hasStoredModelRunSuccessEvidence(current);
+    const diagnostic = classifyStoredRemotePreSubmitState(current) !== null;
     if (
+      diagnostic ||
+      modelSuccess ||
+      foreignLiveRunAttempt ||
       !browser ||
       !currentRecoveryRouteIsBound(current, originRunId) ||
       (existingClaim && !completionClaimIsStale(existingClaim))
     ) {
+      if ((diagnostic || modelSuccess) && hasRecoveryStateForOrigin(current, originRunId)) {
+        cleanupBlockedSidecars = true;
+        return {
+          browser: stripBlockedRecoveryState(current, originRunId, modelSuccess),
+        };
+      }
       return {};
     }
+    const browserWithoutStaleRunAttempt =
+      runAttemptClaim && !ownsRunAttempt
+        ? (({ runAttemptClaim: _staleRunAttempt, ...withoutStaleRunAttempt }) =>
+            withoutStaleRunAttempt)(browser)
+        : browser;
     claimed = true;
     return {
       browser: {
-        ...browser,
+        ...browserWithoutStaleRunAttempt,
         remoteRecoveryCompletionClaim: claim,
       },
     };
   });
+  if (cleanupBlockedSidecars) {
+    await deleteSupersededRecoverySidecars(sessionId, originRunId);
+  }
   return claimed ? claim : null;
 }
 
@@ -155,6 +254,7 @@ export function ownsRemoteBrowserRecoveryCompletion(
   claim: BrowserRemoteRecoveryCompletionClaim,
 ): boolean {
   return (
+    !storedRecoveryIsBlocked(metadata) &&
     metadata.browser?.remoteRecoveryCompletionClaim?.claimId === claim.claimId &&
     currentRecoveryRouteIsBound(metadata, claim.originRunId)
   );
@@ -170,7 +270,14 @@ export function isRemoteBrowserRecoveryCompletionPersisted(
   expectedRemoteRun: NonNullable<SessionMetadata["browser"]>["remoteRun"],
   expectedArtifacts: SessionMetadata["artifacts"],
 ): boolean {
-  if (!metadata || !expectedRemoteRun || expectedRemoteRun.terminalDoneOk !== true) return false;
+  if (
+    !metadata ||
+    classifyStoredRemotePreSubmitState(metadata) !== null ||
+    !expectedRemoteRun ||
+    expectedRemoteRun.terminalDoneOk !== true
+  ) {
+    return false;
+  }
   const actualRun = metadata.browser?.remoteRun;
   if (
     metadata.status !== "completed" ||
@@ -247,6 +354,33 @@ export async function promotePendingRemoteBrowserRecoveryClaim(
   options: { log?: (message?: string) => void; timeoutMs?: number } = {},
 ): Promise<SessionMetadata | null> {
   const failedRun = metadata.browser?.remoteRun;
+  if (storedRecoveryIsBlocked(metadata)) {
+    if (failedRun?.runId) {
+      const blockedOriginRunId = failedRun.runId;
+      let cleanupBlockedSidecars = false;
+      await sessionStore.updateSession(metadata.id, (current) => {
+        cleanupBlockedSidecars = false;
+        const modelSuccess = hasStoredModelRunSuccessEvidence(current);
+        const diagnostic = classifyStoredRemotePreSubmitState(current) !== null;
+        if (
+          (modelSuccess || diagnostic) &&
+          hasRecoveryStateForOrigin(current, blockedOriginRunId)
+        ) {
+          cleanupBlockedSidecars = true;
+          return {
+            browser: stripBlockedRecoveryState(current, blockedOriginRunId, modelSuccess),
+          };
+        }
+        return {};
+      });
+      if (cleanupBlockedSidecars) {
+        await deleteSupersededRecoverySidecars(metadata.id, blockedOriginRunId);
+      }
+    }
+    throw new RemoteBrowserRecoveryUnavailableError(
+      "Stored pre-submit or completed model evidence forbids remote recovery promotion.",
+    );
+  }
   if (
     failedRun?.terminalDoneOk !== false ||
     !failedRun.runId ||
@@ -255,9 +389,10 @@ export async function promotePendingRemoteBrowserRecoveryClaim(
   ) {
     return null;
   }
+  const originRunId = failedRun.runId;
   let pending;
   try {
-    pending = await readRemoteBrowserPendingRecoveryClaim(metadata.id, failedRun.runId);
+    pending = await readRemoteBrowserPendingRecoveryClaim(metadata.id, originRunId);
   } catch (error) {
     throw new RemoteBrowserRecoveryUnavailableError(
       `The stored pending remote recovery authority failed its owner-only file checks. ${MANUAL_HISTORY_GUIDANCE}`,
@@ -266,7 +401,7 @@ export async function promotePendingRemoteBrowserRecoveryClaim(
   }
   if (!pending) return null;
   if (
-    pending.originRunId !== failedRun.runId ||
+    pending.originRunId !== originRunId ||
     pending.accountId !== failedRun.accountId ||
     pending.originLaneId !== failedRun.laneId
   ) {
@@ -298,7 +433,7 @@ export async function promotePendingRemoteBrowserRecoveryClaim(
     );
   }
   if (
-    carrier.recovery.originRunId !== failedRun.runId ||
+    carrier.recovery.originRunId !== originRunId ||
     carrier.accountId !== failedRun.accountId ||
     carrier.laneId !== failedRun.laneId
   ) {
@@ -307,22 +442,80 @@ export async function promotePendingRemoteBrowserRecoveryClaim(
     );
   }
 
+  const routeStillMatches = (current: SessionMetadata): boolean => {
+    const currentRun = current.browser?.remoteRun;
+    return (
+      currentRun?.terminalDoneOk === false &&
+      currentRun.runId === originRunId &&
+      currentRun.accountId === failedRun.accountId &&
+      (currentRun.laneId ?? null) === (failedRun.laneId ?? null)
+    );
+  };
+  let publicationAllowed = false;
+  let cleanupBeforePublication = false;
+  await sessionStore.updateSession(metadata.id, (current) => {
+    publicationAllowed = false;
+    cleanupBeforePublication = false;
+    const modelSuccess = hasStoredModelRunSuccessEvidence(current);
+    const diagnostic = classifyStoredRemotePreSubmitState(current) !== null;
+    const existing = current.browser?.remoteRecovery;
+    if (
+      diagnostic ||
+      modelSuccess ||
+      !routeStillMatches(current) ||
+      current.browser?.remoteRecoveryCompletionClaim ||
+      (existing && existing.originRunId !== originRunId)
+    ) {
+      if ((diagnostic || modelSuccess) && hasRecoveryStateForOrigin(current, originRunId)) {
+        cleanupBeforePublication = true;
+        return {
+          browser: stripBlockedRecoveryState(current, originRunId, modelSuccess),
+        };
+      }
+      return {};
+    }
+    publicationAllowed = true;
+    return {};
+  });
+  if (!publicationAllowed) {
+    if (cleanupBeforePublication) {
+      await deleteSupersededRecoverySidecars(metadata.id, originRunId);
+    }
+    throw new RemoteBrowserRecoveryUnavailableError(
+      "A newer browser generation or completed model superseded the pending remote recovery claim before promotion.",
+    );
+  }
+
   await writeRemoteBrowserRecoverySecret(metadata.id, carrier);
   const coordinate = toPublicRemoteRecoveryMetadata(carrier);
   let promoted = false;
+  let blockedByStoredPreSubmitState = false;
+  let blockedByModelSuccess = false;
   const updated = await sessionStore.updateSession(metadata.id, (current) => {
     promoted = false;
-    const currentRun = current.browser?.remoteRun;
+    blockedByStoredPreSubmitState = false;
+    blockedByModelSuccess = false;
+    const diagnostic = classifyStoredRemotePreSubmitState(current) !== null;
+    const modelSuccess = hasStoredModelRunSuccessEvidence(current);
+    if (diagnostic) {
+      blockedByStoredPreSubmitState = true;
+    }
+    if (modelSuccess) {
+      blockedByModelSuccess = true;
+    }
+    if (diagnostic || modelSuccess) {
+      if (hasRecoveryStateForOrigin(current, originRunId)) {
+        return {
+          browser: stripBlockedRecoveryState(current, originRunId, modelSuccess),
+        };
+      }
+      return {};
+    }
     const existing = current.browser?.remoteRecovery;
-    const routeStillMatches =
-      currentRun?.terminalDoneOk === false &&
-      currentRun.runId === failedRun.runId &&
-      currentRun.accountId === failedRun.accountId &&
-      (currentRun.laneId ?? null) === (failedRun.laneId ?? null);
     if (
-      !routeStillMatches ||
+      !routeStillMatches(current) ||
       current.browser?.remoteRecoveryCompletionClaim ||
-      (existing && existing.originRunId !== failedRun.runId)
+      (existing && existing.originRunId !== originRunId)
     ) {
       return {};
     }
@@ -336,15 +529,63 @@ export async function promotePendingRemoteBrowserRecoveryClaim(
   });
   if (!promoted) {
     const current = await sessionStore.readSession(metadata.id).catch(() => null);
-    if (current?.browser?.remoteRecovery?.originRunId !== failedRun.runId) {
-      await deleteRemoteBrowserRecoverySecret(metadata.id, failedRun.runId).catch(() => false);
+    if (
+      blockedByStoredPreSubmitState ||
+      blockedByModelSuccess ||
+      current?.browser?.remoteRecovery?.originRunId !== originRunId
+    ) {
+      await deleteSupersededRecoverySidecars(metadata.id, originRunId);
+    }
+    if (blockedByStoredPreSubmitState) {
+      throw new RemoteBrowserRecoveryUnavailableError(
+        "Stored pre-submit diagnostic became authoritative while promoting remote recovery; refusing promotion.",
+      );
+    }
+    if (blockedByModelSuccess) {
+      throw new RemoteBrowserRecoveryUnavailableError(
+        "Completed model evidence became authoritative while promoting remote recovery; refusing promotion.",
+      );
     }
     throw new RemoteBrowserRecoveryUnavailableError(
       "A newer browser generation superseded the pending remote recovery claim.",
     );
   }
-  await deleteRemoteBrowserPendingRecoveryClaim(metadata.id, failedRun.runId).catch(() => false);
-  return updated ?? (await sessionStore.readSession(metadata.id));
+  let promotionStillOwned = false;
+  let cleanupAfterPublication = false;
+  const verified = await sessionStore.updateSession(metadata.id, (current) => {
+    promotionStillOwned = false;
+    cleanupAfterPublication = false;
+    const modelSuccess = hasStoredModelRunSuccessEvidence(current);
+    const diagnostic = classifyStoredRemotePreSubmitState(current) !== null;
+    const coordinateStillMatches = current.browser?.remoteRecovery?.originRunId === originRunId;
+    if (
+      diagnostic ||
+      modelSuccess ||
+      !routeStillMatches(current) ||
+      !coordinateStillMatches ||
+      current.browser?.remoteRecoveryCompletionClaim
+    ) {
+      if ((diagnostic || modelSuccess) && hasRecoveryStateForOrigin(current, originRunId)) {
+        cleanupAfterPublication = true;
+        return {
+          browser: stripBlockedRecoveryState(current, originRunId, modelSuccess),
+        };
+      }
+      return {};
+    }
+    promotionStillOwned = true;
+    return {};
+  });
+  if (!promotionStillOwned) {
+    if (cleanupAfterPublication || verified?.browser?.remoteRecovery?.originRunId !== originRunId) {
+      await deleteSupersededRecoverySidecars(metadata.id, originRunId);
+    }
+    throw new RemoteBrowserRecoveryUnavailableError(
+      "A newer browser generation or completed model superseded remote recovery after promotion.",
+    );
+  }
+  await deleteRemoteBrowserPendingRecoveryClaim(metadata.id, originRunId).catch(() => false);
+  return verified ?? updated ?? (await sessionStore.readSession(metadata.id));
 }
 
 /**
@@ -357,6 +598,34 @@ export async function recoverStoredRemoteBrowserSession(
   options: RecoverStoredRemoteBrowserSessionOptions = {},
   deps: RecoverStoredRemoteBrowserSessionDeps = {},
 ): Promise<BrowserRunResult> {
+  const initialOriginRunId =
+    metadata.browser?.remoteRecovery?.originRunId ?? metadata.browser?.remoteRun?.runId;
+  if (storedRecoveryIsBlocked(metadata)) {
+    if (initialOriginRunId) {
+      let cleanupBlockedSidecars = false;
+      await sessionStore.updateSession(metadata.id, (current) => {
+        cleanupBlockedSidecars = false;
+        const modelSuccess = hasStoredModelRunSuccessEvidence(current);
+        const diagnostic = classifyStoredRemotePreSubmitState(current) !== null;
+        if (
+          (modelSuccess || diagnostic) &&
+          hasRecoveryStateForOrigin(current, initialOriginRunId)
+        ) {
+          cleanupBlockedSidecars = true;
+          return {
+            browser: stripBlockedRecoveryState(current, initialOriginRunId, modelSuccess),
+          };
+        }
+        return {};
+      });
+      if (cleanupBlockedSidecars) {
+        await deleteSupersededRecoverySidecars(metadata.id, initialOriginRunId);
+      }
+    }
+    throw new RemoteBrowserRecoveryUnavailableError(
+      "Stored pre-submit or completed model evidence forbids remote browser recovery.",
+    );
+  }
   const coordinate = metadata.browser?.remoteRecovery;
   if (!coordinate) {
     throw new RemoteBrowserRecoveryUnavailableError(
@@ -436,6 +705,54 @@ export async function recoverStoredRemoteBrowserSession(
       `Remote browser recovery coordinate does not match its private capability; refusing cross-session recovery. ${MANUAL_HISTORY_GUIDANCE}`,
     );
   }
+
+  let dispatchAllowed = false;
+  let cleanupBlockedSidecars = false;
+  const fresh = await sessionStore.updateSession(metadata.id, (current) => {
+    dispatchAllowed = false;
+    cleanupBlockedSidecars = false;
+    const currentCoordinate = current.browser?.remoteRecovery;
+    const coordinateStillMatches =
+      currentCoordinate?.originRunId === coordinate.originRunId &&
+      currentCoordinate.accountId === coordinate.accountId &&
+      (currentCoordinate.laneId ?? null) === (coordinate.laneId ?? null) &&
+      currentCoordinate.expiresAt === coordinate.expiresAt &&
+      currentCoordinate.stage === coordinate.stage;
+    const claimStillOwned =
+      !options.completionClaim ||
+      ownsRemoteBrowserRecoveryCompletion(current, options.completionClaim);
+    const modelSuccess = hasStoredModelRunSuccessEvidence(current);
+    const diagnostic = classifyStoredRemotePreSubmitState(current) !== null;
+    if (
+      diagnostic ||
+      modelSuccess ||
+      !coordinateStillMatches ||
+      !currentRecoveryRouteIsBound(current, coordinate.originRunId) ||
+      !claimStillOwned
+    ) {
+      if (
+        (diagnostic || modelSuccess) &&
+        hasRecoveryStateForOrigin(current, coordinate.originRunId)
+      ) {
+        cleanupBlockedSidecars = true;
+        return {
+          browser: stripBlockedRecoveryState(current, coordinate.originRunId, modelSuccess),
+        };
+      }
+      return {};
+    }
+    dispatchAllowed = true;
+    return {};
+  });
+  if (!dispatchAllowed) {
+    if (cleanupBlockedSidecars) {
+      await deleteSupersededRecoverySidecars(metadata.id, coordinate.originRunId);
+    }
+    throw new RemoteBrowserRecoveryUnavailableError(
+      "A newer browser generation, completed model, or completion owner superseded remote recovery before dispatch.",
+    );
+  }
+  metadata = fresh ?? metadata;
 
   const loaded = await (deps.loadConfig ?? loadUserConfig)({
     cwd: metadata.cwd ?? process.cwd(),

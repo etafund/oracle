@@ -31,6 +31,21 @@ vi.mock("../../src/cli/notifier.ts", () => ({
   deriveNotificationSettingsFromMetadata: vi.fn(() => ({ enabled: true, sound: false })),
 }));
 
+vi.mock("../../src/cli/localBrowserReattachClaim.ts", () => ({
+  browserProcessClaimIsStale: vi.fn(() => false),
+  claimLocalBrowserReattachCompletion: vi.fn(async () => ({
+    schema: "local-browser-reattach-completion-claim.v1",
+    claimId: "local-claim-test",
+    originGenerationSha256: "a".repeat(64),
+    claimedAt: "2026-07-24T00:00:00.000Z",
+    ownerPid: process.pid,
+  })),
+  currentBrowserProcessClaimOwner: vi.fn(() => ({ ownerPid: process.pid })),
+  ownsLocalBrowserReattachCompletion: vi.fn(() => true),
+  localBrowserReattachClaimIsStale: vi.fn(() => false),
+  releaseLocalBrowserReattachCompletion: vi.fn(async () => true),
+}));
+
 const sessionStoreMock = vi.hoisted(() => ({
   updateSession: vi.fn(),
   createLogWriter: vi.fn(),
@@ -73,6 +88,7 @@ import type { OracleResponse, RunOracleResult } from "../../src/oracle.ts";
 import {
   ensureSessionArtifacts,
   runBrowserSessionExecution,
+  type BrowserExecutionResult,
 } from "../../src/browser/sessionRunner.ts";
 import { sendSessionNotification } from "../../src/cli/notifier.ts";
 import { getCliVersion } from "../../src/version.ts";
@@ -93,6 +109,14 @@ import { ORACLE_CLAUDE_CODE_CAAM_PROFILE_ENV_VAR } from "../../src/claude-code/c
 import { ORACLE_CLAUDE_CODE_MAX_RATE_LIMIT_ROTATIONS_ENV_VAR } from "../../src/claude-code/caamRotation.ts";
 import type { RemoteBrowserRecoveryCarrier } from "../../src/remote/client.ts";
 import { buildRemoteBrowserPreSubmitDiagnostic } from "../../src/remote/types.ts";
+import { RemoteBrowserRecoveryUnavailableError } from "../../src/remote/sessionRecovery.ts";
+import {
+  browserProcessClaimIsStale,
+  claimLocalBrowserReattachCompletion,
+  localBrowserReattachClaimIsStale,
+  ownsLocalBrowserReattachCompletion,
+  releaseLocalBrowserReattachCompletion,
+} from "../../src/cli/localBrowserReattachClaim.ts";
 
 const baseSessionMeta: SessionMetadata = {
   id: "sess-1",
@@ -105,6 +129,55 @@ const baseRunOptions = {
   prompt: "Hello",
   model: "gpt-5.2-pro" as const,
 };
+
+function materializeSessionPatch(
+  updates:
+    | Partial<SessionMetadata>
+    | ((metadata: SessionMetadata) => Partial<SessionMetadata> | Promise<Partial<SessionMetadata>>),
+  current: SessionMetadata,
+): Partial<SessionMetadata> {
+  const patch = typeof updates === "function" ? updates(current) : updates;
+  if (patch instanceof Promise) {
+    throw new Error("Expected a synchronous recorded session updater.");
+  }
+  return patch;
+}
+
+function installStatefulSessionStore(initial: SessionMetadata): () => SessionMetadata {
+  let current = initial;
+  sessionStoreMock.readSession.mockImplementation(async () => current);
+  sessionStoreMock.updateSession.mockImplementation(
+    async (
+      _sessionId: string,
+      updates:
+        | Partial<SessionMetadata>
+        | ((
+            metadata: SessionMetadata,
+          ) => Partial<SessionMetadata> | Promise<Partial<SessionMetadata>>),
+    ) => {
+      const patch = typeof updates === "function" ? await updates(current) : updates;
+      current = { ...current, ...patch };
+      return current;
+    },
+  );
+  return () => current;
+}
+
+function withoutBrowserRunAttemptClaim(metadata: SessionMetadata): SessionMetadata {
+  if (!metadata.browser?.runAttemptClaim) return metadata;
+  const { runAttemptClaim: _runAttemptClaim, ...browser } = metadata.browser;
+  return { ...metadata, browser };
+}
+
+function successfulBrowserResult(answerText = "Answer"): BrowserExecutionResult {
+  return {
+    usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0, totalTokens: 2 },
+    elapsedMs: 10,
+    runtime: { chromePid: 123, chromePort: 9222 },
+    answerText,
+    artifacts: [],
+  };
+}
 
 const log = vi.fn();
 const write = vi.fn((_chunk: string) => true);
@@ -500,6 +573,17 @@ beforeEach(() => {
   vi.mocked(ensureSessionArtifacts).mockImplementation(
     async ({ existingArtifacts }) => existingArtifacts,
   );
+  vi.mocked(claimLocalBrowserReattachCompletion).mockResolvedValue({
+    schema: "local-browser-reattach-completion-claim.v1",
+    claimId: "local-claim-test",
+    originGenerationSha256: "a".repeat(64),
+    claimedAt: "2026-07-24T00:00:00.000Z",
+    ownerPid: process.pid,
+  });
+  vi.mocked(ownsLocalBrowserReattachCompletion).mockReturnValue(true);
+  vi.mocked(browserProcessClaimIsStale).mockReturnValue(false);
+  vi.mocked(localBrowserReattachClaimIsStale).mockReturnValue(false);
+  vi.mocked(releaseLocalBrowserReattachCompletion).mockResolvedValue(true);
   vi.mocked(runMultiModelApiSession).mockResolvedValue({
     fulfilled: [],
     rejected: [],
@@ -511,6 +595,7 @@ beforeEach(() => {
     stream: { end: vi.fn() },
   });
   sessionStoreMock.readModelLog.mockResolvedValue("model log body");
+  sessionStoreMock.readSession.mockResolvedValue(baseSessionMeta);
   sessionStoreMock.sessionsDir.mockReturnValue("/tmp/.oracle/sessions");
   sessionStoreMock.getPaths.mockResolvedValue({
     dir: "/tmp/.oracle/sessions/sess-1",
@@ -523,6 +608,196 @@ beforeEach(() => {
 });
 
 describe("performSessionRun", () => {
+  test("a live local reattach completion claim blocks a stale fresh runner", async () => {
+    const claimed: SessionMetadata = {
+      ...baseSessionMeta,
+      status: "running",
+      mode: "browser",
+      model: "gpt-5.2-pro",
+      models: [{ model: "gpt-5.2-pro", status: "running" }],
+      browser: {
+        config: { chromePath: null },
+        localReattachCompletionClaim: {
+          schema: "local-browser-reattach-completion-claim.v1",
+          claimId: "live-local-claim",
+          originGenerationSha256: "c".repeat(64),
+          claimedAt: "2026-07-24T00:00:00.000Z",
+          ownerPid: process.pid,
+        },
+      },
+    };
+    const readStoredSession = installStatefulSessionStore(claimed);
+
+    await expect(
+      performSessionRun({
+        sessionMeta: claimed,
+        runOptions: baseRunOptions,
+        mode: "browser",
+        browserConfig: { chromePath: null },
+        cwd: "/tmp",
+        log,
+        write,
+        version: cliVersion,
+      }),
+    ).rejects.toBeInstanceOf(RemoteBrowserRecoveryUnavailableError);
+
+    expect(vi.mocked(runBrowserSessionExecution)).not.toHaveBeenCalled();
+    expect(readStoredSession()).toEqual(claimed);
+  });
+
+  test("a live browser run-attempt claim admits exactly one concurrent runner", async () => {
+    const initial: SessionMetadata = {
+      ...baseSessionMeta,
+      mode: "browser",
+      model: "gpt-5.2-pro",
+      models: [{ model: "gpt-5.2-pro", status: "pending" }],
+      browser: { config: { chromePath: null } },
+    };
+    const readStoredSession = installStatefulSessionStore(initial);
+    let resolveFirst!: (result: BrowserExecutionResult) => void;
+    vi.mocked(runBrowserSessionExecution).mockImplementationOnce(
+      async () =>
+        await new Promise<BrowserExecutionResult>((resolve) => {
+          resolveFirst = resolve;
+        }),
+    );
+
+    const first = performSessionRun({
+      sessionMeta: initial,
+      runOptions: baseRunOptions,
+      mode: "browser",
+      browserConfig: { chromePath: null },
+      cwd: "/tmp",
+      log,
+      write,
+      version: cliVersion,
+    });
+    await vi.waitFor(() => expect(runBrowserSessionExecution).toHaveBeenCalledTimes(1));
+
+    await expect(
+      performSessionRun({
+        sessionMeta: initial,
+        runOptions: baseRunOptions,
+        mode: "browser",
+        browserConfig: { chromePath: null },
+        cwd: "/tmp",
+        log,
+        write,
+        version: cliVersion,
+      }),
+    ).rejects.toBeInstanceOf(RemoteBrowserRecoveryUnavailableError);
+
+    resolveFirst(successfulBrowserResult());
+    await first;
+    expect(runBrowserSessionExecution).toHaveBeenCalledTimes(1);
+    expect(readStoredSession()).toMatchObject({ status: "completed" });
+    expect(readStoredSession().browser?.runAttemptClaim).toBeUndefined();
+  });
+
+  test("a stale ordinary browser result cannot erase a newer pre-submit diagnostic", async () => {
+    const initial: SessionMetadata = {
+      ...baseSessionMeta,
+      mode: "browser",
+      model: "gpt-5.2-pro",
+      models: [{ model: "gpt-5.2-pro", status: "pending" }],
+      browser: { config: { chromePath: null } },
+    };
+    const readStoredSession = installStatefulSessionStore(initial);
+    let resolveResult!: (result: BrowserExecutionResult) => void;
+    vi.mocked(runBrowserSessionExecution).mockImplementationOnce(
+      async () =>
+        await new Promise<BrowserExecutionResult>((resolve) => {
+          resolveResult = resolve;
+        }),
+    );
+    const run = performSessionRun({
+      sessionMeta: initial,
+      runOptions: baseRunOptions,
+      mode: "browser",
+      browserConfig: { chromePath: null },
+      cwd: "/tmp",
+      log,
+      write,
+      version: cliVersion,
+    });
+    await vi.waitFor(() => expect(runBrowserSessionExecution).toHaveBeenCalledTimes(1));
+    const diagnostic = buildRemoteBrowserPreSubmitDiagnostic({
+      stage: "model-selection",
+      code: "protected-route-changed-after-preflight",
+      guardReason: "exact-prompt-changed",
+      exactPromptVerified: false,
+      attachmentStateVerified: true,
+      focusVerified: true,
+      exactReadVerified: true,
+      selectionRestored: true,
+      focusPreserved: true,
+    })!;
+    await sessionStoreMock.updateSession(initial.id, (current: SessionMetadata) => ({
+      status: "error",
+      completedAt: "2026-07-24T00:00:00.000Z",
+      error: {
+        category: "browser-automation",
+        message: "newer protected diagnostic",
+        details: {
+          stage: diagnostic.stage,
+          preSubmitDiagnostic: diagnostic,
+        },
+      },
+      response: { status: "error" },
+      browser: current.browser,
+    }));
+
+    resolveResult(successfulBrowserResult("stale answer"));
+    await expect(run).resolves.toBeUndefined();
+    expect(readStoredSession()).toMatchObject({
+      status: "error",
+      error: {
+        details: {
+          preSubmitDiagnostic: expect.objectContaining({
+            code: "protected-route-changed-after-preflight",
+          }),
+        },
+      },
+    });
+    expect(readStoredSession().browser?.runAttemptClaim).toBeUndefined();
+  });
+
+  test("a stale browser run-attempt owner is reclaimed", async () => {
+    vi.mocked(browserProcessClaimIsStale).mockReturnValueOnce(true);
+    const initial: SessionMetadata = {
+      ...baseSessionMeta,
+      mode: "browser",
+      model: "gpt-5.2-pro",
+      models: [{ model: "gpt-5.2-pro", status: "pending" }],
+      browser: {
+        config: { chromePath: null },
+        runAttemptClaim: {
+          schema: "browser-run-attempt-claim.v1",
+          claimId: "dead-owner",
+          claimedAt: "2026-07-24T00:00:00.000Z",
+          ownerPid: 999_999,
+        },
+      },
+    };
+    const readStoredSession = installStatefulSessionStore(initial);
+    vi.mocked(runBrowserSessionExecution).mockResolvedValue(successfulBrowserResult());
+
+    await performSessionRun({
+      sessionMeta: initial,
+      runOptions: baseRunOptions,
+      mode: "browser",
+      browserConfig: { chromePath: null },
+      cwd: "/tmp",
+      log,
+      write,
+      version: cliVersion,
+    });
+
+    expect(runBrowserSessionExecution).toHaveBeenCalledOnce();
+    expect(readStoredSession().status).toBe("completed");
+    expect(readStoredSession().browser?.runAttemptClaim).toBeUndefined();
+  });
+
   test("rejects a pending recovery authority from a different authenticated route before mutation", async () => {
     const updateSession = vi.fn();
     const writePendingClaim = vi.fn();
@@ -576,8 +851,14 @@ describe("performSessionRun", () => {
           | ((metadata: SessionMetadata) => Partial<SessionMetadata>),
       ) => {
         updateCount += 1;
-        events.push(updateCount === 1 ? "failed-route-marker" : "public-coordinate-cas");
-        if (updateCount === 2) {
+        events.push(
+          updateCount === 1
+            ? "failed-route-marker"
+            : updateCount === 2
+              ? "ownership-precheck"
+              : "public-coordinate-cas",
+        );
+        if (updateCount === 3) {
           expect(current.browser?.remoteRun).toMatchObject({
             runId: "remote-run-1",
             terminalDoneOk: false,
@@ -633,7 +914,12 @@ describe("performSessionRun", () => {
       ),
     ).rejects.toThrow(/simulated interruption/);
 
-    expect(events).toEqual(["failed-route-marker", "private-sidecar", "public-coordinate-cas"]);
+    expect(events).toEqual([
+      "failed-route-marker",
+      "ownership-precheck",
+      "private-sidecar",
+      "public-coordinate-cas",
+    ]);
     expect(current.browser?.remoteRun).toMatchObject({
       runId: "remote-run-1",
       accountId: "acct1",
@@ -726,7 +1012,7 @@ describe("performSessionRun", () => {
 
     expect(current.browser?.remoteRun?.runId).toBe("remote-run-2");
     expect(current.browser?.remoteRecovery).toBeUndefined();
-    expect(deleteSecret).toHaveBeenCalledWith(current.id, "remote-run-1");
+    expect(deleteSecret).not.toHaveBeenCalled();
   });
 
   test.each(["completed winner", "active completion claim"])(
@@ -1082,6 +1368,623 @@ describe("performSessionRun", () => {
       },
     });
   });
+
+  test("a future run does not promote, recover, or replay a validated pre-submit refusal", async () => {
+    const originRunId = "remote-origin-pre-submit";
+    const preSubmitDiagnostic = buildRemoteBrowserPreSubmitDiagnostic({
+      stage: "model-selection",
+      code: "protected-route-changed-after-preflight",
+      guardReason: "exact-prompt-changed",
+      exactPromptVerified: false,
+      attachmentStateVerified: true,
+      focusVerified: true,
+      exactReadVerified: true,
+      selectionRestored: true,
+      focusPreserved: true,
+    })!;
+    let current: SessionMetadata = {
+      ...baseSessionMeta,
+      status: "error",
+      mode: "browser",
+      model: "gpt-5.6-sol",
+      browser: {
+        config: { chromePath: null },
+        remoteRun: {
+          runId: originRunId,
+          accountId: "acct1",
+          laneId: "acct1-9473",
+          terminalDoneOk: false,
+          provenance: null,
+        },
+      },
+      error: {
+        category: "browser-automation",
+        message: "Protected browser pre-submit integrity proof failed; no prompt was submitted.",
+        details: {
+          stage: "remote-run",
+          errorClass: "integrity_ui_unknown",
+          retryable: false,
+          preSubmitDiagnostic,
+        },
+      },
+    };
+    sessionStoreMock.updateSession.mockImplementation(
+      async (
+        _sessionId: string,
+        updates:
+          | Partial<SessionMetadata>
+          | ((metadata: SessionMetadata) => Partial<SessionMetadata>),
+      ) => {
+        const patch = typeof updates === "function" ? updates(current) : updates;
+        current = { ...current, ...patch };
+        return current;
+      },
+    );
+    const promotePending = vi.fn();
+    const claim = vi.fn();
+    const recoverStored = vi.fn();
+
+    await expect(
+      performSessionRun({
+        sessionMeta: current,
+        runOptions: { ...baseRunOptions, model: "gpt-5.6-sol" },
+        mode: "browser",
+        browserConfig: { chromePath: null },
+        cwd: "/tmp",
+        log,
+        write,
+        version: cliVersion,
+        remoteRecoveryDeps: {
+          promotePending,
+          claim,
+          recoverStored,
+        },
+      }),
+    ).rejects.toThrow(/no prompt was submitted/i);
+
+    expect(promotePending).not.toHaveBeenCalled();
+    expect(claim).not.toHaveBeenCalled();
+    expect(recoverStored).not.toHaveBeenCalled();
+    expect(vi.mocked(runBrowserSessionExecution)).not.toHaveBeenCalled();
+    expect(sessionStoreMock.updateModelRun).not.toHaveBeenCalled();
+    expect(current).toMatchObject({
+      status: "error",
+      browser: {
+        remoteRun: {
+          runId: originRunId,
+          accountId: "acct1",
+          laneId: "acct1-9473",
+          terminalDoneOk: false,
+        },
+      },
+      error: {
+        details: { preSubmitDiagnostic },
+      },
+    });
+  });
+
+  test("a diagnostic landing during pending promotion survives outer failure persistence", async () => {
+    const originRunId = "remote-origin-promotion-race";
+    const preSubmitDiagnostic = buildRemoteBrowserPreSubmitDiagnostic({
+      stage: "model-selection",
+      code: "protected-route-changed-after-preflight",
+      guardReason: "exact-prompt-changed",
+      exactPromptVerified: false,
+      attachmentStateVerified: true,
+      focusVerified: true,
+      exactReadVerified: true,
+      selectionRestored: true,
+      focusPreserved: true,
+    })!;
+    const landedError: NonNullable<SessionMetadata["error"]> = {
+      category: "browser-automation",
+      message: "Protected browser pre-submit integrity proof failed; no prompt was submitted.",
+      details: {
+        stage: "remote-run",
+        errorClass: "integrity_ui_unknown",
+        retryable: false,
+        preSubmitDiagnostic,
+      },
+    };
+    let current: SessionMetadata = {
+      ...baseSessionMeta,
+      status: "error",
+      mode: "browser",
+      model: "gpt-5.6-sol",
+      browser: {
+        config: { chromePath: null },
+        remoteRun: {
+          runId: originRunId,
+          accountId: "acct1",
+          laneId: "acct1-9473",
+          terminalDoneOk: false,
+          provenance: null,
+        },
+      },
+    };
+    sessionStoreMock.updateSession.mockImplementation(
+      async (
+        _sessionId: string,
+        updates:
+          | Partial<SessionMetadata>
+          | ((metadata: SessionMetadata) => Partial<SessionMetadata>),
+      ) => {
+        const patch = typeof updates === "function" ? updates(current) : updates;
+        current = { ...current, ...patch };
+        return current;
+      },
+    );
+    const promotePending = vi.fn(async () => {
+      current = {
+        ...current,
+        status: "error",
+        error: landedError,
+      };
+      throw new RemoteBrowserRecoveryUnavailableError(
+        "Stored pre-submit diagnostic became authoritative while promoting remote recovery.",
+      );
+    });
+
+    await expect(
+      performSessionRun({
+        sessionMeta: current,
+        runOptions: { ...baseRunOptions, model: "gpt-5.6-sol" },
+        mode: "browser",
+        browserConfig: { chromePath: null },
+        cwd: "/tmp",
+        log,
+        write,
+        version: cliVersion,
+        remoteRecoveryDeps: { promotePending },
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(promotePending).toHaveBeenCalledOnce();
+    expect(vi.mocked(runBrowserSessionExecution)).not.toHaveBeenCalled();
+    expect(current.status).toBe("error");
+    expect(current.error).toEqual(landedError);
+    expect(current.browser).toMatchObject({
+      config: { chromePath: null },
+      remoteRun: {
+        runId: originRunId,
+        accountId: "acct1",
+        laneId: "acct1-9473",
+        terminalDoneOk: false,
+        provenance: null,
+      },
+    });
+  });
+
+  test.each([
+    [
+      "completed session",
+      (metadata: SessionMetadata): SessionMetadata => ({
+        ...metadata,
+        status: "completed",
+        response: { status: "completed" },
+      }),
+    ],
+    [
+      "terminal successful remote run",
+      (metadata: SessionMetadata): SessionMetadata => ({
+        ...metadata,
+        browser: {
+          ...metadata.browser,
+          remoteRun: {
+            runId: "newer-successful-run",
+            accountId: "acct1",
+            laneId: "acct1-9473",
+            terminalDoneOk: true,
+            provenance: null,
+          },
+        },
+      }),
+    ],
+    [
+      "active recovery completion claim",
+      (metadata: SessionMetadata): SessionMetadata => ({
+        ...metadata,
+        browser: {
+          ...metadata.browser,
+          remoteRecoveryCompletionClaim: {
+            schema: "remote-browser-recovery-completion-claim.v1",
+            originRunId: "remote-origin-promotion-winner",
+            claimId: "newer-completion-writer",
+            claimedAt: "2026-07-24T00:00:00.000Z",
+            ownerPid: 4242,
+          },
+        },
+      }),
+    ],
+    [
+      "completed model row",
+      (metadata: SessionMetadata): SessionMetadata => ({
+        ...metadata,
+        models: [
+          {
+            model: "gpt-5.6-sol",
+            status: "completed",
+            completedAt: "2026-07-24T00:00:00.000Z",
+            response: { status: "completed" },
+            usage: {
+              inputTokens: 1,
+              outputTokens: 1,
+              reasoningTokens: 0,
+              totalTokens: 2,
+            },
+          },
+        ],
+      }),
+    ],
+  ] as const)(
+    "a carrier-less promotion failure cannot overwrite a newer %s",
+    async (_label, installWinner) => {
+      const originRunId = "remote-origin-promotion-winner";
+      let current: SessionMetadata = {
+        ...baseSessionMeta,
+        status: "error",
+        mode: "browser",
+        model: "gpt-5.6-sol",
+        browser: {
+          config: { chromePath: null },
+          remoteRun: {
+            runId: originRunId,
+            accountId: "acct1",
+            laneId: "acct1-9473",
+            terminalDoneOk: false,
+            provenance: null,
+          },
+        },
+      };
+      sessionStoreMock.updateSession.mockImplementation(
+        async (
+          _sessionId: string,
+          updates:
+            | Partial<SessionMetadata>
+            | ((metadata: SessionMetadata) => Partial<SessionMetadata>),
+        ) => {
+          const patch = typeof updates === "function" ? updates(current) : updates;
+          current = { ...current, ...patch };
+          return current;
+        },
+      );
+      let winner: SessionMetadata | null = null;
+      const promotePending = vi.fn(async () => {
+        winner = installWinner(current);
+        current = winner;
+        throw new RemoteBrowserRecoveryUnavailableError(
+          "A newer browser generation superseded pending recovery.",
+        );
+      });
+
+      await expect(
+        performSessionRun({
+          sessionMeta: current,
+          runOptions: { ...baseRunOptions, model: "gpt-5.6-sol" },
+          mode: "browser",
+          browserConfig: { chromePath: null },
+          cwd: "/tmp",
+          log,
+          write,
+          version: cliVersion,
+          remoteRecoveryDeps: { promotePending },
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(promotePending).toHaveBeenCalledOnce();
+      expect(vi.mocked(runBrowserSessionExecution)).not.toHaveBeenCalled();
+      expect(winner).not.toBeNull();
+      if (_label === "completed model row") {
+        expect(current).toMatchObject({
+          status: "running",
+          models: [expect.objectContaining({ status: "completed" })],
+          browser: { config: { chromePath: null } },
+        });
+        expect(current.browser?.remoteRun).toBeUndefined();
+      } else {
+        expect(current).toEqual(withoutBrowserRunAttemptClaim(winner!));
+      }
+    },
+  );
+
+  test.each([
+    [
+      "validated pre-submit diagnostic",
+      (metadata: SessionMetadata): SessionMetadata => {
+        const preSubmitDiagnostic = buildRemoteBrowserPreSubmitDiagnostic({
+          stage: "model-selection",
+          code: "protected-route-changed-after-preflight",
+          guardReason: "exact-prompt-changed",
+          exactPromptVerified: false,
+          attachmentStateVerified: true,
+          focusVerified: true,
+          exactReadVerified: true,
+          selectionRestored: true,
+          focusPreserved: true,
+        })!;
+        return {
+          ...metadata,
+          status: "error",
+          browser: {
+            ...metadata.browser,
+            remoteRun: {
+              runId: "newer-pre-submit-run",
+              accountId: "acct1",
+              laneId: "acct1-9473",
+              terminalDoneOk: false,
+              provenance: null,
+            },
+          },
+          error: {
+            category: "browser-automation",
+            message:
+              "Protected browser pre-submit integrity proof failed; no prompt was submitted.",
+            details: {
+              stage: "remote-run",
+              errorClass: "integrity_ui_unknown",
+              retryable: false,
+              preSubmitDiagnostic,
+            },
+          },
+        };
+      },
+    ],
+    [
+      "completed session",
+      (metadata: SessionMetadata): SessionMetadata => ({
+        ...metadata,
+        status: "completed",
+        completedAt: "2026-07-24T00:00:00.000Z",
+        response: { status: "completed" },
+      }),
+    ],
+    [
+      "terminal successful remote run",
+      (metadata: SessionMetadata): SessionMetadata => ({
+        ...metadata,
+        browser: {
+          ...metadata.browser,
+          remoteRun: {
+            runId: "newer-successful-run",
+            accountId: "acct1",
+            laneId: "acct1-9473",
+            terminalDoneOk: true,
+            provenance: null,
+          },
+        },
+      }),
+    ],
+    [
+      "active recovery completion claim",
+      (metadata: SessionMetadata): SessionMetadata => ({
+        ...metadata,
+        browser: {
+          ...metadata.browser,
+          remoteRun: {
+            runId: "newer-recovery-run",
+            accountId: "acct1",
+            laneId: "acct1-9473",
+            terminalDoneOk: false,
+            provenance: null,
+          },
+          remoteRecoveryCompletionClaim: {
+            schema: "remote-browser-recovery-completion-claim.v1",
+            originRunId: "newer-recovery-run",
+            claimId: "newer-completion-writer",
+            claimedAt: "2026-07-24T00:00:00.000Z",
+            ownerPid: 4242,
+          },
+        },
+      }),
+    ],
+    [
+      "active local reattach completion claim",
+      (metadata: SessionMetadata): SessionMetadata => ({
+        ...metadata,
+        browser: {
+          ...metadata.browser,
+          localReattachCompletionClaim: {
+            schema: "local-browser-reattach-completion-claim.v1",
+            claimId: "newer-local-completion-writer",
+            originGenerationSha256: "b".repeat(64),
+            claimedAt: "2026-07-24T00:00:00.000Z",
+            ownerPid: process.pid,
+          },
+        },
+      }),
+    ],
+  ] as const)(
+    "a route-less browser failure cannot overwrite a newer %s",
+    async (_label, installWinner) => {
+      let current: SessionMetadata = {
+        ...baseSessionMeta,
+        status: "pending",
+        mode: "browser",
+        model: "gpt-5.6-sol",
+        browser: { config: { chromePath: null } },
+      };
+      let updateCount = 0;
+      let winner: SessionMetadata | null = null;
+      sessionStoreMock.updateSession.mockImplementation(
+        async (
+          _sessionId: string,
+          updates:
+            | Partial<SessionMetadata>
+            | ((metadata: SessionMetadata) => Partial<SessionMetadata>),
+        ) => {
+          updateCount += 1;
+          if (updateCount === 2) {
+            winner = installWinner(current);
+            current = winner;
+          }
+          const patch = typeof updates === "function" ? updates(current) : updates;
+          current = { ...current, ...patch };
+          return current;
+        },
+      );
+      sessionStoreMock.updateModelRun.mockResolvedValue({});
+      const staleFailure =
+        _label === "completed session"
+          ? new BrowserAutomationError("stale connection loss", {
+              stage: "connection-lost",
+              runtime: {
+                tabUrl: "https://chatgpt.com/c/stale-run",
+                conversationId: "stale-run",
+                promptSubmitted: true,
+              },
+            })
+          : _label === "terminal successful remote run"
+            ? new BrowserAutomationError("stale assistant timeout", {
+                stage: "assistant-timeout",
+                runtime: {
+                  tabUrl: "https://chatgpt.com/c/stale-run",
+                  conversationId: "stale-run",
+                  promptSubmitted: true,
+                },
+              })
+            : new Error("route-less browser failure");
+      vi.mocked(runBrowserSessionExecution).mockRejectedValueOnce(staleFailure);
+
+      await expect(
+        performSessionRun({
+          sessionMeta: current,
+          runOptions: { ...baseRunOptions, model: "gpt-5.6-sol" },
+          mode: "browser",
+          browserConfig: { chromePath: null },
+          cwd: "/tmp",
+          log,
+          write,
+          version: cliVersion,
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(updateCount).toBe(3);
+      expect(winner).not.toBeNull();
+      expect(current).toEqual(withoutBrowserRunAttemptClaim(winner!));
+      expect(sessionStoreMock.updateModelRun).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([
+    [
+      "connection loss before conversation creation",
+      () =>
+        new BrowserAutomationError("stale connection loss", {
+          stage: "connection-lost",
+          runtime: { promptSubmitted: false },
+        }),
+      true,
+    ],
+    [
+      "connection loss with a recoverable conversation",
+      () =>
+        new BrowserAutomationError("stale recoverable connection loss", {
+          stage: "connection-lost",
+          recoverableDisconnect: false,
+          runtime: {
+            tabUrl: "https://chatgpt.com/c/stale-run",
+            conversationId: "stale-run",
+            promptSubmitted: true,
+          },
+        }),
+      false,
+    ],
+    [
+      "assistant timeout",
+      () =>
+        new BrowserAutomationError("stale assistant timeout", {
+          stage: "assistant-timeout",
+          runtime: {
+            tabUrl: "https://chatgpt.com/c/stale-run",
+            conversationId: "stale-run",
+            promptSubmitted: true,
+          },
+        }),
+      false,
+    ],
+    ["generic browser failure", () => new Error("stale generic browser failure"), true],
+  ] as const)(
+    "a newer completion arriving after the %s metadata CAS cannot be overwritten in the model file",
+    async (_label, buildFailure, rejects) => {
+      let current: SessionMetadata = {
+        ...baseSessionMeta,
+        status: "pending",
+        mode: "browser",
+        model: "gpt-5.6-sol",
+        browser: { config: { chromePath: null } },
+      };
+      let modelRun: SessionModelRun = {
+        model: "gpt-5.6-sol",
+        status: "pending",
+      };
+      let updateCount = 0;
+      sessionStoreMock.updateSession.mockImplementation(
+        async (
+          _sessionId: string,
+          updates:
+            | Partial<SessionMetadata>
+            | ((metadata: SessionMetadata) => Partial<SessionMetadata>),
+        ) => {
+          updateCount += 1;
+          const patch = typeof updates === "function" ? updates(current) : updates;
+          current = { ...current, ...patch };
+          if (updateCount === 2) {
+            // The stale failure's conditional metadata write committed, then a
+            // newer completion won before the stale runner resumed. Any
+            // separate model write after this await would corrupt the winner.
+            modelRun = {
+              ...modelRun,
+              status: "completed",
+              completedAt: "2026-07-24T00:00:00.000Z",
+              response: { status: "completed" },
+            };
+            current = {
+              ...current,
+              status: "completed",
+              completedAt: "2026-07-24T00:00:00.000Z",
+              response: { status: "completed" },
+              error: undefined,
+            };
+          }
+          return current;
+        },
+      );
+      sessionStoreMock.updateModelRun.mockImplementation(
+        async (_sessionId: string, _model: string, updates: Partial<SessionModelRun>) => {
+          modelRun = { ...modelRun, ...updates };
+          return modelRun;
+        },
+      );
+      vi.mocked(runBrowserSessionExecution).mockRejectedValueOnce(buildFailure());
+
+      const run = performSessionRun({
+        sessionMeta: current,
+        runOptions: { ...baseRunOptions, model: "gpt-5.6-sol" },
+        mode: "browser",
+        browserConfig: { chromePath: null },
+        cwd: "/tmp",
+        log,
+        write,
+        version: cliVersion,
+      });
+      if (rejects) {
+        await expect(run).rejects.toThrow();
+      } else {
+        await expect(run).resolves.toBeUndefined();
+      }
+
+      expect(updateCount).toBe(3);
+      expect(current.status).toBe("completed");
+      expect(modelRun).toMatchObject({
+        model: "gpt-5.6-sol",
+        status: "completed",
+        response: { status: "completed" },
+      });
+      // Browser start and failure transitions share the session CAS; no
+      // split model-file write may run after a newer completion lands.
+      expect(sessionStoreMock.updateModelRun).not.toHaveBeenCalled();
+    },
+  );
 
   test("second-CAS loss to a same-origin completion claim preserves its retry sidecar", async () => {
     let current: SessionMetadata = {
@@ -3656,7 +4559,15 @@ describe("performSessionRun", () => {
 
     expect(vi.mocked(runBrowserSessionExecution)).toHaveBeenCalled();
     expect(vi.mocked(sendSessionNotification)).toHaveBeenCalled();
-    const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    const finalUpdateInput = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    const finalUpdate = materializeSessionPatch(finalUpdateInput, {
+      ...baseSessionMeta,
+      status: "running",
+      mode: "browser",
+      model: "gpt-5.2-pro",
+      models: [{ model: "gpt-5.2-pro", status: "running" }],
+      browser: { config: { chromePath: null } },
+    });
     expect(finalUpdate).toMatchObject({
       status: "completed",
       browser: expect.objectContaining({
@@ -3667,16 +4578,18 @@ describe("performSessionRun", () => {
       artifacts: [{ kind: "transcript", path: "/tmp/transcript.md" }],
     });
     expect(finalUpdate).toHaveProperty("errorMessage", undefined);
-    expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
-      baseSessionMeta.id,
-      "gpt-5.2-pro",
-      expect.objectContaining({ status: "running" }),
-    );
-    expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
-      baseSessionMeta.id,
-      "gpt-5.2-pro",
-      expect.objectContaining({ status: "completed" }),
-    );
+    const startUpdate = sessionStoreMock.updateSession.mock.calls[0]?.[1];
+    expect(
+      materializeSessionPatch(startUpdate, {
+        ...baseSessionMeta,
+        model: "gpt-5.2-pro",
+        models: [{ model: "gpt-5.2-pro", status: "pending" }],
+      }),
+    ).toMatchObject({
+      status: "running",
+      models: [expect.objectContaining({ model: "gpt-5.2-pro", status: "running" })],
+    });
+    expect(sessionStoreMock.updateModelRun).not.toHaveBeenCalled();
   });
 
   test("recovers submitted browser sessions by saved conversation URL instead of resubmitting", async () => {
@@ -3712,6 +4625,7 @@ describe("performSessionRun", () => {
         },
       },
     };
+    const readStoredSession = installStatefulSessionStore(submittedSessionMeta);
 
     await performSessionRun({
       sessionMeta: submittedSessionMeta,
@@ -3748,11 +4662,7 @@ describe("performSessionRun", () => {
         conversationUrl: "https://chatgpt.com/c/saved-conversation",
       }),
     );
-    const finalUpdateInput = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
-    const finalUpdate =
-      typeof finalUpdateInput === "function"
-        ? finalUpdateInput(submittedSessionMeta)
-        : finalUpdateInput;
+    const finalUpdate = readStoredSession();
     expect(finalUpdate).toMatchObject({
       status: "completed",
       response: { status: "completed" },
@@ -3764,8 +4674,111 @@ describe("performSessionRun", () => {
       },
       artifacts: [{ kind: "transcript", path: "/tmp/recovered-transcript.md" }],
     });
+    expect(finalUpdate.browser?.runAttemptClaim).toBeUndefined();
+    expect(vi.mocked(claimLocalBrowserReattachCompletion)).toHaveBeenCalledWith(
+      expect.objectContaining({ id: submittedSessionMeta.id }),
+      expect.objectContaining({ ownedRunAttemptClaimId: expect.any(String) }),
+    );
     const logLines = log.mock.calls.map((c) => String(c[0])).join("\n");
     expect(logLines).toContain("attempting reattach instead of submitting again");
+  });
+
+  test("a local submitted-session recovery refuses completion and releases its claim when the fresh transcript fails", async () => {
+    const submitted: SessionMetadata = {
+      ...baseSessionMeta,
+      status: "running",
+      mode: "browser",
+      model: "gpt-5.2-pro",
+      models: [{ model: "gpt-5.2-pro", status: "running" }],
+      browser: {
+        runtime: {
+          tabUrl: "https://chatgpt.com/c/transcript-failure",
+          conversationId: "transcript-failure",
+          promptSubmitted: true,
+        },
+      },
+    };
+    const readStoredSession = installStatefulSessionStore(submitted);
+    vi.mocked(resumeBrowserSession).mockResolvedValue({
+      answerText: "captured answer",
+      answerMarkdown: "captured **answer**",
+    });
+    vi.mocked(ensureSessionArtifacts).mockRejectedValue(new Error("fresh transcript unavailable"));
+
+    await expect(
+      performSessionRun({
+        sessionMeta: submitted,
+        runOptions: baseRunOptions,
+        mode: "browser",
+        browserConfig: { chromePath: null },
+        cwd: "/tmp",
+        log,
+        write,
+        version: cliVersion,
+      }),
+    ).rejects.toThrow(/fresh transcript unavailable/);
+
+    expect(readStoredSession().status).not.toBe("completed");
+    expect(sessionStoreMock.createLogWriter).not.toHaveBeenCalled();
+    expect(vi.mocked(releaseLocalBrowserReattachCompletion)).toHaveBeenCalledWith(
+      submitted.id,
+      expect.objectContaining({ claimId: "local-claim-test" }),
+    );
+  });
+
+  test("a post-commit local recovery log failure leaves the fresh transcript and completion recoverable", async () => {
+    const submitted: SessionMetadata = {
+      ...baseSessionMeta,
+      status: "running",
+      mode: "browser",
+      model: "gpt-5.2-pro",
+      models: [{ model: "gpt-5.2-pro", status: "running" }],
+      browser: {
+        runtime: {
+          tabUrl: "https://chatgpt.com/c/post-commit-log-failure",
+          conversationId: "post-commit-log-failure",
+          promptSubmitted: true,
+        },
+      },
+    };
+    const readStoredSession = installStatefulSessionStore(submitted);
+    vi.mocked(resumeBrowserSession).mockResolvedValue({
+      answerText: "durable captured answer",
+      answerMarkdown: "durable **captured answer**",
+    });
+    vi.mocked(ensureSessionArtifacts).mockResolvedValue([
+      { kind: "transcript", path: "/tmp/fresh-recovery-transcript.md" },
+    ]);
+    sessionStoreMock.createLogWriter.mockReturnValue({
+      logLine: vi.fn(),
+      writeChunk: vi.fn(),
+      stream: {
+        end: vi.fn(() => {
+          throw new Error("log stream failed");
+        }),
+      },
+    });
+
+    await expect(
+      performSessionRun({
+        sessionMeta: submitted,
+        runOptions: baseRunOptions,
+        mode: "browser",
+        browserConfig: { chromePath: null },
+        cwd: "/tmp",
+        log,
+        write,
+        version: cliVersion,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(readStoredSession()).toMatchObject({
+      status: "completed",
+      artifacts: [{ kind: "transcript", path: "/tmp/fresh-recovery-transcript.md" }],
+      models: [expect.objectContaining({ status: "completed" })],
+    });
+    expect(vi.mocked(releaseLocalBrowserReattachCompletion)).not.toHaveBeenCalled();
+    expect(log.mock.calls.map((call) => String(call[0])).join("\n")).toContain("already committed");
   });
 
   test("writes browser answers to disk when writeOutputPath provided", async () => {
@@ -3908,7 +4921,10 @@ describe("performSessionRun", () => {
       }),
     ).rejects.toThrow("automation failed");
 
-    const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    const finalUpdate = materializeSessionPatch(
+      sessionStoreMock.updateSession.mock.calls.at(-1)?.[1],
+      staleSessionMeta,
+    );
     expect(finalUpdate).toMatchObject({
       status: "error",
       errorMessage: "automation failed",
@@ -3916,11 +4932,7 @@ describe("performSessionRun", () => {
     });
     expect(finalUpdate?.browser?.runtime).toBeUndefined();
     expect(finalUpdate?.browser?.modelSelection).toEqual(staleSessionMeta.browser.modelSelection);
-    expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
-      baseSessionMeta.id,
-      "gpt-5.2-pro",
-      expect.objectContaining({ status: "error" }),
-    );
+    expect(sessionStoreMock.updateModelRun).not.toHaveBeenCalled();
     const logLines = log.mock.calls.map((c) => String(c[0])).join("\n");
     expect(logLines).not.toContain("Next steps (browser fallback)");
     expect(logLines).not.toContain("--engine api");
@@ -4067,7 +5079,10 @@ describe("performSessionRun", () => {
     });
 
     expect(vi.mocked(resumeBrowserSession)).toHaveBeenCalledTimes(1);
-    const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    const finalUpdate = materializeSessionPatch(
+      sessionStoreMock.updateSession.mock.calls.at(-1)?.[1],
+      baseSessionMeta,
+    );
     expect(finalUpdate).toMatchObject({
       status: "running",
       response: { status: "running", incompleteReason: "chrome-disconnected" },
@@ -4076,11 +5091,7 @@ describe("performSessionRun", () => {
         modelSelection: expect.objectContaining({ resolvedLabel: "Pro", verified: true }),
       }),
     });
-    expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
-      baseSessionMeta.id,
-      "gpt-5.2-pro",
-      expect.objectContaining({ status: "running" }),
-    );
+    expect(sessionStoreMock.updateModelRun).not.toHaveBeenCalled();
     const logLines = log.mock.calls.map((c) => String(c[0])).join("\n");
     expect(logLines).toContain(
       "Chrome disconnected before completion; keeping session running for reattach.",
@@ -4127,7 +5138,10 @@ describe("performSessionRun", () => {
     expect(vi.mocked(resumeBrowserSession)).not.toHaveBeenCalled();
     const logLines = log.mock.calls.map((c) => String(c[0])).join("\n");
     expect(logLines).toContain("Skipping auto-reattach: disconnect classified as non-recoverable.");
-    const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    const finalUpdate = materializeSessionPatch(
+      sessionStoreMock.updateSession.mock.calls.at(-1)?.[1],
+      baseSessionMeta,
+    );
     expect(finalUpdate).toMatchObject({
       status: "running",
       response: { status: "running", incompleteReason: "chrome-disconnected" },
@@ -4170,7 +5184,10 @@ describe("performSessionRun", () => {
     const logLines = log.mock.calls.map((c) => String(c[0])).join("\n");
     expect(logLines).toContain("Auto-reattach will try up to 1 attempt(s).");
     expect(logLines).toContain("Auto-reattach stopped after 1 attempt(s)");
-    const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    const finalUpdate = materializeSessionPatch(
+      sessionStoreMock.updateSession.mock.calls.at(-1)?.[1],
+      baseSessionMeta,
+    );
     expect(finalUpdate).toMatchObject({
       status: "running",
       response: { status: "running", incompleteReason: "chrome-disconnected" },
@@ -4221,6 +5238,7 @@ describe("performSessionRun", () => {
     vi.mocked(ensureSessionArtifacts).mockResolvedValueOnce([
       { kind: "transcript", path: "/tmp/transcript.md" },
     ]);
+    const readStoredSession = installStatefulSessionStore(baseSessionMeta);
 
     await performSessionRun({
       sessionMeta: baseSessionMeta,
@@ -4234,13 +5252,16 @@ describe("performSessionRun", () => {
     });
 
     expect(vi.mocked(resumeBrowserSession)).toHaveBeenCalledTimes(1);
-    const finalUpdateInput = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
-    const finalUpdate =
-      typeof finalUpdateInput === "function" ? finalUpdateInput(baseSessionMeta) : finalUpdateInput;
+    const finalUpdate = readStoredSession();
     expect(finalUpdate).toMatchObject({
       status: "completed",
       response: { status: "completed" },
     });
+    expect(finalUpdate.browser?.runAttemptClaim).toBeUndefined();
+    expect(vi.mocked(claimLocalBrowserReattachCompletion)).toHaveBeenCalledWith(
+      expect.objectContaining({ id: baseSessionMeta.id }),
+      expect.objectContaining({ ownedRunAttemptClaimId: expect.any(String) }),
+    );
     const logLines = log.mock.calls.map((c) => String(c[0])).join("\n");
     expect(logLines).toContain("Auto-reattach succeeded; session marked completed.");
   });
@@ -4272,14 +5293,13 @@ describe("performSessionRun", () => {
       }),
     ).rejects.toThrow("Chrome window closed");
 
-    const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    const finalUpdate = materializeSessionPatch(
+      sessionStoreMock.updateSession.mock.calls.at(-1)?.[1],
+      baseSessionMeta,
+    );
     expect(finalUpdate).toMatchObject({ status: "error" });
     expect(finalUpdate?.browser?.runtime).toBeUndefined();
-    expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
-      baseSessionMeta.id,
-      "gpt-5.2-pro",
-      expect.objectContaining({ status: "error" }),
-    );
+    expect(sessionStoreMock.updateModelRun).not.toHaveBeenCalled();
     const logLines = log.mock.calls.map((c) => String(c[0])).join("\n");
     expect(logLines).not.toContain("keeping session running for reattach");
     expect(logLines).not.toContain("oracle session sess-1 --render");
@@ -4312,20 +5332,16 @@ describe("performSessionRun", () => {
       }),
     ).rejects.toThrow(/Chrome window closed/);
 
-    const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    const finalUpdate = materializeSessionPatch(
+      sessionStoreMock.updateSession.mock.calls.at(-1)?.[1],
+      baseSessionMeta,
+    );
     expect(finalUpdate).toMatchObject({
       status: "error",
       response: { status: "error", incompleteReason: "chrome-disconnected" },
       browser: expect.objectContaining({ runtime: expect.objectContaining({ chromePort: 9222 }) }),
     });
-    expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
-      baseSessionMeta.id,
-      "gpt-5.2-pro",
-      expect.objectContaining({
-        status: "error",
-        response: { status: "error", incompleteReason: "chrome-disconnected" },
-      }),
-    );
+    expect(sessionStoreMock.updateModelRun).not.toHaveBeenCalled();
     const logLines = log.mock.calls.map((c) => String(c[0])).join("\n");
     expect(logLines).toContain(
       "Chrome disconnected before a ChatGPT conversation was created; marking session error.",
@@ -4387,7 +5403,10 @@ describe("performSessionRun", () => {
       version: cliVersion,
     });
 
-    const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    const finalUpdate = materializeSessionPatch(
+      sessionStoreMock.updateSession.mock.calls.at(-1)?.[1],
+      baseSessionMeta,
+    );
     expect(finalUpdate).toMatchObject({
       status: "error",
       response: { status: "incomplete", incompleteReason: "incomplete-capture" },
@@ -4409,22 +5428,7 @@ describe("performSessionRun", () => {
         }),
       }),
     });
-    expect(sessionStoreMock.updateModelRun).toHaveBeenCalledWith(
-      baseSessionMeta.id,
-      "gpt-5.2-pro",
-      expect.objectContaining({
-        status: "error",
-        response: { status: "incomplete", incompleteReason: "incomplete-capture" },
-        error: expect.objectContaining({
-          details: expect.objectContaining({
-            diagnostics: expect.objectContaining({
-              domPath: "/tmp/.oracle/sessions/sess-1/artifacts/assistant-timeout.dom.json",
-              screenshotPath: "/tmp/.oracle/sessions/sess-1/artifacts/assistant-timeout.png",
-            }),
-          }),
-        }),
-      }),
-    );
+    expect(sessionStoreMock.updateModelRun).not.toHaveBeenCalled();
     const logLines = log.mock.calls.map((c) => String(c[0])).join("\n");
     expect(logLines).toContain(
       "ERROR: ChatGPT displayed a rate-limit warning while waiting for the assistant: Too many requests.",
@@ -4472,7 +5476,10 @@ describe("performSessionRun", () => {
       version: cliVersion,
     });
 
-    const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    const finalUpdate = materializeSessionPatch(
+      sessionStoreMock.updateSession.mock.calls.at(-1)?.[1],
+      baseSessionMeta,
+    );
     expect(finalUpdate).toMatchObject({
       status: "error",
       response: { status: "incomplete", incompleteReason: "incomplete-capture" },
@@ -4530,7 +5537,10 @@ describe("performSessionRun", () => {
       }),
     ).rejects.toThrow("Cloudflare challenge detected");
 
-    const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    const finalUpdate = materializeSessionPatch(
+      sessionStoreMock.updateSession.mock.calls.at(-1)?.[1],
+      baseSessionMeta,
+    );
     expect(finalUpdate).toMatchObject({
       status: "error",
       browser: expect.objectContaining({
@@ -4579,7 +5589,10 @@ describe("performSessionRun", () => {
       }),
     ).rejects.toThrow("Copy-profile runs cannot be retained");
 
-    const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    const finalUpdate = materializeSessionPatch(
+      sessionStoreMock.updateSession.mock.calls.at(-1)?.[1],
+      baseSessionMeta,
+    );
     expect(finalUpdate?.browser?.runtime).toBeUndefined();
     const logLines = log.mock.calls.map((c) => String(c[0])).join("\n");
     expect(logLines).toContain("Cloudflare challenge detected; copied profile closed and removed.");
@@ -4612,7 +5625,10 @@ describe("performSessionRun", () => {
     ).rejects.toThrow("assistant timed out");
 
     expect(resumeBrowserSession).not.toHaveBeenCalled();
-    const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    const finalUpdate = materializeSessionPatch(
+      sessionStoreMock.updateSession.mock.calls.at(-1)?.[1],
+      baseSessionMeta,
+    );
     expect(finalUpdate?.browser?.runtime).toBeUndefined();
     const logLines = log.mock.calls.map((c) => String(c[0])).join("\n");
     expect(logLines).not.toContain("capture incomplete for reattach");
@@ -4652,6 +5668,7 @@ describe("performSessionRun", () => {
       { kind: "transcript", path: "/tmp/transcript.md" },
       { kind: "deep-research-report", path: "/tmp/deep-research-report.md" },
     ]);
+    const readStoredSession = installStatefulSessionStore(baseSessionMeta);
 
     await performSessionRun({
       sessionMeta: baseSessionMeta,
@@ -4678,31 +5695,7 @@ describe("performSessionRun", () => {
         conversationUrl: "https://chatgpt.com/c/demo",
       }),
     );
-    const finalUpdateInput = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
-    const finalUpdate =
-      typeof finalUpdateInput === "function"
-        ? finalUpdateInput({
-            ...baseSessionMeta,
-            browser: {
-              config: { chromePath: null },
-              runtime: {
-                chromePort: 9222,
-                chromeHost: "127.0.0.1",
-                tabUrl: "https://chatgpt.com/c/demo",
-                promptSubmitted: true,
-              },
-              modelSelection: {
-                requestedModel: "Pro",
-                resolvedLabel: "Pro",
-                strategy: "select",
-                status: "already-selected",
-                verified: true,
-                source: "chatgpt-model-picker",
-                capturedAt: "2026-07-03T00:00:00.000Z",
-              },
-            },
-          })
-        : finalUpdateInput;
+    const finalUpdate = readStoredSession();
     expect(finalUpdate).toMatchObject({
       status: "completed",
       artifacts: [
@@ -4952,7 +5945,10 @@ describe("performSessionRun", () => {
       await pending;
 
       expect(vi.mocked(resumeBrowserSession).mock.calls.length).toBeGreaterThanOrEqual(2);
-      const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+      const finalUpdate = materializeSessionPatch(
+        sessionStoreMock.updateSession.mock.calls.at(-1)?.[1],
+        baseSessionMeta,
+      );
       expect(finalUpdate).toMatchObject({
         status: "error",
         response: { status: "incomplete", incompleteReason: "incomplete-capture" },

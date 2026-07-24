@@ -19,6 +19,10 @@ import {
 } from "../browser/recoverConversation.js";
 import { normalizeChatGptConversationId } from "../browser/conversationIdentity.js";
 import { hasImportedChatgptConversationClaim } from "../browser/importedConversation.js";
+import {
+  classifyStoredRemotePreSubmitState,
+  formatStoredRemotePreSubmitRecoveryBlock,
+} from "../remote/storedPreSubmitState.js";
 import { resolveOutputPath } from "./writeOutputPath.js";
 
 const LIVE_POLL_MS = 2000;
@@ -301,6 +305,10 @@ export async function harvestSessionBrowserOutput(
       `Session ${sessionId} is an untrusted manual conversation import. Refusing --harvest because Oracle did not submit or bind an answer in that thread.`,
     );
   }
+  const storedPreSubmitState = classifyStoredRemotePreSubmitState(meta);
+  if (storedPreSubmitState) {
+    throw new Error(formatStoredRemotePreSubmitRecoveryBlock(sessionId, storedPreSubmitState));
+  }
   if (meta.browser?.remoteRun || meta.browser?.remoteRecovery) {
     throw new Error(
       meta.browser.remoteRecovery
@@ -375,6 +383,10 @@ export async function liveTailSessionBrowserOutput(
     throw new Error(
       `Session ${sessionId} is an untrusted manual conversation import. Refusing --live because Oracle did not submit or bind an answer in that thread.`,
     );
+  }
+  const storedPreSubmitState = classifyStoredRemotePreSubmitState(meta);
+  if (storedPreSubmitState) {
+    throw new Error(formatStoredRemotePreSubmitRecoveryBlock(sessionId, storedPreSubmitState));
   }
   if (meta.browser?.remoteRun || meta.browser?.remoteRecovery) {
     throw new Error(

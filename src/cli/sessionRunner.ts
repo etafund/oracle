@@ -38,7 +38,15 @@ import {
   saveDeepResearchReportArtifact,
 } from "../browser/artifacts.js";
 import { renderMarkdownAnsi } from "./markdownRenderer.js";
-import { formatResponseMetadata, formatTransportMetadata } from "./sessionDisplay.js";
+import {
+  formatResponseMetadata,
+  formatStoredRemotePreSubmitRecoveryBlock,
+  formatTransportMetadata,
+} from "./sessionDisplay.js";
+import {
+  classifyStoredRemotePreSubmitState,
+  hasStoredModelRunSuccessEvidence,
+} from "../remote/storedPreSubmitState.js";
 import { markErrorLogged } from "./errorUtils.js";
 import {
   type NotificationSettings,
@@ -46,7 +54,19 @@ import {
   deriveNotificationSettingsFromMetadata,
 } from "./notifier.js";
 import { sessionStore } from "../sessionStore.js";
-import { wait } from "../sessionManager.js";
+import {
+  wait,
+  type BrowserLocalReattachCompletionClaim,
+  type BrowserRunAttemptClaim,
+} from "../sessionManager.js";
+import {
+  browserProcessClaimIsStale,
+  claimLocalBrowserReattachCompletion,
+  currentBrowserProcessClaimOwner,
+  localBrowserReattachClaimIsStale,
+  ownsLocalBrowserReattachCompletion,
+  releaseLocalBrowserReattachCompletion,
+} from "./localBrowserReattachClaim.js";
 import { runMultiModelApiSession, type MultiModelRunSummary } from "../oracle/multiModelRunner.js";
 import { MODEL_CONFIGS, DEFAULT_SYSTEM_PROMPT } from "../oracle/config.js";
 import { isKnownModel } from "../oracle/modelResolver.js";
@@ -68,6 +88,7 @@ import type { BrowserRunResult } from "../browserMode.js";
 import {
   getRemoteBrowserFailedRouteFromError,
   getRemoteBrowserPendingRecoveryClaimFromError,
+  getRemoteBrowserPromptSubmitObservedFromError,
   getRemoteBrowserRecoveryFromError,
   RemoteRunFailedError,
   type RemoteBrowserFailedRoute,
@@ -167,12 +188,140 @@ function failedRemoteRouteMatches(
   metadata: SessionMetadata,
   expected: RemoteBrowserFailedRoute,
 ): boolean {
-  const actual = metadata.browser?.remoteRun;
+  return browserFailedRemoteRouteMatches(metadata.browser, expected);
+}
+
+function browserFailedRemoteRouteMatches(
+  browser: SessionMetadata["browser"],
+  expected: RemoteBrowserFailedRoute,
+): boolean {
+  const actual = browser?.remoteRun;
   return (
     actual?.terminalDoneOk === false &&
     actual.runId === expected.runId &&
     actual.accountId === expected.accountId &&
     (actual.laneId ?? null) === (expected.laneId ?? null)
+  );
+}
+
+function stripExecutableRemoteRecoveryState(
+  browser: SessionMetadata["browser"],
+  expected: RemoteBrowserFailedRoute,
+): SessionMetadata["browser"] {
+  if (!browser) return browser;
+  let next = browser;
+  if (next.remoteRecovery?.originRunId === expected.runId) {
+    const { remoteRecovery: _remoteRecovery, ...withoutRecovery } = next;
+    next = withoutRecovery;
+  }
+  if (next.remoteRecoveryCompletionClaim?.originRunId === expected.runId) {
+    const { remoteRecoveryCompletionClaim: _completionClaim, ...withoutCompletionClaim } = next;
+    next = withoutCompletionClaim;
+  }
+  return next;
+}
+
+function stripFailedRemoteRecoveryState(
+  browser: SessionMetadata["browser"],
+  expected: RemoteBrowserFailedRoute,
+): SessionMetadata["browser"] {
+  const withoutExecutableRecovery = stripExecutableRemoteRecoveryState(browser, expected);
+  if (!browserFailedRemoteRouteMatches(withoutExecutableRecovery, expected)) {
+    return withoutExecutableRecovery;
+  }
+  if (!withoutExecutableRecovery) return withoutExecutableRecovery;
+  const { remoteRun: _remoteRun, ...withoutFailedRoute } = withoutExecutableRecovery;
+  return withoutFailedRoute;
+}
+
+function stripLocalReattachCompletionClaim(
+  browser: SessionMetadata["browser"],
+): SessionMetadata["browser"] {
+  if (!browser?.localReattachCompletionClaim) return browser;
+  const { localReattachCompletionClaim: _localReattachCompletionClaim, ...withoutLocalClaim } =
+    browser;
+  return withoutLocalClaim;
+}
+
+function ownsBrowserRunAttempt(metadata: SessionMetadata, claim: BrowserRunAttemptClaim): boolean {
+  return metadata.browser?.runAttemptClaim?.claimId === claim.claimId;
+}
+
+function stripBrowserRunAttemptClaim(
+  browser: SessionMetadata["browser"],
+  expectedClaimId?: string,
+): SessionMetadata["browser"] {
+  if (
+    !browser?.runAttemptClaim ||
+    (expectedClaimId && browser.runAttemptClaim.claimId !== expectedClaimId)
+  ) {
+    return browser;
+  }
+  const { runAttemptClaim: _runAttemptClaim, ...withoutRunAttemptClaim } = browser;
+  return withoutRunAttemptClaim;
+}
+
+function ordinaryBrowserRunAttemptCanMutate(
+  metadata: SessionMetadata,
+  claim: BrowserRunAttemptClaim,
+): boolean {
+  return (
+    metadata.status === "running" &&
+    ownsBrowserRunAttempt(metadata, claim) &&
+    classifyStoredRemotePreSubmitState(metadata) === null &&
+    !hasStoredModelRunSuccessEvidence(metadata) &&
+    !metadata.browser?.remoteRun &&
+    !metadata.browser?.remoteRecovery &&
+    !metadata.browser?.remoteRecoveryCompletionClaim &&
+    !hasActiveLocalReattachCompletionClaim(metadata)
+  );
+}
+
+async function releaseBrowserRunAttempt(
+  sessionId: string,
+  claim: BrowserRunAttemptClaim,
+): Promise<boolean> {
+  let released = false;
+  await sessionStore.updateSession(sessionId, (current) => {
+    released = false;
+    if (!ownsBrowserRunAttempt(current, claim)) {
+      return {};
+    }
+    released = true;
+    return {
+      browser: stripBrowserRunAttemptClaim(current.browser, claim.claimId),
+    };
+  });
+  return released;
+}
+
+function hasActiveLocalReattachCompletionClaim(metadata: SessionMetadata): boolean {
+  const claim = metadata.browser?.localReattachCompletionClaim;
+  return Boolean(
+    claim &&
+    !localBrowserReattachClaimIsStale(claim) &&
+    ownsLocalBrowserReattachCompletion(metadata, claim),
+  );
+}
+
+function failedRemoteRecoveryStateIsOwned(
+  metadata: SessionMetadata,
+  expected: RemoteBrowserFailedRoute,
+): boolean {
+  return (
+    metadata.status !== "completed" &&
+    classifyStoredRemotePreSubmitState(metadata) === null &&
+    !hasStoredModelRunSuccessEvidence(metadata) &&
+    !metadata.browser?.remoteRecoveryCompletionClaim &&
+    !hasActiveLocalReattachCompletionClaim(metadata) &&
+    failedRemoteRouteMatches(metadata, expected)
+  );
+}
+
+function storedRemoteFailureRecoveryIsBlocked(metadata: SessionMetadata): boolean {
+  return (
+    classifyStoredRemotePreSubmitState(metadata) !== null ||
+    hasStoredModelRunSuccessEvidence(metadata)
   );
 }
 
@@ -189,6 +338,7 @@ export async function persistRemoteBrowserFailureRecoveryState(
     failedRoute: RemoteBrowserFailedRoute;
     recoveryCarrier?: RemoteBrowserRecoveryCarrier | null;
     pendingRecoveryClaim?: RemoteBrowserPendingRecoveryClaim | null;
+    runAttemptClaimId?: string;
   },
   deps: RemoteBrowserFailurePersistenceDeps = {},
 ): Promise<SessionMetadata["browser"]> {
@@ -219,29 +369,57 @@ export async function persistRemoteBrowserFailureRecoveryState(
     ...input.browser,
     remoteRun: input.failedRoute,
   };
+  const cleanupSidecars = async (): Promise<void> => {
+    await Promise.all([
+      deleteSecret(input.sessionId, input.failedRoute.runId).catch(() => false),
+      deletePendingClaim(input.sessionId, input.failedRoute.runId).catch(() => false),
+    ]);
+  };
+  const runAttemptIsOwned = (metadata: SessionMetadata): boolean =>
+    !input.runAttemptClaimId ||
+    metadata.browser?.runAttemptClaim?.claimId === input.runAttemptClaimId;
 
   let routeMarked = false;
+  let routeStrippedForBlockedEvidence = false;
   const marked = await updateSession(input.sessionId, (current) => {
     routeMarked = false;
+    routeStrippedForBlockedEvidence = false;
     const currentRun = current.browser?.remoteRun;
     const currentCoordinate = current.browser?.remoteRecovery;
     const sameFailedRoute = failedRemoteRouteMatches(current, input.failedRoute);
+    const modelSuccess = hasStoredModelRunSuccessEvidence(current);
+    const diagnostic = classifyStoredRemotePreSubmitState(current) !== null;
+    const blockedEvidence = modelSuccess || diagnostic;
+    const activeLocalReattachClaim = hasActiveLocalReattachCompletionClaim(current);
+    if (!runAttemptIsOwned(current)) {
+      return {};
+    }
     if (
       current.status === "completed" ||
+      blockedEvidence ||
       currentRun?.terminalDoneOk === true ||
       current.browser?.remoteRecoveryCompletionClaim ||
+      activeLocalReattachClaim ||
       (currentRun && !sameFailedRoute) ||
       (currentCoordinate && currentCoordinate.originRunId !== input.failedRoute.runId)
     ) {
+      if (blockedEvidence && sameFailedRoute) {
+        routeStrippedForBlockedEvidence = true;
+        return {
+          browser: modelSuccess
+            ? stripFailedRemoteRecoveryState(current.browser, input.failedRoute)
+            : stripExecutableRemoteRecoveryState(current.browser, input.failedRoute),
+        };
+      }
       return {};
     }
     routeMarked = true;
     return {
-      browser: {
+      browser: stripLocalReattachCompletionClaim({
         ...input.browser,
         ...current.browser,
         remoteRun: input.failedRoute,
-      },
+      }),
     };
   });
   browser = marked?.browser ?? browser;
@@ -249,31 +427,85 @@ export async function persistRemoteBrowserFailureRecoveryState(
   // A terminal/newer generation or active completion owner won the CAS.
   // Refuse to touch any sidecar and return its fresh browser state.
   if (!routeMarked) {
+    if (routeStrippedForBlockedEvidence) {
+      await cleanupSidecars();
+    }
     throw new RemoteBrowserFailureSupersededError(
       "A terminal/newer browser generation or active recovery writer superseded this failed run.",
       browser,
     );
   }
 
-  if (!input.recoveryCarrier && input.pendingRecoveryClaim) {
-    await writePendingClaim(input.sessionId, input.pendingRecoveryClaim);
-    let stillOwned = false;
-    const refreshed = await updateSession(input.sessionId, (current) => {
-      stillOwned = failedRemoteRouteMatches(current, input.failedRoute);
+  const verifyFailedRouteOwnership = async (): Promise<{
+    owned: boolean;
+    blockedCleanup: boolean;
+    metadata: SessionMetadata;
+  }> => {
+    let owned = false;
+    let blockedCleanup = false;
+    const metadata = await updateSession(input.sessionId, (current) => {
+      owned =
+        runAttemptIsOwned(current) && failedRemoteRecoveryStateIsOwned(current, input.failedRoute);
+      blockedCleanup = false;
+      if (
+        !owned &&
+        storedRemoteFailureRecoveryIsBlocked(current) &&
+        failedRemoteRouteMatches(current, input.failedRoute)
+      ) {
+        blockedCleanup = true;
+        const modelSuccess = hasStoredModelRunSuccessEvidence(current);
+        return {
+          browser: modelSuccess
+            ? stripFailedRemoteRecoveryState(current.browser, input.failedRoute)
+            : stripExecutableRemoteRecoveryState(current.browser, input.failedRoute),
+        };
+      }
       return {};
     });
-    if (!stillOwned) {
-      await deletePendingClaim(input.sessionId, input.pendingRecoveryClaim.originRunId).catch(
-        () => false,
-      );
+    browser = metadata?.browser ?? browser;
+    return { owned, blockedCleanup, metadata };
+  };
+
+  if (!input.recoveryCarrier && input.pendingRecoveryClaim) {
+    const beforeWrite = await verifyFailedRouteOwnership();
+    if (!beforeWrite.owned) {
+      if (beforeWrite.blockedCleanup) {
+        await cleanupSidecars();
+      }
       throw new RemoteBrowserFailureSupersededError(
-        "A newer browser generation superseded this pending remote recovery claim.",
-        refreshed?.browser ?? browser,
+        "A newer browser generation superseded this pending remote recovery claim before publication.",
+        beforeWrite.metadata?.browser ?? browser,
       );
     }
-    return refreshed?.browser ?? browser;
+    await writePendingClaim(input.sessionId, input.pendingRecoveryClaim);
+    const afterWrite = await verifyFailedRouteOwnership();
+    if (!afterWrite.owned) {
+      if (afterWrite.blockedCleanup) {
+        await cleanupSidecars();
+      } else {
+        // This invocation wrote only the pending claim. It is obsolete after
+        // any CAS loss, but a same-origin winner may already own a recovery
+        // secret that this helper must not delete.
+        await deletePendingClaim(input.sessionId, input.failedRoute.runId).catch(() => false);
+      }
+      throw new RemoteBrowserFailureSupersededError(
+        "A newer browser generation superseded this pending remote recovery claim.",
+        afterWrite.metadata?.browser ?? browser,
+      );
+    }
+    return afterWrite.metadata?.browser ?? browser;
   }
   if (!input.recoveryCarrier) return browser;
+  const beforeWrite = await verifyFailedRouteOwnership();
+  if (!beforeWrite.owned) {
+    if (beforeWrite.blockedCleanup) {
+      await cleanupSidecars();
+    }
+    throw new RemoteBrowserFailureSupersededError(
+      "A newer browser generation superseded this remote recovery capability before publication.",
+      beforeWrite.metadata?.browser ?? browser,
+    );
+  }
   await writeSecret(input.sessionId, input.recoveryCarrier);
   const coordinate = toPublicRemoteRecoveryMetadata(input.recoveryCarrier);
   let published = false;
@@ -281,9 +513,20 @@ export async function persistRemoteBrowserFailureRecoveryState(
     // The updater may be retried on a fresher metadata generation.
     published = false;
     if (
-      !failedRemoteRouteMatches(current, input.failedRoute) ||
-      current.browser?.remoteRecoveryCompletionClaim
+      !runAttemptIsOwned(current) ||
+      !failedRemoteRecoveryStateIsOwned(current, input.failedRoute)
     ) {
+      if (
+        storedRemoteFailureRecoveryIsBlocked(current) &&
+        failedRemoteRouteMatches(current, input.failedRoute)
+      ) {
+        const modelSuccess = hasStoredModelRunSuccessEvidence(current);
+        return {
+          browser: modelSuccess
+            ? stripFailedRemoteRecoveryState(current.browser, input.failedRoute)
+            : stripExecutableRemoteRecoveryState(current.browser, input.failedRoute),
+        };
+      }
       return {};
     }
     published = true;
@@ -300,15 +543,34 @@ export async function persistRemoteBrowserFailureRecoveryState(
       freshBrowser?.remoteRecovery?.originRunId === input.failedRoute.runId ||
       freshBrowser?.remoteRecoveryCompletionClaim?.originRunId === input.failedRoute.runId;
     if (!sameOriginStillNeedsSidecar) {
-      await deleteSecret(input.sessionId, input.failedRoute.runId).catch(() => false);
+      await cleanupSidecars();
     }
     throw new RemoteBrowserFailureSupersededError(
       "A newer browser generation or active recovery writer won while the public coordinate was being published.",
       freshBrowser,
     );
   }
+  browser = publishedMetadata?.browser ?? { ...browser, remoteRecovery: coordinate };
+  const afterPublish = await verifyFailedRouteOwnership();
+  if (!afterPublish.owned) {
+    const freshBrowser = afterPublish.metadata?.browser ?? browser;
+    const sameOriginStillOwnsSecret =
+      freshBrowser?.remoteRecovery?.originRunId === input.failedRoute.runId ||
+      freshBrowser?.remoteRecoveryCompletionClaim?.originRunId === input.failedRoute.runId;
+    if (afterPublish.blockedCleanup || !sameOriginStillOwnsSecret) {
+      await cleanupSidecars();
+    } else {
+      // A completion claimant won after publication and still needs the
+      // capability. Only the now-obsolete pending-claim sidecar is removable.
+      await deletePendingClaim(input.sessionId, input.failedRoute.runId).catch(() => false);
+    }
+    throw new RemoteBrowserFailureSupersededError(
+      "A newer browser generation superseded this remote recovery capability after publication.",
+      freshBrowser,
+    );
+  }
   await deletePendingClaim(input.sessionId, input.failedRoute.runId).catch(() => false);
-  return publishedMetadata?.browser ?? { ...browser, remoteRecovery: coordinate };
+  return afterPublish.metadata?.browser ?? browser;
 }
 
 async function persistRemoteRecoveryArtifacts(input: {
@@ -363,7 +625,10 @@ export interface SessionRunParams {
     getFailedRoute?: typeof getRemoteBrowserFailedRouteFromError;
     getRecovery?: typeof getRemoteBrowserRecoveryFromError;
     getPendingRecoveryClaim?: typeof getRemoteBrowserPendingRecoveryClaimFromError;
+    getPromptSubmitObserved?: typeof getRemoteBrowserPromptSubmitObservedFromError;
     persistState?: typeof persistRemoteBrowserFailureRecoveryState;
+    deleteRecoverySecret?: typeof deleteRemoteBrowserRecoverySecret;
+    deletePendingRecoveryClaim?: typeof deleteRemoteBrowserPendingRecoveryClaim;
   };
   /** Narrow injection seam for submitted-session recovery race tests. */
   remoteRecoveryDeps?: {
@@ -477,6 +742,117 @@ export type ClaudeCodeSessionRunner = (
   input: ClaudeCodeRunnerInput,
 ) => Promise<ClaudeCodeRunnerResult>;
 
+function beginBrowserModelRun(
+  modelRuns: SessionModelRun[] | undefined,
+  model: string,
+  startedAt: string,
+): SessionModelRun[] {
+  let found = false;
+  const next = (modelRuns ?? []).map((run) => {
+    if (run.model !== model) return run;
+    found = true;
+    const {
+      completedAt: _completedAt,
+      usage: _usage,
+      response: _response,
+      transport: _transport,
+      error: _error,
+      ...preserved
+    } = run;
+    return { ...preserved, status: "running" as const, startedAt };
+  });
+  if (!found) {
+    next.push({ model, status: "running", startedAt });
+  }
+  return next;
+}
+
+function completeBrowserModelRun(
+  modelRuns: SessionModelRun[] | undefined,
+  model: string,
+  completedAt: string,
+  usage: NonNullable<SessionMetadata["usage"]>,
+): SessionModelRun[] {
+  let found = false;
+  const next = (modelRuns ?? []).map((run) => {
+    if (run.model !== model) return run;
+    found = true;
+    const {
+      completedAt: _completedAt,
+      usage: _usage,
+      response: _response,
+      transport: _transport,
+      error: _error,
+      ...preserved
+    } = run;
+    return {
+      ...preserved,
+      status: "completed" as const,
+      completedAt,
+      usage,
+      response: { status: "completed" },
+    };
+  });
+  if (!found) {
+    next.push({
+      model,
+      status: "completed",
+      completedAt,
+      usage,
+      response: { status: "completed" },
+    });
+  }
+  return next;
+}
+
+type RemoteRecoveryCompletionClaim = NonNullable<
+  NonNullable<SessionMetadata["browser"]>["remoteRecoveryCompletionClaim"]
+>;
+
+async function assertRemoteRecoveryCompletionOwnership(
+  sessionId: string,
+  claim: RemoteRecoveryCompletionClaim,
+): Promise<void> {
+  let owned = false;
+  await sessionStore.updateSession(sessionId, (current) => {
+    owned = ownsRemoteBrowserRecoveryCompletion(current, claim);
+    return {};
+  });
+  if (!owned) {
+    throw new RemoteBrowserRecoveryUnavailableError(
+      "Recovery completion ownership changed after capture; refusing stale artifact or log writes.",
+    );
+  }
+}
+
+async function claimFreshLocalBrowserReattachCompletion(
+  fallback: SessionMetadata,
+  ownedRunAttemptClaimId?: string,
+): Promise<BrowserLocalReattachCompletionClaim | null> {
+  let fresh = fallback;
+  try {
+    fresh = (await sessionStore.readSession(fallback.id)) ?? fallback;
+  } catch {
+    // The claim helper still performs a fresh compare-and-set. Falling back to
+    // the caller's snapshot can only make acquisition fail closed.
+  }
+  return await claimLocalBrowserReattachCompletion(fresh, {
+    ownedRunAttemptClaimId,
+  });
+}
+
+async function assertLocalBrowserReattachCompletionOwnership(
+  sessionId: string,
+  claim: BrowserLocalReattachCompletionClaim,
+): Promise<void> {
+  const current = await sessionStore.readSession(sessionId);
+  if (!current || !ownsLocalBrowserReattachCompletion(current, claim)) {
+    throw new RemoteBrowserRecoveryUnavailableError(
+      "Local reattach ownership changed after capture; refusing stale artifact or log writes.",
+    );
+  }
+}
+
 export async function performSessionRun({
   sessionMeta,
   runOptions,
@@ -498,44 +874,153 @@ export async function performSessionRun({
     write(chunk);
     return muteStdout ? true : process.stdout.write(chunk);
   };
+  const modelForStatus = runOptions.model ?? sessionMeta.model;
+  let browserRunAttemptClaim: BrowserRunAttemptClaim | null =
+    mode === "browser"
+      ? {
+          schema: "browser-run-attempt-claim.v1",
+          claimId: randomUUID(),
+          claimedAt: new Date().toISOString(),
+          ...currentBrowserProcessClaimOwner(),
+        }
+      : null;
   let startRefused = false;
   const startedSession = await sessionStore.updateSession(sessionMeta.id, (current) => {
     // A session runner may have been spawned from an older metadata snapshot.
     // Merge the freshest browser state and never reopen a terminal remote run
     // or trample an in-flight recovery completion claim.
     startRefused = false;
+    const localReattachClaim = current.browser?.localReattachCompletionClaim;
+    const activeLocalReattachClaim = Boolean(
+      localReattachClaim &&
+      !localBrowserReattachClaimIsStale(localReattachClaim) &&
+      ownsLocalBrowserReattachCompletion(current, localReattachClaim),
+    );
+    const existingRunAttemptClaim = current.browser?.runAttemptClaim;
+    const activeOtherRunAttempt = Boolean(
+      browserRunAttemptClaim &&
+      existingRunAttemptClaim &&
+      existingRunAttemptClaim.claimId !== browserRunAttemptClaim.claimId &&
+      !browserProcessClaimIsStale(existingRunAttemptClaim),
+    );
+    if (
+      mode === "browser" &&
+      (classifyStoredRemotePreSubmitState(current) ||
+        hasStoredModelRunSuccessEvidence(current) ||
+        activeOtherRunAttempt)
+    ) {
+      startRefused = true;
+      return {};
+    }
     if (
       mode === "browser" &&
       (current.browser?.remoteRecoveryCompletionClaim ||
+        activeLocalReattachClaim ||
         current.browser?.remoteRun?.terminalDoneOk === true)
     ) {
       startRefused = true;
       return {};
     }
+    const startedAt = new Date().toISOString();
+    const mergedBrowser = { ...sessionMeta.browser, ...current.browser };
+    const browserWithoutInactiveLocalClaim =
+      localReattachClaim && !activeLocalReattachClaim
+        ? (({ localReattachCompletionClaim: _staleLocalClaim, ...withoutStaleLocalClaim }) =>
+            withoutStaleLocalClaim)(mergedBrowser)
+        : mergedBrowser;
+    const browserForStart =
+      mode === "browser" && browserRunAttemptClaim
+        ? {
+            ...stripBrowserRunAttemptClaim(browserWithoutInactiveLocalClaim),
+            runAttemptClaim: browserRunAttemptClaim,
+          }
+        : browserWithoutInactiveLocalClaim;
     return {
       status: "running",
-      startedAt: new Date().toISOString(),
+      startedAt,
       mode,
-      ...(browserConfig
+      ...(mode === "browser" && modelForStatus
+        ? { models: beginBrowserModelRun(current.models, modelForStatus, startedAt) }
+        : {}),
+      ...(mode === "browser" && browserRunAttemptClaim
         ? {
             browser: {
-              ...sessionMeta.browser,
-              ...current.browser,
-              config: browserConfig,
+              ...browserForStart,
+              ...(browserConfig ? { config: browserConfig } : {}),
+              runAttemptClaim: browserRunAttemptClaim,
             },
           }
-        : {}),
+        : browserConfig
+          ? {
+              browser: {
+                ...browserForStart,
+                config: browserConfig,
+              },
+            }
+          : localReattachClaim && !activeLocalReattachClaim
+            ? { browser: browserForStart }
+            : {}),
     };
   });
   if (startRefused) {
-    throw new RemoteBrowserRecoveryUnavailableError(
-      `Session ${sessionMeta.id} already has a terminal remote result or an active recovery completion writer; refusing a stale runner start.`,
+    const storedPreSubmitStartRefusal = classifyStoredRemotePreSubmitState(
+      startedSession ?? sessionMeta,
     );
+    if (storedPreSubmitStartRefusal) {
+      throw new BrowserAutomationError(
+        formatStoredRemotePreSubmitRecoveryBlock(sessionMeta.id, storedPreSubmitStartRefusal),
+        {
+          stage: "stored-pre-submit-terminal",
+          retryable: false,
+          diagnosticState: storedPreSubmitStartRefusal.kind,
+          ...(storedPreSubmitStartRefusal.kind === "malformed"
+            ? {}
+            : { preSubmitDiagnostic: storedPreSubmitStartRefusal.diagnostic }),
+        },
+      );
+    }
+    throw new RemoteBrowserRecoveryUnavailableError(
+      `Session ${sessionMeta.id} already has a terminal result or an active recovery completion writer; refusing a stale runner start.`,
+    );
+  }
+  if (
+    browserRunAttemptClaim &&
+    (!startedSession || !ownsBrowserRunAttempt(startedSession, browserRunAttemptClaim))
+  ) {
+    // Custom/injected stores may record the updater call without
+    // materializing it. Only enforce a lease that the store confirms was
+    // durably published; the file-backed production store always does.
+    browserRunAttemptClaim = null;
   }
   sessionMeta = startedSession ?? sessionMeta;
   let currentBrowser: SessionMetadata["browser"] = browserConfig
     ? { ...sessionMeta.browser, config: browserConfig }
     : sessionMeta.browser;
+  const updateOwnedOrdinaryBrowserAttempt = async (
+    updater: (current: SessionMetadata) => Partial<SessionMetadata>,
+  ): Promise<SessionMetadata> => {
+    if (!browserRunAttemptClaim) {
+      return await sessionStore.updateSession(sessionMeta.id, updater);
+    }
+    let applied = false;
+    let rejectedBrowser: SessionMetadata["browser"] = currentBrowser;
+    const persisted = await sessionStore.updateSession(sessionMeta.id, (current) => {
+      applied = false;
+      rejectedBrowser = current.browser;
+      if (!ordinaryBrowserRunAttemptCanMutate(current, browserRunAttemptClaim)) {
+        return {};
+      }
+      applied = true;
+      return updater(current);
+    });
+    if (!applied) {
+      throw new RemoteBrowserFailureSupersededError(
+        "A newer browser result, diagnostic, recovery writer, or run attempt superseded this ordinary browser runner.",
+        persisted?.browser ?? rejectedBrowser,
+      );
+    }
+    return persisted;
+  };
   // A bound digest may be written only after this process has durably cleared
   // the previous turn's digest for the current attempt. This makes a failed
   // follow-up submission incapable of inheriting recovery ownership from the
@@ -543,7 +1028,6 @@ export async function performSessionRun({
   let submittedPromptOwnershipInvalidated = false;
   const notificationSettings =
     notifications ?? deriveNotificationSettingsFromMetadata(sessionMeta, process.env);
-  const modelForStatus = runOptions.model ?? sessionMeta.model;
   try {
     if (mode === "claude-code") {
       if (modelForStatus) {
@@ -700,12 +1184,6 @@ export async function performSessionRun({
       if (!browserConfig) {
         throw new Error("Missing browser configuration for session.");
       }
-      if (modelForStatus) {
-        await sessionStore.updateModelRun(sessionMeta.id, modelForStatus, {
-          status: "running",
-          startedAt: new Date().toISOString(),
-        });
-      }
       if (
         await recoverSubmittedBrowserSessionBeforeFreshRun({
           sessionMeta,
@@ -715,6 +1193,7 @@ export async function performSessionRun({
           notificationSettings,
           log,
           deps: remoteRecoveryDeps,
+          runAttemptClaim: browserRunAttemptClaim,
         })
       ) {
         return;
@@ -731,8 +1210,7 @@ export async function performSessionRun({
             runtime,
             ...(modelSelection ? { modelSelection } : {}),
           };
-          const persisted = await sessionStore.updateSession(sessionMeta.id, (current) => ({
-            status: "running",
+          const persisted = await updateOwnedOrdinaryBrowserAttempt((current) => ({
             browser: {
               ...currentBrowser,
               ...current.browser,
@@ -761,7 +1239,7 @@ export async function performSessionRun({
           currentBrowser = browserWithoutDigest;
 
           if (!submittedPromptDomSha256) {
-            const persisted = await sessionStore.updateSession(sessionMeta.id, (current) => ({
+            const persisted = await updateOwnedOrdinaryBrowserAttempt((current) => ({
               browser: {
                 ...currentBrowser,
                 ...current.browser,
@@ -787,7 +1265,7 @@ export async function performSessionRun({
             submittedPromptDomSha256,
           };
           try {
-            const persisted = await sessionStore.updateSession(sessionMeta.id, (current) => ({
+            const persisted = await updateOwnedOrdinaryBrowserAttempt((current) => ({
               browser: {
                 ...currentBrowser,
                 ...current.browser,
@@ -799,6 +1277,9 @@ export async function performSessionRun({
             currentBrowser = persisted?.browser ?? browserWithDigest;
             submittedPromptOwnershipInvalidated = false;
           } catch (error) {
+            if (error instanceof RemoteBrowserFailureSupersededError) {
+              throw error;
+            }
             // The pre-dispatch invalidation is already durable, so continuing
             // the live capture is safe. Keep recovery disabled for this turn
             // instead of converting a successful ChatGPT submission into an
@@ -821,32 +1302,53 @@ export async function performSessionRun({
         },
         runnerDeps,
       );
-      if (modelForStatus) {
-        await sessionStore.updateModelRun(sessionMeta.id, modelForStatus, {
+      await updateOwnedOrdinaryBrowserAttempt((current) => {
+        const completedAt = new Date().toISOString();
+        return {
           status: "completed",
-          completedAt: new Date().toISOString(),
+          completedAt,
           usage: result.usage,
-        });
-      }
-      await sessionStore.updateSession(sessionMeta.id, {
-        status: "completed",
-        completedAt: new Date().toISOString(),
-        usage: result.usage,
-        elapsedMs: result.elapsedMs,
-        errorMessage: undefined,
-        browser: {
-          ...currentBrowser,
-          config: browserConfig,
-          runtime: result.runtime,
-          archive: result.archive,
-          modelSelection: result.modelSelection,
-          remoteRun: result.remoteRun,
-          warnings: result.warnings,
-        },
-        artifacts: mergeArtifacts(sessionMeta.artifacts, result.artifacts),
-        response: undefined,
-        transport: undefined,
-        error: undefined,
+          elapsedMs: result.elapsedMs,
+          errorMessage: undefined,
+          browser: browserRunAttemptClaim
+            ? stripBrowserRunAttemptClaim(
+                {
+                  ...current.browser,
+                  ...currentBrowser,
+                  config: browserConfig,
+                  runtime: result.runtime,
+                  archive: result.archive,
+                  modelSelection: result.modelSelection,
+                  remoteRun: result.remoteRun,
+                  warnings: result.warnings,
+                },
+                browserRunAttemptClaim.claimId,
+              )
+            : {
+                ...current.browser,
+                ...currentBrowser,
+                config: browserConfig,
+                runtime: result.runtime,
+                archive: result.archive,
+                modelSelection: result.modelSelection,
+                remoteRun: result.remoteRun,
+                warnings: result.warnings,
+              },
+          artifacts: mergeArtifacts(current.artifacts ?? sessionMeta.artifacts, result.artifacts),
+          ...(modelForStatus
+            ? {
+                models: completeBrowserModelRun(
+                  current.models,
+                  modelForStatus,
+                  completedAt,
+                  result.usage,
+                ),
+              }
+            : {}),
+          response: undefined,
+          transport: undefined,
+          error: undefined,
+        };
       });
       await writeAssistantOutput(runOptions.writeOutputPath, result.answerText ?? "", log);
       await sendSessionNotification(
@@ -1206,6 +1708,9 @@ export async function performSessionRun({
     const rawPendingRecoveryClaim = (
       remoteFailureDeps?.getPendingRecoveryClaim ?? getRemoteBrowserPendingRecoveryClaimFromError
     )(error);
+    const remotePromptSubmitObserved = (
+      remoteFailureDeps?.getPromptSubmitObserved ?? getRemoteBrowserPromptSubmitObservedFromError
+    )(error);
     // A single recovered answer cannot truthfully complete a multi-turn run:
     // prior captured turns are not yet durably checkpointed, and later
     // requested follow-ups may never have been submitted. Preserve only the
@@ -1260,6 +1765,7 @@ export async function performSessionRun({
           failedRoute: failedRemoteRoute,
           recoveryCarrier: remoteRecoveryCarrier,
           pendingRecoveryClaim,
+          runAttemptClaimId: browserRunAttemptClaim?.claimId,
         });
       } catch (storeError) {
         if (storeError instanceof RemoteBrowserFailureSupersededError) {
@@ -1295,15 +1801,117 @@ export async function performSessionRun({
     const cloudflareChallenge =
       userError?.category === "browser-automation" &&
       (userError.details as { stage?: string } | undefined)?.stage === "cloudflare-challenge";
+    const storedFailedRemoteRoute =
+      mode === "browser" &&
+      sessionMeta.browser?.remoteRun?.terminalDoneOk === false &&
+      typeof sessionMeta.browser.remoteRun.runId === "string" &&
+      sessionMeta.browser.remoteRun.runId.length > 0 &&
+      typeof sessionMeta.browser.remoteRun.accountId === "string" &&
+      sessionMeta.browser.remoteRun.accountId.length > 0
+        ? ({
+            ...sessionMeta.browser.remoteRun,
+            runId: sessionMeta.browser.remoteRun.runId,
+            accountId: sessionMeta.browser.remoteRun.accountId,
+            laneId: sessionMeta.browser.remoteRun.laneId ?? null,
+          } satisfies RemoteBrowserFailedRoute)
+        : null;
     const persistFailureSession = async (updates: Partial<SessionMetadata>): Promise<boolean> => {
-      if (!failedRemoteRoute) {
+      // Ordinary non-browser failures retain their historical direct write.
+      // Every browser failure needs a fresh-state CAS: a terminal diagnostic,
+      // completed run, or recovery writer may have landed after admission.
+      if (mode !== "browser" && !failedRemoteRoute && !storedFailedRemoteRoute) {
         await sessionStore.updateSession(sessionMeta.id, updates);
         return true;
       }
-      let applied = false;
+      // The store evaluates the updater at least once or throws. Each
+      // evaluation below overwrites this verdict from its freshest snapshot.
+      let applied = true;
+      let supersededSidecarRunId: string | null = null;
       await sessionStore.updateSession(sessionMeta.id, (current) => {
         // The updater may retry; the last invocation owns the verdict.
         applied = false;
+        supersededSidecarRunId = null;
+        if (
+          mode === "browser" &&
+          browserRunAttemptClaim &&
+          !ownsBrowserRunAttempt(current, browserRunAttemptClaim)
+        ) {
+          return {};
+        }
+        const localReattachClaim = current.browser?.localReattachCompletionClaim;
+        const activeLocalReattachClaim = hasActiveLocalReattachCompletionClaim(current);
+        if (mode === "browser" && activeLocalReattachClaim) {
+          return {};
+        }
+        const currentBrowserWithoutInactiveLocalClaim = localReattachClaim
+          ? stripLocalReattachCompletionClaim(current.browser)
+          : current.browser;
+        const terminalFailureUpdate =
+          updates.status !== undefined &&
+          updates.status !== "pending" &&
+          updates.status !== "running";
+        const finalizeAttemptBrowser = (
+          browser: SessionMetadata["browser"],
+        ): SessionMetadata["browser"] =>
+          terminalFailureUpdate && browserRunAttemptClaim
+            ? stripBrowserRunAttemptClaim(browser, browserRunAttemptClaim.claimId)
+            : browser;
+        if (mode === "browser" && storedRemoteFailureRecoveryIsBlocked(current)) {
+          const routeToStrip = failedRemoteRoute ?? storedFailedRemoteRoute;
+          if (routeToStrip && failedRemoteRouteMatches(current, routeToStrip)) {
+            supersededSidecarRunId = routeToStrip.runId;
+            const modelSuccess = hasStoredModelRunSuccessEvidence(current);
+            return {
+              browser: finalizeAttemptBrowser(
+                modelSuccess
+                  ? stripFailedRemoteRecoveryState(
+                      currentBrowserWithoutInactiveLocalClaim,
+                      routeToStrip,
+                    )
+                  : stripExecutableRemoteRecoveryState(
+                      currentBrowserWithoutInactiveLocalClaim,
+                      routeToStrip,
+                    ),
+              ),
+            };
+          }
+          return {};
+        }
+        if (!failedRemoteRoute) {
+          if (
+            current.status === "completed" ||
+            current.browser?.remoteRun?.terminalDoneOk === true ||
+            current.browser?.remoteRecoveryCompletionClaim ||
+            (storedFailedRemoteRoute && !failedRemoteRouteMatches(current, storedFailedRemoteRoute))
+          ) {
+            return {};
+          }
+          applied = true;
+          return {
+            ...updates,
+            ...(updates.browser
+              ? {
+                  browser: storedFailedRemoteRoute
+                    ? // A recovery/promotion helper retained this generation.
+                      // Preserve its complete browser snapshot.
+                      finalizeAttemptBrowser(
+                        currentBrowserWithoutInactiveLocalClaim ?? updates.browser,
+                      )
+                    : finalizeAttemptBrowser(
+                        stripLocalReattachCompletionClaim({
+                          // No remote generation was admitted. Retain concurrent
+                          // additive fields while persisting this attempt's
+                          // latest runtime and prompt-ownership evidence.
+                          ...currentBrowserWithoutInactiveLocalClaim,
+                          ...updates.browser,
+                        }),
+                      ),
+                }
+              : localReattachClaim || (terminalFailureUpdate && browserRunAttemptClaim)
+                ? { browser: finalizeAttemptBrowser(currentBrowserWithoutInactiveLocalClaim) }
+                : {}),
+          };
+        }
         if (
           current.status === "completed" ||
           current.browser?.remoteRun?.terminalDoneOk === true ||
@@ -1317,15 +1925,30 @@ export async function performSessionRun({
           ...updates,
           ...(updates.browser
             ? {
-                browser: {
-                  ...current.browser,
-                  ...updates.browser,
-                  remoteRun: failedRemoteRoute,
-                },
+                browser: finalizeAttemptBrowser(
+                  stripLocalReattachCompletionClaim({
+                    ...currentBrowserWithoutInactiveLocalClaim,
+                    ...updates.browser,
+                    remoteRun: failedRemoteRoute,
+                  }),
+                ),
               }
-            : {}),
+            : localReattachClaim || (terminalFailureUpdate && browserRunAttemptClaim)
+              ? { browser: finalizeAttemptBrowser(currentBrowserWithoutInactiveLocalClaim) }
+              : {}),
         };
       });
+      if (supersededSidecarRunId) {
+        await Promise.all([
+          (remoteFailureDeps?.deleteRecoverySecret ?? deleteRemoteBrowserRecoverySecret)(
+            sessionMeta.id,
+            supersededSidecarRunId,
+          ).catch(() => false),
+          (
+            remoteFailureDeps?.deletePendingRecoveryClaim ?? deleteRemoteBrowserPendingRecoveryClaim
+          )(sessionMeta.id, supersededSidecarRunId).catch(() => false),
+        ]);
+      }
       return applied;
     };
     const browserCanReattach = !browserConfig?.copyProfileSource;
@@ -1366,18 +1989,6 @@ export async function performSessionRun({
             "Chrome disconnected before a ChatGPT conversation was created; marking session error.",
           ),
         );
-        if (modelForStatus && !failedRemoteRoute) {
-          await sessionStore.updateModelRun(sessionMeta.id, modelForStatus, {
-            status: "error",
-            completedAt: new Date().toISOString(),
-            response: { status: "error", incompleteReason: "chrome-disconnected" },
-            error: {
-              category: userError.category,
-              message: userError.message,
-              details: userError.details,
-            },
-          });
-        }
         const failureApplied = await persistFailureSession({
           status: "error",
           completedAt: new Date().toISOString(),
@@ -1403,12 +2014,6 @@ export async function performSessionRun({
       failureLog(
         dim("Chrome disconnected before completion; keeping session running for reattach."),
       );
-      if (modelForStatus && !failedRemoteRoute) {
-        await sessionStore.updateModelRun(sessionMeta.id, modelForStatus, {
-          status: "running",
-          completedAt: undefined,
-        });
-      }
       const failureApplied = await persistFailureSession({
         status: "running",
         errorMessage: message,
@@ -1457,6 +2062,7 @@ export async function performSessionRun({
         notificationSettings,
         log,
         maxAttempts: configuredIntervalMs > 0 ? undefined : 1,
+        runAttemptClaim: browserRunAttemptClaim,
       });
       if (success) {
         return;
@@ -1467,18 +2073,6 @@ export async function performSessionRun({
       const runtime = (userError.details as { runtime?: BrowserRuntimeMetadata } | undefined)
         ?.runtime;
       failureLog(dim("Assistant response timed out; marking capture incomplete for reattach."));
-      if (modelForStatus && !failedRemoteRoute) {
-        await sessionStore.updateModelRun(sessionMeta.id, modelForStatus, {
-          status: "error",
-          completedAt: new Date().toISOString(),
-          response: { status: "incomplete", incompleteReason: "incomplete-capture" },
-          error: {
-            category: userError.category,
-            message: userError.message,
-            details: userError.details,
-          },
-        });
-      }
       const failureApplied = await persistFailureSession({
         status: "error",
         completedAt: new Date().toISOString(),
@@ -1512,6 +2106,7 @@ export async function performSessionRun({
           modelForStatus,
           notificationSettings,
           log,
+          runAttemptClaim: browserRunAttemptClaim,
         });
         if (success) {
           return;
@@ -1569,7 +2164,12 @@ export async function performSessionRun({
               errorClass: error.errorClass,
               retryable: error.retryable,
               ...(error.preSubmitDiagnostic
-                ? { preSubmitDiagnostic: error.preSubmitDiagnostic }
+                ? {
+                    preSubmitDiagnostic: error.preSubmitDiagnostic,
+                    ...(remotePromptSubmitObserved
+                      ? { runtime: { promptSubmitted: true as const } }
+                      : {}),
+                  }
                 : {}),
             },
           }
@@ -1599,13 +2199,23 @@ export async function performSessionRun({
     });
     if (!failureApplied) return;
     flushFailureLogs();
-    if (modelForStatus && !failedRemoteRoute) {
+    if (mode !== "browser" && modelForStatus && !failedRemoteRoute) {
       await sessionStore.updateModelRun(sessionMeta.id, modelForStatus, {
         status: "error",
         completedAt: new Date().toISOString(),
       });
     }
     throw error;
+  } finally {
+    if (browserRunAttemptClaim) {
+      await releaseBrowserRunAttempt(sessionMeta.id, browserRunAttemptClaim).catch((error) => {
+        log(
+          dim(
+            `Could not release browser run-attempt ownership (${error instanceof Error ? error.message : String(error)}).`,
+          ),
+        );
+      });
+    }
   }
 }
 
@@ -1638,6 +2248,7 @@ async function recoverSubmittedBrowserSessionBeforeFreshRun({
   notificationSettings,
   log,
   deps,
+  runAttemptClaim,
 }: {
   sessionMeta: SessionMetadata;
   browserConfig: BrowserSessionConfig;
@@ -1646,7 +2257,22 @@ async function recoverSubmittedBrowserSessionBeforeFreshRun({
   notificationSettings: NotificationSettings;
   log: (message?: string) => void;
   deps?: SessionRunParams["remoteRecoveryDeps"];
+  runAttemptClaim?: BrowserRunAttemptClaim | null;
 }): Promise<boolean> {
+  const storedPreSubmitState = classifyStoredRemotePreSubmitState(sessionMeta);
+  if (storedPreSubmitState) {
+    throw new BrowserAutomationError(
+      formatStoredRemotePreSubmitRecoveryBlock(sessionMeta.id, storedPreSubmitState),
+      {
+        stage: "stored-pre-submit-terminal",
+        retryable: false,
+        diagnosticState: storedPreSubmitState.kind,
+        ...(storedPreSubmitState.kind === "malformed"
+          ? {}
+          : { preSubmitDiagnostic: storedPreSubmitState.diagnostic }),
+      },
+    );
+  }
   let remoteOrigin = isFailedRemoteBrowserOrigin(sessionMeta);
   if (remoteOrigin && !sessionMeta.browser?.remoteRecovery) {
     const promoted = await (deps?.promotePending ?? promotePendingRemoteBrowserRecoveryClaim)(
@@ -1655,6 +2281,20 @@ async function recoverSubmittedBrowserSessionBeforeFreshRun({
     );
     if (promoted) {
       sessionMeta = promoted;
+      const promotedPreSubmitState = classifyStoredRemotePreSubmitState(sessionMeta);
+      if (promotedPreSubmitState) {
+        throw new BrowserAutomationError(
+          formatStoredRemotePreSubmitRecoveryBlock(sessionMeta.id, promotedPreSubmitState),
+          {
+            stage: "stored-pre-submit-terminal",
+            retryable: false,
+            diagnosticState: promotedPreSubmitState.kind,
+            ...(promotedPreSubmitState.kind === "malformed"
+              ? {}
+              : { preSubmitDiagnostic: promotedPreSubmitState.diagnostic }),
+          },
+        );
+      }
       remoteOrigin = isFailedRemoteBrowserOrigin(sessionMeta);
     }
   }
@@ -1735,6 +2375,7 @@ async function recoverSubmittedBrowserSessionBeforeFreshRun({
   logger.verbose = true;
   const attemptedOriginRunId = sessionMeta.browser?.remoteRecovery?.originRunId;
   let completionClaim: Awaited<ReturnType<typeof claimRemoteBrowserRecoveryCompletion>> = null;
+  let localCompletionClaim: BrowserLocalReattachCompletionClaim | null = null;
   let recoveryCommitted = false;
 
   try {
@@ -1742,10 +2383,21 @@ async function recoverSubmittedBrowserSessionBeforeFreshRun({
       completionClaim = await (deps?.claim ?? claimRemoteBrowserRecoveryCompletion)(
         sessionMeta.id,
         attemptedOriginRunId,
+        { ownedRunAttemptClaimId: runAttemptClaim?.claimId },
       );
       if (!completionClaim) {
         throw new RemoteBrowserRecoveryUnavailableError(
           "A newer remote recovery attempt or another completion writer owns this session; refusing a stale recovery dispatch.",
+        );
+      }
+    } else {
+      localCompletionClaim = await claimFreshLocalBrowserReattachCompletion(
+        sessionMeta,
+        runAttemptClaim?.claimId,
+      );
+      if (!localCompletionClaim) {
+        throw new RemoteBrowserRecoveryUnavailableError(
+          "A newer local reattach attempt or browser generation owns this session; refusing stale capture.",
         );
       }
     }
@@ -1762,6 +2414,12 @@ async function recoverSubmittedBrowserSessionBeforeFreshRun({
           promptDomSha256: sessionMeta.browser?.submittedPromptDomSha256,
           requirePromptPreviewMatch: true,
         });
+    if (completionClaim) {
+      await assertRemoteRecoveryCompletionOwnership(sessionMeta.id, completionClaim);
+    }
+    if (localCompletionClaim) {
+      await assertLocalBrowserReattachCompletionOwnership(sessionMeta.id, localCompletionClaim);
+    }
     const remoteResult = hasRemoteRecovery ? (result as BrowserRunResult) : undefined;
     const recoveredTabUrl = remoteResult?.tabUrl;
     const recoveredConversationId = remoteResult?.conversationId;
@@ -1786,36 +2444,47 @@ async function recoverSubmittedBrowserSessionBeforeFreshRun({
           browserConfig,
           existingArtifacts: sessionMeta.artifacts,
           logger,
+          requireFreshTranscript: true,
         });
-    const logWriter = sessionStore.createLogWriter(sessionMeta.id);
-    logWriter.logLine(
-      "[submitted-session-recovery] captured assistant response without resubmitting",
-    );
-    logWriter.logLine("Answer:");
-    logWriter.logLine(answerText);
-    await endRecoveryLogStream(logWriter.stream);
+    if (completionClaim) {
+      await assertRemoteRecoveryCompletionOwnership(sessionMeta.id, completionClaim);
+    }
+    if (localCompletionClaim) {
+      await assertLocalBrowserReattachCompletionOwnership(sessionMeta.id, localCompletionClaim);
+    }
     const usage = {
       inputTokens: 0,
       outputTokens,
       reasoningTokens: 0,
       totalTokens: outputTokens,
     };
-    let completionApplied = !completionClaim;
+    let completionApplied = false;
     try {
       await sessionStore.updateSession(sessionMeta.id, (current) => {
         completionApplied = false;
         if (completionClaim && !ownsRemoteBrowserRecoveryCompletion(current, completionClaim)) {
           return {};
         }
+        if (
+          localCompletionClaim &&
+          !ownsLocalBrowserReattachCompletion(current, localCompletionClaim)
+        ) {
+          return {};
+        }
+        const completedAt = new Date().toISOString();
         const {
           remoteRecovery: _remoteRecovery,
           remoteRecoveryCompletionClaim: _completionClaim,
-          ...freshBrowser
+          localReattachCompletionClaim: _localCompletionClaim,
+          ...browserWithoutCompletionClaims
         } = current.browser ?? sessionMeta.browser ?? {};
+        const freshBrowser = runAttemptClaim
+          ? stripBrowserRunAttemptClaim(browserWithoutCompletionClaims, runAttemptClaim.claimId)
+          : browserWithoutCompletionClaims;
         completionApplied = true;
         return {
           status: "completed",
-          completedAt: new Date().toISOString(),
+          completedAt,
           usage,
           errorMessage: undefined,
           browser: {
@@ -1830,6 +2499,11 @@ async function recoverSubmittedBrowserSessionBeforeFreshRun({
             remoteRun: recoveredRemoteRun,
           },
           artifacts: mergeArtifacts(current.artifacts ?? sessionMeta.artifacts, artifacts),
+          ...(modelForStatus
+            ? {
+                models: completeBrowserModelRun(current.models, modelForStatus, completedAt, usage),
+              }
+            : {}),
           response: { status: "completed" },
           error: undefined,
           transport: undefined,
@@ -1840,7 +2514,7 @@ async function recoverSubmittedBrowserSessionBeforeFreshRun({
           "Recovery completion ownership changed before finalization; refusing a stale success commit.",
         );
       }
-      recoveryCommitted = Boolean(completionClaim);
+      recoveryCommitted = true;
     } catch (error) {
       const persisted = completionClaim
         ? await sessionStore.readSession(sessionMeta.id).catch(() => null)
@@ -1853,13 +2527,13 @@ async function recoverSubmittedBrowserSessionBeforeFreshRun({
       }
       recoveryCommitted = true;
     }
-    if (modelForStatus && !hasRemoteRecovery) {
-      await sessionStore.updateModelRun(sessionMeta.id, modelForStatus, {
-        status: "completed",
-        completedAt: new Date().toISOString(),
-        usage,
-      });
-    }
+    const logWriter = sessionStore.createLogWriter(sessionMeta.id);
+    logWriter.logLine(
+      "[submitted-session-recovery] captured assistant response without resubmitting",
+    );
+    logWriter.logLine("Answer:");
+    logWriter.logLine(answerText);
+    await endRecoveryLogStream(logWriter.stream);
     if (hasRemoteRecovery) {
       try {
         await (deps?.deleteSecret ?? deleteRemoteBrowserRecoverySecret)(
@@ -1939,6 +2613,11 @@ async function recoverSubmittedBrowserSessionBeforeFreshRun({
         sessionMeta.id,
         completionClaim,
       ).catch(() => undefined);
+    }
+    if (localCompletionClaim && !recoveryCommitted) {
+      await releaseLocalBrowserReattachCompletion(sessionMeta.id, localCompletionClaim).catch(
+        () => undefined,
+      );
     }
     const message = error instanceof Error ? error.message : String(error);
     throw new BrowserAutomationError(
@@ -3974,6 +4653,7 @@ async function autoReattachUntilComplete({
   notificationSettings,
   log,
   maxAttempts,
+  runAttemptClaim,
 }: {
   sessionMeta: SessionMetadata;
   runtime?: BrowserRuntimeMetadata;
@@ -3984,7 +4664,14 @@ async function autoReattachUntilComplete({
   notificationSettings: NotificationSettings;
   log: (message?: string) => void;
   maxAttempts?: number;
+  runAttemptClaim?: BrowserRunAttemptClaim | null;
 }): Promise<boolean> {
+  const remoteMetadata = { ...sessionMeta, browser: browserMetadata };
+  const storedPreSubmitState = classifyStoredRemotePreSubmitState(remoteMetadata);
+  if (storedPreSubmitState) {
+    log(dim(formatStoredRemotePreSubmitRecoveryBlock(sessionMeta.id, storedPreSubmitState)));
+    return false;
+  }
   if ((runOptions.browserFollowUps?.length ?? 0) > 0) {
     log(
       dim(
@@ -3993,7 +4680,6 @@ async function autoReattachUntilComplete({
     );
     return false;
   }
-  const remoteMetadata = { ...sessionMeta, browser: browserMetadata };
   const remoteOrigin = isFailedRemoteBrowserOrigin(remoteMetadata);
   const hasRemoteRecovery = Boolean(browserMetadata?.remoteRecovery);
   const attemptedOriginRunId = browserMetadata?.remoteRecovery?.originRunId;
@@ -4058,6 +4744,7 @@ async function autoReattachUntilComplete({
     attempt += 1;
     log(dim(`Auto-reattach attempt ${attempt}...`));
     let completionClaim: Awaited<ReturnType<typeof claimRemoteBrowserRecoveryCompletion>> = null;
+    let localCompletionClaim: BrowserLocalReattachCompletionClaim | null = null;
     let recoveryCommitted = false;
     try {
       const attemptTimeoutMs = Math.max(1, Math.min(timeoutMs, remainingBudgetMs));
@@ -4075,10 +4762,21 @@ async function autoReattachUntilComplete({
           completionClaim = await claimRemoteBrowserRecoveryCompletion(
             sessionMeta.id,
             attemptedOriginRunId,
+            { ownedRunAttemptClaimId: runAttemptClaim?.claimId },
           );
           if (!completionClaim) {
             throw new RemoteBrowserRecoveryUnavailableError(
               "A newer remote recovery attempt or another completion writer owns this session; refusing a stale recovery dispatch.",
+            );
+          }
+        } else {
+          localCompletionClaim = await claimFreshLocalBrowserReattachCompletion(
+            remoteMetadata,
+            runAttemptClaim?.claimId,
+          );
+          if (!localCompletionClaim) {
+            throw new RemoteBrowserRecoveryUnavailableError(
+              "A newer local reattach attempt or browser generation owns this session; refusing stale capture.",
             );
           }
         }
@@ -4099,6 +4797,12 @@ async function autoReattachUntilComplete({
             });
       } finally {
         if (attemptTimer) clearTimeout(attemptTimer);
+      }
+      if (completionClaim) {
+        await assertRemoteRecoveryCompletionOwnership(sessionMeta.id, completionClaim);
+      }
+      if (localCompletionClaim) {
+        await assertLocalBrowserReattachCompletionOwnership(sessionMeta.id, localCompletionClaim);
       }
       const remoteResult = hasRemoteRecovery ? (result as BrowserRunResult) : undefined;
       const recoveredTabUrl = remoteResult?.tabUrl;
@@ -4124,34 +4828,48 @@ async function autoReattachUntilComplete({
             browserConfig,
             existingArtifacts: sessionMeta.artifacts,
             logger,
+            requireFreshTranscript: true,
           });
-      const logWriter = sessionStore.createLogWriter(sessionMeta.id);
-      logWriter.logLine(`[auto-reattach] captured assistant response on attempt ${attempt}`);
-      logWriter.logLine("Answer:");
-      logWriter.logLine(answerText);
-      await endRecoveryLogStream(logWriter.stream);
-      let completionApplied = !completionClaim;
+      if (completionClaim) {
+        await assertRemoteRecoveryCompletionOwnership(sessionMeta.id, completionClaim);
+      }
+      if (localCompletionClaim) {
+        await assertLocalBrowserReattachCompletionOwnership(sessionMeta.id, localCompletionClaim);
+      }
+      const usage = {
+        inputTokens: 0,
+        outputTokens,
+        reasoningTokens: 0,
+        totalTokens: outputTokens,
+      };
+      let completionApplied = false;
       try {
         await sessionStore.updateSession(sessionMeta.id, (current) => {
           completionApplied = false;
           if (completionClaim && !ownsRemoteBrowserRecoveryCompletion(current, completionClaim)) {
             return {};
           }
+          if (
+            localCompletionClaim &&
+            !ownsLocalBrowserReattachCompletion(current, localCompletionClaim)
+          ) {
+            return {};
+          }
+          const completedAt = new Date().toISOString();
           const {
             remoteRecovery: _remoteRecovery,
             remoteRecoveryCompletionClaim: _completionClaim,
-            ...completedBrowserMetadata
+            localReattachCompletionClaim: _localCompletionClaim,
+            ...browserWithoutCompletionClaims
           } = current.browser ?? browserMetadata ?? {};
+          const completedBrowserMetadata = runAttemptClaim
+            ? stripBrowserRunAttemptClaim(browserWithoutCompletionClaims, runAttemptClaim.claimId)
+            : browserWithoutCompletionClaims;
           completionApplied = true;
           return {
             status: "completed",
-            completedAt: new Date().toISOString(),
-            usage: {
-              inputTokens: 0,
-              outputTokens,
-              reasoningTokens: 0,
-              totalTokens: outputTokens,
-            },
+            completedAt,
+            usage,
             errorMessage: undefined,
             browser: {
               ...completedBrowserMetadata,
@@ -4165,6 +4883,16 @@ async function autoReattachUntilComplete({
               remoteRun: recoveredRemoteRun,
             },
             artifacts: mergeArtifacts(current.artifacts ?? sessionMeta.artifacts, artifacts),
+            ...(modelForStatus
+              ? {
+                  models: completeBrowserModelRun(
+                    current.models,
+                    modelForStatus,
+                    completedAt,
+                    usage,
+                  ),
+                }
+              : {}),
             response: { status: "completed" },
             error: undefined,
             transport: undefined,
@@ -4175,7 +4903,7 @@ async function autoReattachUntilComplete({
             "Recovery completion ownership changed before finalization; refusing a stale success commit.",
           );
         }
-        recoveryCommitted = Boolean(completionClaim);
+        recoveryCommitted = true;
       } catch (error) {
         const persisted = completionClaim
           ? await sessionStore.readSession(sessionMeta.id).catch(() => null)
@@ -4188,18 +4916,11 @@ async function autoReattachUntilComplete({
         }
         recoveryCommitted = true;
       }
-      if (modelForStatus && !hasRemoteRecovery) {
-        await sessionStore.updateModelRun(sessionMeta.id, modelForStatus, {
-          status: "completed",
-          completedAt: new Date().toISOString(),
-          usage: {
-            inputTokens: 0,
-            outputTokens,
-            reasoningTokens: 0,
-            totalTokens: outputTokens,
-          },
-        });
-      }
+      const logWriter = sessionStore.createLogWriter(sessionMeta.id);
+      logWriter.logLine(`[auto-reattach] captured assistant response on attempt ${attempt}`);
+      logWriter.logLine("Answer:");
+      logWriter.logLine(answerText);
+      await endRecoveryLogStream(logWriter.stream);
       if (hasRemoteRecovery) {
         try {
           await deleteRemoteBrowserRecoverySecret(sessionMeta.id, attemptedOriginRunId);
@@ -4278,6 +4999,11 @@ async function autoReattachUntilComplete({
       }
       if (completionClaim && !recoveryCommitted) {
         await releaseRemoteBrowserRecoveryCompletion(sessionMeta.id, completionClaim).catch(
+          () => undefined,
+        );
+      }
+      if (localCompletionClaim && !recoveryCommitted) {
+        await releaseLocalBrowserReattachCompletion(sessionMeta.id, localCompletionClaim).catch(
           () => undefined,
         );
       }

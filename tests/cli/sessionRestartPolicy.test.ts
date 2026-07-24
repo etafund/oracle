@@ -67,6 +67,22 @@ describe("evaluateBrowserRestart", () => {
     ).toEqual({ allowed: false, reason: "not-proven-pre-submit" });
   });
 
+  test("refuses restart when any stored pre-submit diagnostic envelope is present", () => {
+    expect(
+      evaluateBrowserRestart(
+        browserSession({
+          error: {
+            details: {
+              retryable: true,
+              errorClass: "transport_interrupted_before_submit",
+              preSubmitDiagnostic: { malformed: true },
+            },
+          },
+        }),
+      ),
+    ).toEqual({ allowed: false, reason: "not-proven-pre-submit" });
+  });
+
   test("does not constrain API restart policy", () => {
     expect(
       evaluateBrowserRestart({

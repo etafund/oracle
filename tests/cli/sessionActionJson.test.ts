@@ -7,6 +7,8 @@
 // tests/cli/sessionListJson.test.ts.
 
 import { execFile } from "node:child_process";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -24,6 +26,7 @@ import {
   V18_BUNDLE_VERSION,
   jsonEnvelopeSchema,
 } from "../../src/oracle/v18/index.ts";
+import { buildRemoteBrowserPreSubmitDiagnostic } from "../../src/remote/types.ts";
 
 const execFileAsync = promisify(execFile);
 const CLI_ENTRYPOINT = path.join(process.cwd(), "bin", "oracle-cli.ts");
@@ -165,5 +168,87 @@ describe("oracle restart/follow-up --json — CLI wiring", () => {
     expect(envelope.errors[0].message).toContain("No session found with ID not-a-real-session-id");
     // Human diagnostics stay on stderr; stdout stays pure JSON.
     expect(stderr).toContain("No session found with ID not-a-real-session-id");
+  }, 60_000);
+
+  test("restart reports terminal pre-submit state without suggesting recovery or account history", async () => {
+    const oracleHome = await mkdtemp(path.join(os.tmpdir(), "oracle-restart-pre-submit-"));
+    const sessionId = "remote-pre-submit-restart";
+    const sessionDir = path.join(oracleHome, "sessions", sessionId);
+    const diagnostic = buildRemoteBrowserPreSubmitDiagnostic({
+      stage: "model-selection",
+      code: "protected-route-changed-after-preflight",
+      guardReason: "exact-prompt-changed",
+      exactPromptVerified: false,
+      attachmentStateVerified: true,
+      focusVerified: true,
+      exactReadVerified: true,
+      selectionRestored: true,
+      focusPreserved: true,
+    });
+    if (!diagnostic) throw new Error("failed to build pre-submit diagnostic fixture");
+
+    try {
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(
+        path.join(sessionDir, "meta.json"),
+        JSON.stringify({
+          id: sessionId,
+          createdAt: "2026-07-24T00:00:00.000Z",
+          status: "error",
+          mode: "browser",
+          options: {
+            prompt: "review this",
+            mode: "browser",
+            browserConfig: { url: "https://chatgpt.com/" },
+          },
+          browser: {
+            remoteRun: {
+              runId: "remote-pre-submit-run",
+              accountId: "acct1",
+              laneId: "acct1-9473",
+              terminalDoneOk: false,
+              provenance: null,
+            },
+          },
+          error: {
+            category: "browser-automation",
+            message: "Protected browser pre-submit integrity proof failed.",
+            details: {
+              stage: "remote-run",
+              errorClass: "integrity_ui_unknown",
+              retryable: false,
+              preSubmitDiagnostic: diagnostic,
+            },
+          },
+        }),
+      );
+
+      let stdout = "";
+      let stderr = "";
+      try {
+        const result = await execFileAsync(
+          process.execPath,
+          ["--import", "tsx", CLI_ENTRYPOINT, "restart", sessionId, "--json"],
+          {
+            timeout: 60_000,
+            env: { ...process.env, NO_COLOR: "1", ORACLE_HOME_DIR: oracleHome },
+          },
+        );
+        stdout = result.stdout;
+        stderr = result.stderr;
+        expect.unreachable("restart of a terminal pre-submit session must exit non-zero");
+      } catch (error) {
+        const failure = error as { stdout?: string; stderr?: string };
+        stdout = failure.stdout ?? "";
+        stderr = failure.stderr ?? "";
+      }
+
+      const envelope = JSON.parse(stdout);
+      expect(envelope.ok).toBe(false);
+      expect(envelope.errors[0].message).toMatch(/validated pre-submit.*no prompt was submitted/i);
+      expect(`${stdout}\n${stderr}`).not.toMatch(/account.*history|recover.*--render/i);
+    } finally {
+      await rm(oracleHome, { recursive: true, force: true });
+    }
   }, 60_000);
 });

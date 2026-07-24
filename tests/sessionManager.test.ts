@@ -380,6 +380,171 @@ describe("session lifecycle", () => {
     },
   );
 
+  test("terminal browser projection clears stale in-flight fields and carries authoritative usage", async () => {
+    const meta = await sessionModule.initializeSession(
+      { prompt: "Browser completion", model: "gpt-5.2-pro", mode: "browser" },
+      "/tmp/cwd",
+    );
+    await sessionModule.updateModelRunMetadata(meta.id, "gpt-5.2-pro", {
+      status: "running",
+      startedAt: "2026-07-24T00:00:00.000Z",
+      completedAt: "2026-07-23T00:00:00.000Z",
+      usage: {
+        inputTokens: 99,
+        outputTokens: 99,
+        reasoningTokens: 99,
+        totalTokens: 297,
+      },
+      response: { status: "error", requestId: "stale-request" },
+      transport: { reason: "connection-lost" },
+      error: { category: "browser-automation", message: "stale error" },
+    });
+
+    const completedAt = "2026-07-24T00:05:00.000Z";
+    const usage = {
+      inputTokens: 10,
+      outputTokens: 20,
+      reasoningTokens: 5,
+      totalTokens: 35,
+    };
+    await sessionModule.updateSessionMetadata(meta.id, {
+      status: "completed",
+      completedAt,
+      usage,
+      response: { status: "completed", requestId: "fresh-request" },
+      error: undefined,
+      transport: undefined,
+    });
+
+    const updated = await sessionModule.readSessionMetadata(meta.id);
+    expect(updated?.models?.[0]).toEqual(
+      expect.objectContaining({
+        model: "gpt-5.2-pro",
+        status: "completed",
+        completedAt,
+        usage,
+        response: { status: "completed", requestId: "fresh-request" },
+      }),
+    );
+    expect(updated?.models?.[0]?.error).toBeUndefined();
+    expect(updated?.models?.[0]?.transport).toBeUndefined();
+  });
+
+  test("a partial completed model patch preserves response identity already projected by the session", async () => {
+    const meta = await sessionModule.initializeSession(
+      { prompt: "API completion", model: "gpt-5.2-pro" },
+      "/tmp/cwd",
+    );
+    await sessionModule.updateModelRunMetadata(meta.id, "gpt-5.2-pro", {
+      status: "running",
+    });
+    await sessionModule.updateSessionMetadata(meta.id, {
+      status: "completed",
+      completedAt: "2026-07-24T00:05:00.000Z",
+      response: { status: "completed", id: "response-id", requestId: "request-id" },
+    });
+    await sessionModule.updateModelRunMetadata(meta.id, "gpt-5.2-pro", {
+      status: "completed",
+      usage: {
+        inputTokens: 1,
+        outputTokens: 2,
+        reasoningTokens: 0,
+        totalTokens: 3,
+      },
+    });
+
+    const updated = await sessionModule.readModelRunMetadata(meta.id, "gpt-5.2-pro");
+    expect(updated?.response).toEqual({
+      status: "completed",
+      id: "response-id",
+      requestId: "request-id",
+    });
+  });
+
+  test("updateSessionMetadata rejects attempts to redirect persistence through a different id", async () => {
+    const meta = await sessionModule.initializeSession(
+      { prompt: "Immutable id", model: "gpt-5.2-pro" },
+      "/tmp/cwd",
+    );
+    await expect(
+      sessionModule.updateSessionMetadata(meta.id, { id: "different-session" }),
+    ).rejects.toThrow(/immutable id/i);
+    await expect(sessionModule.readSessionMetadata(meta.id)).resolves.toMatchObject({
+      id: meta.id,
+    });
+    await expect(sessionModule.readSessionMetadata("different-session")).resolves.toBeNull();
+  });
+
+  test("stable malformed model JSON makes every metadata writer fail closed without changing bytes", async () => {
+    const meta = await sessionModule.initializeSession(
+      { prompt: "Malformed model", model: "gpt-5.2-pro" },
+      "/tmp/cwd",
+    );
+    const baseDir = path.join(sessionModule.getSessionsDir(), meta.id);
+    const metadataPath = path.join(baseDir, "meta.json");
+    const modelPath = path.join(baseDir, "models", "gpt-5.2-pro.json");
+    const metadataBefore = await readFile(metadataPath, "utf8");
+    const malformedModel = '{"model":"gpt-5.2-pro","status":';
+    await writeFile(modelPath, malformedModel, "utf8");
+
+    await expect(
+      sessionModule.updateSessionMetadata(meta.id, { promptPreview: "must-not-land" }),
+    ).rejects.toThrow(/malformed model metadata/i);
+    await expect(
+      sessionModule.updateModelRunMetadata(meta.id, "gpt-5.2-pro", {
+        status: "running",
+      }),
+    ).rejects.toThrow(/malformed model metadata/i);
+
+    expect(await readFile(metadataPath, "utf8")).toBe(metadataBefore);
+    expect(await readFile(modelPath, "utf8")).toBe(malformedModel);
+  });
+
+  test.each(["session-id", "model-identity"] as const)(
+    "strict writer reads reject a mismatched on-disk %s without cross-target persistence",
+    async (mismatch) => {
+      const meta = await sessionModule.initializeSession(
+        { prompt: "Mismatched identity", model: "gpt-5.2-pro" },
+        "/tmp/cwd",
+      );
+      const baseDir = path.join(sessionModule.getSessionsDir(), meta.id);
+      const metadataPath = path.join(baseDir, "meta.json");
+      const modelPath = path.join(baseDir, "models", "gpt-5.2-pro.json");
+      if (mismatch === "session-id") {
+        const stored = await readJsonFixture<StoredSessionJson>(metadataPath);
+        await writeFile(
+          metadataPath,
+          JSON.stringify({ ...stored, id: "different-on-disk-session" }, null, 2),
+          "utf8",
+        );
+      } else {
+        const stored = await readJsonFixture<Record<string, unknown>>(modelPath);
+        await writeFile(
+          modelPath,
+          JSON.stringify({ ...stored, model: "different-model" }, null, 2),
+          "utf8",
+        );
+      }
+      const metadataBefore = await readFile(metadataPath, "utf8");
+      const modelBefore = await readFile(modelPath, "utf8");
+
+      await expect(
+        sessionModule.updateSessionMetadata(meta.id, { promptPreview: "must-not-land" }),
+      ).rejects.toThrow(/different session|different model|identifies model|does not match/i);
+      await expect(
+        sessionModule.updateModelRunMetadata(meta.id, "gpt-5.2-pro", {
+          status: "running",
+        }),
+      ).rejects.toThrow(/different session|different model|identifies model|does not match/i);
+
+      expect(await readFile(metadataPath, "utf8")).toBe(metadataBefore);
+      expect(await readFile(modelPath, "utf8")).toBe(modelBefore);
+      await expect(
+        sessionModule.readSessionMetadata("different-on-disk-session"),
+      ).resolves.toBeNull();
+    },
+  );
+
   test("createSessionLogWriter appends logs and supports chunk writes", async () => {
     const meta = await sessionModule.initializeSession(
       { prompt: "Log history", model: "gpt-5.2-pro" },
@@ -521,6 +686,60 @@ describe("session lifecycle", () => {
     const refreshed = await sessionModule.readSessionMetadata(meta.id);
     expect(refreshed?.status).toBe("running");
   });
+
+  test.each(["local", "remote"] as const)(
+    "keeps a dead-runtime browser session running while a live %s completion owner holds it",
+    async (claimKind) => {
+      const meta = await sessionModule.initializeSession(
+        { prompt: "Browser completion owner", model: "gpt-5.2-pro", mode: "browser" },
+        "/tmp/cwd",
+      );
+      const staleStarted = new Date(
+        Date.now() - sessionModule.ZOMBIE_MAX_AGE_MS - 60_000,
+      ).toISOString();
+      await sessionModule.updateSessionMetadata(meta.id, {
+        status: "running",
+        startedAt: staleStarted,
+        mode: "browser",
+        browser: {
+          runtime: {
+            chromePid: 999999,
+            chromePort: 1,
+            chromeHost: "127.0.0.1",
+          },
+          ...(claimKind === "local"
+            ? {
+                localReattachCompletionClaim: {
+                  schema: "local-browser-reattach-completion-claim.v1",
+                  claimId: "live-local-owner",
+                  originGenerationSha256: "a".repeat(64),
+                  claimedAt: new Date().toISOString(),
+                  ownerPid: process.pid,
+                },
+              }
+            : {
+                remoteRecoveryCompletionClaim: {
+                  schema: "remote-browser-recovery-completion-claim.v1",
+                  originRunId: "remote-origin",
+                  claimId: "live-remote-owner",
+                  claimedAt: new Date().toISOString(),
+                  ownerPid: process.pid,
+                },
+              }),
+        },
+      });
+
+      await expect(sessionModule.readSessionMetadata(meta.id)).resolves.toMatchObject({
+        status: "running",
+      });
+      const listed = await sessionModule.listSessionsMetadata();
+      expect(listed.find((entry) => entry.id === meta.id)?.status).toBe("running");
+      const raw = await readJsonFixture<StoredSessionJson>(
+        path.join(sessionModule.getSessionsDir(), meta.id, "meta.json"),
+      );
+      expect(raw.status).toBe("running");
+    },
+  );
 
   test("marks running browser sessions as error when Chrome runtime is gone", async () => {
     const meta = await sessionModule.initializeSession(

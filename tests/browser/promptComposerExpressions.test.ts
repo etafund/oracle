@@ -238,9 +238,10 @@ class FakeElement extends FakeEventTarget {
     this.focusHandler?.();
   }
 
-  dispatchEvent(event: { type?: string }): boolean {
+  dispatchEvent(event: { type?: string; options?: Record<string, unknown> }): boolean {
     if (event.type === "click") this.click();
     if (event.type === "pointerover") this.hoverHandler?.();
+    if (event.type === "keydown") this.ownerDocument?.dispatchKeydown(event, this);
     return true;
   }
 
@@ -422,6 +423,12 @@ class FakeDocument extends FakeEventTarget {
   readonly documentElement: FakeElement;
   activeElement: FakeElement | null;
   private hitTarget: FakeElement | null = null;
+  private keydownHandler:
+    | ((
+        event: { type?: string; options?: Record<string, unknown> },
+        target: FakeElement | FakeDocument,
+      ) => void)
+    | null = null;
   private readonly selection: FakeSelection;
 
   constructor(children: FakeElement[]) {
@@ -477,6 +484,27 @@ class FakeDocument extends FakeEventTarget {
 
   setActiveElement(target: FakeElement | null): void {
     this.activeElement = target;
+  }
+
+  setKeydownHandler(
+    handler: (
+      event: { type?: string; options?: Record<string, unknown> },
+      target: FakeElement | FakeDocument,
+    ) => void,
+  ): void {
+    this.keydownHandler = handler;
+  }
+
+  dispatchKeydown(
+    event: { type?: string; options?: Record<string, unknown> },
+    target: FakeElement | FakeDocument,
+  ): void {
+    this.keydownHandler?.(event, target);
+  }
+
+  dispatchEvent(event: { type?: string; options?: Record<string, unknown> }): boolean {
+    if (event.type === "keydown") this.dispatchKeydown(event, this);
+    return true;
   }
 }
 
@@ -1548,6 +1576,9 @@ interface PublicRouteFixtureOptions {
   composerBindingToken?: string;
   duplicateParentId?: boolean;
   duplicateSolRow?: "visible" | "hidden";
+  escapeClosesOneMenuAtATime?: boolean;
+  escapeDoesNotCloseMenus?: boolean;
+  escapeLeavesModelMenuOpen?: boolean;
   fallbackOwnership?: boolean;
   fallbackPollution?: boolean;
   hiddenUnmarkedOtherModel?: boolean;
@@ -1555,6 +1586,7 @@ interface PublicRouteFixtureOptions {
   modelMarkerMissing?: boolean;
   modelOptionalMarkerConflict?: boolean;
   modelStateContradiction?: boolean;
+  preexistingVisibleMenu?: boolean;
   prompt?: string;
   renderedInnerText?: string;
   proChecked?: boolean;
@@ -1563,6 +1595,8 @@ interface PublicRouteFixtureOptions {
   proRowText?: string;
   proStateContradiction?: boolean;
   remountParentMenuOnModelOpen?: boolean;
+  remountMenusOnEscapeClose?: boolean;
+  remountPillOnEscapeClose?: boolean;
   remountPillOnClose?: boolean;
   remountPillOnOpen?: boolean;
   remountSolTriggerOnOpen?: boolean;
@@ -1739,14 +1773,18 @@ function makePublicRouteFixture(options: PublicRouteFixtureOptions = {}) {
       ),
     );
   }
-  const modelMenu = new FakeElement(
+  let modelMenu = new FakeElement(
     "div",
     { id: "sol-model-menu", role: "menu", "data-hidden": "true" },
     modelRows,
   );
   const pollutionMenu = new FakeElement(
     "div",
-    { id: "pollution-menu", role: "menu", "data-hidden": "true" },
+    {
+      id: "pollution-menu",
+      role: "menu",
+      "data-hidden": String(options.preexistingVisibleMenu !== true),
+    },
     [
       new FakeElement(
         "button",
@@ -1769,7 +1807,7 @@ function makePublicRouteFixture(options: PublicRouteFixtureOptions = {}) {
     form,
     parentMenu,
     modelMenu,
-    ...(options.fallbackPollution ? [pollutionMenu] : []),
+    ...(options.fallbackPollution || options.preexistingVisibleMenu ? [pollutionMenu] : []),
     ...(options.duplicateParentId ? [duplicateParent] : []),
   ]);
   const windowStub = new FakeWindow();
@@ -1782,9 +1820,12 @@ function makePublicRouteFixture(options: PublicRouteFixtureOptions = {}) {
     solTrigger.setAttribute("aria-expanded", "false");
     parentMenu.setAttribute("data-hidden", "true");
     modelMenu.setAttribute("data-hidden", "true");
-    pollutionMenu.setAttribute("data-hidden", "true");
+    if (!options.preexistingVisibleMenu) pollutionMenu.setAttribute("data-hidden", "true");
   };
   let pillRemounted = false;
+  let pillCloseClicks = 0;
+  let escapePresses = 0;
+  const escapeTargetIds: string[] = [];
   const replacePill = (target: FakeElement, expanded: boolean) => {
     const replacement = new FakeElement(
       "button",
@@ -1798,6 +1839,7 @@ function makePublicRouteFixture(options: PublicRouteFixtureOptions = {}) {
       "Pro",
     );
     installPillHandler(replacement);
+    replacement.ownerDocument = document;
     const index = composer.children.indexOf(target);
     composer.children[index] = replacement;
     replacement.parentElement = composer;
@@ -1807,6 +1849,7 @@ function makePublicRouteFixture(options: PublicRouteFixtureOptions = {}) {
   const installPillHandler = (target: FakeElement) =>
     target.setClickHandler(() => {
       if (target.getAttribute("aria-expanded") === "true") {
+        pillCloseClicks += 1;
         closeAllMenus();
         if (options.remountPillOnClose) replacePill(target, false);
         return;
@@ -1820,6 +1863,83 @@ function makePublicRouteFixture(options: PublicRouteFixtureOptions = {}) {
       }
     });
   installPillHandler(pill);
+  document.setKeydownHandler((event, target) => {
+    if (event.options?.key !== "Escape") return;
+    escapePresses += 1;
+    escapeTargetIds.push(
+      target instanceof FakeElement ? (target.getAttribute("id") ?? target.tagName) : "document",
+    );
+    if (options.escapeDoesNotCloseMenus) return;
+    if (options.remountMenusOnEscapeClose) {
+      const oldParentMenu = parentMenu;
+      const oldModelMenu = modelMenu;
+      const oldSolTrigger = solTrigger;
+      const replacementSolTrigger = new FakeElement(
+        "button",
+        {
+          role: "menuitem",
+          "aria-haspopup": "menu",
+          "aria-expanded": "false",
+          ...(options.fallbackOwnership ? {} : { "aria-controls": "sol-model-menu" }),
+        },
+        [],
+        options.solTriggerText ?? "GPT-5.6 Sol",
+      );
+      const replacementParentMenu = new FakeElement(
+        "div",
+        { id: "intelligence-menu", role: "menu" },
+        [
+          new FakeElement(
+            "button",
+            { role: "menuitemradio", "aria-checked": "true", "data-state": "checked" },
+            [],
+            "Pro",
+          ),
+          replacementSolTrigger,
+        ],
+      );
+      const replacementModelMenu = new FakeElement("div", { id: "sol-model-menu", role: "menu" }, [
+        new FakeElement(
+          "button",
+          { role: "menuitemradio", "aria-checked": "true", "data-state": "checked" },
+          [],
+          "GPT-5.6 Sol",
+        ),
+      ]);
+      for (const replacement of [replacementParentMenu, replacementModelMenu]) {
+        for (const element of [replacement, ...flattenElements(replacement.children)]) {
+          element.ownerDocument = document;
+        }
+      }
+      const parentIndex = document.body.children.indexOf(oldParentMenu);
+      const modelIndex = document.body.children.indexOf(oldModelMenu);
+      document.body.children[parentIndex] = replacementParentMenu;
+      document.body.children[modelIndex] = replacementModelMenu;
+      replacementParentMenu.parentElement = document.body;
+      replacementModelMenu.parentElement = document.body;
+      oldParentMenu.setAttribute("data-connected", "false");
+      oldModelMenu.setAttribute("data-connected", "false");
+      oldSolTrigger.setAttribute("data-connected", "false");
+      pill.setAttribute("aria-expanded", "false");
+      parentMenu = replacementParentMenu;
+      modelMenu = replacementModelMenu;
+      solTrigger = replacementSolTrigger;
+      return;
+    }
+    if (options.escapeLeavesModelMenuOpen && !modelMenu.hidden) {
+      pill.setAttribute("aria-expanded", "false");
+      parentMenu.setAttribute("data-hidden", "true");
+      return;
+    }
+    if (options.escapeClosesOneMenuAtATime && !modelMenu.hidden) {
+      solTrigger.setAttribute("aria-expanded", "false");
+      modelMenu.setAttribute("data-hidden", "true");
+      return;
+    }
+    const provedPill = pill;
+    closeAllMenus();
+    if (options.remountPillOnEscapeClose) replacePill(provedPill, false);
+  });
 
   let solTriggerRemounted = false;
   let parentMenuRemounted = false;
@@ -1842,6 +1962,7 @@ function makePublicRouteFixture(options: PublicRouteFixtureOptions = {}) {
           options.solTriggerText ?? "GPT-5.6 Sol",
         );
         installSolTriggerHandler(replacement);
+        replacement.ownerDocument = document;
         const index = parentMenu.children.indexOf(target);
         parentMenu.children[index] = replacement;
         replacement.parentElement = parentMenu;
@@ -1860,6 +1981,7 @@ function makePublicRouteFixture(options: PublicRouteFixtureOptions = {}) {
           },
           [proRow, standardRow, solTrigger],
         );
+        replacement.ownerDocument = document;
         const index = document.body.children.indexOf(oldParent);
         document.body.children[index] = replacement;
         replacement.parentElement = document.body;
@@ -1928,6 +2050,9 @@ function makePublicRouteFixture(options: PublicRouteFixtureOptions = {}) {
     solRow,
     solTrigger,
     form,
+    getEscapePresses: () => escapePresses,
+    getEscapeTargetIds: () => escapeTargetIds,
+    getPillCloseClicks: () => pillCloseClicks,
     windowStub,
   };
 }
@@ -2126,6 +2251,14 @@ describe("public controlled-submenu protected-route proof", () => {
     });
   });
 
+  test("preserves a stable unrelated menu that was visible before route proof", async () => {
+    const fixture = makePublicRouteFixture({ preexistingVisibleMenu: true });
+    await expect(fixture.mint()).resolves.toMatchObject({
+      verified: true,
+      proofMinted: true,
+    });
+  });
+
   test("rejects a second exact Pro composer pill", async () => {
     const fixture = makePublicRouteFixture({ additionalProPill: true });
     await expect(fixture.mint()).resolves.toMatchObject({
@@ -2135,8 +2268,73 @@ describe("public controlled-submenu protected-route proof", () => {
     });
   });
 
-  test("retries and refuses when the proved pill remounts while the menus close", async () => {
+  test("uses Escape instead of a remounting click-close path", async () => {
     const fixture = makePublicRouteFixture({ remountPillOnClose: true });
+    await expect(fixture.mint()).resolves.toMatchObject({
+      verified: true,
+      proofMinted: true,
+    });
+    expect(fixture.getEscapePresses()).toBeGreaterThanOrEqual(1);
+    expect(fixture.getPillCloseClicks()).toBe(0);
+  });
+
+  test("uses a fresh pill click only when bounded Escape attempts leave the menu open", async () => {
+    const fixture = makePublicRouteFixture({ escapeDoesNotCloseMenus: true });
+    await expect(fixture.mint()).resolves.toMatchObject({
+      verified: true,
+      proofMinted: true,
+    });
+    expect(fixture.getEscapePresses()).toBe(2);
+    expect(fixture.getPillCloseClicks()).toBe(1);
+  });
+
+  test("closes a nested submenu and its parent with two bounded Escapes", async () => {
+    const fixture = makePublicRouteFixture({ escapeClosesOneMenuAtATime: true });
+    await expect(fixture.mint()).resolves.toMatchObject({
+      verified: true,
+      proofMinted: true,
+    });
+    expect(fixture.getEscapePresses()).toBe(2);
+    expect(fixture.getEscapeTargetIds()).toEqual(["sol-model-menu", "intelligence-menu"]);
+    expect(fixture.getPillCloseClicks()).toBe(0);
+  });
+
+  test("refuses when the outer pill collapses but a proved model menu remains visible", async () => {
+    const fixture = makePublicRouteFixture({ escapeLeavesModelMenuOpen: true });
+    await expect(fixture.mint()).resolves.toMatchObject({
+      verified: false,
+      proofMinted: false,
+      reason: "proof-menus-did-not-close",
+    });
+    expect(fixture.getEscapePresses()).toBe(4);
+    expect(fixture.getPillCloseClicks()).toBe(0);
+  });
+
+  test("refuses when Escape itself remounts the proved pill", async () => {
+    const fixture = makePublicRouteFixture({ remountPillOnEscapeClose: true });
+    await expect(fixture.mint()).resolves.toMatchObject({
+      verified: false,
+      proofMinted: false,
+      reason: "dispatch-composer-remounted-during-proof",
+    });
+  });
+
+  test("refuses when Escape replaces proved menu owners behind a stable pill", async () => {
+    const fixture = makePublicRouteFixture({ remountMenusOnEscapeClose: true });
+    await expect(fixture.mint()).resolves.toMatchObject({
+      verified: false,
+      proofMinted: false,
+      reason: "proof-menus-did-not-close",
+    });
+    expect(fixture.getEscapePresses()).toBe(1);
+    expect(fixture.getPillCloseClicks()).toBe(0);
+  });
+
+  test("refuses when ignored Escapes fall back to a remounting click-close", async () => {
+    const fixture = makePublicRouteFixture({
+      escapeDoesNotCloseMenus: true,
+      remountPillOnClose: true,
+    });
     await expect(fixture.mint()).resolves.toMatchObject({
       verified: false,
       proofMinted: false,

@@ -11,6 +11,7 @@ import {
   validateArtifactFile,
   validateZipBuffer,
   writeBinaryBrowserArtifact,
+  writeTextBrowserArtifact,
   __test__,
 } from "../../src/browser/artifacts.js";
 import { setOracleHomeDirOverrideForTest } from "../../src/oracleHome.js";
@@ -152,6 +153,29 @@ describe("browser session artifacts", () => {
     );
     await expect(fs.readFile(first!.path, "utf8")).resolves.toBe("first");
     await expect(fs.readFile(second!.path, "utf8")).resolves.toBe("second");
+  });
+
+  test("atomically keeps concurrent same-filename artifacts unique", async () => {
+    const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-artifact-concurrent-"));
+    setOracleHomeDirOverrideForTest(tmpHome);
+    const contents = Array.from({ length: 8 }, (_, index) => `concurrent payload ${index}`);
+
+    const artifacts = await Promise.all(
+      contents.map((text) =>
+        writeTextBrowserArtifact({
+          sessionId: "concurrent-recovery",
+          kind: "transcript",
+          filename: "transcript.md",
+          contents: text,
+        }),
+      ),
+    );
+
+    const paths = artifacts.map((artifact) => artifact?.path);
+    expect(new Set(paths).size).toBe(contents.length);
+    await expect(
+      Promise.all(artifacts.map((artifact) => fs.readFile(artifact!.path, "utf8"))),
+    ).resolves.toEqual(expect.arrayContaining(contents.map((text) => `${text}\n`)));
   });
 
   test("validates empty ZIP central directory metadata", () => {

@@ -10,9 +10,11 @@ vi.mock("../../src/sessionStore.js", () => ({
 
 import {
   claimRemoteBrowserRecoveryCompletion,
+  isRemoteBrowserRecoveryCompletionPersisted,
   ownsRemoteBrowserRecoveryCompletion,
   releaseRemoteBrowserRecoveryCompletion,
 } from "../../src/remote/sessionRecovery.js";
+import { buildRemoteBrowserPreSubmitDiagnostic } from "../../src/remote/types.js";
 
 function recoverySession(originRunId = "origin-1"): SessionMetadata {
   return {
@@ -42,6 +44,31 @@ function recoverySession(originRunId = "origin-1"): SessionMetadata {
           promptSubmitted: true,
         },
       },
+    },
+  };
+}
+
+function addStoredPreSubmitDiagnostic(metadata: SessionMetadata): void {
+  const diagnostic = buildRemoteBrowserPreSubmitDiagnostic({
+    stage: "model-selection",
+    code: "protected-route-changed-after-preflight",
+    guardReason: "exact-prompt-changed",
+    exactPromptVerified: false,
+    attachmentStateVerified: true,
+    focusVerified: true,
+    exactReadVerified: true,
+    selectionRestored: true,
+    focusPreserved: true,
+  });
+  if (!diagnostic) throw new Error("failed to build pre-submit diagnostic fixture");
+  metadata.error = {
+    category: "browser-automation",
+    message: "Protected browser pre-submit integrity proof failed; no prompt was submitted.",
+    details: {
+      stage: "remote-run",
+      errorClass: "integrity_ui_unknown",
+      retryable: false,
+      preSubmitDiagnostic: diagnostic,
     },
   };
 }
@@ -103,6 +130,55 @@ describe("remote recovery completion claims", () => {
     ).toBe(false);
   });
 
+  test("claim CAS rejects a diagnostic that lands on an existing bound recovery coordinate", async () => {
+    if (!state.current) throw new Error("missing fixture session");
+    addStoredPreSubmitDiagnostic(state.current);
+
+    await expect(
+      claimRemoteBrowserRecoveryCompletion("recovery-session", "origin-1"),
+    ).resolves.toBeNull();
+    expect(state.current.browser?.remoteRecoveryCompletionClaim).toBeUndefined();
+  });
+
+  test("a diagnostic that lands after claim revokes final completion ownership", async () => {
+    const claim = await claimRemoteBrowserRecoveryCompletion("recovery-session", "origin-1");
+    expect(claim).not.toBeNull();
+    if (!state.current) throw new Error("missing fixture session");
+    addStoredPreSubmitDiagnostic(state.current);
+
+    expect(ownsRemoteBrowserRecoveryCompletion(state.current, claim!)).toBe(false);
+  });
+
+  test("a contradictory diagnostic cannot satisfy partial recovery-commit detection", () => {
+    if (!state.current?.browser) throw new Error("missing fixture browser metadata");
+    addStoredPreSubmitDiagnostic(state.current);
+    state.current = {
+      ...state.current,
+      status: "completed",
+      browser: {
+        ...state.current.browser,
+        remoteRecovery: undefined,
+        remoteRecoveryCompletionClaim: undefined,
+        remoteRun: {
+          runId: "recovered-run",
+          accountId: "acct1",
+          laneId: "acct1-9473",
+          terminalDoneOk: true,
+          provenance: null,
+        },
+      },
+      artifacts: [{ kind: "transcript", path: "/tmp/recovered.md" }],
+    };
+
+    expect(
+      isRemoteBrowserRecoveryCompletionPersisted(
+        state.current,
+        state.current.browser?.remoteRun,
+        state.current.artifacts,
+      ),
+    ).toBe(false);
+  });
+
   test("excludes a second same-origin writer and becomes retryable after owner release", async () => {
     const first = await claimRemoteBrowserRecoveryCompletion("recovery-session", "origin-1");
     expect(first).not.toBeNull();
@@ -132,6 +208,42 @@ describe("remote recovery completion claims", () => {
       claimRemoteBrowserRecoveryCompletion("recovery-session", "origin-1"),
     ).resolves.toBeNull();
     expect(state.current.browser.remoteRecoveryCompletionClaim.claimId).toBe("live-old-claim");
+  });
+
+  test("rejects a foreign live run attempt but allows its exact owning runner", async () => {
+    if (!state.current?.browser) throw new Error("missing fixture browser");
+    state.current.browser.runAttemptClaim = {
+      schema: "browser-run-attempt-claim.v1",
+      claimId: "ordinary-run-owner",
+      claimedAt: "2026-07-24T00:00:00.000Z",
+      ownerPid: process.pid,
+    };
+
+    await expect(
+      claimRemoteBrowserRecoveryCompletion("recovery-session", "origin-1"),
+    ).resolves.toBeNull();
+    const claim = await claimRemoteBrowserRecoveryCompletion("recovery-session", "origin-1", {
+      ownedRunAttemptClaimId: "ordinary-run-owner",
+    });
+
+    expect(claim).not.toBeNull();
+    expect(state.current.browser.runAttemptClaim?.claimId).toBe("ordinary-run-owner");
+    expect(state.current.browser.remoteRecoveryCompletionClaim?.claimId).toBe(claim?.claimId);
+  });
+
+  test("reclaims a dead run-attempt owner while installing the remote claim", async () => {
+    if (!state.current?.browser) throw new Error("missing fixture browser");
+    state.current.browser.runAttemptClaim = {
+      schema: "browser-run-attempt-claim.v1",
+      claimId: "dead-run-owner",
+      claimedAt: "2026-07-24T00:00:00.000Z",
+      ownerPid: 999_999,
+    };
+
+    await expect(
+      claimRemoteBrowserRecoveryCompletion("recovery-session", "origin-1"),
+    ).resolves.not.toBeNull();
+    expect(state.current.browser.runAttemptClaim).toBeUndefined();
   });
 
   test("uses only the final optimistic-updater invocation verdict", async () => {

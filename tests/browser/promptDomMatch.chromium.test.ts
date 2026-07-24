@@ -4,7 +4,10 @@ import puppeteer, { type Browser, type CDPSession, type Page } from "puppeteer-c
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
 import { readExactComposerPromptText } from "../../src/browser/promptDomMatch.js";
-import { buildGpt56SolProFinalDispatchGuard } from "../../src/browser/providers/chatgptDomProvider.js";
+import {
+  buildGpt56SolProFinalDispatchGuard,
+  buildGpt56SolProPublicRouteProofExpressionForTest,
+} from "../../src/browser/providers/chatgptDomProvider.js";
 
 const chromePath = process.env.ORACLE_CHROMIUM_PATH ?? "";
 const enabled =
@@ -305,6 +308,244 @@ describe.skipIf(!enabled)("exact composer plaintext in real Chromium", () => {
     const distorted = await insertAndRead("a\n\nb");
     expect(distorted.innerText).not.toBe("a\n\nb");
     expect(distorted.read.value).toBe("a\n\nb");
+  });
+
+  test("arms the exact guard ten times with a 24,677-character multiline prompt", async () => {
+    const seed = [
+      "Live canary-sized exact prompt.",
+      "",
+      "- preserve Markdown",
+      "- preserve blank lines",
+      "",
+      "```ts",
+      "const exact = true;",
+      "```",
+      "",
+    ].join("\n");
+    const prompt = seed.repeat(Math.ceil(24_677 / seed.length)).slice(0, 24_677);
+    expect(prompt).toHaveLength(24_677);
+    expect(prompt).toContain("\n\n");
+
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const guard = await installProductionGuard(prompt, "none");
+      await expect(
+        evaluateExpression(guard.immediatelyBeforeDispatchExpression!),
+      ).resolves.toMatchObject({ status: "armed" });
+      await expect(readGuardPageState()).resolves.toMatchObject({
+        activeId: "editor",
+        applicationClicks: 0,
+        bindingPayloads: [],
+      });
+      await expect(evaluateExpression(guard.afterDispatchExpression!)).resolves.toMatchObject({
+        status: "armed",
+        lastEvent: null,
+      });
+    }
+  }, 60_000);
+
+  test("mints the production route proof by escaping the deepest owned menus", async () => {
+    const token = "chromium-route-proof";
+    await page.setContent(`
+      <!doctype html>
+      <style>
+        button, [role="menu"] { width: 180px; min-height: 30px; }
+        [hidden] { display: none !important; }
+      </style>
+      <form id="composer" data-testid="unified-composer"
+            data-oracle-send-composer-binding="${token}">
+        <div id="editor" role="textbox" contenteditable="true"
+             data-oracle-send-editor-binding="${token}">exact protected prompt</div>
+        <button id="pill" type="button" class="__composer-pill"
+                aria-haspopup="menu" aria-expanded="false"
+                aria-controls="parent-menu">Pro</button>
+        <button id="send" type="button" data-testid="send-button"
+                data-oracle-send-binding="${token}">Send</button>
+      </form>
+      <div id="parent-menu" role="menu" hidden>
+        <button role="menuitemradio" aria-checked="true" data-state="checked">Pro</button>
+        <button role="menuitemradio" aria-checked="false"
+                data-state="unchecked">Standard</button>
+        <button id="sol-trigger" type="button" role="menuitem"
+                aria-haspopup="menu" aria-expanded="false"
+                aria-controls="model-menu">GPT-5.6 Sol</button>
+      </div>
+      <div id="model-menu" role="menu" hidden>
+        <button role="menuitemradio" aria-checked="true"
+                data-state="checked">GPT-5.6 Sol</button>
+        <button role="menuitemradio" aria-checked="false"
+                data-state="unchecked">GPT-5.6 Sol Mini</button>
+      </div>
+    `);
+    await page.evaluate(() => {
+      const root = window as unknown as Record<string, unknown>;
+      const editor = document.querySelector("#editor") as HTMLElement;
+      const pill = document.querySelector("#pill") as HTMLButtonElement;
+      const parentMenu = document.querySelector("#parent-menu") as HTMLElement;
+      const solTrigger = document.querySelector("#sol-trigger") as HTMLButtonElement;
+      const modelMenu = document.querySelector("#model-menu") as HTMLElement;
+      const state = {
+        escapeTargets: [] as string[],
+        pillCloseClicks: 0,
+      };
+      root.__oracleChromiumRouteFixtureState = state;
+
+      pill.addEventListener("click", () => {
+        const opening = pill.getAttribute("aria-expanded") !== "true";
+        pill.setAttribute("aria-expanded", String(opening));
+        parentMenu.hidden = !opening;
+        if (!opening) {
+          state.pillCloseClicks += 1;
+          solTrigger.setAttribute("aria-expanded", "false");
+          modelMenu.hidden = true;
+        }
+      });
+      solTrigger.addEventListener("click", () => {
+        solTrigger.setAttribute("aria-expanded", "true");
+        modelMenu.hidden = false;
+      });
+      modelMenu.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape") return;
+        state.escapeTargets.push((event.target as HTMLElement).id);
+        solTrigger.setAttribute("aria-expanded", "false");
+        modelMenu.hidden = true;
+      });
+      parentMenu.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape") return;
+        state.escapeTargets.push((event.target as HTMLElement).id);
+        pill.setAttribute("aria-expanded", "false");
+        parentMenu.hidden = true;
+      });
+      editor.focus();
+    });
+
+    const expression = buildGpt56SolProPublicRouteProofExpressionForTest(undefined, token);
+    const result = await page.evaluate(async (source) => await (0, eval)(source), expression);
+    expect(result).toMatchObject({
+      verified: true,
+      composerBindingVerified: true,
+      modelVerified: true,
+      modeVerified: true,
+      proofMinted: true,
+      reason: null,
+    });
+    await expect(
+      page.evaluate(() => {
+        const root = window as unknown as Record<string, unknown>;
+        const state = root.__oracleChromiumRouteFixtureState as {
+          escapeTargets: string[];
+          pillCloseClicks: number;
+        };
+        const proofRegistry = root.__oracleProtectedPublicRouteProofsV1 as
+          | Map<string, { burn?: (reason: string) => void; cleanup?: () => void }>
+          | undefined;
+        const proof = proofRegistry?.get("chromium-route-proof");
+        proof?.burn?.("chromium-test-cleanup");
+        proof?.cleanup?.();
+        proofRegistry?.delete("chromium-route-proof");
+        return {
+          ...state,
+          activeId: (document.activeElement as HTMLElement | null)?.id ?? null,
+          pillExpanded: document.querySelector("#pill")?.getAttribute("aria-expanded"),
+          parentHidden: (document.querySelector("#parent-menu") as HTMLElement).hidden,
+          modelHidden: (document.querySelector("#model-menu") as HTMLElement).hidden,
+        };
+      }),
+    ).resolves.toEqual({
+      escapeTargets: ["model-menu", "parent-menu"],
+      pillCloseClicks: 0,
+      activeId: "editor",
+      pillExpanded: "false",
+      parentHidden: true,
+      modelHidden: true,
+    });
+  });
+
+  test("refuses when Escape replaces proved menu owners behind a stable composer", async () => {
+    const token = "chromium-route-proof-menu-remount";
+    await page.setContent(`
+      <!doctype html>
+      <style>
+        button, [role="menu"] { width: 180px; min-height: 30px; }
+        [hidden] { display: none !important; }
+      </style>
+      <form id="composer" data-testid="unified-composer"
+            data-oracle-send-composer-binding="${token}">
+        <div id="editor" role="textbox" contenteditable="true"
+             data-oracle-send-editor-binding="${token}">exact protected prompt</div>
+        <button id="pill" type="button" class="__composer-pill"
+                aria-haspopup="menu" aria-expanded="false"
+                aria-controls="parent-menu">Pro</button>
+        <button id="send" type="button" data-testid="send-button"
+                data-oracle-send-binding="${token}">Send</button>
+      </form>
+      <div id="parent-menu" role="menu" hidden>
+        <button role="menuitemradio" aria-checked="true" data-state="checked">Pro</button>
+        <button role="menuitemradio" aria-checked="false"
+                data-state="unchecked">Standard</button>
+        <button id="sol-trigger" type="button" role="menuitem"
+                aria-haspopup="menu" aria-expanded="false"
+                aria-controls="model-menu">GPT-5.6 Sol</button>
+      </div>
+      <div id="model-menu" role="menu" hidden>
+        <button role="menuitemradio" aria-checked="true"
+                data-state="checked">GPT-5.6 Sol</button>
+        <button role="menuitemradio" aria-checked="false"
+                data-state="unchecked">GPT-5.6 Sol Mini</button>
+      </div>
+    `);
+    await page.evaluate(() => {
+      const editor = document.querySelector("#editor") as HTMLElement;
+      const pill = document.querySelector("#pill") as HTMLButtonElement;
+      const parentMenu = document.querySelector("#parent-menu") as HTMLElement;
+      const solTrigger = document.querySelector("#sol-trigger") as HTMLButtonElement;
+      const modelMenu = document.querySelector("#model-menu") as HTMLElement;
+
+      pill.addEventListener("click", () => {
+        pill.setAttribute("aria-expanded", "true");
+        parentMenu.hidden = false;
+      });
+      solTrigger.addEventListener("click", () => {
+        solTrigger.setAttribute("aria-expanded", "true");
+        modelMenu.hidden = false;
+      });
+      modelMenu.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape") return;
+        pill.setAttribute("aria-expanded", "false");
+        solTrigger.setAttribute("aria-expanded", "false");
+        const replacementParent = parentMenu.cloneNode(true) as HTMLElement;
+        const replacementModel = modelMenu.cloneNode(true) as HTMLElement;
+        parentMenu.replaceWith(replacementParent);
+        modelMenu.replaceWith(replacementModel);
+      });
+      editor.focus();
+    });
+
+    const expression = buildGpt56SolProPublicRouteProofExpressionForTest(undefined, token);
+    const result = await page.evaluate(async (source) => await (0, eval)(source), expression);
+    expect(result).toMatchObject({
+      verified: false,
+      composerBindingVerified: true,
+      modelVerified: false,
+      modeVerified: false,
+      proofMinted: false,
+      reason: "proof-menus-did-not-close",
+    });
+    await expect(
+      page.evaluate(() => ({
+        activeId: (document.activeElement as HTMLElement | null)?.id ?? null,
+        pillExpanded: document.querySelector("#pill")?.getAttribute("aria-expanded"),
+        visibleMenuIds: Array.from(document.querySelectorAll('[role="menu"]'))
+          .filter((node) => {
+            const rect = (node as HTMLElement).getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          })
+          .map((node) => node.id),
+      })),
+    ).resolves.toEqual({
+      activeId: "editor",
+      pillExpanded: "false",
+      visibleMenuIds: ["parent-menu", "model-menu"],
+    });
   });
 
   test("refuses an unfocused editor without stealing send-button focus", async () => {

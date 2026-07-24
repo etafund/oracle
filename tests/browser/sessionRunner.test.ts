@@ -1,10 +1,17 @@
-import { describe, expect, test, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type { RunOracleOptions } from "../../src/oracle.js";
 import type { BrowserSessionConfig } from "../../src/sessionStore.js";
 import {
   buildBrowserRunWarningsForTest,
+  ensureSessionArtifacts,
   runBrowserSessionExecution,
 } from "../../src/browser/sessionRunner.js";
+import { RemoteRunFailedError } from "../../src/remote/client.js";
+import { buildRemoteBrowserPreSubmitDiagnostic } from "../../src/remote/types.js";
+import { setOracleHomeDirOverrideForTest } from "../../src/oracleHome.js";
 
 const baseRunOptions: RunOracleOptions = {
   prompt: "Hello world",
@@ -14,8 +21,71 @@ const baseRunOptions: RunOracleOptions = {
 };
 
 const baseConfig: BrowserSessionConfig = {};
+let artifactHome: string;
+
+beforeAll(async () => {
+  artifactHome = await mkdtemp(path.join(os.tmpdir(), "oracle-browser-artifact-tests-"));
+  setOracleHomeDirOverrideForTest(artifactHome);
+});
+
+afterAll(async () => {
+  setOracleHomeDirOverrideForTest(null);
+  await rm(artifactHome, { recursive: true, force: true });
+});
 
 describe("runBrowserSessionExecution", () => {
+  test("preserves typed remote failures for session recovery metadata", async () => {
+    const preSubmitDiagnostic = buildRemoteBrowserPreSubmitDiagnostic({
+      stage: "model-selection",
+      code: "protected-route-changed-after-preflight",
+      guardReason: "dispatch-composer-remounted-during-proof",
+      exactPromptVerified: true,
+      attachmentStateVerified: true,
+      focusVerified: true,
+      exactReadVerified: true,
+      selectionRestored: true,
+      focusPreserved: true,
+    });
+    expect(preSubmitDiagnostic).not.toBeNull();
+    const remoteFailure = new RemoteRunFailedError("remote pre-submit refusal", {
+      errorClass: "integrity_ui_unknown",
+      retryable: false,
+      preSubmitDiagnostic,
+    });
+
+    const failure = await runBrowserSessionExecution(
+      {
+        runOptions: baseRunOptions,
+        browserConfig: baseConfig,
+        cwd: "/repo",
+        log: vi.fn(),
+      },
+      {
+        assemblePrompt: async () => ({
+          markdown: "prompt",
+          composerText: "prompt",
+          estimatedInputTokens: 1,
+          attachments: [],
+          inlineFileCount: 0,
+          tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: "auto",
+          attachmentMode: "inline",
+          fallback: null,
+        }),
+        executeBrowser: async () => {
+          throw remoteFailure;
+        },
+      },
+    ).then(
+      () => null,
+      (error: unknown) => error,
+    );
+
+    expect(failure).toBe(remoteFailure);
+    expect(failure).toBeInstanceOf(RemoteRunFailedError);
+    expect((failure as RemoteRunFailedError).preSubmitDiagnostic).toEqual(preSubmitDiagnostic);
+  });
+
   test("logs stats and returns usage/runtime", async () => {
     const log = vi.fn();
     const persistRuntimeHint = vi.fn();
@@ -1120,5 +1190,44 @@ describe("runBrowserSessionExecution", () => {
     );
     expect(result.answerText).toBe("gemini response");
     expect(executeBrowser).toHaveBeenCalled();
+  });
+});
+
+describe("ensureSessionArtifacts recovery durability", () => {
+  test("requireFreshTranscript writes this answer even when an older transcript exists", async () => {
+    const existing = [{ kind: "transcript" as const, path: "/tmp/old-transcript.md" }];
+    const artifacts = await ensureSessionArtifacts({
+      sessionId: "fresh-recovery-transcript",
+      prompt: "fresh prompt",
+      answerMarkdown: "fresh recovered answer",
+      browserConfig: {},
+      existingArtifacts: existing,
+      logger: Object.assign(vi.fn(), { verbose: false }),
+      requireFreshTranscript: true,
+    });
+
+    const transcripts = artifacts?.filter((artifact) => artifact.kind === "transcript") ?? [];
+    expect(transcripts).toHaveLength(2);
+    const fresh = transcripts.find((artifact) => artifact.path !== existing[0]?.path);
+    expect(fresh).toBeDefined();
+    await expect(readFile(fresh!.path, "utf8")).resolves.toContain("fresh recovered answer");
+  });
+
+  test("requireFreshTranscript propagates a durable write failure", async () => {
+    const sessionDir = path.join(artifactHome, "sessions", "blocked-recovery-transcript");
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(path.join(sessionDir, "artifacts"), "not a directory", "utf8");
+
+    await expect(
+      ensureSessionArtifacts({
+        sessionId: "blocked-recovery-transcript",
+        prompt: "fresh prompt",
+        answerMarkdown: "fresh recovered answer",
+        browserConfig: {},
+        existingArtifacts: [{ kind: "transcript", path: "/tmp/stale-transcript.md" }],
+        logger: Object.assign(vi.fn(), { verbose: false }),
+        requireFreshTranscript: true,
+      }),
+    ).rejects.toThrow();
   });
 });

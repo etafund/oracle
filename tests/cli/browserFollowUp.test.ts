@@ -4,7 +4,12 @@ import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import { setOracleHomeDirOverrideForTest } from "../../src/oracleHome.js";
 import { sessionStore } from "../../src/sessionStore.js";
-import { startBrowserFollowUpSession } from "../../src/cli/browserFollowUp.js";
+import {
+  resolveBrowserFollowUpParent,
+  startBrowserFollowUpSession,
+} from "../../src/cli/browserFollowUp.js";
+import { buildRemoteBrowserPreSubmitDiagnostic } from "../../src/remote/types.js";
+import type { SessionMetadata } from "../../src/sessionStore.js";
 
 afterEach(() => {
   setOracleHomeDirOverrideForTest(null);
@@ -52,6 +57,31 @@ async function createBrowserParent(waitPreference = false) {
     },
   });
   return (await sessionStore.readSession(parent.id)) ?? parent;
+}
+
+function storedPreSubmitError(): NonNullable<SessionMetadata["error"]> {
+  const diagnostic = buildRemoteBrowserPreSubmitDiagnostic({
+    stage: "model-selection",
+    code: "protected-route-changed-after-preflight",
+    guardReason: "exact-prompt-changed",
+    exactPromptVerified: false,
+    attachmentStateVerified: true,
+    focusVerified: true,
+    exactReadVerified: true,
+    selectionRestored: true,
+    focusPreserved: true,
+  });
+  if (!diagnostic) throw new Error("failed to build pre-submit diagnostic fixture");
+  return {
+    category: "browser-automation",
+    message: "Protected browser pre-submit integrity proof failed; no prompt was submitted.",
+    details: {
+      stage: "remote-run",
+      errorClass: "integrity_ui_unknown",
+      retryable: false,
+      preSubmitDiagnostic: diagnostic,
+    },
+  };
 }
 
 describe("browser follow-up sessions", () => {
@@ -259,6 +289,35 @@ describe("browser follow-up sessions", () => {
       });
     },
   );
+
+  test("uses the terminal pre-submit refusal instead of directing a child to account history", () => {
+    const parent: SessionMetadata = {
+      id: "remote-pre-submit-parent",
+      createdAt: "2026-07-24T00:00:00.000Z",
+      status: "error",
+      mode: "browser",
+      options: {},
+      browser: {
+        remoteRun: {
+          runId: "remote-pre-submit-run",
+          accountId: "acct1",
+          laneId: "acct1-9473",
+          terminalDoneOk: false,
+          provenance: null,
+        },
+      },
+      error: storedPreSubmitError(),
+    };
+
+    expect(() => resolveBrowserFollowUpParent(parent, parent.id)).toThrow(
+      /validated pre-submit.*no prompt was submitted/i,
+    );
+    try {
+      resolveBrowserFollowUpParent(parent, parent.id);
+    } catch (error) {
+      expect((error as Error).message).not.toMatch(/account.*history/i);
+    }
+  });
 
   test("does not mutate the parent session metadata", async () => {
     await withOracleHome(async () => {

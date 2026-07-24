@@ -8,6 +8,10 @@ import { resolveRecoveryUrl } from "../browser/recoverConversation.js";
 import { launchDetachedSessionFinalizer, launchDetachedSessionRunner } from "./detachedSession.js";
 import { buildSessionLifecycle } from "./sessionLifecycle.js";
 import { isTerminalSessionStatus } from "./sessionStatus.js";
+import {
+  classifyStoredRemotePreSubmitState,
+  formatStoredRemotePreSubmitRecoveryBlock,
+} from "../remote/storedPreSubmitState.js";
 
 const DEFAULT_FOLLOW_UP_POLL_MS = 2_000;
 
@@ -98,6 +102,10 @@ export function resolveBrowserFollowUpParent(
   }
   if (parent.mode !== "browser") {
     throw new Error(`Parent session ${parent.id} is not a browser session.`);
+  }
+  const storedPreSubmitState = classifyStoredRemotePreSubmitState(parent);
+  if (storedPreSubmitState) {
+    throw new Error(formatStoredRemotePreSubmitRecoveryBlock(parent.id, storedPreSubmitState));
   }
   if (parent.browser?.remoteRecovery || parent.browser?.remoteRun) {
     throw new Error(

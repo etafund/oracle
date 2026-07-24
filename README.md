@@ -55,7 +55,7 @@ oracle --engine browser --browser-manual-login \
 Install globally: `npm install -g @steipete/oracle`
 Homebrew: `brew install steipete/tap/oracle`
 
-Requires Node 24+. Or use `npx -y @steipete/oracle …` (or pnpx).
+Requires Node 24.15+. Or use `npx -y @steipete/oracle …` (or pnpx).
 
 This is the whole first-try surface — the 3 reviewed lanes, plus the shared session commands every lane uses:
 

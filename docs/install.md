@@ -1,6 +1,6 @@
 ---
 title: Install
-description: "Install Oracle via Homebrew, npm, or run on demand with npx. Node 24+ required."
+description: "Install Oracle via Homebrew, npm, or run on demand with npx. Node 24.15+ required."
 ---
 
 ## Homebrew (macOS / Linux)
@@ -19,7 +19,7 @@ npm install -g @steipete/oracle
 pnpm add -g @steipete/oracle
 ```
 
-Requires Node **24 or newer**. After install:
+Requires Node **24.15 or newer**. After install:
 
 ```bash
 oracle --help

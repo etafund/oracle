@@ -231,6 +231,7 @@ export interface RemoteBrowserFailedRoute {
 const remoteRecoveryByError = new WeakMap<Error, RemoteBrowserRecoveryCarrier>();
 const remoteFailedRouteByError = new WeakMap<Error, RemoteBrowserFailedRoute>();
 const remotePendingRecoveryClaimByError = new WeakMap<Error, RemoteBrowserPendingRecoveryClaim>();
+const remotePromptSubmitObservedByError = new WeakMap<Error, true>();
 
 function walkErrorCauses<T>(error: unknown, read: (candidate: Error) => T | null): T | null {
   const seen = new Set<Error>();
@@ -269,6 +270,22 @@ export function getRemoteBrowserPendingRecoveryClaimFromError(
   return walkErrorCauses(
     error,
     (candidate) => remotePendingRecoveryClaimByError.get(candidate) ?? null,
+  );
+}
+
+/**
+ * Return the client's monotonic observation that the worker emitted its
+ * submit-confirmation marker before a validated pre-submit diagnostic.
+ * This contradiction is intentionally separate from the private pending
+ * recovery claim: the public session record must remain conservative even
+ * when that sidecar was unavailable or could not be persisted.
+ */
+export function getRemoteBrowserPromptSubmitObservedFromError(error: unknown): boolean {
+  return (
+    walkErrorCauses(
+      error,
+      (candidate) => remotePromptSubmitObservedByError.get(candidate) ?? null,
+    ) === true
   );
 }
 
@@ -1284,7 +1301,22 @@ export function createRemoteBrowserExecutor({
         // whenever that accepted route later fails, even without a capability.
         const failedRoute = failedRouteFromIdentity(acceptedRouteIdentity);
         if (failedRoute) remoteFailedRouteByError.set(error, failedRoute);
-        if (acceptedPendingRecoveryClaim) {
+        // A diagnostic reaches this point only after the closed-schema terminal
+        // parser validates it. Suppress the capability only when that proof
+        // agrees with our monotonic local send marker; any contradiction keeps
+        // the claim so downstream handling remains conservatively fail-closed.
+        const definitelyFailedBeforeSubmit =
+          error instanceof RemoteRunFailedError &&
+          error.preSubmitDiagnostic !== null &&
+          submitObserved === false;
+        if (
+          error instanceof RemoteRunFailedError &&
+          error.preSubmitDiagnostic !== null &&
+          submitObserved === true
+        ) {
+          remotePromptSubmitObservedByError.set(error, true);
+        }
+        if (acceptedPendingRecoveryClaim && !definitelyFailedBeforeSubmit) {
           remotePendingRecoveryClaimByError.set(error, acceptedPendingRecoveryClaim);
         }
         settled = true;

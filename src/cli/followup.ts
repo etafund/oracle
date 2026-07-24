@@ -16,6 +16,10 @@ import {
   resolveClaudeCodeCaamProfile,
   validateCaamBasePath,
 } from "../claude-code/caamCommand.js";
+import {
+  classifyStoredRemotePreSubmitState,
+  formatStoredRemotePreSubmitRecoveryBlock,
+} from "../remote/storedPreSubmitState.js";
 
 export interface BrowserFollowupResolution {
   sessionId: string;
@@ -103,6 +107,10 @@ export async function resolveBrowserFollowupReference(
   );
   if (mode !== "browser" && !hasBrowserMetadata) {
     return null;
+  }
+  const storedPreSubmitState = classifyStoredRemotePreSubmitState(metadata);
+  if (storedPreSubmitState) {
+    throw new Error(formatStoredRemotePreSubmitRecoveryBlock(trimmed, storedPreSubmitState));
   }
   if (metadata.browser?.remoteRecovery || metadata.browser?.remoteRun) {
     throw new Error(

@@ -116,12 +116,12 @@
     "runtime": [
       {
         "name": "node",
-        "version": ">=24"
+        "version": ">=24.15"
       }
     ]
   },
   "engines": {
-    "node": ">=24"
+    "node": ">=24.15"
   },
   "packageManager": "pnpm@10.33.2"
 }

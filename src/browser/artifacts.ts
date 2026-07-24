@@ -76,17 +76,40 @@ async function pathExists(targetPath: string): Promise<boolean> {
   }
 }
 
-export async function resolveUniqueArtifactPath(basePath: string): Promise<string> {
+function artifactPathCandidate(basePath: string, index: number): string {
+  if (index === 1) return basePath;
   const ext = path.extname(basePath);
   const stem = ext ? path.basename(basePath, ext) : path.basename(basePath);
-  const dir = path.dirname(basePath);
-  let candidate = basePath;
-  let suffix = 2;
-  while (await pathExists(candidate)) {
-    candidate = path.join(dir, `${stem}-${suffix}${ext}`);
-    suffix += 1;
+  return path.join(path.dirname(basePath), `${stem}-${index}${ext}`);
+}
+
+export async function resolveUniqueArtifactPath(basePath: string): Promise<string> {
+  let index = 1;
+  while (await pathExists(artifactPathCandidate(basePath, index))) {
+    index += 1;
   }
-  return candidate;
+  return artifactPathCandidate(basePath, index);
+}
+
+async function writeUniqueArtifactFile(
+  basePath: string,
+  contents: string | Buffer,
+): Promise<string> {
+  for (let index = 1; ; index += 1) {
+    const candidate = artifactPathCandidate(basePath, index);
+    try {
+      if (typeof contents === "string") {
+        await fs.writeFile(candidate, contents, { encoding: "utf8", flag: "wx" });
+      } else {
+        await fs.writeFile(candidate, contents, { flag: "wx" });
+      }
+      return candidate;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw error;
+      }
+    }
+  }
 }
 
 async function readSizeBytes(targetPath: string): Promise<number | undefined> {
@@ -289,8 +312,8 @@ export async function writeTextBrowserArtifact(params: {
   const dir = resolveSessionArtifactsDir(params.sessionId);
   await fs.mkdir(dir, { recursive: true });
   const filename = sanitizeArtifactFilename(params.filename, "artifact.md");
-  const targetPath = await resolveUniqueArtifactPath(path.join(dir, filename));
-  await fs.writeFile(targetPath, `${text}\n`, "utf8");
+  const serialized = `${text}\n`;
+  const targetPath = await writeUniqueArtifactFile(path.join(dir, filename), serialized);
   params.logger?.(`[browser] Saved ${params.kind} artifact to ${targetPath}`);
   return {
     kind: params.kind,
@@ -299,7 +322,7 @@ export async function writeTextBrowserArtifact(params: {
     mimeType: params.mimeType ?? "text/markdown",
     sizeBytes: await readSizeBytes(targetPath),
     sourceUrl: params.sourceUrl,
-    sha256: computeBufferSha256(Buffer.from(`${text}\n`, "utf8")),
+    sha256: computeBufferSha256(Buffer.from(serialized, "utf8")),
     validation: { type: "generic", ok: true },
     transfer: { status: "not-needed" },
     origin: { mode: "local" },
@@ -322,8 +345,7 @@ export async function writeBinaryBrowserArtifact(params: {
   const dir = resolveSessionArtifactsDir(params.sessionId);
   await fs.mkdir(dir, { recursive: true });
   const filename = sanitizeArtifactFilename(params.filename, "artifact.bin");
-  const targetPath = await resolveUniqueArtifactPath(path.join(dir, filename));
-  await fs.writeFile(targetPath, params.contents);
+  const targetPath = await writeUniqueArtifactFile(path.join(dir, filename), params.contents);
   const validation = validateArtifactBuffer({
     filename,
     mimeType: params.mimeType,

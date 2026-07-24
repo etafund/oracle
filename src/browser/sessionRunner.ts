@@ -15,6 +15,7 @@ import { runBrowserMode } from "../browserMode.js";
 import type { BrowserRunResult } from "../browserMode.js";
 import { assembleBrowserPrompt } from "./prompt.js";
 import { BrowserAutomationError } from "../oracle/errors.js";
+import { RemoteRunFailedError } from "../remote/client.js";
 import type { BrowserArchiveResult, BrowserLogger } from "./types.js";
 import {
   appendArtifacts,
@@ -272,7 +273,7 @@ export async function runBrowserSessionExecution(
       submittedPromptPreviewCb: deps.persistSubmittedPromptPreview,
     });
   } catch (error) {
-    if (error instanceof BrowserAutomationError) {
+    if (error instanceof BrowserAutomationError || error instanceof RemoteRunFailedError) {
       throw error;
     }
     const message = error instanceof Error ? error.message : "Browser automation failed.";
@@ -377,8 +378,15 @@ export async function ensureSessionArtifacts(params: {
   browserConfig: BrowserSessionConfig;
   existingArtifacts?: SessionArtifact[];
   logger: BrowserLogger;
+  /** Recovery must bind this exact captured answer to a newly written transcript. */
+  requireFreshTranscript?: boolean;
 }): Promise<SessionArtifact[] | undefined> {
   if (!params.sessionId || !params.answerMarkdown.trim()) {
+    if (params.requireFreshTranscript) {
+      throw new Error(
+        "Recovery produced no answer/session identity for a fresh transcript; refusing commit.",
+      );
+    }
     return params.existingArtifacts;
   }
   let artifacts = params.existingArtifacts;
@@ -393,15 +401,21 @@ export async function ensureSessionArtifacts(params: {
     artifacts = appendArtifacts(artifacts, [report]);
   }
   const hasTranscript = artifacts?.some((artifact) => artifact.kind === "transcript");
-  if (!hasTranscript) {
-    const transcript = await saveBrowserTranscriptArtifact({
+  if (params.requireFreshTranscript || !hasTranscript) {
+    const writeTranscript = saveBrowserTranscriptArtifact({
       sessionId: params.sessionId,
       prompt: params.prompt,
       answerMarkdown: params.answerMarkdown,
       conversationUrl: params.conversationUrl,
       artifacts,
       logger: params.logger,
-    }).catch(() => null);
+    });
+    const transcript = params.requireFreshTranscript
+      ? await writeTranscript
+      : await writeTranscript.catch(() => null);
+    if (params.requireFreshTranscript && !transcript) {
+      throw new Error("Recovery produced no durable fresh transcript; refusing commit.");
+    }
     artifacts = appendArtifacts(artifacts, [transcript]);
   }
   return artifacts;

@@ -1071,23 +1071,72 @@ function buildProtectedRouteProofMintExpression(
         ? candidates[0]
         : null;
     };
-    const closeProofMenus = async () => {
+    const closeProofMenus = async (bindings = []) => {
+      const provedBindings = bindings.filter(Boolean);
+      const ownerIsOpen = (owner) => Boolean(
+        owner &&
+        owner.isConnected !== false &&
+        isVisible(owner)
+      );
+      const allProvedOwnersClosed = () =>
+        provedBindings.every((binding) => !ownerIsOpen(binding.owner));
+      const canReceiveEscape = (node) => Boolean(
+        node &&
+        node.isConnected !== false &&
+        isVisible(node) &&
+        typeof node.dispatchEvent === 'function'
+      );
+      const deepestEscapeTarget = (pill) => {
+        // Prefer the deepest currently open owned menu. A keyboard event
+        // targeted at document never reaches element-scoped menu handlers,
+        // while an event dispatched here still bubbles to document.
+        for (let index = provedBindings.length - 1; index >= 0; index -= 1) {
+          const owner = provedBindings[index]?.owner;
+          if (ownerIsOpen(owner) && canReceiveEscape(owner)) return owner;
+        }
+        // If an owned menu was just removed, its deepest surviving control is
+        // the next faithful keyboard target.
+        for (let index = provedBindings.length - 1; index >= 0; index -= 1) {
+          const trigger = provedBindings[index]?.trigger;
+          if (canReceiveEscape(trigger)) return trigger;
+        }
+        if (canReceiveEscape(pill)) return pill;
+        if (canReceiveEscape(document.activeElement)) return document.activeElement;
+        return document;
+      };
+      const isClosed = (pill) => Boolean(
+        pill &&
+        pill.getAttribute?.('aria-expanded') !== 'true' &&
+        allProvedOwnersClosed()
+      );
       let current = locate().pill;
+      // Escape is the least invasive way to close ChatGPT's nested picker.
+      // Click-toggling the pill can make React remount the live composer even
+      // though the route selection itself did not change. Give the submenu and
+      // its parent one Escape each, reacquiring the pill after every settle.
+      for (
+        let attempt = 0;
+        attempt < 2 && !isClosed(current);
+        attempt += 1
+      ) {
+        try {
+          deepestEscapeTarget(current).dispatchEvent?.(new KeyboardEvent('keydown', {
+            key: 'Escape', code: 'Escape', keyCode: 27, which: 27,
+            bubbles: true, cancelable: true, composed: true,
+          }));
+        } catch {}
+        await settle();
+        current = locate().pill;
+      }
+      // Some picker variants ignore Escape. Re-read the exact current pill and
+      // use its ordinary toggle only as a bounded fallback; the caller still
+      // rejects any node identity change across the complete proof.
       if (current?.getAttribute?.('aria-expanded') === 'true') {
         activate(current);
         await settle();
       }
       current = locate().pill;
-      if (current?.getAttribute?.('aria-expanded') === 'true') {
-        try {
-          document.dispatchEvent?.(new KeyboardEvent('keydown', {
-            key: 'Escape', code: 'Escape', bubbles: true, composed: true,
-          }));
-        } catch {}
-        await settle();
-      }
-      current = locate().pill;
-      return Boolean(current && current.getAttribute?.('aria-expanded') !== 'true');
+      return isClosed(current);
     };
     const fail = (reason) => ({
       verified: false,
@@ -1117,6 +1166,7 @@ function buildProtectedRouteProofMintExpression(
         break;
       }
       const { composer, editor, send, attachmentRoot } = located;
+      const attemptMenuBaseline = menuRoots();
       const parentBinding = await resolveOwnedMenuAfterOpen(() => locate().pill);
       const readParentProof = () => {
         const owner = parentBinding
@@ -1136,7 +1186,7 @@ function buildProtectedRouteProofMintExpression(
       let parent = readParentProof();
       if (!parentBinding || !parent.ok || locate().composer !== composer) {
         lastReason = 'parent-menu-owner-unverified';
-        await closeProofMenus();
+        await closeProofMenus([parentBinding]);
         continue;
       }
       const getSolTrigger = () => {
@@ -1154,23 +1204,23 @@ function buildProtectedRouteProofMintExpression(
       };
       if (!modelBinding || locate().composer !== composer) {
         lastReason = 'model-submenu-owner-unverified';
-        await closeProofMenus();
+        await closeProofMenus([parentBinding, modelBinding]);
         continue;
       }
       parent = readParentProof();
       const model = readModelProof();
       if (!parent.ok || !model.ok) {
         lastReason = !parent.ok ? parent.reason : model.reason;
-        await closeProofMenus();
+        await closeProofMenus([parentBinding, modelBinding]);
         continue;
       }
       const provedOpenPill = locate().pill;
       if (!provedOpenPill || !isVisible(provedOpenPill)) {
         lastReason = 'proved-route-pill-unavailable';
-        await closeProofMenus();
+        await closeProofMenus([parentBinding, modelBinding]);
         continue;
       }
-      if (!(await closeProofMenus())) {
+      if (!(await closeProofMenus([parentBinding, modelBinding]))) {
         lastReason = 'proof-menus-did-not-close';
         continue;
       }
@@ -1198,6 +1248,22 @@ function buildProtectedRouteProofMintExpression(
         lastReason = 'dispatch-composer-focus-rebind-failed';
         continue;
       }
+      const provedMenuOwners = new Set([
+        parentBinding?.owner, modelBinding?.owner, parent.owner, model.owner,
+      ].filter(Boolean));
+      const verifiedClosedMenuBaseline = menuRoots();
+      if (
+        verifiedClosedMenuBaseline.some((menu) => !attemptMenuBaseline.includes(menu)) ||
+        verifiedClosedMenuBaseline.some((menu) => provedMenuOwners.has(menu))
+      ) {
+        // A disconnected proved owner does not establish closure if React
+        // replaced it with a different visible menu. This check runs after the
+        // final focus settle, and the verified identities are carried directly
+        // into the continuity proof so no later fresh snapshot can trust a
+        // remount that happened during Escape.
+        lastReason = 'proof-menus-did-not-close';
+        break;
+      }
       proved = {
         composer, editor, send, pill: provedOpenPill, attachmentRoot,
         parentMenu: parent.owner,
@@ -1205,6 +1271,7 @@ function buildProtectedRouteProofMintExpression(
         solTrigger: parent.solTrigger,
         modelMenu: model.owner,
         solRow: model.model.row,
+        closedMenuBaseline: verifiedClosedMenuBaseline,
       };
     }
     if (!proved) return fail(lastReason);
@@ -1212,7 +1279,7 @@ function buildProtectedRouteProofMintExpression(
     const mintedAt = Date.now();
     const promptSnapshot = normalizeRenderedPromptDomIdentity(readEditorValue(proved.editor));
     const hrefSnapshot = String(root.location?.href || '');
-    const closedMenuBaseline = menuRoots();
+    const closedMenuBaseline = proved.closedMenuBaseline;
     const routeRefs = [
       proved.parentMenu, proved.proRow, proved.solTrigger, proved.modelMenu, proved.solRow,
     ];

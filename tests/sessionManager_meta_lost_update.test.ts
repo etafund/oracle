@@ -6,10 +6,12 @@
 // cross-process window with a stat-fingerprint optimistic-concurrency
 // check (retry with a fresh read; fail loud after repeated conflicts).
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { execFile } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { promisify } from "node:util";
 import { setOracleHomeDirOverrideForTest } from "../src/oracleHome.js";
 
 type SessionModule = typeof import("../src/sessionManager.ts");
@@ -17,6 +19,30 @@ type SessionMetadata = Awaited<ReturnType<SessionModule["initializeSession"]>>;
 
 let sessionModule: SessionModule;
 let oracleHomeDir: string;
+const execFileAsync = promisify(execFile);
+
+async function updateModelRunFromSeparateProcess(
+  sessionId: string,
+  model: string,
+  updates: Record<string, unknown>,
+): Promise<void> {
+  const oracleHomeModuleUrl = new URL("../src/oracleHome.ts", import.meta.url).href;
+  const sessionManagerModuleUrl = new URL("../src/sessionManager.ts", import.meta.url).href;
+  const script = [
+    `const { setOracleHomeDirOverrideForTest } = await import(${JSON.stringify(oracleHomeModuleUrl)});`,
+    `const { updateModelRunMetadata } = await import(${JSON.stringify(sessionManagerModuleUrl)});`,
+    `setOracleHomeDirOverrideForTest(${JSON.stringify(oracleHomeDir)});`,
+    `await updateModelRunMetadata(${JSON.stringify(sessionId)}, ${JSON.stringify(model)}, ${JSON.stringify(updates)});`,
+  ].join("\n");
+  await execFileAsync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", script],
+    {
+      cwd: process.cwd(),
+      env: process.env,
+    },
+  );
+}
 
 beforeAll(async () => {
   oracleHomeDir = await mkdtemp(path.join(os.tmpdir(), "oracle-meta-lost-update-"));
@@ -121,6 +147,67 @@ describe("session meta.json concurrent update safety", () => {
     // Atomic tmp-then-rename writes must not leave litter behind.
     const leftovers = (await readdir(sessionDirPath)).filter((name) => name.includes(".tmp-"));
     expect(leftovers).toEqual([]);
+  });
+
+  test("a completed model write landing during a session update is re-read and survives", async () => {
+    const model = "gpt-5.2-pro";
+    const meta = await sessionModule.initializeSession(
+      { prompt: "Cross-process model winner", model, mode: "browser" },
+      "/tmp/cwd",
+    );
+    await sessionModule.updateSessionMetadata(meta.id, {
+      status: "running",
+      mode: "browser",
+    });
+    await sessionModule.updateModelRunMetadata(meta.id, model, {
+      status: "running",
+      startedAt: "2026-07-24T00:00:00.000Z",
+    });
+
+    let updaterCalls = 0;
+    await sessionModule.updateSessionMetadata(meta.id, async () => {
+      updaterCalls += 1;
+      if (updaterCalls === 1) {
+        // This is a real cooperating writer in a separate process. It lands
+        // after updateSessionMetadata fingerprinted/read the running model but
+        // before that stale session updater acquires the shared SQLite lease.
+        await updateModelRunFromSeparateProcess(meta.id, model, {
+          status: "completed",
+          completedAt: "2026-07-24T00:01:00.000Z",
+          response: { status: "completed" },
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            reasoningTokens: 0,
+            totalTokens: 2,
+          },
+        });
+      }
+      return {
+        status: "error",
+        completedAt: "2026-07-24T00:02:00.000Z",
+        errorMessage: "stale browser failure",
+        error: {
+          category: "browser-automation",
+          message: "stale browser failure",
+        },
+      };
+    });
+
+    expect(updaterCalls).toBeGreaterThan(1);
+    const storedModel = await sessionModule.readModelRunMetadata(meta.id, model);
+    expect(storedModel).toMatchObject({
+      status: "completed",
+      completedAt: "2026-07-24T00:01:00.000Z",
+      response: { status: "completed" },
+      usage: { totalTokens: 2 },
+    });
+    const storedSession = await sessionModule.readSessionMetadata(meta.id);
+    expect(storedSession?.models?.[0]).toMatchObject({
+      status: "completed",
+      response: { status: "completed" },
+      usage: { totalTokens: 2 },
+    });
   });
 
   test("fails loud instead of clobbering when the file keeps changing under us", async () => {

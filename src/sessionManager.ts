@@ -4,6 +4,7 @@ import { createWriteStream, mkdirSync, readFileSync } from "node:fs";
 import type { WriteStream } from "node:fs";
 import net from "node:net";
 import { createHash, randomUUID } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import type {
   BrowserArchiveMode,
   BrowserArchiveResult,
@@ -250,6 +251,27 @@ export interface BrowserRemoteRecoveryCompletionClaim {
   ownerStartToken?: string;
 }
 
+/** Cross-process ownership marker for one local browser reattach generation. */
+export interface BrowserLocalReattachCompletionClaim {
+  schema: "local-browser-reattach-completion-claim.v1";
+  claimId: string;
+  originGenerationSha256: string;
+  claimedAt: string;
+  ownerPid: number;
+  /** Linux process start tick, when available, to distinguish PID reuse. */
+  ownerStartToken?: string;
+}
+
+/** Cross-process lease for the one ordinary browser runner allowed to mutate a session. */
+export interface BrowserRunAttemptClaim {
+  schema: "browser-run-attempt-claim.v1";
+  claimId: string;
+  claimedAt: string;
+  ownerPid: number;
+  /** Linux process start tick, when available, to distinguish PID reuse. */
+  ownerStartToken?: string;
+}
+
 export interface BrowserMetadata {
   config?: BrowserSessionConfig;
   runtime?: BrowserRuntimeMetadata;
@@ -272,6 +294,8 @@ export interface BrowserMetadata {
   remoteRun?: BrowserRemoteRunEvidence;
   remoteRecovery?: BrowserRemoteRecoveryMetadata;
   remoteRecoveryCompletionClaim?: BrowserRemoteRecoveryCompletionClaim;
+  localReattachCompletionClaim?: BrowserLocalReattachCompletionClaim;
+  runAttemptClaim?: BrowserRunAttemptClaim;
   warnings?: BrowserRunWarning[];
 }
 
@@ -849,33 +873,192 @@ async function readModelRunFile(sessionId: string, model: string): Promise<Sessi
   }
 }
 
+function parseModelRunFileStrict(
+  sessionId: string,
+  filePath: string,
+  raw: string,
+  expectedModel?: string,
+): SessionModelRun {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`Session "${sessionId}" has malformed model metadata at ${filePath}.`, {
+      cause: error,
+    });
+  }
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    typeof (parsed as Partial<SessionModelRun>).model !== "string" ||
+    typeof (parsed as Partial<SessionModelRun>).status !== "string"
+  ) {
+    throw new Error(`Session "${sessionId}" has invalid model metadata at ${filePath}.`);
+  }
+  const record = parsed as SessionModelRun;
+  if (expectedModel !== undefined && record.model !== expectedModel) {
+    throw new Error(
+      `Session "${sessionId}" model metadata at ${filePath} identifies "${record.model}" instead of "${expectedModel}".`,
+    );
+  }
+  if (path.resolve(modelJsonPath(sessionId, record.model)) !== path.resolve(filePath)) {
+    throw new Error(
+      `Session "${sessionId}" model metadata at ${filePath} does not match its fingerprinted filename.`,
+    );
+  }
+  return ensureModelLogReference(sessionId, record);
+}
+
+async function readModelRunFileStrict(
+  sessionId: string,
+  model: string,
+): Promise<SessionModelRun | null> {
+  const filePath = modelJsonPath(sessionId, model);
+  try {
+    const raw = await fs.readFile(filePath, "utf8");
+    return parseModelRunFileStrict(sessionId, filePath, raw, model);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function listModelRunFilesStrict(sessionId: string): Promise<SessionModelRun[]> {
+  let entries: string[];
+  try {
+    entries = await fs.readdir(modelsDir(sessionId));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+  const modelFiles = entries.filter((entry) => entry.endsWith(MODEL_JSON_EXTENSION)).sort();
+  return await Promise.all(
+    modelFiles.map(async (entry) => {
+      const filePath = path.join(modelsDir(sessionId), entry);
+      const raw = await fs.readFile(filePath, "utf8");
+      return parseModelRunFileStrict(sessionId, filePath, raw);
+    }),
+  );
+}
+
+async function readSessionMetadataFileStrict(
+  sessionId: string,
+  filePath: string,
+): Promise<SessionMetadata | null> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(filePath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`Session "${sessionId}" has malformed metadata at ${filePath}.`, {
+      cause: error,
+    });
+  }
+  if (!isSessionMetadataRecord(parsed)) {
+    throw new Error(`Session "${sessionId}" has invalid metadata at ${filePath}.`);
+  }
+  if (parsed.id !== sessionId) {
+    throw new Error(
+      `Session "${sessionId}" metadata at ${filePath} identifies a different session "${parsed.id}".`,
+    );
+  }
+  const runs = await listModelRunFilesStrict(sessionId);
+  return runs.length > 0 ? { ...parsed, models: runs } : parsed;
+}
+
+async function readRawSessionMetadataForUpdate(sessionId: string): Promise<SessionMetadata | null> {
+  return (
+    (await readSessionMetadataFileStrict(sessionId, metaPath(sessionId))) ??
+    (await readSessionMetadataFileStrict(sessionId, legacySessionPath(sessionId)))
+  );
+}
+
 export async function updateModelRunMetadata(
   sessionId: string,
   model: string,
   updates: Partial<SessionModelRun>,
 ): Promise<SessionModelRun> {
-  // Serialized with updateSessionMetadata: both mutate files that
-  // persistSessionMetadata may rewrite (models/*.json), so the
-  // read-merge-write must not interleave within this process.
+  // Serialized with updateSessionMetadata in-process and across processes:
+  // both mutate files that persistSessionMetadata may rewrite
+  // (meta.json + models/*.json), so every writer fingerprints the same file
+  // set and holds the same SQLite lease across its final re-check + rename.
   return withSessionMetadataLock(sessionId, async () => {
-    const sessionMetadata = await readRawSessionMetadata(sessionId);
-    if (hasImportedChatgptConversationClaim(sessionMetadata)) {
-      throw new Error(
-        `Session "${sessionId}" is an imported ChatGPT conversation; model-run updates are refused. Use the strict conversation import command with --force to replace it.`,
-      );
+    await ensureDir(sessionDir(sessionId));
+    const lockPath = metaLockPath(sessionId);
+    for (let attempt = 1; attempt <= MAX_METADATA_UPDATE_ATTEMPTS; attempt += 1) {
+      const readFingerprint = await statSessionWriteFingerprint(sessionId);
+      let sessionMetadata: SessionMetadata | null;
+      let existing: SessionModelRun | null;
+      try {
+        sessionMetadata = await readRawSessionMetadataForUpdate(sessionId);
+        existing = await readModelRunFileStrict(sessionId, model);
+      } catch (error) {
+        if (!(await sessionReadFailureIsStable(sessionId, lockPath, readFingerprint))) {
+          continue;
+        }
+        throw error;
+      }
+      if (hasImportedChatgptConversationClaim(sessionMetadata)) {
+        throw new Error(
+          `Session "${sessionId}" is an imported ChatGPT conversation; model-run updates are refused. Use the strict conversation import command with --force to replace it.`,
+        );
+      }
+      await ensureDir(modelsDir(sessionId));
+      const previous = existing ?? {
+        model,
+        status: "pending",
+      };
+      // A transition back to running starts a fresh attempt and must not
+      // retain terminal evidence from the previous one. A same-status
+      // completed patch, however, is often deliberately partial (for example
+      // it may only add usage after top-level completion) and must preserve an
+      // already-persisted response id/request id.
+      const resetTerminalFields = updates.status === "running";
+      const base = resetTerminalFields
+        ? (({
+            completedAt: _completedAt,
+            usage: _usage,
+            response: _response,
+            transport: _transport,
+            error: _error,
+            ...preserved
+          }) => preserved)(previous)
+        : previous;
+      const next: SessionModelRun = ensureModelLogReference(sessionId, {
+        ...base,
+        ...updates,
+        model,
+      });
+      const lease = await acquireMetaLock(lockPath);
+      if (!lease) {
+        continue;
+      }
+      try {
+        const writeFingerprint = await statSessionWriteFingerprint(sessionId);
+        if (!sessionWriteFingerprintsEqual(readFingerprint, writeFingerprint)) {
+          continue;
+        }
+        await atomicWriteFileUtf8(modelJsonPath(sessionId, model), JSON.stringify(next, null, 2));
+        return next;
+      } finally {
+        await releaseMetaLock(lease);
+      }
     }
-    await ensureDir(modelsDir(sessionId));
-    const existing = (await readModelRunFile(sessionId, model)) ?? {
-      model,
-      status: "pending",
-    };
-    const next: SessionModelRun = ensureModelLogReference(sessionId, {
-      ...existing,
-      ...updates,
-      model,
-    });
-    await atomicWriteFileUtf8(modelJsonPath(sessionId, model), JSON.stringify(next, null, 2));
-    return next;
+    throw new Error(
+      `Session "${sessionId}" metadata/model files kept changing concurrently; aborting model update after ${MAX_METADATA_UPDATE_ATTEMPTS} attempts instead of overwriting newer state.`,
+    );
   });
 }
 
@@ -981,11 +1164,6 @@ export async function initializeSession(
     },
   };
   await ensureDir(modelsDir(sessionId));
-  // Honor the module's tmp-file + rename invariant on creation too, so a
-  // concurrent reader (`oracle status --json`) or a crash mid-write never
-  // observes a torn meta.json / model JSON that would drop the session
-  // from listings.
-  await atomicWriteFileUtf8(metaPath(sessionId), JSON.stringify(metadata, null, 2));
   await Promise.all(
     (modelList.length > 0 ? modelList : [metadata.model ?? DEFAULT_MODEL]).map(
       async (modelName) => {
@@ -1003,6 +1181,10 @@ export async function initializeSession(
     ),
   );
   await fs.writeFile(logPath(sessionId), "", "utf8");
+  // Publish meta.json last. The unique directory is not a readable session
+  // until all model/log files exist, so a crash during initialization cannot
+  // expose a half-created session whose embedded and per-model state diverge.
+  await atomicWriteFileUtf8(metaPath(sessionId), JSON.stringify(metadata, null, 2));
   return metadata;
 }
 
@@ -1028,25 +1210,23 @@ export async function readSessionMetadata(sessionId: string): Promise<SessionMet
 //      session directory), so concurrent callers in one Node process
 //      never interleave the read-merge-write window.
 //
-//   2. Cross-process optimistic-concurrency guard: capture a stat
-//      fingerprint of meta.json at read time and re-check it just
-//      before writing. If another process replaced the file in
+//   2. Cross-process optimistic-concurrency guard: capture stat
+//      fingerprints of meta.json and every models/*.json at read time and
+//      re-check them just before writing. If another process replaced a file
 //      between (e.g. a background runner completing while `oracle
 //      session --live` harvests), re-read and re-merge instead of
 //      blindly overwriting the fresher state; fail loud after
 //      repeated conflicts instead of silently reverting.
 //
-//   3. Cross-process advisory lock (an O_EXCL sentinel lockfile next
-//      to meta.json) held across the re-stat + rename critical
-//      section. The fingerprint re-check and the rename are two
-//      separate syscalls, so a cooperating writer in another process
-//      could otherwise land its own rename in the sub-millisecond
-//      window between them. Holding the sentinel only around that
-//      tiny section keeps hold time near a single stat+rename while
-//      closing the residual TOCTOU window for cooperating writers;
-//      a crashed holder is reclaimed by PID-liveness / staleness, and
-//      an uncontended lock never blocks. This narrows — but, against a
-//      non-cooperating raw writer, cannot fully guarantee — atomicity.
+//   3. A per-session SQLite BEGIN IMMEDIATE transaction held across the
+//      re-stat + rename critical section. The fingerprint re-check and
+//      the rename are two separate syscalls, so a cooperating writer in
+//      another process could otherwise land its own rename in the
+//      sub-millisecond window between them. SQLite's OS-backed lock is
+//      automatically released when a process exits, avoiding hand-rolled
+//      stale-file reclamation and its unlink/reacquire ABA race. This
+//      narrows — but, against a non-cooperating raw writer, cannot fully
+//      guarantee — atomicity.
 //
 // Writes themselves are tmp-file + rename so readers (and crashes)
 // never observe a torn meta.json.
@@ -1079,12 +1259,26 @@ interface MetadataFileFingerprint {
   size: bigint;
 }
 
+interface NamedModelFileFingerprint {
+  name: string;
+  fingerprint: MetadataFileFingerprint | null;
+}
+
+interface SessionWriteFingerprint {
+  metadata: MetadataFileFingerprint | null;
+  legacyMetadata: MetadataFileFingerprint | null;
+  models: NamedModelFileFingerprint[];
+}
+
 async function statMetadataFingerprint(filePath: string): Promise<MetadataFileFingerprint | null> {
   try {
     const stats = await fs.stat(filePath, { bigint: true });
     return { ino: stats.ino, mtimeNs: stats.mtimeNs, size: stats.size };
-  } catch {
-    return null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return null;
+    }
+    throw error;
   }
 }
 
@@ -1096,6 +1290,51 @@ function metadataFingerprintsEqual(
     return left === right;
   }
   return left.ino === right.ino && left.mtimeNs === right.mtimeNs && left.size === right.size;
+}
+
+async function statSessionWriteFingerprint(sessionId: string): Promise<SessionWriteFingerprint> {
+  let entries: string[];
+  try {
+    entries = await fs.readdir(modelsDir(sessionId));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+    entries = [];
+  }
+  const modelEntries = entries.filter((entry) => entry.endsWith(MODEL_JSON_EXTENSION)).sort();
+  const [metadata, legacyMetadata, models] = await Promise.all([
+    statMetadataFingerprint(metaPath(sessionId)),
+    statMetadataFingerprint(legacySessionPath(sessionId)),
+    Promise.all(
+      modelEntries.map(async (name) => ({
+        name,
+        fingerprint: await statMetadataFingerprint(path.join(modelsDir(sessionId), name)),
+      })),
+    ),
+  ]);
+  return { metadata, legacyMetadata, models };
+}
+
+function sessionWriteFingerprintsEqual(
+  left: SessionWriteFingerprint,
+  right: SessionWriteFingerprint,
+): boolean {
+  if (!metadataFingerprintsEqual(left.metadata, right.metadata)) {
+    return false;
+  }
+  if (!metadataFingerprintsEqual(left.legacyMetadata, right.legacyMetadata)) {
+    return false;
+  }
+  if (left.models.length !== right.models.length) {
+    return false;
+  }
+  return left.models.every((entry, index) => {
+    const other = right.models[index];
+    return (
+      entry.name === other?.name && metadataFingerprintsEqual(entry.fingerprint, other.fingerprint)
+    );
+  });
 }
 
 async function atomicWriteFileUtf8(filePath: string, contents: string): Promise<void> {
@@ -1113,72 +1352,109 @@ async function atomicWriteFileUtf8(filePath: string, contents: string): Promise<
   }
 }
 
-// ─── Cross-process advisory lock for the meta.json critical section ───────────
+// ─── Cross-process advisory lock for the session write critical section ───────
 //
-// An O_EXCL sentinel lockfile next to meta.json, held only around the
-// re-stat + rename in updateSessionMetadata so a cooperating writer in
-// another process cannot slip a rename between our fingerprint re-check
-// and our own rename. Hold time is ~one stat + one rename. A crashed
-// holder is reclaimed (dead PID or stale mtime); an uncontended lock is
-// acquired on the first open with no timers. If the lock cannot be
-// acquired within the bounded wait we proceed best-effort (never worse
-// than the fingerprint-only guard).
-const META_LOCK_STALE_MS = 10_000;
+// The persistent SQLite file is only a mutex; session metadata still uses the
+// fingerprint check plus tmp-file/rename publication below. BEGIN IMMEDIATE
+// takes SQLite's single-writer lock before the fingerprint re-check and keeps
+// it through the metadata/model renames. The transaction intentionally makes
+// no database changes and is rolled back on release. If a holder crashes, the
+// OS closes its connection and SQLite releases the lock without any stale-file
+// unlink protocol (and therefore without a reclaimer ABA window).
 const META_LOCK_POLL_MS = 5;
 const META_LOCK_MAX_WAIT_MS = 2_000;
 
-function metaLockPath(sessionId: string): string {
-  return `${metaPath(sessionId)}.lock`;
+interface MetaLockLease {
+  database: DatabaseSync;
 }
 
-async function metaLockIsStale(lockPath: string): Promise<boolean> {
+function metaLockPath(sessionId: string): string {
+  return `${metaPath(sessionId)}.write-lock.sqlite`;
+}
+
+function sqlitePrimaryResultCode(error: unknown): number | undefined {
+  const errcode = (error as { errcode?: unknown } | null)?.errcode;
+  return typeof errcode === "number" ? errcode & 0xff : undefined;
+}
+
+function isSqliteBusyOrLocked(error: unknown): boolean {
+  const code = sqlitePrimaryResultCode(error);
+  // https://sqlite.org/rescode.html#busy / #locked. Extended result codes
+  // retain their primary code in the low byte.
+  return code === 5 || code === 6;
+}
+
+function closeMetaLockDatabase(database: DatabaseSync): void {
   try {
-    const [stats, raw] = await Promise.all([
-      fs.stat(lockPath),
-      fs.readFile(lockPath, "utf8").catch(() => ""),
-    ]);
-    const ownerPid = Number.parseInt(raw.trim(), 10);
-    if (Number.isInteger(ownerPid) && ownerPid > 0 && !isProcessAlive(ownerPid)) {
-      return true;
-    }
-    return Date.now() - stats.mtimeMs > META_LOCK_STALE_MS;
+    database.close();
   } catch {
-    // Lock vanished between the failed open and this check — reclaimable.
-    return true;
+    // Close is a last-resort cleanup path. A process-level close/crash also
+    // rolls back an open SQLite transaction and releases the OS lock.
   }
 }
 
-async function acquireMetaLock(lockPath: string): Promise<boolean> {
+async function acquireMetaLock(lockPath: string): Promise<MetaLockLease | null> {
   const deadline = Date.now() + META_LOCK_MAX_WAIT_MS;
+  let database: DatabaseSync;
+  try {
+    // Keep SQLite's synchronous busy timeout at zero. Waiting inside
+    // DatabaseSync would block the entire Node event loop; async polling
+    // below yields between attempts while retaining the same connection.
+    database = new DatabaseSync(lockPath, { timeout: 0 });
+  } catch (error) {
+    throw new Error(
+      `Could not open session metadata lock database at ${lockPath}. Verify that the session directory is writable.`,
+      { cause: error },
+    );
+  }
   for (;;) {
     try {
-      const handle = await fs.open(lockPath, "wx");
-      try {
-        await handle.writeFile(`${process.pid}`);
-      } finally {
-        await handle.close();
-      }
-      return true;
+      database.exec("BEGIN IMMEDIATE");
+      return { database };
     } catch (error) {
-      if (!isAlreadyExistsError(error)) {
-        // Missing parent dir or other unexpected error: skip the lock and
-        // fall back to the fingerprint-only guard rather than failing.
-        return false;
-      }
-      if (await metaLockIsStale(lockPath)) {
-        await fs.rm(lockPath, { force: true }).catch(() => undefined);
-        continue;
+      if (!isSqliteBusyOrLocked(error)) {
+        closeMetaLockDatabase(database);
+        throw new Error(
+          `Could not acquire session metadata lock at ${lockPath}: SQLite rejected the lock database. Verify that it is a valid, writable SQLite file on local storage before retrying.`,
+          { cause: error },
+        );
       }
       if (Date.now() >= deadline) {
-        return false;
+        closeMetaLockDatabase(database);
+        return null;
       }
       await wait(META_LOCK_POLL_MS);
     }
   }
 }
 
-async function releaseMetaLock(lockPath: string): Promise<void> {
-  await fs.rm(lockPath, { force: true }).catch(() => undefined);
+async function releaseMetaLock(lease: MetaLockLease): Promise<void> {
+  try {
+    if (lease.database.isTransaction) {
+      lease.database.exec("ROLLBACK");
+    }
+  } catch {
+    // Release must not turn a successfully-published metadata rename into an
+    // ambiguous write failure. Closing the connection below is SQLite's
+    // documented rollback fallback and releases the process-owned OS lock.
+  } finally {
+    closeMetaLockDatabase(lease.database);
+  }
+}
+
+async function sessionReadFailureIsStable(
+  sessionId: string,
+  lockPath: string,
+  readFingerprint: SessionWriteFingerprint,
+): Promise<boolean> {
+  const lease = await acquireMetaLock(lockPath);
+  if (!lease) return false;
+  try {
+    const currentFingerprint = await statSessionWriteFingerprint(sessionId);
+    return sessionWriteFingerprintsEqual(readFingerprint, currentFingerprint);
+  } finally {
+    await releaseMetaLock(lease);
+  }
 }
 
 /**
@@ -1199,41 +1475,58 @@ export async function updateSessionMetadata(
   updates: Partial<SessionMetadata> | SessionMetadataUpdater,
 ): Promise<SessionMetadata> {
   return withSessionMetadataLock(sessionId, async () => {
-    const targetPath = metaPath(sessionId);
+    await ensureDir(sessionDir(sessionId));
     const lockPath = metaLockPath(sessionId);
     for (let attempt = 1; attempt <= MAX_METADATA_UPDATE_ATTEMPTS; attempt += 1) {
-      const readFingerprint = await statMetadataFingerprint(targetPath);
-      const existing =
-        (await readModernSessionMetadata(sessionId, { reconcile: false, persist: false })) ??
-        (await readLegacySessionMetadata(sessionId, { reconcile: false, persist: false })) ??
-        ({ id: sessionId } as SessionMetadata);
+      const readFingerprint = await statSessionWriteFingerprint(sessionId);
+      let existing: SessionMetadata;
+      try {
+        existing =
+          (await readRawSessionMetadataForUpdate(sessionId)) ??
+          ({ id: sessionId } as SessionMetadata);
+      } catch (error) {
+        if (!(await sessionReadFailureIsStable(sessionId, lockPath, readFingerprint))) {
+          continue;
+        }
+        throw error;
+      }
       if (hasImportedChatgptConversationClaim(existing)) {
         throw new Error(
           `Session "${sessionId}" is an imported ChatGPT conversation; generic metadata updates are refused. Use the strict conversation import command with --force to replace it.`,
         );
       }
       const patch = typeof updates === "function" ? await updates(existing) : updates;
-      const next = normalizeTerminalModelRuns({ ...existing, ...patch });
-      // Hold the cross-process sentinel across the re-stat + rename so a
+      if (patch.id !== undefined && patch.id !== sessionId) {
+        throw new Error(
+          `Session "${sessionId}" update attempted to change its immutable id to "${patch.id}".`,
+        );
+      }
+      const next = normalizeTerminalModelRuns({ ...existing, ...patch, id: sessionId });
+      const modelRunsExplicitlyChanged = Object.hasOwn(patch, "models");
+      // Hold the cross-process SQLite lease across the re-stat + rename so a
       // cooperating writer in another process cannot land its rename in
       // the window between our fingerprint check and persistSessionMetadata's
       // own rename.
-      const locked = await acquireMetaLock(lockPath);
+      const lease = await acquireMetaLock(lockPath);
+      if (!lease) {
+        continue;
+      }
       try {
         // Optimistic-concurrency guard: if another process replaced
-        // meta.json since we read it, our merge base is stale — writing it
-        // would silently revert the fresher fields (e.g. a terminal status
-        // written by the session's runner). Re-read and re-merge instead.
-        const writeFingerprint = await statMetadataFingerprint(targetPath);
-        if (!metadataFingerprintsEqual(readFingerprint, writeFingerprint)) {
+        // meta.json or any model JSON since we read them, our merge base is
+        // stale — writing it would silently revert fresher session/model
+        // state. Re-read and re-merge instead.
+        const writeFingerprint = await statSessionWriteFingerprint(sessionId);
+        if (!sessionWriteFingerprintsEqual(readFingerprint, writeFingerprint)) {
           continue;
         }
-        await persistSessionMetadata(next.metadata, next.modelRunsChanged);
+        await persistSessionMetadata(
+          next.metadata,
+          next.modelRunsChanged || modelRunsExplicitlyChanged,
+        );
         return next.metadata;
       } finally {
-        if (locked) {
-          await releaseMetaLock(lockPath);
-        }
+        await releaseMetaLock(lease);
       }
     }
     throw new Error(
@@ -1313,6 +1606,26 @@ async function reconcileSessionMetadata(
   });
 }
 
+/**
+ * Pure reconciliation view used to bind a completion claim to the same
+ * dead-browser/zombie interpretation exposed by readSessionMetadata, without
+ * publishing that interpretation or recursively entering the session writer.
+ */
+export async function reconcileSessionMetadataForCompletionClaim(
+  meta: SessionMetadata,
+): Promise<SessionMetadata> {
+  return await reconcileSessionMetadata(meta, { persist: false });
+}
+
+/**
+ * Pure view of the transformation the generic metadata writer applies after
+ * an updater returns. Completion claims must bind to this stored generation,
+ * not the pre-normalization input passed to their updater.
+ */
+export function normalizeSessionMetadataForCompletionClaim(meta: SessionMetadata): SessionMetadata {
+  return normalizeTerminalModelRuns(meta).metadata;
+}
+
 function isSessionMetadataRecord(value: unknown): value is SessionMetadata {
   return Boolean(
     value && typeof (value as SessionMetadata).id === "string" && (value as SessionMetadata).status,
@@ -1337,6 +1650,9 @@ function terminalModelRunPatch(meta: SessionMetadata): Partial<SessionModelRun> 
   const patch: Partial<SessionModelRun> = { status };
   if (meta.completedAt) {
     patch.completedAt = meta.completedAt;
+  }
+  if (meta.usage) {
+    patch.usage = meta.usage;
   }
   if (meta.response) {
     patch.response = meta.response;
@@ -1375,8 +1691,16 @@ function normalizeTerminalModelRuns(meta: SessionMetadata): {
       return run;
     }
     modelRunsChanged = true;
+    const {
+      completedAt: _completedAt,
+      usage: _usage,
+      response: _response,
+      transport: _transport,
+      error: _error,
+      ...preserved
+    } = run;
     return ensureModelLogReference(meta.id, {
-      ...run,
+      ...preserved,
       ...patch,
     });
   });
@@ -1393,17 +1717,33 @@ async function persistSessionMetadata(
   meta: SessionMetadata,
   persistModelRuns = false,
 ): Promise<void> {
-  await atomicWriteFileUtf8(metaPath(meta.id), JSON.stringify(meta, null, 2));
-  if (!persistModelRuns || !Array.isArray(meta.models)) {
-    return;
-  }
-  await ensureDir(modelsDir(meta.id));
-  await Promise.all(
-    meta.models.map(async (run) => {
+  const persistModels = async (): Promise<void> => {
+    if (!persistModelRuns || !Array.isArray(meta.models)) return;
+    await ensureDir(modelsDir(meta.id));
+    // Keep every model rename inside the caller's SQLite lease. Promise.all
+    // rejects as soon as one child fails while sibling writes continue in the
+    // background, which could otherwise outlive the finally block that
+    // releases the lease and interleave with the next writer.
+    for (const run of meta.models) {
       const record = ensureModelLogReference(meta.id, run);
       await atomicWriteFileUtf8(modelJsonPath(meta.id, run.model), JSON.stringify(record, null, 2));
-    }),
-  );
+    }
+  };
+  const publishFailureFirst = meta.status === "error" || meta.status === "cancelled";
+  if (publishFailureFirst) {
+    // A browser failure's route, runtime, and diagnostic are the fail-closed
+    // publication marker. Publish them before projecting model failures so a
+    // crash cannot leave active top-level metadata paired with a terminal
+    // error model that a fresh runner might mistake for a safe new attempt.
+    await atomicWriteFileUtf8(metaPath(meta.id), JSON.stringify(meta, null, 2));
+    await persistModels();
+    return;
+  }
+  // Successful/partial model evidence is the fail-closed publication marker:
+  // stale failure writers and replay admission reject it even if a crash
+  // happens before the matching top-level metadata rename.
+  await persistModels();
+  await atomicWriteFileUtf8(metaPath(meta.id), JSON.stringify(meta, null, 2));
 }
 
 export function createSessionLogWriter(sessionId: string, model?: string): SessionLogWriter {
@@ -1715,7 +2055,44 @@ export async function getSessionPaths(sessionId: string): Promise<{
 // updateSessionMetadata by reconcileSessionMetadata so the lock + OCC guard
 // (and terminal model-row propagation) apply uniformly.
 
+function completionClaimOwnerIsLive(
+  claim:
+    | BrowserRemoteRecoveryCompletionClaim
+    | BrowserLocalReattachCompletionClaim
+    | BrowserRunAttemptClaim
+    | undefined,
+): boolean {
+  if (!claim || !isProcessAlive(claim.ownerPid)) return false;
+  const liveStartToken = readProcessStartToken(claim.ownerPid);
+  return !(claim.ownerStartToken && liveStartToken && claim.ownerStartToken !== liveStartToken);
+}
+
+function readProcessStartToken(pid: number): string | undefined {
+  if (process.platform !== "linux") return undefined;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const fieldsAfterCommand = stat
+      .slice(stat.lastIndexOf(")") + 2)
+      .trim()
+      .split(/\s+/);
+    return fieldsAfterCommand[19];
+  } catch {
+    return undefined;
+  }
+}
+
+function hasLiveBrowserCompletionClaim(meta: SessionMetadata): boolean {
+  return (
+    completionClaimOwnerIsLive(meta.browser?.remoteRecoveryCompletionClaim) ||
+    completionClaimOwnerIsLive(meta.browser?.localReattachCompletionClaim) ||
+    completionClaimOwnerIsLive(meta.browser?.runAttemptClaim)
+  );
+}
+
 async function zombiePatch(meta: SessionMetadata): Promise<Partial<SessionMetadata> | null> {
+  if (hasLiveBrowserCompletionClaim(meta)) {
+    return null;
+  }
   if (!(await isZombie(meta))) {
     return null;
   }
@@ -1748,6 +2125,9 @@ async function deadBrowserPatch(meta: SessionMetadata): Promise<Partial<SessionM
     !RUNNING_SESSION_STATUSES.has(meta.status) ||
     !BROWSER_SESSION_MODES.has(meta.mode as SessionMode)
   ) {
+    return null;
+  }
+  if (hasLiveBrowserCompletionClaim(meta)) {
     return null;
   }
   const runtime = meta.browser?.runtime;

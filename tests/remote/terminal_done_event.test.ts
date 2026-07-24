@@ -12,6 +12,9 @@ import {
 } from "../../src/browser/actions/captureBinding.js";
 import {
   createRemoteBrowserExecutor,
+  getRemoteBrowserFailedRouteFromError,
+  getRemoteBrowserPendingRecoveryClaimFromError,
+  getRemoteBrowserPromptSubmitObservedFromError,
   getRemoteBrowserRecoveryFromError,
   recoverRemoteBrowserSession,
   RemoteRunFailedError,
@@ -41,6 +44,13 @@ import {
   strongRemoteSuccessProvenance,
   verifiedSolProModelSelection,
 } from "./_submissionProvenanceFixture.js";
+import { performSessionRun } from "../../src/cli/sessionRunner.js";
+import { sessionStore } from "../../src/sessionStore.js";
+import { setOracleHomeDirOverrideForTest } from "../../src/oracleHome.js";
+import {
+  classifyStoredRemotePreSubmitState,
+  formatStoredRemotePreSubmitRecoveryBlock,
+} from "../../src/remote/storedPreSubmitState.js";
 
 // Terminal done-event contract:
 // - the server emits exactly one terminal `done` event per accepted run and
@@ -101,6 +111,7 @@ const savedFleetDir = process.env.ORACLE_FLEET_DIR;
 const tempDirs: string[] = [];
 
 afterEach(async () => {
+  setOracleHomeDirOverrideForTest(null);
   if (savedFleetDir === undefined) {
     delete process.env.ORACLE_FLEET_DIR;
   } else {
@@ -1231,6 +1242,133 @@ describe("client: terminal done enforcement", () => {
         expect((failure as RemoteRunFailedError).retryable).toBe(false);
         expect((failure as RemoteRunFailedError).preSubmitDiagnostic).toEqual(
           EXACT_PROMPT_PRE_SUBMIT_DIAGNOSTIC,
+        );
+        expect(getRemoteBrowserFailedRouteFromError(failure)).toEqual({
+          runId: "fixture-run",
+          accountId: "acct1",
+          laneId: "acct1-9473",
+          terminalDoneOk: false,
+          provenance: null,
+        });
+        expect(getRemoteBrowserPendingRecoveryClaimFromError(failure)).toBeNull();
+        expect(getRemoteBrowserPromptSubmitObservedFromError(failure)).toBe(false);
+      } finally {
+        await fake.close();
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "retains the pending claim when local submit evidence contradicts a pre-submit diagnostic",
+    async () => {
+      const fake = await startFakeRunServer([
+        { type: "log", message: "Submitted prompt via Enter key" },
+        {
+          type: "done",
+          ok: false,
+          errorClass: "integrity_ui_unknown",
+          errorMessage: "contradictory pre-submit diagnostic",
+          retryable: false,
+          preSubmitDiagnostic: EXACT_PROMPT_PRE_SUBMIT_DIAGNOSTIC,
+        },
+      ]);
+      try {
+        const executor = createRemoteBrowserExecutor({
+          host: `127.0.0.1:${fake.port}`,
+          token: "secret",
+        });
+        const failure = await executor({ prompt: "x", config: {} }).then(
+          () => null,
+          (error: unknown) => error,
+        );
+
+        expect(failure).toBeInstanceOf(RemoteRunFailedError);
+        expect(getRemoteBrowserFailedRouteFromError(failure)).toEqual({
+          runId: "fixture-run",
+          accountId: "acct1",
+          laneId: "acct1-9473",
+          terminalDoneOk: false,
+          provenance: null,
+        });
+        expect(getRemoteBrowserPendingRecoveryClaimFromError(failure)).toMatchObject({
+          originRunId: "fixture-run",
+          accountId: "acct1",
+          originLaneId: "acct1-9473",
+        });
+        expect(getRemoteBrowserPromptSubmitObservedFromError(failure)).toBe(true);
+      } finally {
+        await fake.close();
+      }
+    },
+  );
+
+  test.skipIf(!CAN_LISTEN_LOCALHOST)(
+    "persists a submit-observed diagnostic contradiction even without a pending-claim sidecar",
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "oracle-submit-diagnostic-"));
+      tempDirs.push(root);
+      setOracleHomeDirOverrideForTest(path.join(root, "oracle-home"));
+      await sessionStore.ensureStorage();
+      const metadata = await sessionStore.createSession(
+        { prompt: "x", model: "gpt-5.6-sol", mode: "browser" },
+        root,
+      );
+      const fake = await startFakeRunServer([
+        { type: "log", message: "Submitted prompt via Enter key" },
+        {
+          type: "done",
+          ok: false,
+          errorClass: "integrity_ui_unknown",
+          errorMessage: "contradictory pre-submit diagnostic",
+          retryable: false,
+          preSubmitDiagnostic: EXACT_PROMPT_PRE_SUBMIT_DIAGNOSTIC,
+        },
+      ]);
+      try {
+        const executor = createRemoteBrowserExecutor({
+          host: `127.0.0.1:${fake.port}`,
+          token: "secret",
+        });
+        const failure = await performSessionRun({
+          sessionMeta: metadata,
+          runOptions: { prompt: "x", model: "gpt-5.6-sol" },
+          mode: "browser",
+          browserConfig: {},
+          cwd: root,
+          log: () => {},
+          write: () => true,
+          version: "test",
+          notifications: { enabled: false, sound: false },
+          browserDeps: {
+            executeBrowser: executor,
+            v18EmitHomeDir: path.join(root, "v18"),
+          },
+          remoteFailureDeps: {
+            // Prove the public contradiction marker does not depend on a
+            // private pending-claim sidecar surviving this process.
+            getPendingRecoveryClaim: () => null,
+          },
+        }).then(
+          () => null,
+          (error: unknown) => error,
+        );
+        expect(failure).toBeInstanceOf(RemoteRunFailedError);
+        expect(getRemoteBrowserPromptSubmitObservedFromError(failure)).toBe(true);
+
+        const stored = await sessionStore.readSession(metadata.id);
+        if (!stored) throw new Error("stored session disappeared");
+        expect(stored.error?.details).toMatchObject({
+          preSubmitDiagnostic: EXACT_PROMPT_PRE_SUBMIT_DIAGNOSTIC,
+          runtime: { promptSubmitted: true },
+        });
+        const state = classifyStoredRemotePreSubmitState(stored);
+        expect(state).toMatchObject({
+          kind: "contradictory",
+          conflicts: expect.arrayContaining(["error.details.runtime.promptSubmitted"]),
+        });
+        if (!state) throw new Error("stored diagnostic was not classified");
+        expect(formatStoredRemotePreSubmitRecoveryBlock(stored.id, state)).not.toMatch(
+          /no prompt was submitted/i,
         );
       } finally {
         await fake.close();
